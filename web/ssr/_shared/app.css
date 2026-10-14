@@ -351,3 +351,36 @@ body { background: var(--bs-body-bg); }
   #card-print-actions:empty { display: none !important; }
   .app-topbar .app-title { min-width: 0; overflow-wrap: anywhere; }
 }
+
+/* ---- Календарь загрузки «/calendar» ----
+   Сетка месяца Пн–Вс + панель выбранного дня. Цвет ячейки — уровень загрузки:
+   free (2+ места) / busy (1 место) / full (мест нет) / over (перегруз). Только --bs-* токены. */
+.cal-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.cal-month-title { min-width: 150px; text-align: center; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cal-head { font-size: 12px; text-align: center; color: var(--bs-secondary-color); padding-bottom: 2px; }
+.cal-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; min-height: 78px; padding: 6px 8px;
+  border: 1px solid var(--bs-border-color); border-radius: var(--kt-radius);
+  color: var(--bs-body-color); text-decoration: none; background: var(--bs-body-bg); }
+.cal-cell:hover { border-color: var(--bs-primary); }
+.cal-num { font-weight: 600; font-size: 14px; }
+.cal-load { font-size: 13px; font-variant-numeric: tabular-nums; }
+.cal-note { font-size: 11px; color: var(--bs-secondary-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-cell.cal-free { background: var(--bs-success-bg-subtle); border-color: var(--bs-success-border-subtle); }
+.cal-cell.cal-busy { background: var(--bs-warning-bg-subtle); border-color: var(--bs-warning-border-subtle); }
+.cal-cell.cal-full, .cal-cell.cal-over { background: var(--bs-danger-bg-subtle); border-color: var(--bs-danger-border-subtle); }
+.cal-cell.cal-over .cal-note, .cal-cell.cal-full .cal-note { color: var(--bs-danger-text-emphasis); font-weight: 600; }
+.cal-cell.cal-past { opacity: .6; }
+.cal-cell.cal-out { opacity: .35; }
+.cal-cell.cal-is-today .cal-num { color: var(--bs-primary); }
+.cal-cell.cal-selected { outline: 2px solid var(--bs-primary); outline-offset: 1px; opacity: 1; }
+.cal-order { padding: 8px 10px; border: 1px solid var(--bs-border-color); border-radius: var(--kt-radius); }
+.cal-col-badge { background: var(--cal-col); color: #fff; font-weight: 500; }
+@media (max-width: 992px) {
+  .cal-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 576px) {
+  .cal-grid { gap: 3px; }
+  .cal-cell { min-height: 58px; padding: 4px; }
+  .cal-note { display: none; }
+}

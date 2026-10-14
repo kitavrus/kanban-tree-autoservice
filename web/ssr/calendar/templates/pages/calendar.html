@@ -1,0 +1,84 @@
+{{ define "content" }}
+<div id="cal" data-testid="cal-root">
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+    <a class="btn btn-outline-secondary btn-sm" href="{{ .PrevURL }}" data-testid="cal-prev" aria-label="Предыдущий месяц">‹</a>
+    <h2 class="h5 mb-0 cal-month-title" data-testid="cal-month">{{ .MonthTitle }}</h2>
+    <a class="btn btn-outline-secondary btn-sm" href="{{ .NextURL }}" data-testid="cal-next" aria-label="Следующий месяц">›</a>
+    <a class="btn btn-outline-secondary btn-sm" href="{{ .TodayURL }}" data-testid="cal-today">Сегодня</a>
+    {{ with .Today }}
+    <span class="ms-2 small" data-testid="cal-today-summary">
+      Сегодня в ремонте: <strong>{{ .Occupied }}</strong> из {{ $.Capacity }} ·
+      {{ if gt .Over 0 }}<strong class="text-danger">перегруз +{{ .Over }}</strong>{{ else if gt .Free 0 }}свободно <strong class="text-success">{{ .Free }}</strong>{{ else }}<strong class="text-danger">мест нет</strong>{{ end }}
+    </span>
+    {{ end }}
+
+    <div class="ms-auto d-flex align-items-center gap-2" data-testid="cal-capacity">
+      <label class="small text-body-secondary mb-0" for="cal-max-cars">Мест одновременно:</label>
+      {{ if .IsAdmin }}
+      <input type="number" class="form-control form-control-sm" id="cal-max-cars" data-testid="cal-max-cars"
+             min="{{ .MinCars }}" max="{{ .MaxCars }}" step="1" value="{{ .Capacity }}" style="width:80px">
+      <button type="button" class="btn btn-primary btn-sm" id="cal-save" data-testid="cal-save">Сохранить</button>
+      {{ else }}
+      <strong id="cal-max-cars" data-testid="cal-max-cars">{{ .Capacity }}</strong>
+      {{ end }}
+    </div>
+  </div>
+  <div class="alert alert-danger d-none py-2" id="cal-error" data-testid="cal-error" role="alert"></div>
+
+  <div class="cal-layout">
+    <div class="cal-grid" data-testid="cal-grid" role="grid" aria-label="Загрузка по дням">
+      {{ range .WeekDays }}<div class="cal-head" role="columnheader">{{ . }}</div>{{ end }}
+      {{ range .Weeks }}{{ range . }}
+      <a href="{{ .URL }}" role="gridcell"
+         class="cal-cell cal-{{ .Level }}{{ if not .InMonth }} cal-out{{ end }}{{ if .IsPast }} cal-past{{ end }}{{ if .IsToday }} cal-is-today{{ end }}{{ if .IsSelected }} cal-selected{{ end }}"
+         data-testid="cal-day" data-date="{{ .Date }}" data-occupied="{{ .Occupied }}" data-free="{{ .Free }}" data-level="{{ .Level }}"
+         {{ if .IsSelected }}aria-current="date"{{ end }}>
+        <span class="cal-num">{{ .Day }}</span>
+        <span class="cal-load">{{ .Occupied }}/{{ $.Capacity }}</span>
+        <span class="cal-note">{{ if gt .Over 0 }}+{{ .Over }} сверх{{ else if gt .Free 0 }}своб. {{ .Free }}{{ else }}мест нет{{ end }}</span>
+      </a>
+      {{ end }}{{ end }}
+    </div>
+
+    <aside class="card cal-day" data-testid="cal-day-panel">
+      {{ with .Selected }}
+      <div class="card-body">
+        <h3 class="h6 mb-1" data-testid="cal-day-title">{{ .Title }}</h3>
+        <p class="small mb-3" data-testid="cal-day-summary">
+          В ремонте: <strong>{{ .Occupied }}</strong> из {{ $.Capacity }} ·
+          {{ if gt .Over 0 }}<span class="text-danger fw-semibold">перегруз +{{ .Over }}</span>
+          {{ else if gt .Free 0 }}<span class="text-success fw-semibold">свободно {{ .Free }}</span>
+          {{ else }}<span class="text-danger fw-semibold">мест нет</span>{{ end }}
+        </p>
+        {{ if .Orders }}
+        <ul class="list-unstyled mb-0 d-flex flex-column gap-2" data-testid="cal-day-orders">
+          {{ range .Orders }}
+          <li class="cal-order" data-testid="cal-day-order" data-task-id="{{ .ID }}">
+            <div class="d-flex align-items-center gap-2">
+              <a href="/?task={{ .ID }}" class="fw-semibold text-decoration-none">#{{ .ID }} {{ .Title }}</a>
+              <span class="badge cal-col-badge ms-auto" style="--cal-col: {{ .ColumnColor }}">{{ .ColumnName }}</span>
+            </div>
+            <div class="small text-body-secondary">{{ .ClientName }}</div>
+            <div class="small {{ if .OpenEnded }}text-warning-emphasis{{ else }}text-body-secondary{{ end }}">{{ .Period }}</div>
+          </li>
+          {{ end }}
+        </ul>
+        {{ else }}
+        <div class="empty-state" data-testid="cal-day-empty">В этот день машин в ремонте нет.</div>
+        {{ end }}
+      </div>
+      {{ end }}
+    </aside>
+  </div>
+
+  <p class="text-body-secondary small mt-3 mb-0">
+    Машина занимает место со дня приёмки до выдачи (перенос заказа в финальную колонку, например «Выдан»). Пока машина не выдана,
+    место занято по срок заказа; если срок не указан или уже прошёл — место считается занятым и во все следующие
+    дни, пока машину не выдадут. Удалённые заказы не учитываются.
+  </p>
+</div>
+{{ end }}
+
+{{ define "scripts" }}
+<script src="/assets/ssr-shared/js/calendar.js"></script>
+{{ end }}

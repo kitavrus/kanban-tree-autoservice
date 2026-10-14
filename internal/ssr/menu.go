@@ -21,6 +21,7 @@ type NavGroup struct {
 var menu = []NavGroup{
 	{Label: "Работа", Items: []NavItem{
 		{Title: "Доска", Icon: "▦", URL: "/"},
+		{Title: "Календарь", Icon: "📅", URL: "/calendar"},
 		{Title: "Остатки", Icon: "📊", URL: "/stock"},
 		{Title: "Выплаты", Icon: "💸", URL: "/executor-payouts"},
 	}},

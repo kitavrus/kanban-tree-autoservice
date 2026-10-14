@@ -17,6 +17,7 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/config"
 	"github.com/kitavrus/kanban-tree/internal/features/auth"
 	"github.com/kitavrus/kanban-tree/internal/features/board"
+	"github.com/kitavrus/kanban-tree/internal/features/calendar"
 	"github.com/kitavrus/kanban-tree/internal/features/catalog"
 	"github.com/kitavrus/kanban-tree/internal/features/clients"
 	"github.com/kitavrus/kanban-tree/internal/features/executorpayouts"
@@ -122,7 +123,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	boardSubtaskLogRepo := board.NewSubtaskLogRepo(pool)
 
 	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
-	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/suppliers", "/executor-payouts", "/deleted").WithBadges(boardStockSvc)
+	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/suppliers", "/executor-payouts", "/calendar", "/deleted").WithBadges(boardStockSvc)
 
 	sharedR, err := ssr.NewRenderer(ssr.SharedRoot)
 	if err != nil {
@@ -153,6 +154,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	if err != nil {
 		return nil, err
 	}
+	calendarR, err := ssr.NewRenderer(calendar.Root, ssr.SharedRoot)
+	if err != nil {
+		return nil, err
+	}
 	suppliersR, err := ssr.NewRenderer(suppliers.Root, ssr.SharedRoot)
 	if err != nil {
 		return nil, err
@@ -180,6 +185,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	// Выплаты исполнителям (D62–D70): отчёт и массовая отметка — и admin, и executor.
 	executorpayouts.Register(app, api, guard, executorpayouts.NewHandler(executorpayouts.NewService(pool)),
 		executorpayouts.NewSSR(payoutsR, shell))
+	// Календарь загрузки сервиса: смотрят все, вместимость (5–12 машин) меняет admin.
+	calendarSvc := calendar.NewService(pool)
+	calendar.Register(app, api, guard, calendar.NewHandler(calendarSvc), calendar.NewSSR(calendarSvc, calendarR, shell))
 	// Раздел «Удалённые» (soft-delete-core DS-011): только admin. Источники видов подключают
 	// части мастер-спеки soft-delete; часть 1 — заказы.
 	deletedSvc := softdelete.NewService().
