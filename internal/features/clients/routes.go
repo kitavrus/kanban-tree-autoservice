@@ -7,7 +7,7 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
 )
 
-// Register — JSON API /api/v1/clients + /api/v1/equipment (чтение — RequireAPI, мутации —
+// Register — JSON API /api/v1/clients + /api/v1/equipment/:id (чтение — RequireAPI, мутации —
 // +admin; POST /clients/:id/equipment — RequireAPI без admin, D19: исполнитель создаёт
 // оборудование) + SSR-экран /clients + форма единицы оборудования /equipment/:id (только
 // admin, ADR-005/ADR-006). При s == nil SSR-группа не регистрируется (используется в
@@ -28,7 +28,6 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, 
 	g.Post("/:id/equipment", h.CreateEquipment) // D19: без admin-guard
 
 	e := api.Group("/equipment", a.RequireAPI())
-	e.Get("", h.SearchEquipment) // transfers-core DS-057: поиск единиц по всем клиентам
 	e.Get("/:id", h.GetEquipment)
 	e.Get("/:id/history", h.EquipmentHistory)
 	e.Put("/:id", admin, h.UpdateEquipment)

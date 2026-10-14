@@ -21,11 +21,11 @@
   <h2>Оборудование</h2>
   {{ if .Card.Equipment }}
   <table class="table table-bordered table-sm" data-testid="print-equipment">
-    <thead><tr><th>Тип</th><th>Бренд</th><th>Модель</th><th>Серийный №</th><th>Комплектность</th><th>Состояние</th></tr></thead>
+    <thead><tr><th>Госномер</th><th>Тип</th><th>Бренд</th><th>Модель</th><th>Серийный №</th><th>Комплектность</th><th>Состояние</th></tr></thead>
     <tbody>
     {{ range .Card.Equipment }}
     <tr>
-      <td>{{ .TypeName }}</td><td>{{ .Brand }}</td><td>{{ .Model }}</td><td>{{ .Serial }}</td>
+      <td class="text-nowrap" data-testid="print-plate-number">{{ .PlateNumber }}</td><td>{{ .TypeName }}</td><td>{{ .Brand }}</td><td>{{ .Model }}</td><td>{{ .Serial }}</td>
       <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
     </tr>
     {{ end }}
@@ -76,11 +76,6 @@
 </section>
 
 <section class="print-section print-total" data-testid="print-total">
-  {{/* «Продано по накладным» (transfers-sales DS-014) — уже входит в итог; строки нет, пока
-       у заказа нет отправленных накладных с товаром. */}}
-  {{ if ne (printf "%s" .Card.Task.TransfersAmount) "0.00" }}
-  <p data-testid="print-transfers-amount">Продано по накладным: {{ .Card.Task.TransfersAmount }}</p>
-  {{ end }}
   <h2>Итого: {{ .Card.Task.TotalAmount }}</h2>
   <p data-testid="print-payment">
     {{ if .Card.Task.IsPaid }}Оплачено{{ if .Card.Task.PaidAt }} {{ timeIn .Timezone "02.01.2006" .Card.Task.PaidAt }}{{ end }}{{ else }}Не оплачено{{ end }}

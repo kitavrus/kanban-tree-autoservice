@@ -19,7 +19,7 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/testutil"
 )
 
-// UserTimezoneMigrationSuite — миграция 0013 (docs/features/user-timezone/draft-spec.md
+// UserTimezoneMigrationSuite — миграция 0010 (docs/features/user-timezone/draft-spec.md
 // §4.1, DS-033; часть TS-022 — «существующие пользователи получили Asia/Almaty»):
 // down → колонки нет; up → колонка NOT NULL с умолчанием, существующие строки заполнены,
 // CHECK длины 1..64; повторный down/up чистый.
@@ -56,14 +56,14 @@ func (s *UserTimezoneMigrationSuite) TestTS022_Migration0013_UpDown() {
 	s.Require().NoError(err)
 	defer func() { _, _ = mig.Close() }()
 
-	s.Require().NoError(mig.Migrate(12))
-	// Вернуть схему на последнюю версию; пока 0013 — последняя, Up() отвечает ErrNoChange.
+	s.Require().NoError(mig.Migrate(9))
+	// Вернуть схему на последнюю версию; пока 0010 — последняя, Up() отвечает ErrNoChange.
 	defer func() {
 		if err := mig.Up(); !errors.Is(err, migrate.ErrNoChange) {
 			s.Require().NoError(err)
 		}
 	}()
-	s.False(s.columnExists(), "до 0013 колонки users.timezone нет")
+	s.False(s.columnExists(), "до 0010 колонки users.timezone нет")
 
 	// «Существующий» пользователь — заведён ДО миграции.
 	var oldID string
@@ -72,8 +72,8 @@ func (s *UserTimezoneMigrationSuite) TestTS022_Migration0013_UpDown() {
 		 RETURNING id::text`).Scan(&oldID))
 	defer func() { _, _ = s.Pool.Exec(ctx, `DELETE FROM users WHERE login LIKE 'tz-mig-%'`) }()
 
-	// --- up 0013 ---
-	s.Require().NoError(mig.Migrate(13))
+	// --- up 0010 ---
+	s.Require().NoError(mig.Migrate(10))
 	s.True(s.columnExists())
 
 	var typ, nullable, def string
@@ -110,14 +110,14 @@ func (s *UserTimezoneMigrationSuite) TestTS022_Migration0013_UpDown() {
 	_, err = s.Pool.Exec(ctx, `UPDATE users SET timezone = 'Europe/Moscow' WHERE id = $1::uuid`, oldID)
 	s.Require().NoError(err)
 
-	// --- down → 0012: колонка (и CHECK) удалены, пользователи на месте; up поднимается чисто ---
-	s.Require().NoError(mig.Migrate(12))
+	// --- down → 0009: колонка (и CHECK) удалены, пользователи на месте; up поднимается чисто ---
+	s.Require().NoError(mig.Migrate(9))
 	s.False(s.columnExists())
 	var kept int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE login LIKE 'tz-mig-%'`).Scan(&kept))
 	s.Equal(2, kept, "откат не удаляет пользователей")
 
-	s.Require().NoError(mig.Migrate(13))
+	s.Require().NoError(mig.Migrate(10))
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT timezone FROM users WHERE id = $1::uuid`, oldID).Scan(&tz))
 	s.Equal("Asia/Almaty", tz, "после отката и повторного наката — снова умолчание")
 }

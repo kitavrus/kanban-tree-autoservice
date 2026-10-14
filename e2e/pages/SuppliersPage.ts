@@ -26,7 +26,7 @@ export class SuppliersPage {
   readonly toggleActive: Locator;
   readonly cancel: Locator;
   readonly archivedNote: Locator;
-  /** «Удалить» внизу формы поставщика слева (soft-delete-warehouses-suppliers §8.1). */
+  /** «Удалить» внизу формы поставщика слева (soft-delete-suppliers §8.1). */
   readonly delete: Locator;
   // окно «Удаление»
   readonly deleteDialog: Locator;

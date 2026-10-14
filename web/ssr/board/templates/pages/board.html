@@ -11,7 +11,7 @@
     <option value="">Все клиенты</option>
   </select>
   <input type="search" class="form-control form-control-sm" id="filter-q" data-testid="filter-q"
-         placeholder="Поиск: №, заказ, клиент, услуга, товар, модель/SN" style="max-width:260px" autocomplete="off">
+         placeholder="Поиск: №, заказ, клиент, госномер, услуга, товар, модель/SN" style="max-width:300px" autocomplete="off">
   <select class="form-select form-select-sm" id="filter-category" data-testid="filter-category" style="max-width:200px">
     <option value="">Все виды работ</option>
   </select>
@@ -34,11 +34,6 @@
     <option value="all">Любой срок</option>
     <option value="soon">Горит (сегодня/завтра, просрочено)</option>
     <option value="overdue">Только просроченные</option>
-  </select>
-  <select class="form-select form-select-sm" id="filter-warehouse" data-testid="filter-warehouse" style="max-width:200px"
-          title="Заказы, у которых оборудование на складе или едет на склад">
-    <option value="">Все склады</option>
-    {{ range .Warehouses }}<option value="{{ .ID }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
   </select>
   <button type="button" class="btn btn-outline-secondary btn-sm" id="filter-reset" data-testid="filter-reset">Сбросить</button>
   <span class="text-body-secondary small ms-auto" id="board-total" data-testid="board-total"></span>{{/* pagination DS-004 */}}
@@ -101,10 +96,6 @@
         <hr>
         <h3 class="fs-6">Оборудование</h3>
         <div id="card-equipment" data-testid="card-equipment"></div>
-
-        <hr>
-        <h3 class="fs-6">Перемещения заказа</h3>
-        <div id="card-transfers" data-testid="card-transfers"></div>
 
         <hr>
         <h3 class="fs-6">Услуги</h3>

@@ -179,7 +179,7 @@ func (h *Handler) RestoreEquipment(c fiber.Ctx) error {
 
 func equipmentInputOf(req EquipmentRequest) EquipmentInput {
 	return EquipmentInput{
-		TypeID: req.TypeID, Brand: req.Brand, Model: req.Model, SKU: req.SKU,
+		TypeID: req.TypeID, PlateNumber: req.PlateNumber, Brand: req.Brand, Model: req.Model, SKU: req.SKU,
 		Serial: req.Serial, Note: req.Note, Specs: req.Specs,
 	}
 }

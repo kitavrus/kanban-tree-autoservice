@@ -61,13 +61,6 @@ type cardEquipmentDTO struct {
 	Completeness string                `json:"completeness"`
 	Condition    string                `json:"condition"`
 	History      []equipmentHistoryDTO `json:"history"`
-	// Местоположение единицы (transfers-core DS-008, §6.9).
-	LocationStatus          string  `json:"location_status"`
-	WarehouseID             *string `json:"warehouse_id"`
-	WarehouseName           *string `json:"warehouse_name"`
-	ActiveTransferID        *int64  `json:"active_transfer_id"`
-	TransitToName           *string `json:"transit_to_name"`
-	ActiveTransferDirection *string `json:"active_transfer_direction"`
 }
 
 type cardSubtaskProductDTO struct {
@@ -79,9 +72,6 @@ type cardSubtaskProductDTO struct {
 	Qty       json.Number  `json:"qty"`
 	Price     *json.Number `json:"price"`
 	LineTotal json.Number  `json:"line_total"`
-	// warehouses DS-005: склад строки товара.
-	WarehouseID   string `json:"warehouse_id"`
-	WarehouseName string `json:"warehouse_name"`
 }
 
 type cardSubtaskLogDTO struct {
@@ -117,7 +107,6 @@ type cardSubtaskDTO struct {
 
 type cardStockDTO struct {
 	ProductID    string      `json:"product_id"`
-	WarehouseID  string      `json:"warehouse_id"`
 	Stock        json.Number `json:"stock"`
 	MinStock     json.Number `json:"min_stock"`
 	TaskReserved json.Number `json:"task_reserved"`
@@ -134,35 +123,14 @@ type cardTaskDTO struct {
 	IsPaid          bool        `json:"is_paid"`
 	DescriptionHTML string      `json:"description_html"`
 	TotalAmount     json.Number `json:"total_amount"`
-	HasInTransit    bool        `json:"has_in_transit"`
-	// TransfersAmount — «Продано по накладным» (transfers-sales DS-014).
-	TransfersAmount json.Number `json:"transfers_amount"`
 }
 
 type orderCardDTO struct {
-	Task       cardTaskDTO        `json:"task"`
-	Column     cardColumnDTO      `json:"column"`
-	Equipment  []cardEquipmentDTO `json:"equipment"`
-	Subtasks   []cardSubtaskDTO   `json:"subtasks"`
-	Stock      []cardStockDTO     `json:"stock"`
-	Warehouses []struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		IsActive bool   `json:"is_active"`
-	} `json:"warehouses"`
-	// Transfers — документы «Перемещение» заказа (transfers-partners §6.8), новые сверху.
-	Transfers []cardTransferDTO `json:"transfers"`
-}
-
-// cardTransferDTO — 1:1 с board.CardTransfer.
-type cardTransferDTO struct {
-	ID            int64       `json:"id"`
-	Direction     string      `json:"direction"`
-	Status        string      `json:"status"`
-	WarehouseName string      `json:"warehouse_name"`
-	ItemsCount    int         `json:"items_count"`
-	CreatedAt     string      `json:"created_at"`
-	Amount        json.Number `json:"amount"`
+	Task      cardTaskDTO        `json:"task"`
+	Column    cardColumnDTO      `json:"column"`
+	Equipment []cardEquipmentDTO `json:"equipment"`
+	Subtasks  []cardSubtaskDTO   `json:"subtasks"`
+	Stock     []cardStockDTO     `json:"stock"`
 }
 
 type orderCardMutationDTO struct {
@@ -321,9 +289,7 @@ func (s *OrderCardLiveSuite) newProductCategory() string {
 func (s *OrderCardLiveSuite) newProduct(price, stock, minStock string) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`WITH p AS (INSERT INTO products (category_id, name, unit, price) VALUES ($1, 'Товар', 'шт', $2::numeric) RETURNING id),
-		      ps AS (INSERT INTO product_stock (product_id, warehouse_id, stock, min_stock) SELECT id, default_warehouse_id(), $3::numeric, $4::numeric FROM p)
-		 SELECT id FROM p`,
+		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, 'Товар', 'шт', $2::numeric, $3::numeric, $4::numeric) RETURNING id`,
 		s.newProductCategory(), price, stock, minStock).Scan(&id))
 	return id
 }
@@ -869,7 +835,6 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Totals() {
 	}
 	s.Equal(json.Number("100.00"), sub2Total, "«по факту» + 1*100")
 	s.Equal(json.Number("1404.33"), m.Card.Task.TotalAmount, "1304.33 + 100.00")
-	s.Equal(json.Number("0.00"), m.Card.Task.TransfersAmount, "накладных нет — итог прежний (transfers-sales DS-014)")
 
 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/tasks?client_id="+c, nil)
 	s.Require().Equal(http.StatusOK, st, string(raw))

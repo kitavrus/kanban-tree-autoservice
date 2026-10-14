@@ -72,14 +72,12 @@
         <td class="text-body-secondary">{{ .SKU }}</td>
         <td class="d-none d-md-table-cell">{{ .Unit }}</td>
         <td>{{ .Price }} ₽</td>
-        {{ $unit := .Unit }}
         <td data-testid="product-stock">
-          {{ if .IsDebt }}<span class="stock-out" data-testid="stock-debt">{{ .TotalStock }} {{ .Unit }} · долг</span>
-          {{ else if .IsLow }}<span class="stock-low" data-testid="stock-low">{{ .TotalStock }} {{ .Unit }} ⚠</span>
-          {{ else }}{{ .TotalStock }} {{ .Unit }}{{ end }}
-          <div class="small text-body-secondary" data-testid="product-stock-by-warehouse">{{ range $i, $s := .Stocks }}{{ if $i }} · {{ end }}<span data-testid="product-stock-wh" data-warehouse="{{ $s.WarehouseName }}"{{ if $s.IsDebt }} class="stock-out"{{ else if $s.IsLow }} class="stock-low"{{ end }}>{{ $s.WarehouseName }}: {{ $s.Stock }}</span>{{ end }}</div>
+          {{ if .IsDebt }}<span class="stock-out" data-testid="stock-debt">долг {{ .Stock }} {{ .Unit }}</span>
+          {{ else if .IsLow }}<span class="stock-low" data-testid="stock-low">{{ .Stock }} {{ .Unit }} ⚠</span>
+          {{ else }}{{ .Stock }} {{ .Unit }}{{ end }}
         </td>
-        <td class="d-none d-md-table-cell text-body-secondary small">{{ range .Stocks }}{{ if or .Place .Box }}<div>{{ .WarehouseName }}: {{ .Place }}{{ if .Box }} · коробка {{ .Box }}{{ end }}</div>{{ end }}{{ end }}</td>
+        <td class="d-none d-md-table-cell text-body-secondary small">{{ .Place }}{{ if .Box }} · коробка {{ .Box }}{{ end }}</td>
         <td class="text-end">
           <form method="post" action="/catalog/products/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-inline">
             <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">

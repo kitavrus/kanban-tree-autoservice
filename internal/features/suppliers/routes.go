@@ -9,7 +9,7 @@ import (
 
 // Register — JSON API /api/v1/suppliers (§6.1–§6.3) + SSR-экран /suppliers; всё — только
 // admin (DS-007: executor → 403). Архив — PUT is_active; мягкое удаление и восстановление —
-// soft-delete-warehouses-suppliers §6.3, §6.4.
+// soft-delete-suppliers §6.3, §6.4.
 // s == nil — SSR не регистрируется.
 func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
 	admin := middleware.RequireAdmin(nil)

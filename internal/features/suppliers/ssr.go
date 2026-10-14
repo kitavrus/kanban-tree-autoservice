@@ -10,7 +10,7 @@ import (
 const Root = "web/ssr/suppliers/templates"
 
 // SSR — экран «Поставщики» (admin, DS-007, §8.1): таблица, поиск, toggle архивных и форма
-// рисует js/suppliers.js поверх JSON API (как экран «Перемещения»); открытая форма —
+// рисует js/suppliers.js поверх JSON API (как экран «Остатки»); открытая форма —
 // ?id=<uuid> (правка) либо ?new=1 (создание).
 type SSR struct {
 	r      *ssr.Renderer

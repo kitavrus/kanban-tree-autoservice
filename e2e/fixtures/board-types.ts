@@ -3,9 +3,6 @@
 
 export type StockWarning = {
   product_id: string;
-  /** warehouses DS-004: предупреждение — по паре товар×склад. */
-  warehouse_id: string;
-  warehouse_name: string;
   name: string;
   stock: number | string;
   min_stock: number | string;
@@ -55,9 +52,6 @@ export type TaskCard = {
   last_log: TaskLastLog | null;
   // pagination DS-002: заказов колонки под фильтрами GET /tasks (в GET /tasks/:id — 0).
   column_total: number;
-  // transfers-core DS-046: у заказа есть единица оборудования с location_status = in_transit
-  // (бейдж «в пути» на доске).
-  has_in_transit: boolean;
   // executor-payouts D68: услуг done с исполнителем без выплаты (метка «к выплате: N»).
   executor_unpaid_done: number;
 };
@@ -67,9 +61,6 @@ export type Task = TaskCard & {
   created_at: string;
   updated_at: string;
   description_html: string;
-  /** transfers-sales DS-014: «Продано по накладным» — Σ сумм накладных «склад → клиент» заказа
-   *  в статусах in_transit / received; уже входит в total_amount. */
-  transfers_amount: number | string;
 };
 
 export type NewTask = {
@@ -128,29 +119,26 @@ export type CatalogError = {
     | 'CATEGORY_NOT_FOUND' | 'EQUIPMENT_TYPE_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
   message: string;
 };
-/** Виды «склад» и «поставщик» (часть 6, soft-delete-warehouses-suppliers). */
-export type PartnerKind = 'warehouses' | 'suppliers';
-/** 200 DELETE /api/v1/{warehouses|suppliers}/:id (warehouses.DeleteResponse / suppliers.DeleteResponse,
- *  soft-delete-warehouses-suppliers §6.1, §6.3). */
+/** Вид «поставщик» (часть 6, soft-delete-suppliers). */
+export type PartnerKind = 'suppliers';
+/** 200 DELETE /api/v1/suppliers/:id (suppliers.DeleteResponse, soft-delete-suppliers §6.3). */
 export type PartnerDeleteResponse = { id: string; deleted_at: string };
-/** 200 POST /api/v1/{warehouses|suppliers}/:id/restore (§6.2, §6.4). */
+/** 200 POST /api/v1/suppliers/:id/restore (§6.4). */
 export type PartnerRestoreResponse = { id: string };
-/** Отказы удаления и восстановления склада и поставщика (§6.1–§6.4). */
+/** Отказы удаления и восстановления поставщика (§6.3–§6.4). */
 export type PartnerError = {
-  code:
-    | 'NOT_DELETED' | 'NAME_TAKEN' | 'WAREHOUSE_IN_USE' | 'WAREHOUSE_LAST_ACTIVE' | 'WAREHOUSE_NOT_FOUND'
-    | 'SUPPLIER_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
+  code: 'NOT_DELETED' | 'NAME_TAKEN' | 'SUPPLIER_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
   message: string;
 };
 /** Виды служебной уборки, подключённые на стенде (части 1–6 мастер-спеки soft-delete). */
-export type PurgeKind = 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment' | CatalogKind | PartnerKind;
+export type PurgeKind = 'tasks' | 'columns' | 'clients' | 'equipment' | CatalogKind | PartnerKind;
 /** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
 export type PurgeResponse = { id: string };
 
 // ---- раздел «Удалённые» (internal/features/softdelete/dto.go, §6.3, §6.4) ----
 export type DeletedKind =
-  | 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment' | 'products' | 'services'
-  | 'catalog-categories' | 'equipment-types' | 'warehouses' | 'suppliers';
+  | 'tasks' | 'columns' | 'clients' | 'equipment' | 'products' | 'services'
+  | 'catalog-categories' | 'equipment-types' | 'suppliers';
 export type DeletedItem = {
   kind: DeletedKind;
   id: string;
@@ -166,15 +154,10 @@ export type DeletedListResponse = { items: DeletedItem[]; total: number; limit: 
 export type DeletedListQuery = { q?: string; deleted_from?: string; deleted_to?: string; deleted_by?: string; limit?: number; offset?: number };
 export type DeletedSummaryResponse = {
   counts: {
-    tasks: number; transfers: number; columns: number; clients: number; equipment: number; products: number;
-    services: number; catalog_categories: number; equipment_types: number; warehouses: number; suppliers: number;
+    tasks: number; columns: number; clients: number; equipment: number; products: number;
+    services: number; catalog_categories: number; equipment_types: number; suppliers: number;
   };
 };
-/** 409 служебной уборки DELETE /api/v1/test/purge/tasks/:id (soft-delete-core DS-036; мягкое удаление
- *  заказа этот отказ больше не отдаёт — soft-delete-transfers DS-006): у заказа есть действующие документы
- *  в requested / in_transit / received; transfer_ids — их номера по возрастанию. */
-export type ApiErrorTaskHasTransfers = { code: 'TASK_HAS_TRANSFERS'; message: string; details: { transfer_ids: number[] } };
-
 export type ApiErrorSubtask = { id: string; service_name: string; status: 'new' | 'in_progress' | 'done' };
 export type ApiErrorSubtasks = { code: 'SUBTASKS_NOT_DONE'; message: string; details: { subtasks: ApiErrorSubtask[] } };
 
@@ -183,22 +166,10 @@ export type ApiErrorSubtasks = { code: 'SUBTASKS_NOT_DONE'; message: string; det
 export type StockScope = 'risky' | 'all';
 export type StockState = 'out' | 'low' | 'will_low' | 'ok';
 
-// Пара товар×склад в строке «Остатков» (warehouses DS-004).
-export type StockWarehouseCell = {
-  warehouse_id: string;
-  stock: number | string;
-  min_stock: number | string;
-  pending: number | string;
-  state: StockState;
-};
-
 export type StockRow = {
   product_id: string;
   /** Товар удалён из каталога, но на складе числится его остаток (soft-delete-catalog DS-042). */
   is_deleted: boolean;
-  /** Товар в архиве (не удалён), но на удалённом складе числится его остаток — бейдж «в архиве»
-   *  (board.StockRow, fix-loop 1 части 6 soft-delete-warehouses-suppliers). */
-  is_archived: boolean;
   name: string;
   unit: string;
   box: string;
@@ -208,15 +179,9 @@ export type StockRow = {
   pending: number;
   forecast: number;
   state: StockState;
-  /** «В пути» — перемещения (подфаза B); в подфазе A всегда 0. */
-  in_transit: number | string;
-  by_warehouse: StockWarehouseCell[];
 };
 
 export type StockListResponse = {
-  /** Склады отчёта: активные и — с ненулевым остатком — архивные (is_archived) и мягко удалённые
-   *  (is_deleted) (board.StockWarehouse, soft-delete-warehouses-suppliers §6.5, DS-049). */
-  warehouses: Array<{ id: string; name: string; is_archived: boolean; is_deleted: boolean }>;
   items: StockRow[];
   total: number;
   limit: number;
@@ -249,21 +214,7 @@ export type CardEquipment = {
   completeness: string;
   condition: string;
   history: EquipmentHistory[];
-  // Местоположение единицы (transfers-core DS-008, §6.9) — читается с equipment:
-  // warehouse_* — только at_warehouse; active_transfer_id — незавершённый документ
-  // «Перемещение»; transit_to_name — пока единица в пути: склад назначения документа либо
-  // «клиент» (документ «склад → клиент», transfers-partners DS-013).
-  location_status: EquipmentLocationStatus;
-  warehouse_id: string | null;
-  warehouse_name: string | null;
-  active_transfer_id: number | null;
-  transit_to_name: string | null;
-  /** Направление незавершённого документа единицы (null — документа нет). */
-  active_transfer_direction: import('./auth').TransferDirection | null;
 };
-
-/** equipment.location_status (CHECK миграции 0014). */
-export type EquipmentLocationStatus = 'at_client' | 'at_warehouse' | 'in_transit';
 
 export type CardSubtaskProduct = {
   id: string;
@@ -276,9 +227,6 @@ export type CardSubtaskProduct = {
   qty: number | string;
   price: number | string | null;
   line_total: number | string;
-  /** warehouses DS-005: склад списания строки. */
-  warehouse_id: string;
-  warehouse_name: string;
 };
 
 export type CardSubtaskLog = {
@@ -343,7 +291,6 @@ export type PayoutMarkResponse = { updated: number };
 
 export type CardStock = {
   product_id: string;
-  warehouse_id: string;
   stock: number | string;
   min_stock: number | string;
   task_reserved: number | string;
@@ -355,31 +302,11 @@ export type OrderCardResponse = {
   equipment: CardEquipment[];
   subtasks: CardSubtask[];
   stock: CardStock[];
-  /** warehouses DS-005: склады select'а строки товара (активные + архивные, на которые ссылаются строки). */
-  /** is_deleted — склад мягко удалён: есть в карточке, только если на него ссылаются строки заказа
-   *  (board.CardWarehouse, soft-delete-warehouses-suppliers §6.5). */
-  warehouses: Array<{ id: string; name: string; is_active: boolean; is_deleted: boolean }>;
   /** Фаза 7 (D21): вложения заказа, порядок загрузки. */
   attachments: CardAttachment[];
-  /** transfers-partners §6.8: документы «Перемещение» заказа, новые сверху (всегда массив). */
-  transfers: CardTransfer[];
 };
 
-/** Документ заказа в блоке «Перемещения заказа» (board.CardTransfer). warehouse_name — склад
- *  назначения (приём от клиента) либо отправления (возврат клиенту). */
-export type CardTransfer = {
-  id: number;
-  direction: 'client_to_warehouse' | 'warehouse_to_client';
-  status: 'requested' | 'in_transit' | 'received' | 'cancelled';
-  warehouse_name: string;
-  items_count: number;
-  created_at: string;
-  /** transfers-sales §6.3: сумма документа (0.00 для приёма от клиента и накладной без товаров). */
-  amount: number | string;
-};
-
-/** Тело POST /api/v1/tasks/:id/equipment (board.TaskEquipmentCreateRequest). Упразднённый
- *  warehouse_id сервер игнорирует (DS-045) — в фикстурах не передаётся. */
+/** Тело POST /api/v1/tasks/:id/equipment (board.TaskEquipmentCreateRequest). */
 export type NewTaskEquipment = { equipment_id: string; completeness?: string; condition?: string };
 
 /** 1:1 с internal/features/board/card_dto.go CardAttachment (фаза 7). */

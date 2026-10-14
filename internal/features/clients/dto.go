@@ -66,6 +66,7 @@ type EquipmentResponse struct {
 	TypeIsActive bool   `json:"type_is_active"` // ADR-004
 	// TypeIsDeleted — тип единицы мягко удалён: бейдж «удалён» у типа (soft-delete-catalog DS-014).
 	TypeIsDeleted bool      `json:"type_is_deleted"`
+	PlateNumber   string    `json:"plate_number"` // госномер автомобиля
 	Brand         string    `json:"brand"`
 	Model         string    `json:"model"`
 	SKU           string    `json:"sku"`
@@ -85,11 +86,12 @@ type EquipmentListResponse struct {
 
 // EquipmentRequest — POST /clients/:id/equipment и PUT /equipment/:id (полная замена, LWW).
 type EquipmentRequest struct {
-	TypeID string    `json:"type_id"`
-	Brand  string    `json:"brand"`
-	Model  string    `json:"model"`
-	SKU    string    `json:"sku"`
-	Serial string    `json:"serial"`
-	Specs  []SpecDTO `json:"specs"`
-	Note   string    `json:"note"`
+	TypeID      string    `json:"type_id"`
+	PlateNumber string    `json:"plate_number"`
+	Brand       string    `json:"brand"`
+	Model       string    `json:"model"`
+	SKU         string    `json:"sku"`
+	Serial      string    `json:"serial"`
+	Specs       []SpecDTO `json:"specs"`
+	Note        string    `json:"note"`
 }

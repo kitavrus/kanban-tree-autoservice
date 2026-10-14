@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/google/uuid"
 
 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 )
@@ -18,7 +17,7 @@ const (
 // stockService — узкий интерфейс зависимости StockHandler (эталон taskService).
 type stockService interface {
 	List(ctx context.Context, p StockListParams) (*StockListResponse, error)
-	Summary(ctx context.Context, warehouseID string) (*StockSummaryResponse, error)
+	Summary(ctx context.Context) (*StockSummaryResponse, error)
 	Adjust(ctx context.Context, productID, userID string, in StockAdjustRequest) (*StockRow, error)
 }
 
@@ -29,8 +28,7 @@ type StockHandler struct {
 
 func NewStockHandler(svc stockService) *StockHandler { return &StockHandler{svc: svc} }
 
-// List — GET /api/v1/stock?scope=&q=&warehouse_id=&limit=&offset=. scope/limit/offset/
-// warehouse_id — enum/диапазон/uuid (design-errors.md §Validation Fields), иначе 400 field.
+// List — GET /api/v1/stock?scope=&q=&limit=&offset=. scope/limit/offset — enum/диапазон (design-errors.md §Validation Fields), иначе 400 field.
 func (h *StockHandler) List(c fiber.Ctx) error {
 	var fields []errorspkg.Field
 	add := func(name string) { fields = append(fields, errorspkg.Field{Name: name, Message: msgInvalid}) }
@@ -58,16 +56,12 @@ func (h *StockHandler) List(c fiber.Ctx) error {
 			offset = n
 		}
 	}
-	warehouseID := c.Query("warehouse_id")
-	if warehouseID != "" && uuid.Validate(warehouseID) != nil {
-		add("warehouse_id")
-	}
 	if len(fields) > 0 {
 		return errorspkg.Validation(fields...)
 	}
 
 	resp, err := h.svc.List(c.Context(), StockListParams{
-		Scope: scope, Q: c.Query("q"), WarehouseID: warehouseID, Limit: limit, Offset: offset,
+		Scope: scope, Q: c.Query("q"), Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return err
@@ -75,13 +69,9 @@ func (h *StockHandler) List(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// Summary — GET /api/v1/stock/summary?warehouse_id=.
+// Summary — GET /api/v1/stock/summary.
 func (h *StockHandler) Summary(c fiber.Ctx) error {
-	warehouseID := c.Query("warehouse_id")
-	if warehouseID != "" && uuid.Validate(warehouseID) != nil {
-		return errorspkg.Validation(errorspkg.Field{Name: "warehouse_id", Message: msgInvalid})
-	}
-	resp, err := h.svc.Summary(c.Context(), warehouseID)
+	resp, err := h.svc.Summary(c.Context())
 	if err != nil {
 		return err
 	}

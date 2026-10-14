@@ -52,12 +52,6 @@ func NewEquipmentTypesSource(pool *pgxpool.Pool) *CatalogSource {
 	return &CatalogSource{pool: pool, kind: KindEquipmentTypes, table: "equipment_types", subtitleSQL: "''"}
 }
 
-// NewWarehousesSource — вкладка «Склады» (часть 6 soft-delete-warehouses-suppliers §6.5, §8.2):
-// subtitle — пустая строка. Строка той же формы, что у каталога: название, признак архива.
-func NewWarehousesSource(pool *pgxpool.Pool) *CatalogSource {
-	return &CatalogSource{pool: pool, kind: KindWarehouses, table: "warehouses", subtitleSQL: "''"}
-}
-
 // NewSuppliersSource — вкладка «Поставщики» (часть 6): subtitle — контактное лицо.
 func NewSuppliersSource(pool *pgxpool.Pool) *CatalogSource {
 	return &CatalogSource{pool: pool, kind: KindSuppliers, table: "suppliers", subtitleSQL: "r.contact_name"}

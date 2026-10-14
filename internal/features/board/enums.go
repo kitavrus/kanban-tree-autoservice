@@ -85,14 +85,3 @@ const (
 // конкретные сигнатуры парсинга query-параметров не входят в паспорт этой фазы (design-sql
 // §Board List Query/Stock List Query используют их) — здесь заведён только источник правды
 // enum-значений, которым эти будущие Parse-функции будут валидировать вход.
-
-// EquipmentLocation — CHECK equipment.location_status (migrations/0014, transfers-core
-// DS-008): местоположение единицы; меняют переходы документа «Перемещение» и (временно, до
-// transfers-partners) добавление единицы «у клиента» в заказ со складом приёма.
-const (
-	EquipmentLocationAtClient    = "at_client"
-	EquipmentLocationAtWarehouse = "at_warehouse"
-	EquipmentLocationInTransit   = "in_transit"
-)
-
-var EquipmentLocations = []string{EquipmentLocationAtClient, EquipmentLocationAtWarehouse, EquipmentLocationInTransit}

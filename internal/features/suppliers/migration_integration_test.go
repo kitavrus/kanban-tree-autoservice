@@ -19,7 +19,7 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/testutil"
 )
 
-// SuppliersMigrationSuite — миграция 0012 (docs/features/suppliers/draft-spec.md §4.1,
+// SuppliersMigrationSuite — миграция 0009 (docs/features/suppliers/draft-spec.md §4.1,
 // DS-007; часть TS-020 — «уникальность без регистра и с пробелами по краям, включая
 // архивные» держит индекс suppliers_name_lower_uq). down → таблицы нет; up → таблица,
 // дефолты, уникальный индекс, CHECK'и длины; повторный down/up чистый.
@@ -54,17 +54,17 @@ func (s *SuppliersMigrationSuite) TestTS020_Migration0012_UpDown() {
 	s.Require().NoError(err)
 	defer func() { _, _ = mig.Close() }()
 
-	s.Require().NoError(mig.Migrate(11))
-	// Вернуть схему на последнюю версию; пока 0012 — последняя, Up() отвечает ErrNoChange.
+	s.Require().NoError(mig.Migrate(8))
+	// Вернуть схему на последнюю версию; пока 0009 — последняя, Up() отвечает ErrNoChange.
 	defer func() {
 		if err := mig.Up(); !errors.Is(err, migrate.ErrNoChange) {
 			s.Require().NoError(err)
 		}
 	}()
-	s.False(s.tableExists(), "до 0012 таблицы suppliers нет")
+	s.False(s.tableExists(), "до 0009 таблицы suppliers нет")
 
-	// --- up 0012 ---
-	s.Require().NoError(mig.Migrate(12))
+	// --- up 0009 ---
+	s.Require().NoError(mig.Migrate(9))
 	s.True(s.tableExists())
 
 	// колонки и типы — §4.1.
@@ -139,10 +139,10 @@ func (s *SuppliersMigrationSuite) TestTS020_Migration0012_UpDown() {
 		strings.Repeat("я", 200), strings.Repeat("я", 200), strings.Repeat("1", 50), strings.Repeat("я", 500), strings.Repeat("я", 1000))
 	s.Require().NoError(err, "границы длины валидны")
 
-	// --- down → 0011: таблица удалена; up снова поднимается чисто (пустой) ---
-	s.Require().NoError(mig.Migrate(11))
+	// --- down → 0008: таблица удалена; up снова поднимается чисто (пустой) ---
+	s.Require().NoError(mig.Migrate(8))
 	s.False(s.tableExists())
-	s.Require().NoError(mig.Migrate(12))
+	s.Require().NoError(mig.Migrate(9))
 	var cnt int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM suppliers`).Scan(&cnt))
 	s.Equal(0, cnt)

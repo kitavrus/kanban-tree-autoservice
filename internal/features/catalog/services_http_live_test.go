@@ -32,7 +32,6 @@ func (s *ServicesLiveSuite) SetupSuite() {
 	s.SeedUser("catalog4b-admin", "password1", "Каталог4Б Админ", "admin", true)
 	s.admin = s.NewBrowser()
 	s.admin.Login("catalog4b-admin", "password1")
-	loadTestWarehouses(&s.LiveSuite)
 }
 
 type svcProductDTO struct {
@@ -82,7 +81,6 @@ func (s *ServicesLiveSuite) newCategory(kind, name string) categoryDTO {
 
 func (s *ServicesLiveSuite) newProductB(categoryID string, patch map[string]any) productDTO {
 	m := map[string]any{"category_id": categoryID, "name": "Товар комплекта", "sku": "CMP-1", "unit": "шт", "price": 100, "stock": 10, "min_stock": 0}
-	m = withStocks(m)
 	for k, v := range patch {
 		m[k] = v
 	}
@@ -333,9 +331,8 @@ func (s *ServicesLiveSuite) TestService_InvalidCategory400() {
 func (s *ServicesLiveSuite) TestService_ProductInComplect_ArchiveWorks_DeleteKeepsRow() {
 	cat := s.newCategory("service", "Комплект и удаление")
 	prodCat := s.newCategory("product", "Товары для удаления")
-	stockless := []map[string]any{{"warehouse_id": testAlmatyID, "stock": 0}}
-	used := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-USED", "stocks": stockless})
-	free := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-FREE", "stocks": stockless})
+	used := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-USED", "stock": 0})
+	free := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-FREE", "stock": 0})
 
 	sv := s.newService(cat.ID, map[string]any{"products": []map[string]any{{"product_id": used.ID, "qty": 1}}})
 

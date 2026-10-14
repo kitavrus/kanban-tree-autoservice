@@ -243,3 +243,52 @@ func TestEquipmentInput_Validate_Specs(t *testing.T) {
 	dupSpecs := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{{K: "мощность", V: "5"}, {K: "мощность", V: "7"}}}.normalize()
 	assert.Empty(t, fieldsOf(dupSpecs.validate()))
 }
+
+// Госномер: нормализация — trim, схлопывание пробельных серий в один пробел, верхний
+// регистр (кириллица и латиница).
+func TestNormalizePlateNumber(t *testing.T) {
+	cases := map[string]string{
+		"":                "",
+		"   ":             "",
+		"а123вс777":       "А123ВС777",
+		"  а123вс   777 ": "А123ВС 777",
+		"a\t123 bc":       "A 123 BC",
+		"х-987-км":        "Х-987-КМ",
+		"Ё001ЁЁ 77":       "Ё001ЁЁ 77",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, NormalizePlateNumber(in), "in=%q", in)
+	}
+	in := EquipmentInput{TypeID: validTypeID, Model: "M1", PlateNumber: " в 777 хх "}.normalize()
+	assert.Equal(t, "В 777 ХХ", in.PlateNumber)
+}
+
+// Госномер: необязателен; ≤20 символов (руны, после нормализации); только буквы, цифры,
+// пробел, дефис; NUL/битый UTF-8 → invalid_text.
+func TestEquipmentInput_Validate_PlateNumber(t *testing.T) {
+	cases := []struct {
+		name, plate, msg string
+	}{
+		{"пусто — допустимо", "", ""},
+		{"кириллица с пробелом", "а123вс 777", ""},
+		{"латиница с дефисом", "ab-1234", ""},
+		{"20 рун — граница", strings.Repeat("Я", 20), ""},
+		{"20 после схлопывания пробелов", "АААААААААА     ББББББББ1", ""},
+		{"21 руна", strings.Repeat("Я", 21), msgTooLong},
+		{"спецсимвол", "А123#ВС", msgInvalidFormat},
+		{"подчёркивание", "А_1", msgInvalidFormat},
+		{"точка", "A.1", msgInvalidFormat},
+		{"NUL-байт", "А1\x00", msgInvalidText},
+		{"битый UTF-8", "А1\xff", msgInvalidText},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fieldsOf(EquipmentInput{TypeID: validTypeID, Model: "M1", PlateNumber: tc.plate}.normalize().validate())
+			if tc.msg == "" {
+				assert.Empty(t, got)
+				return
+			}
+			assert.Equal(t, tc.msg, got["plate_number"])
+		})
+	}
+}

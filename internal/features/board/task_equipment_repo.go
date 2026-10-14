@@ -19,7 +19,7 @@ func NewTaskEquipmentRepo() *TaskEquipmentRepo { return &TaskEquipmentRepo{} }
 // DS-014). FOR SHARE: удаление единицы и клиента пишет строку equipment (блокировка NO KEY
 // UPDATE, с FOR KEY SHARE она совместима — поэтому SHARE) — оно либо уже видно, либо ждёт
 // добавление в заказ, и единица уходит в удалённые уже в составе заказа с бейджем. Порядок
-// блокировок: заказ (LockTask) → equipment, как у документов перемещения.
+// блокировок: заказ (LockTask) → equipment.
 func (r *TaskEquipmentRepo) EquipmentClient(ctx context.Context, tx pgx.Tx, equipmentID string) (string, error) {
 	var clientID string
 	err := tx.QueryRow(ctx, `SELECT client_id FROM equipment WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, equipmentID).Scan(&clientID)
@@ -41,22 +41,6 @@ func (r *TaskEquipmentRepo) Insert(ctx context.Context, tx pgx.Tx, taskID int64,
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
-}
-
-// ActiveTransfer — незавершённый документ «Перемещение» единицы заказа под блокировкой
-// строки equipment (DS-026: такую единицу из заказа не убрать). Единицы нет в заказе →
-// errNotFound; nil — единица свободна. FOR NO KEY UPDATE — тот же режим, что у transfers
-// (совместим с FOR KEY SHARE внешних ключей).
-func (r *TaskEquipmentRepo) ActiveTransfer(ctx context.Context, tx pgx.Tx, taskID int64, equipmentID string) (*int64, error) {
-	var transferID *int64
-	err := tx.QueryRow(ctx, `
-		SELECT e.active_transfer_id
-		FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-		WHERE te.task_id = $1 AND te.equipment_id = $2 FOR NO KEY UPDATE OF e`, taskID, equipmentID).Scan(&transferID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, errNotFound
-	}
-	return transferID, err
 }
 
 // Update — 0 строк → errNotFound (ErrTaskEquipmentNotFound).
@@ -144,33 +128,6 @@ func (r *TaskEquipmentRepo) ForeignInUse(ctx context.Context, tx pgx.Tx, taskID 
 		out = append(out, o)
 	}
 	return out, rows.Err()
-}
-
-// ForeignInTransfer — смена client_id заказа: чужие (не нового клиента) единицы заказа,
-// стоящие в незавершённом документе «Перемещение» (transfers-core DS-026). Строки equipment
-// блокируются в порядке id (FOR NO KEY UPDATE — как ActiveTransfer и пакет transfers);
-// возвращает номер документа первой такой единицы, nil — все чужие единицы свободны.
-func (r *TaskEquipmentRepo) ForeignInTransfer(ctx context.Context, tx pgx.Tx, taskID int64, clientID string) (*int64, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT e.active_transfer_id
-		FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-		WHERE te.task_id = $1 AND e.client_id <> $2
-		ORDER BY e.id FOR NO KEY UPDATE OF e`, taskID, clientID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var found *int64
-	for rows.Next() {
-		var transferID *int64
-		if err := rows.Scan(&transferID); err != nil {
-			return nil, err
-		}
-		if found == nil && transferID != nil {
-			found = transferID
-		}
-	}
-	return found, rows.Err()
 }
 
 // DeleteForeign — чужие (после смены клиента) task_equipment убираются из заказа молча

@@ -17,5 +17,5 @@ func TestColumnSubtitle(t *testing.T) {
 func TestKindColumnsRegistry(t *testing.T) {
 	assert.True(t, IsKind("columns"))
 	assert.Equal(t, "columns", KindColumns.CountKey())
-	assert.Equal(t, KindColumns, Kinds[2], "вкладка «Колонки» — третья в реестре")
+	assert.Equal(t, KindColumns, Kinds[1], "вкладка «Колонки» — вторая в реестре")
 }

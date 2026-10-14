@@ -24,7 +24,6 @@ func (in TaskEquipmentCreateRequest) normalize() TaskEquipmentCreateRequest {
 }
 
 // validate — формат equipment_id (обязателен, uuid) + длина completeness/condition;
-// warehouse_id не проверяется — поле игнорируется (transfers-partners DS-045);
 // принадлежность клиенту заказа — сервис (design-errors.md: существование/связи — не
 // формат).
 func (in TaskEquipmentCreateRequest) validate() []errorspkg.Field {

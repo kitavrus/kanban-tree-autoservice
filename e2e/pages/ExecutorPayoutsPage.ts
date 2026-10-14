@@ -3,7 +3,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 // POM экрана-отчёта «Выплаты» «/executor-payouts» (executor-payouts D69/D70,
 // js/executor-payouts.js). Селекты фильтров превращаются js/combobox.js в комбобоксы:
 // testid уходит на видимую кнопку, выбор — клик по кнопке и по `.cb-opt` в
-// `combobox-dropdown` (эталон — TransfersPage).
+// `combobox-dropdown` (эталон — StockPage).
 export class ExecutorPayoutsPage {
   readonly root: Locator;
   readonly filterAssignee: Locator;

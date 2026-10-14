@@ -6,17 +6,18 @@ import "testing"
 // марка пропускается без двойного пробела, крайние пробелы частей обрезаются.
 func TestEquipmentTitle(t *testing.T) {
 	cases := []struct {
-		name, typeName, brand, model, want string
+		name, typeName, brand, model, plate, want string
 	}{
-		{"все части", "Принтер", "HP", "LaserJet 1020", "Принтер HP LaserJet 1020"},
-		{"без марки", "Принтер", "", "LaserJet 1020", "Принтер LaserJet 1020"},
-		{"марка из пробелов", "Принтер", "   ", "LaserJet", "Принтер LaserJet"},
-		{"пробелы по краям", " Ноутбук ", " Dell ", " XPS ", "Ноутбук Dell XPS"},
+		{"все части", "Принтер", "HP", "LaserJet 1020", "", "Принтер HP LaserJet 1020"},
+		{"с госномером", "Легковой", "Lada", "Vesta", " А123ВС 777 ", "Легковой Lada Vesta · А123ВС 777"},
+		{"без марки", "Принтер", "", "LaserJet 1020", "", "Принтер LaserJet 1020"},
+		{"марка из пробелов", "Принтер", "   ", "LaserJet", "", "Принтер LaserJet"},
+		{"пробелы по краям", " Ноутбук ", " Dell ", " XPS ", "", "Ноутбук Dell XPS"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := EquipmentTitle(c.typeName, c.brand, c.model); got != c.want {
-				t.Fatalf("EquipmentTitle(%q, %q, %q) = %q, ожидалось %q", c.typeName, c.brand, c.model, got, c.want)
+			if got := EquipmentTitle(c.typeName, c.brand, c.model, c.plate); got != c.want {
+				t.Fatalf("EquipmentTitle(%q, %q, %q, %q) = %q, ожидалось %q", c.typeName, c.brand, c.model, c.plate, got, c.want)
 			}
 		})
 	}

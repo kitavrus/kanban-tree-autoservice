@@ -71,9 +71,7 @@ func (s *StockEngineSuite) createProduct(stock, minStock string) string {
 	).Scan(&categoryID))
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`WITH p AS (INSERT INTO products (category_id, name) VALUES ($1, 'Product') RETURNING id),
-		      ps AS (INSERT INTO product_stock (product_id, warehouse_id, stock, min_stock) SELECT id, default_warehouse_id(), $2::numeric, $3::numeric FROM p)
-		 SELECT id FROM p`,
+		`INSERT INTO products (category_id, name, stock, min_stock) VALUES ($1, 'Product', $2::numeric, $3::numeric) RETURNING id`,
 		categoryID, stock, minStock,
 	).Scan(&productID))
 	return productID
@@ -116,7 +114,7 @@ func (s *StockEngineSuite) createTaskWithDemand(columnID string, productQty map[
 func (s *StockEngineSuite) productStock(productID string) string {
 	var stock string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`SELECT coalesce((SELECT stock FROM product_stock WHERE product_id = $1 AND warehouse_id = default_warehouse_id()), 0)::text`, productID).Scan(&stock))
+		`SELECT stock::text FROM products WHERE id = $1`, productID).Scan(&stock))
 	return stock
 }
 

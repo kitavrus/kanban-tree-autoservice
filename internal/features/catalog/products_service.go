@@ -3,7 +3,6 @@ package catalog
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -20,9 +19,9 @@ var (
 	// ссылки ему не мешают (DS-014).
 	ErrProductInUse = errorspkg.New("PRODUCT_IN_USE", http.StatusConflict,
 		"Товар используется в услугах, заказах или журнале склада — удалить нельзя, отправьте его в архив")
-	// ErrProductHasStock — товар с ненулевым остатком на любом складе не удаляется (DS-021).
+	// ErrProductHasStock — товар с ненулевым остатком не удаляется (DS-021).
 	ErrProductHasStock = errorspkg.New("PRODUCT_HAS_STOCK", http.StatusConflict,
-		"У товара есть остаток на складе — сначала переместите или спишите его")
+		"У товара есть остаток на складе — сначала спишите его")
 	// errProductCategoryInvalid из репозитория маппится в 400 (поле category_id) —
 	// отдельного AppError-кода не заводим, категория — обычная валидация формы.
 )
@@ -101,14 +100,11 @@ func (s *ProductService) Create(ctx context.Context, in ProductInput) (*ProductR
 		return nil, errorspkg.Validation(f...)
 	}
 	p, err := s.repo.Create(ctx, in)
-	var whErr *errStockWarehouseInvalid
 	switch {
 	case errors.Is(err, errProductCategoryInvalid):
 		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgInvalid})
 	case errors.Is(err, errCategoryDeleted):
 		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgNotFound})
-	case errors.As(err, &whErr):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: fmt.Sprintf("stocks[%d].warehouse_id", whErr.Index), Message: whErr.message()})
 	case errors.Is(err, errAmountOutOfRange):
 		return nil, ErrAmountOutOfRange
 	case err != nil:
@@ -128,8 +124,6 @@ func (s *ProductService) Update(ctx context.Context, id, userID string, in Produ
 		return nil, errorspkg.Validation(f...)
 	}
 	p, err := s.repo.Update(ctx, id, userID, in)
-	var deltaErr *errStockDeltaOutOfRangeAt
-	var whErr *errStockWarehouseInvalid
 	switch {
 	case errors.Is(err, ErrProductNotFound):
 		return nil, ErrProductNotFoundErr
@@ -137,10 +131,8 @@ func (s *ProductService) Update(ctx context.Context, id, userID string, in Produ
 		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgInvalid})
 	case errors.Is(err, errCategoryDeleted):
 		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgNotFound})
-	case errors.As(err, &deltaErr):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: fmt.Sprintf("stocks[%d].stock", deltaErr.Index), Message: msgTooLarge})
-	case errors.As(err, &whErr):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: fmt.Sprintf("stocks[%d].warehouse_id", whErr.Index), Message: whErr.message()})
+	case errors.Is(err, errStockDeltaOutOfRange):
+		return nil, errorspkg.Validation(errorspkg.Field{Name: "stock", Message: msgTooLarge})
 	case errors.Is(err, errAmountOutOfRange):
 		return nil, ErrAmountOutOfRange
 	case err != nil:
@@ -161,51 +153,24 @@ func (s *ProductService) SetActive(ctx context.Context, id string, active bool) 
 	return nil
 }
 
-// ActiveWarehouses — активные склады (форма товара, D46).
-func (s *ProductService) ActiveWarehouses(ctx context.Context) ([]WarehouseOption, error) {
-	return s.repo.ActiveWarehouses(ctx)
+func (s *ProductService) toResponse(_ context.Context, p Product) (*ProductResponse, error) {
+	r := toProductResponse(p)
+	return &r, nil
 }
 
-func (s *ProductService) toResponse(ctx context.Context, p Product) (*ProductResponse, error) {
-	out, err := s.toResponses(ctx, []Product{p})
-	if err != nil {
-		return nil, err
-	}
-	return &out[0], nil
-}
-
-// toResponses — товары + блок «Склады» одним запросом на страницу (StocksBatch).
-func (s *ProductService) toResponses(ctx context.Context, items []Product) ([]ProductResponse, error) {
-	ids := make([]string, len(items))
-	for i, p := range items {
-		ids[i] = p.ID
-	}
-	stocks, err := s.repo.StocksBatch(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
+func (s *ProductService) toResponses(_ context.Context, items []Product) ([]ProductResponse, error) {
 	out := make([]ProductResponse, len(items))
 	for i, p := range items {
-		out[i] = toProductResponse(p, stocks[p.ID])
+		out[i] = toProductResponse(p)
 	}
 	return out, nil
 }
 
-func toProductResponse(p Product, st ProductStocks) ProductResponse {
-	r := ProductResponse{
+func toProductResponse(p Product) ProductResponse {
+	return ProductResponse{
 		ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
 		Price: Amount(p.Price), IsActive: p.IsActive, CategoryIsDeleted: p.CategoryIsDeleted,
+		Stock: Amount(p.Stock), MinStock: Amount(p.MinStock), Box: p.Box, Place: p.Place,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
-		Stocks: make([]ProductStockResponse, len(st.Rows)), TotalStock: Amount("0"),
 	}
-	if st.Total != "" {
-		r.TotalStock = Amount(st.Total)
-	}
-	for i, row := range st.Rows {
-		r.Stocks[i] = ProductStockResponse{
-			WarehouseID: row.WarehouseID, WarehouseName: row.WarehouseName, IsActive: row.IsActive, Tracked: row.Tracked,
-			Stock: Amount(row.Stock), MinStock: Amount(row.MinStock), Box: row.Box, Place: row.Place,
-		}
-	}
-	return r
 }

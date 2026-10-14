@@ -94,9 +94,7 @@ func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 	prodCatID := s.newProductCategory(ctx)
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`WITH p AS (INSERT INTO products (category_id, name, unit, price) VALUES ($1, 'Термопаста', 'шт', 100) RETURNING id),
-		      ps AS (INSERT INTO product_stock (product_id, warehouse_id, stock, min_stock) SELECT id, default_warehouse_id(), 10, 1 FROM p)
-		 SELECT id FROM p`,
+		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, 'Термопаста', 'шт', 100, 10, 1) RETURNING id`,
 		prodCatID).Scan(&productID))
 	_, err := s.Pool.Exec(ctx,
 		`INSERT INTO subtask_products (subtask_id, product_id, qty, price) VALUES ($1, $2, 2, 100)`, subtaskID, productID)
@@ -247,16 +245,14 @@ func (s *CardSuite) newProduct(stock, minStock string) string {
 	catID := s.newProductCategory(ctx)
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`WITH p AS (INSERT INTO products (category_id, name, unit, price) VALUES ($1, 'Товар', 'шт', 10) RETURNING id),
-		      ps AS (INSERT INTO product_stock (product_id, warehouse_id, stock, min_stock) SELECT id, default_warehouse_id(), $2::numeric, $3::numeric FROM p)
-		 SELECT id FROM p`,
+		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, 'Товар', 'шт', 10, $2::numeric, $3::numeric) RETURNING id`,
 		catID, stock, minStock).Scan(&id))
 	return id
 }
 
 func (s *CardSuite) productStock(id string) string {
 	var v string
-	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT coalesce((SELECT stock FROM product_stock WHERE product_id = $1 AND warehouse_id = default_warehouse_id()), 0)::text`, id).Scan(&v))
+	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT stock::text FROM products WHERE id = $1`, id).Scan(&v))
 	return v
 }
 

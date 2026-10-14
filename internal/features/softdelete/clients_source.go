@@ -90,15 +90,19 @@ func NewEquipmentSource(pool *pgxpool.Pool) *EquipmentSource { return &Equipment
 const DeletedWithClient = "client"
 
 // EquipmentTitle — заголовок строки удалённой единицы: «тип марка модель» (§6.5); пустая марка
-// пропускается.
-func EquipmentTitle(typeName, brand, model string) string {
+// пропускается. Непустой госномер дописывается через « · » («Легковой Lada Vesta · А123ВС 777»).
+func EquipmentTitle(typeName, brand, model, plateNumber string) string {
 	parts := make([]string, 0, 3)
 	for _, p := range []string{typeName, brand, model} {
 		if p = strings.TrimSpace(p); p != "" {
 			parts = append(parts, p)
 		}
 	}
-	return strings.Join(parts, " ")
+	title := strings.Join(parts, " ")
+	if plate := strings.TrimSpace(plateNumber); plate != "" {
+		title += " · " + plate
+	}
+	return title
 }
 
 // EquipmentDeletedWith — deleted_with строки единицы: "client" у ушедшей вместе с клиентом,
@@ -112,7 +116,7 @@ func EquipmentDeletedWith(withClient bool) *string {
 }
 
 // equipmentWhereSQL — фильтр вкладки «Оборудование»: $1 — строка поиска (тип, марка, модель,
-// серийный номер, название клиента, причина; уже экранирована), $2/$3 — период, $4 — кто
+// серийный номер, госномер — без пробелов/дефисов с обеих сторон, название клиента, причина; уже экранирована), $2/$3 — период, $4 — кто
 // удалил. Клиент и тип соединяются без условия «не удалён»: клиент единицы сам может быть в
 // удалённых. Частичный индекс equipment_deleted_at_idx покрывает условие и сортировку.
 const equipmentWhereSQL = `
@@ -125,6 +129,8 @@ WHERE e.deleted_at IS NOT NULL
        OR e.brand ILIKE '%' || $1 || '%' ESCAPE '\'
        OR e.model ILIKE '%' || $1 || '%' ESCAPE '\'
        OR e.serial ILIKE '%' || $1 || '%' ESCAPE '\'
+       OR replace(replace(e.plate_number, ' ', ''), '-', '')
+          ILIKE '%' || replace(replace($1, ' ', ''), '-', '') || '%' ESCAPE '\'
        OR c.company_name ILIKE '%' || $1 || '%' ESCAPE '\'
        OR e.delete_reason ILIKE '%' || $1 || '%' ESCAPE '\')
   AND ($2::timestamptz IS NULL OR e.deleted_at >= $2)
@@ -142,7 +148,7 @@ func (s *EquipmentSource) List(ctx context.Context, f Filter) ([]Item, int, erro
 	}
 
 	rows, err := s.pool.Query(ctx, `
-SELECT e.id::text, t.name, e.brand, e.model, c.company_name, e.deleted_with_client,
+SELECT e.id::text, t.name, e.brand, e.model, e.plate_number, c.company_name, e.deleted_with_client,
        e.deleted_at, u.id::text, coalesce(nullif(u.name, ''), u.login), e.delete_reason`+
 		equipmentWhereSQL+`
 ORDER BY e.deleted_at DESC, e.id
@@ -154,14 +160,14 @@ LIMIT $5 OFFSET $6`, append(args, f.Limit, f.Offset)...)
 
 	out := []Item{}
 	for rows.Next() {
-		var typeName, brand, model string
+		var typeName, brand, model, plate string
 		var withClient bool
 		it := Item{Kind: string(KindEquipment)}
-		if err := rows.Scan(&it.ID, &typeName, &brand, &model, &it.Subtitle, &withClient,
+		if err := rows.Scan(&it.ID, &typeName, &brand, &model, &plate, &it.Subtitle, &withClient,
 			&it.DeletedAt, &it.DeletedBy.ID, &it.DeletedBy.Name, &it.DeleteReason); err != nil {
 			return nil, 0, err
 		}
-		it.Title = EquipmentTitle(typeName, brand, model)
+		it.Title = EquipmentTitle(typeName, brand, model, plate)
 		it.DeletedWith = EquipmentDeletedWith(withClient)
 		it.DeletedAt = it.DeletedAt.UTC()
 		out = append(out, it)

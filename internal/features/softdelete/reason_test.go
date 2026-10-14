@@ -46,16 +46,16 @@ func TestValidateReason(t *testing.T) {
 	}
 }
 
-// Реестр видов (DS-001): 11 видов, ключи счётчиков summary — snake_case (§API-1).
+// Реестр видов (DS-001): 9 видов, ключи счётчиков summary — snake_case (§API-1).
 func TestKinds(t *testing.T) {
-	require.Len(t, Kinds, 11)
+	require.Len(t, Kinds, 9)
 	keys := map[string]bool{}
 	for _, k := range Kinds {
 		assert.True(t, IsKind(string(k)))
 		assert.NotContains(t, k.CountKey(), "-")
 		keys[k.CountKey()] = true
 	}
-	assert.Len(t, keys, 11, "ключи счётчиков уникальны")
+	assert.Len(t, keys, 9, "ключи счётчиков уникальны")
 	assert.Equal(t, "catalog_categories", KindCatalogCategories.CountKey())
 	assert.Equal(t, "equipment_types", KindEquipmentTypes.CountKey())
 	assert.False(t, IsKind("orders"))

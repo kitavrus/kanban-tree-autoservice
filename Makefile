@@ -1,6 +1,6 @@
 # >>> project-bootstrap >>>
 # Генерится project_scaffold.py — правки блока руками = CONFLICT при регене.
-APP_PORT ?= 8080
+APP_PORT ?= 8090
 FRONTEND_PORT ?= 5173
 
 # ── Первый запуск после генерации каркаса ───────────────────────────────────

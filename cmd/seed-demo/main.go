@@ -1,5 +1,6 @@
-// Seed-demo — заполняет пустую БД демо-данными лазерного сервиса одной командой (AC-019,
+// Seed-demo — заполняет пустую БД демо-данными автосервиса одной командой (AC-019,
 // make seed-demo). Тонкая обёртка: DATABASE_URL → seeddemo.Run (эталон cmd/seed/main.go).
+// Фото/видео вложений заказов пишутся в UPLOADS_DIR (умолчание ./uploads — как у сервера).
 package main
 
 import (
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kitavrus/kanban-tree/internal/filestore"
 	"github.com/kitavrus/kanban-tree/internal/seeddemo"
 )
 
@@ -27,7 +29,17 @@ func main() {
 	}
 	defer pool.Close()
 
-	res, err := seeddemo.Run(ctx, pool)
+	uploadsDir := os.Getenv("UPLOADS_DIR")
+	if uploadsDir == "" {
+		uploadsDir = "./uploads"
+	}
+	files, err := filestore.NewLocal(uploadsDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	res, err := seeddemo.Run(ctx, pool, seeddemo.WithFiles(files))
 	if err != nil {
 		if errors.Is(err, seeddemo.ErrNoAdmin) {
 			fmt.Fprintln(os.Stderr, err)
@@ -42,6 +54,6 @@ func main() {
 		fmt.Println("seed-demo:", res.Message)
 		return
 	}
-	fmt.Printf("seed-demo: %s (исполнители: %d, клиенты: %d, оборудование: %d, товары: %d, услуги: %d, заказы: %d)\n",
-		res.Message, res.Executors, res.Clients, res.Equipment, res.Products, res.Services, res.Tasks)
+	fmt.Printf("seed-demo: %s (мастера: %d, клиенты: %d, автомобили: %d, товары: %d, услуги: %d, заказы: %d, вложения: %d, из них видео: %d → %s)\n",
+		res.Message, res.Executors, res.Clients, res.Equipment, res.Products, res.Services, res.Tasks, res.Attachments, res.Videos, files.Dir())
 }

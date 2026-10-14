@@ -36,19 +36,6 @@ export class OrderCardPage {
   readonly equipmentNewSave: Locator;
   readonly equipmentNewCancel: Locator;
   readonly equipmentNewError: Locator;
-  /** Блок «Перемещения заказа» (transfers-partners §8.2). */
-  readonly transfers: Locator;
-  readonly transfersLocked: Locator;
-  readonly transfersEmpty: Locator;
-  readonly transferRows: Locator;
-  /** «Принять от клиента» — ссылка на форму нового документа либо неактивная кнопка. */
-  readonly transferIntake: Locator;
-  readonly transferIntakeHint: Locator;
-  /** «Вернуть клиенту». */
-  readonly transferReturn: Locator;
-  readonly transferReturnHint: Locator;
-  /** Упразднённый select «Склад приёма» (DS-045) — в форме добавления единицы его нет. */
-  readonly equipmentWarehouse: Locator;
 
   readonly subtasks: Locator;
   readonly subtasksLocked: Locator;
@@ -56,8 +43,6 @@ export class OrderCardPage {
   readonly subtaskAdd: Locator;
 
   readonly total: Locator;
-  /** «Продано по накладным» над итогом — есть, пока сумма больше нуля (transfers-sales §8.2). */
-  readonly transfersAmount: Locator;
 
   // Вложения (фаза 7, D21)
   readonly attachments: Locator;
@@ -101,15 +86,6 @@ export class OrderCardPage {
     this.equipmentNewSave = page.getByTestId('card-equipment-new-save');
     this.equipmentNewCancel = page.getByTestId('card-equipment-new-cancel');
     this.equipmentNewError = page.getByTestId('card-equipment-new-error');
-    this.equipmentWarehouse = page.getByTestId('card-equipment-warehouse');
-    this.transfers = page.getByTestId('card-transfers');
-    this.transfersLocked = page.getByTestId('card-transfers-locked');
-    this.transfersEmpty = page.getByTestId('card-transfers-empty');
-    this.transferRows = page.getByTestId('card-transfer-row');
-    this.transferIntake = page.getByTestId('card-transfer-intake');
-    this.transferIntakeHint = page.getByTestId('card-transfer-intake-hint');
-    this.transferReturn = page.getByTestId('card-transfer-return');
-    this.transferReturnHint = page.getByTestId('card-transfer-return-hint');
 
     this.subtasks = page.getByTestId('card-subtasks');
     this.subtasksLocked = page.getByTestId('card-subtasks-locked');
@@ -117,7 +93,6 @@ export class OrderCardPage {
     this.subtaskAdd = page.getByTestId('card-subtask-add');
 
     this.total = page.getByTestId('card-total');
-    this.transfersAmount = page.getByTestId('card-transfers-amount');
 
     this.attachments = page.getByTestId('card-attachments');
     this.attachmentsLocked = page.getByTestId('card-attachments-locked');
@@ -161,11 +136,6 @@ export class OrderCardPage {
 
   async save() {
     await this.saveBtn.click();
-  }
-
-  /** Бейдж «удалён» у склада строки товара услуги (soft-delete-warehouses-suppliers §8.3 п.3). */
-  productWarehouseDeleted(subtaskId: string): Locator {
-    return this.subtaskRow(subtaskId).getByTestId('card-product-warehouse-deleted');
   }
 
   subtaskRow(subtaskId: string): Locator {
@@ -241,11 +211,6 @@ export class OrderCardPage {
     return this.productRow(productRowId).getByTestId('card-product-hint');
   }
 
-  /** Склад строки товара (warehouses DS-005) — combobox-кнопка (combobox.js переносит testid). */
-  productWarehouse(productRowId: string): Locator {
-    return this.productRow(productRowId).getByTestId('card-product-warehouse');
-  }
-
   productDelete(productRowId: string): Locator {
     return this.productRow(productRowId).getByTestId('card-product-delete');
   }
@@ -294,42 +259,7 @@ export class OrderCardPage {
     return this.equipmentRow(equipmentId).getByTestId('card-equipment-history');
   }
 
-  // ---- местоположение оборудования заказа (transfers-core DS-003, DS-008, §8.2) ----
-
-  /** Бейдж местоположения: «у клиента» / «на складе X» / «в пути → Y». */
-  equipmentLocation(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-location');
-  }
-
-  /** «перемещение #N» единицы в незавершённом документе: ссылка (admin) либо текст (executor). */
-  equipmentTransfer(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-transfer');
-  }
-
-  /** Подпись под упразднённым select «Склад приёма» — её тоже нет. */
-  get equipmentWarehouseHint(): Locator {
-    return this.page.getByTestId('card-equipment-warehouse-hint');
-  }
-
-  /** Строка документа в блоке «Перемещения заказа». */
-  transferRow(transferId: number): Locator {
-    return this.page.locator(`[data-testid="card-transfer-row"][data-id="${transferId}"]`);
-  }
-
-  transferLink(transferId: number): Locator {
-    return this.transferRow(transferId).getByTestId('card-transfer-link');
-  }
-
-  /** Сумма накладной в строке блока «Перемещения заказа» (только если больше нуля). */
-  transferAmount(transferId: number): Locator {
-    return this.transferRow(transferId).getByTestId('card-transfer-amount');
-  }
-
-  transferStatus(transferId: number): Locator {
-    return this.transferRow(transferId).getByTestId('card-transfer-status');
-  }
-
-  /** Блок «Перемещения заказа» и модалка — без горизонтальной прокрутки (TS-045). */
+  /** Модалка карточки заказа — без горизонтальной прокрутки (TS-045). */
   async expectNoHorizontalScroll() {
     const overflow = await this.modal.evaluate((el) => {
       const body = el.querySelector('.modal-body') ?? el;
@@ -337,18 +267,6 @@ export class OrderCardPage {
     });
     expect(overflow.scrollWidth, 'горизонтальная прокрутка карточки заказа').toBeLessThanOrEqual(overflow.clientWidth);
     expect(overflow.doc, 'горизонтальная прокрутка страницы').toBeLessThanOrEqual(overflow.win);
-  }
-
-  /** Снятые D57-кнопки строки единицы (DS-003): «Отправить / Принять / Отменить отправку». */
-  equipmentMoveButtons(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).locator(
-      '[data-testid="card-equipment-send"], [data-testid="card-equipment-receive"], [data-testid="card-equipment-cancel-transit"]',
-    );
-  }
-
-  /** Снятый журнал перемещений единицы в заказе (DS-029). */
-  equipmentMovements(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).locator('[data-testid="card-equipment-movements"], [data-testid="card-equipment-movement"]');
   }
 
   /** Вложение по имени файла (имена в тестах уникальны через uniq()). */
@@ -360,11 +278,6 @@ export class OrderCardPage {
     await this.attachmentInput.setInputFiles(file);
   }
 
-  /** Ссылки на документы в отказе смены клиента заказа (409 TASK_CLIENT_LOCKED_BY_TRANSFERS). */
-  get errorTransferLinks(): Locator {
-    return this.error.getByTestId('task-error-transfer-link');
-  }
-
   // ---- окно «Удаление» с причиной (soft-delete-core §8.2) ----
   get deleteDialog(): Locator { return this.page.getByTestId('ui-dialog'); }
   get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
@@ -373,7 +286,7 @@ export class OrderCardPage {
   get deleteReasonCounter(): Locator { return this.page.getByTestId('delete-reason-counter'); }
   /** Красный блок над кнопками: отказ 409 с текстом сервера. */
   get deleteDialogError(): Locator { return this.page.getByTestId('delete-dialog-error'); }
-  /** Вторая строка пояснения: у заказа есть документы перемещения (soft-delete-transfers §8.3). */
+  /** Вторая строка пояснения окна (ui-dialog-note). */
   get deleteDialogNote(): Locator { return this.page.getByTestId('ui-dialog-note'); }
   get deleteDialogOk(): Locator { return this.page.getByTestId('ui-dialog-ok'); }
 

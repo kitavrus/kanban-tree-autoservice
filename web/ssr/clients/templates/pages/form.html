@@ -77,6 +77,7 @@
     <table class="table table-hover align-middle" data-testid="equipment-table">
       <thead>
         <tr>
+          <th>Госномер</th>
           <th>Модель</th>
           <th>Тип</th>
           <th>Серийный номер</th>
@@ -86,6 +87,7 @@
       <tbody>
       {{ range .Equipment }}
         <tr data-testid="equipment-row" data-model="{{ .Model }}">
+          <td class="text-nowrap fw-semibold" data-testid="equipment-plate-number">{{ .PlateNumber }}</td>
           <td><a href="/equipment/{{ .ID }}" class="fw-semibold">{{ .Model }}</a></td>
           <td>{{ .TypeName }}{{ if .TypeIsDeleted }} <span class="badge text-bg-secondary" data-testid="type-deleted-badge">удалён</span>{{ else if not .TypeIsActive }} <span class="text-body-secondary small">(в архиве)</span>{{ end }}</td>
           <td>{{ .Serial }}</td>

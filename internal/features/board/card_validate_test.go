@@ -206,27 +206,3 @@ func TestSubtaskLogRequestValidate_TrimAndLength(t *testing.T) {
 	assert.Empty(t, f(strings.Repeat("я", subtaskLogTextMax)), "граница — валидно")
 	assert.Equal(t, msgTooLong, f(strings.Repeat("я", subtaskLogTextMax+1))["text"])
 }
-
-// ---- warehouses DS-005: склад строки товара — необязателен, если передан — uuid ----
-
-func TestSubtaskProductRequestValidate_WarehouseID(t *testing.T) {
-	fc := func(in SubtaskProductCreateRequest) map[string]string {
-		got := map[string]string{}
-		for _, fl := range in.normalize().validate() {
-			got[fl.Name] = fl.Message
-		}
-		return got
-	}
-	fu := func(in SubtaskProductUpdateRequest) map[string]string {
-		got := map[string]string{}
-		for _, fl := range in.normalize().validate() {
-			got[fl.Name] = fl.Message
-		}
-		return got
-	}
-	assert.Empty(t, fc(SubtaskProductCreateRequest{ProductID: validUUID, Qty: amt("1")}), "без склада — склад по умолчанию")
-	assert.Empty(t, fc(SubtaskProductCreateRequest{ProductID: validUUID, Qty: amt("1"), WarehouseID: " " + validUUID + " "}))
-	assert.Equal(t, msgInvalid, fc(SubtaskProductCreateRequest{ProductID: validUUID, Qty: amt("1"), WarehouseID: "moscow"})["warehouse_id"])
-	assert.Empty(t, fu(SubtaskProductUpdateRequest{Qty: amt("1")}), "без склада — склад строки не меняется")
-	assert.Equal(t, msgInvalid, fu(SubtaskProductUpdateRequest{Qty: amt("1"), WarehouseID: "x"})["warehouse_id"])
-}

@@ -24,18 +24,15 @@ import (
 // TS-007 (мутации удалённого заказа), TS-012 (CHECK миграции), TS-013 (служебная уборка),
 // TS-033 (права), TS-049 (удалённый заказ удерживает клиента и единицу; колонку — уже нет,
 // soft-delete-board-columns TS-019), TS-052
-// (колонка стала финальной). TS-048 — TestTS017_DeleteTaskWithTransfers; TS-008 —
-// AttachmentsLiveSuite.
+// (колонка стала финальной). TS-008 — AttachmentsLiveSuite.
 
 // ---- wire-типы (1:1 с board.TaskDeleteResponse / TaskRestoreResponse / PurgeResponse) ----
 
 type sdWarningDTO struct {
-	ProductID     string      `json:"product_id"`
-	WarehouseID   string      `json:"warehouse_id"`
-	WarehouseName string      `json:"warehouse_name"`
-	Name          string      `json:"name"`
-	Stock         json.Number `json:"stock"`
-	Kind          string      `json:"kind"`
+	ProductID string      `json:"product_id"`
+	Name      string      `json:"name"`
+	Stock     json.Number `json:"stock"`
+	Kind      string      `json:"kind"`
 }
 
 type sdDeleteDTO struct {
@@ -135,13 +132,31 @@ func (s *OrderCardLiveSuite) sdScalar(q string, args ...any) string {
 	return v
 }
 
-// defaultStock — остаток товара на складе по умолчанию.
+// attachEq — единица клиента принимается в заказ через API карточки.
+func (s *OrderCardLiveSuite) attachEq(taskID int64, equipmentID string) {
+	st, _, raw := s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID),
+		map[string]any{"equipment_id": equipmentID})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+}
+
+// cardEquipment — единица equipmentID в карточке (тест падает, если её нет).
+func (s *OrderCardLiveSuite) cardEquipment(card orderCardDTO, equipmentID string) cardEquipmentDTO {
+	for _, e := range card.Equipment {
+		if e.EquipmentID == equipmentID {
+			return e
+		}
+	}
+	s.FailNow("единицы нет в карточке", equipmentID)
+	return cardEquipmentDTO{}
+}
+
+// defaultStock — остаток товара.
 func (s *OrderCardLiveSuite) defaultStock(productID string) string {
-	return s.sdScalar(`SELECT stock::text FROM product_stock WHERE product_id = $1 AND warehouse_id = default_warehouse_id()`, productID)
+	return s.sdScalar(`SELECT stock::text FROM products WHERE id = $1`, productID)
 }
 
 // sdTaskWithProduct — заказ клиента clientID в колонке columnName с одной услугой (new) и
-// товаром qty (остаток товара — stock на складе по умолчанию). Возвращает заказ, услугу,
+// товаром qty (остаток товара — stock). Возвращает заказ, услугу,
 // товар. Товар и услуга добавляются через API карточки.
 func (s *OrderCardLiveSuite) sdTaskWithProduct(clientID, columnID, stock string, qty int) (taskID int64, subtaskID, productID string) {
 	taskID, _ = s.newTask(clientID, columnID)
@@ -390,8 +405,8 @@ func (s *OrderCardLiveSuite) TestTS004_RestoreConsumesAgain() {
 
 // ---- TS-005 ----
 
-// TS-005 (DS-005): нехватка товара при восстановлении — не отказ: 200, warnings содержит пару
-// товар × склад с kind = negative, остаток ушёл в минус, заказ восстановлен.
+// TS-005 (DS-005): нехватка товара при восстановлении — не отказ: 200, warnings содержит товар
+// с kind = negative, остаток ушёл в минус, заказ восстановлен.
 func (s *OrderCardLiveSuite) TestTS005_RestoreWithShortage() {
 	c := s.newClient("Клиент-Нехватка")
 	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
@@ -400,7 +415,7 @@ func (s *OrderCardLiveSuite) TestTS005_RestoreWithShortage() {
 
 	// товар ушёл со склада, пока заказ был удалён (фикстура остатка).
 	_, err := s.Pool.Exec(context.Background(),
-		`UPDATE product_stock SET stock = 1 WHERE product_id = $1 AND warehouse_id = default_warehouse_id()`, productID)
+		`UPDATE products SET stock = 1 WHERE id = $1`, productID)
 	s.Require().NoError(err)
 
 	st, out, raw := s.restoreTask(s.admin, taskID)
@@ -408,8 +423,6 @@ func (s *OrderCardLiveSuite) TestTS005_RestoreWithShortage() {
 	s.Require().Len(out.Warnings, 1, string(raw))
 	w := out.Warnings[0]
 	s.Equal(productID, w.ProductID)
-	s.Equal(s.sdScalar(`SELECT default_warehouse_id()::text`), w.WarehouseID)
-	s.NotEmpty(w.WarehouseName)
 	s.Equal("negative", w.Kind)
 	s.Equal("-3.000", s.defaultStock(productID))
 	s.Equal("false", s.sdScalar(`SELECT (deleted_at IS NOT NULL)::text FROM tasks WHERE id = $1`, taskID), "заказ восстановлен")
@@ -524,9 +537,7 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 	productName := "SD-Товар-" + uuid.NewString()[:8]
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
-		WITH p AS (INSERT INTO products (category_id, name, unit, price) VALUES ($1, $2, 'шт', 50) RETURNING id),
-		     ps AS (INSERT INTO product_stock (product_id, warehouse_id, stock, min_stock) SELECT id, default_warehouse_id(), 10, 0 FROM p)
-		SELECT id FROM p`, s.newProductCategory(), productName).Scan(&productID))
+		INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, $2, 'шт', 50, 10, 0) RETURNING id`, s.newProductCategory(), productName).Scan(&productID))
 	st, _, raw = s.doCard(s.admin, http.MethodPost, "/api/v1/subtasks/"+subtaskID+"/products", map[string]any{"product_id": productID, "qty": 3})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	_, err := s.Pool.Exec(ctx, `
@@ -536,9 +547,9 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 
 	// единица в заказе и в другом (действующем) заказе — блок истории в его карточке.
 	eq := s.newEquipment(c)
-	s.addEq(taskID, eq, "")
+	s.attachEq(taskID, eq)
 	otherID, _ := s.newTask(c, s.columnID("Новые"))
-	s.addEq(otherID, eq, "")
+	s.attachEq(otherID, eq)
 
 	read := func() sdReaders {
 		var r sdReaders
@@ -637,7 +648,7 @@ func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
 	s.Require().NoError(err)
 	s.addLog(subtaskID, "Запись до удаления")
 	eq, spare := s.newEquipment(c), s.newEquipment(c)
-	s.addEq(taskID, eq, "")
+	s.attachEq(taskID, eq)
 	productRowID := s.sdScalar(`SELECT id::text FROM subtask_products WHERE subtask_id = $1`, subtaskID)
 	logID := s.sdScalar(`SELECT id::text FROM subtask_logs WHERE subtask_id = $1`, subtaskID)
 	svc := s.newService("300")
@@ -739,20 +750,17 @@ func (s *OrderCardLiveSuite) TestTS012_MigrationCheck() {
 // ---- TS-013 ----
 
 // TS-013 (DS-027, DS-036): служебная уборка DELETE /api/v1/test/purge/tasks/:id (сьюта
-// запущена с TEST_PURGE_ENABLED=true) — прежнее безвозвратное удаление: неотменённый документ
-// → 409 TASK_HAS_TRANSFERS, ничего не удалено; иначе заказ физически удалён с частями и
-// отменёнными документами, товар возвращён на склад; работает и для мягко удалённого заказа.
+// запущена с TEST_PURGE_ENABLED=true) — прежнее безвозвратное удаление: заказ физически удалён
+// с частями, товар возвращён на склад; работает и для мягко удалённого заказа.
 // Повтор, неизвестный вид, нечисловой номер → 404 NOT_FOUND. Негатив: исполнитель → 403.
 // Файлы вложений — AttachmentsLiveSuite; «без переменной адреса нет» — BoardLiveSuite.
 func (s *OrderCardLiveSuite) TestTS013_Purge() {
-	almaty := s.warehouseID("Алматы")
 	c := s.newClient("Клиент-Уборка")
 	taskID, subtaskID, productID := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
 	s.sdMove(taskID, s.columnID("В работе"))
 	s.addLog(subtaskID, "Запись")
 	eq := s.newEquipment(c)
-	s.addEq(taskID, eq, "")
-	doc := s.clientTransfer("client_to_warehouse", taskID, almaty, nil, eq)
+	s.attachEq(taskID, eq)
 	id := fmt.Sprint(taskID)
 
 	exec, _ := s.sdExecutor()
@@ -762,34 +770,28 @@ func (s *OrderCardLiveSuite) TestTS013_Purge() {
 		s.Equal("Нет доступа", s.sdErr(raw).Message)
 	}
 
-	st, raw := s.purge(s.admin, "tasks", id)
-	s.Equal(http.StatusConflict, st, string(raw))
-	s.Equal("TASK_HAS_TRANSFERS", s.sdErr(raw).Code)
-	s.Equal("1", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE id = $1`, taskID), "отказ ничего не удалил")
 	s.Equal("6.000", s.defaultStock(productID))
 
 	for _, tc := range []struct{ kind, id string }{{"suppliers", c}, {"orders", id}, {"tasks", "abc"}, {"tasks", "0"}, {"tasks", "999999999"}} {
-		st, raw = s.purge(s.admin, tc.kind, tc.id)
+		st, raw := s.purge(s.admin, tc.kind, tc.id)
 		s.Equal(http.StatusNotFound, st, "%s/%s: %s", tc.kind, tc.id, raw)
 		s.Equal("NOT_FOUND", s.sdErr(raw).Code)
 		s.Equal("Не найдено", s.sdErr(raw).Message)
 	}
 
-	s.transferAction(doc, "cancel")
-	st, raw = s.purge(s.admin, "tasks", id)
+	st, raw := s.purge(s.admin, "tasks", id)
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var out struct {
 		ID string `json:"id"`
 	}
 	s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
 	s.Equal(id, out.ID)
-	s.Equal("0|0|0|0|0", s.sdScalar(`
+	s.Equal("0|0|0|0", s.sdScalar(`
 		SELECT (SELECT count(*) FROM tasks WHERE id = $1)::text || '|' ||
 		       (SELECT count(*) FROM subtasks WHERE task_id = $1)::text || '|' ||
 		       (SELECT count(*) FROM task_equipment WHERE task_id = $1)::text || '|' ||
-		       (SELECT count(*) FROM task_stock WHERE task_id = $1)::text || '|' ||
-		       (SELECT count(*) FROM transfers WHERE id = $2)::text`, taskID, doc.ID),
-		"заказ, его части и отменённый документ удалены физически")
+		       (SELECT count(*) FROM task_stock WHERE task_id = $1)::text`, taskID),
+		"заказ и его части удалены физически")
 	s.Equal("10.000", s.defaultStock(productID), "товар возвращён на склад")
 	s.Equal("1", s.sdScalar(`SELECT count(*)::text FROM equipment WHERE id = $1`, eq), "единица остаётся в справочнике")
 
@@ -797,19 +799,15 @@ func (s *OrderCardLiveSuite) TestTS013_Purge() {
 	s.Equal(http.StatusNotFound, st, "повтор: %s", raw)
 	s.Equal("NOT_FOUND", s.sdErr(raw).Code)
 
-	// мягко удалённый заказ с отменённым документом убирается так же.
+	// мягко удалённый заказ убирается так же.
 	softID, _, softProduct := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
 	s.sdMove(softID, s.columnID("В работе"))
 	eq2 := s.newEquipment(c)
-	s.addEq(softID, eq2, "")
-	cancelled := s.transferAction(s.clientTransfer("client_to_warehouse", softID, almaty, nil, eq2), "cancel")
+	s.attachEq(softID, eq2)
 	s.mustSoftDelete(softID)
-	s.Equal("1", s.sdScalar(`SELECT count(*)::text FROM transfers WHERE id = $1`, cancelled.ID), "мягкое удаление документ не трогает")
 	st, raw = s.purge(s.admin, "tasks", fmt.Sprint(softID))
 	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Equal("0|0", s.sdScalar(`
-		SELECT (SELECT count(*) FROM tasks WHERE id = $1)::text || '|' || (SELECT count(*) FROM transfers WHERE id = $2)::text`,
-		softID, cancelled.ID))
+	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE id = $1`, softID))
 	s.Equal("10.000", s.defaultStock(softProduct), "товар удалённого заказа уже возвращён — второй раз не возвращается")
 }
 
@@ -871,7 +869,7 @@ func (s *OrderCardLiveSuite) TestTS049_DeletedTaskNoLongerHoldsClientEquipment()
 	col := s.sdColumn("SD-Держит-" + uuid.NewString()[:8])
 	taskID, _ := s.newTask(c, col)
 	eq := s.newEquipment(c)
-	s.addEq(taskID, eq, "")
+	s.attachEq(taskID, eq)
 	s.mustSoftDelete(taskID)
 
 	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/test/purge/columns/"+col, nil)

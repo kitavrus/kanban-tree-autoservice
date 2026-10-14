@@ -5,38 +5,16 @@
       <div class="d-flex align-items-start gap-2">
         <div>
           <div class="text-body-secondary small"><a href="/clients/{{ .Equipment.ClientID }}" data-testid="history-client-link">{{ .ClientName }}</a></div>
-          <h2 class="fs-5 mb-1" data-testid="history-equipment-model">{{ if .Equipment.Brand }}{{ .Equipment.Brand }} {{ end }}{{ .Equipment.Model }}</h2>
+          <h2 class="fs-5 mb-1" data-testid="history-equipment-model">{{ if .Equipment.Brand }}{{ .Equipment.Brand }} {{ end }}{{ .Equipment.Model }}{{ if .Equipment.PlateNumber }} <span class="badge text-bg-light border text-nowrap" data-testid="history-equipment-plate">{{ .Equipment.PlateNumber }}</span>{{ end }}</h2>
           <div class="text-body-secondary small">
             {{ .Equipment.TypeName }}{{ if .Equipment.Serial }} · S/N {{ .Equipment.Serial }}{{ end }}{{ if .Equipment.SKU }} · арт. {{ .Equipment.SKU }}{{ end }}
           </div>
         </div>
         <a href="/equipment/{{ .Equipment.ID }}" class="btn btn-outline-secondary btn-sm ms-auto" data-testid="history-edit">Редактировать</a>
       </div>
-      <div class="d-flex align-items-center gap-2 flex-wrap mt-2">
-        <span class="badge {{ .Location.BadgeClass }}" data-testid="history-location" data-location-status="{{ .Location.Status }}">{{ .Location.Label }}</span>
-        {{ if .Location.ActiveTransferID }}<a class="small" href="/transfers?id={{ .Location.ActiveTransferID }}" data-testid="history-active-transfer">перемещение #{{ .Location.ActiveTransferID }}</a>{{ end }}
-      </div>
       <div class="small mt-2" data-testid="history-summary">Заказов: {{ len .Orders }} · услуг: {{ .Services }}</div>
     </div>
   </div>
-
-  {{ if .Transfers }}
-  <div class="card mb-3" data-testid="history-transfers">
-    <div class="card-body">
-      <h3 class="fs-6 mb-2">Перемещения</h3>
-      <ul class="list-unstyled mb-0 small">
-        {{ range .Transfers }}
-        <li class="d-flex align-items-center gap-2 flex-wrap py-1" data-testid="history-transfer" data-transfer-id="{{ .ID }}">
-          <a href="/transfers?id={{ .ID }}" class="fw-semibold" data-testid="history-transfer-link">#{{ .ID }}</a>
-          <span>{{ .FromName }} → {{ .ToName }}</span>
-          <span class="badge {{ .StatusClass }}" data-testid="history-transfer-status">{{ .StatusLabel }}</span>
-          <span class="text-body-secondary ms-auto" data-testid="history-transfer-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
-        </li>
-        {{ end }}
-      </ul>
-    </div>
-  </div>
-  {{ end }}
 
   {{ range .Orders }}
   <div class="card mb-3" data-testid="history-order" data-task-id="{{ .TaskID }}">

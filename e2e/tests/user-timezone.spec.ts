@@ -14,7 +14,6 @@ import {
 import { BoardPage } from '../pages/BoardPage';
 import { OrderCardPage } from '../pages/OrderCardPage';
 import { ExecutorPayoutsPage } from '../pages/ExecutorPayoutsPage';
-import { TransfersPage } from '../pages/TransfersPage';
 import { ShellPage } from '../pages/ShellPage';
 import { UsersPage } from '../pages/UsersPage';
 
@@ -189,12 +188,11 @@ test.describe('TZ: свой часовой пояс', () => {
 });
 
 test.describe('TZ: пояс применяется во всей системе', () => {
-  /** JS-экраны с моментом TS-F5: карточка заказа, «Выплаты», «Перемещения». */
+  /** JS-экраны с моментом TS-F5: карточка заказа, «Выплаты». */
   async function expectJsScreens(
     page: Page,
     view: ZoneView,
-    other: ZoneView,
-    d: { clientId: string; taskId: number; subId: string; executorId: string; transferId: number },
+    d: { clientId: string; taskId: number; subId: string; executorId: string },
   ) {
     await pinFixtureMoment(page);
     const shell = new ShellPage(page);
@@ -212,15 +210,6 @@ test.describe('TZ: пояс применяется во всей системе'
     const ep = new ExecutorPayoutsPage(page);
     await ep.goto(`assignee=${d.executorId}`);
     await expect(ep.row(d.subId).getByTestId('ep-row-paid-at')).toHaveText(view.dateTime);
-
-    // «Перемещения»: сведения документа — создан / отправлен.
-    const st = new TransfersPage(page);
-    await st.goto(d.transferId);
-    const meta = st.cardMeta;
-    await expect(meta).toContainText(`Создан: `);
-    await expect(meta).toContainText(`Отправлен: `);
-    await expect(meta).toContainText(view.dateTime);
-    await expect(meta).not.toContainText(other.dateTime);
   }
 
   /** SSR-экраны с настоящим «сейчас»: история оборудования и две печатные формы. */
@@ -244,7 +233,7 @@ test.describe('TZ: пояс применяется во всей системе'
     return { orderDate, logTime, intakeDate, handoverDate, payment };
   }
 
-  test('TZ-010 (TS-041): карточка заказа, «Выплаты», «Перемещения», история оборудования и печать — в поясе пользователя, не браузера', async ({
+  test('TZ-010 (TS-041): карточка заказа, «Выплаты», история оборудования и печать — в поясе пользователя, не браузера', async ({
     page,
     adminApi,
     uniq,
@@ -261,15 +250,7 @@ test.describe('TZ: пояс применяется во всей системе'
     expect(moscowUser.timezone).toBe(TZ_MOSCOW);
 
     const { client, equipment, task, subId } = await seedPaidOrder({ adminApi, uniq, insertSubtask }, 'TZ-010', exec.id);
-    const productCat = await adminApi.createCategory({ kind: 'product', name: uniq('TZ-010 товары') });
-    const product = await adminApi.createProduct({ category_id: productCat.id, name: uniq('TZ-010 товар'), stock: 5 });
-    const transfer = await adminApi.createTransfer({
-      from_warehouse_id: (await adminApi.warehouseByName('Алматы')).id,
-      to_warehouse_id: (await adminApi.warehouseByName('Москва')).id,
-      items: [{ kind: 'product', product_id: product.id, qty_sent: 1 }],
-      send: true,
-    });
-    const data = { clientId: client.id, taskId: task.id, subId, executorId: exec.id, transferId: transfer.id, equipmentId: equipment.id };
+    const data = { clientId: client.id, taskId: task.id, subId, executorId: exec.id, equipmentId: equipment.id };
 
     // Запись журнала услуги — настоящая, через UI (пользователь Алматы).
     await loginAs(page, almatyUser.login, almatyUser.password);
@@ -294,8 +275,8 @@ test.describe('TZ: пояс применяется во всей системе'
     );
 
     // JS-экраны — точный момент TS-F5: 00:30 7 октября по Алматы = 22:30 6 октября по Москве.
-    await expectJsScreens(page, TZ_FIXTURE.almaty, TZ_FIXTURE.moscow, data);
-    await expectJsScreens(moscowPage, TZ_FIXTURE.moscow, TZ_FIXTURE.almaty, data);
+    await expectJsScreens(page, TZ_FIXTURE.almaty, data);
+    await expectJsScreens(moscowPage, TZ_FIXTURE.moscow, data);
 
     // SSR, даты без времени (печать, дата заказа): администратор разводит пользователей в
     // пояса UTC+14 и UTC−12 — между ними 26 часов, календарная дата различается ВСЕГДА,

@@ -110,13 +110,19 @@ func (s *OrderCardLiveSuite) catSummary() catStockSummaryDTO {
 	return sm
 }
 
-func (s *OrderCardLiveSuite) catAdjust(productID, warehouseID string, stock any) (int, catStockRowDTO, []byte) {
-	st, raw := s.admin.Do(http.MethodPut, "/api/v1/stock/"+productID, map[string]any{"stock": stock, "warehouse_id": warehouseID})
+func (s *OrderCardLiveSuite) catAdjust(productID string, stock any) (int, catStockRowDTO, []byte) {
+	st, raw := s.admin.Do(http.MethodPut, "/api/v1/stock/"+productID, map[string]any{"stock": stock})
 	var row catStockRowDTO
 	if st == http.StatusOK {
 		s.Require().NoError(json.Unmarshal(raw, &row), string(raw))
 	}
 	return st, row, raw
+}
+
+// catSetStock — остаток товара напрямую (фикстура: остаток, появившийся после удаления).
+func (s *OrderCardLiveSuite) catSetStock(productID, stock string) {
+	_, err := s.Pool.Exec(context.Background(), `UPDATE products SET stock = $2::numeric WHERE id = $1`, productID, stock)
+	s.Require().NoError(err)
 }
 
 // ---- TS-026 ----
@@ -270,11 +276,10 @@ func (s *OrderCardLiveSuite) TestTS030_DeletedServiceAndProductNotSelectable() {
 // is_deleted = false.
 func (s *OrderCardLiveSuite) TestTS054_StockOnDeletedProduct() {
 	m := uuid.NewString()[:8]
-	almaty := s.warehouseID("Алматы")
 	taskID, _, product := s.sdTaskWithProduct(s.newClient("SD-054 Клиент "+m), s.columnID("В работе"), "5", 5)
-	s.Require().Equal("0.000", s.pairStock(product, almaty), "товар списан заказом до нуля")
-	// минимум выше возвращаемого остатка: вернувшийся остаток 5 < 10 — пара была бы «low».
-	s.sdScalar(`UPDATE product_stock SET min_stock = 10 WHERE product_id = $1 RETURNING '1'`, product)
+	s.Require().Equal("0.000", s.defaultStock(product), "товар списан заказом до нуля")
+	// минимум выше возвращаемого остатка: вернувшийся остаток 5 < 10 — товар был бы «low».
+	s.sdScalar(`UPDATE products SET min_stock = 10 WHERE id = $1 RETURNING '1'`, product)
 	liveProduct := s.newProduct("10", "50", "1")
 
 	// товар с остатком не удаляется; списанный до нуля — удаляется (товар в заказе не мешает).
@@ -285,7 +290,7 @@ func (s *OrderCardLiveSuite) TestTS054_StockOnDeletedProduct() {
 	s.catMustDelete("/api/v1/products/" + product)
 	afterDelete := s.catSummary()
 	s.Equal(before.ProductsTotal-1, afterDelete.ProductsTotal, "удалённый товар не входит в products_total")
-	s.Equal(before.OutCount-1, afterDelete.OutCount, "пара удалённого товара (остаток 0) ушла из счётчика «нет в наличии»")
+	s.Equal(before.OutCount-1, afterDelete.OutCount, "удалённый товар (остаток 0) ушёл из счётчика «нет в наличии»")
 
 	// негатив: удалённый товар с нулевым остатком в отчёте не показывается.
 	for _, q := range []string{"", "&scope=all"} {
@@ -295,8 +300,8 @@ func (s *OrderCardLiveSuite) TestTS054_StockOnDeletedProduct() {
 	s.False(s.catStock("&scope=all", liveProduct)[liveProduct].IsDeleted, "у действующего товара is_deleted = false")
 
 	// заказ уходит из списывающей колонки — остаток вернулся удалённому товару.
-	s.moveTask(taskID, "Новые")
-	s.Require().Equal("5.000", s.pairStock(product, almaty))
+	s.sdMove(taskID, s.columnID("Новые"))
+	s.Require().Equal("5.000", s.defaultStock(product))
 	for _, q := range []string{"", "&scope=all"} {
 		row, ok := s.catStock(q, product)[product]
 		s.Require().True(ok, "удалённый товар с остатком виден в отчёте (%q)", q)
@@ -312,65 +317,36 @@ func (s *OrderCardLiveSuite) TestTS054_StockOnDeletedProduct() {
 	s.Equal("not_found", s.fields(raw)["product_id"])
 
 	// ручная корректировка: частичная — строка остаётся; до нуля — 200 и строка исчезает.
-	st, row, raw := s.catAdjust(product, almaty, 2)
+	st, row, raw := s.catAdjust(product, 2)
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.True(row.IsDeleted)
 	s.Equal("2.000", row.Stock.String())
-	st, row, raw = s.catAdjust(product, almaty, 0)
+	st, row, raw = s.catAdjust(product, 0)
 	s.Require().Equal(http.StatusOK, st, "списание остатка удалённого товара до нуля: %s", raw)
 	s.Equal(product, row.ProductID)
 	s.True(row.IsDeleted)
 	s.Equal("0.000", row.Stock.String())
-	s.Equal("0.000", s.pairStock(product, almaty))
+	s.Equal("0.000", s.defaultStock(product))
 	s.Equal("manual:-3.000,manual:-2.000", s.sdScalar(`
 		SELECT string_agg(reason || ':' || qty_delta::text, ',' ORDER BY created_at, id) FROM stock_movements
 		WHERE product_id = $1 AND reason = 'manual'`, product), "корректировки записаны в журнал склада")
 	for _, q := range []string{"", "&scope=all"} {
 		s.NotContains(s.catStock(q, product), product, "после списания до нуля строка исчезла (%q)", q)
 	}
-	st, _, raw = s.catAdjust(product, almaty, 4)
+	st, _, raw = s.catAdjust(product, 4)
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("PRODUCT_NOT_FOUND", s.sdErr(raw).Code)
-	s.Equal("0.000", s.pairStock(product, almaty), "остаток удалённого товара с нулём не правится")
+	s.Equal("0.000", s.defaultStock(product), "остаток удалённого товара с нулём не правится")
 }
 
-// DS-042: удалённый товар виден в «Остатках» независимо от признака архива и от того, на каком
-// складе остаток: архивный удалённый товар с остатком только на ВТОРОМ складе — строка с
-// is_deleted (действующий архивный товар в отчёт не входит, как и раньше); остаток на втором
-// складе корректируется до нуля.
-func (s *OrderCardLiveSuite) TestStock_DeletedArchivedProductOnSecondWarehouse() {
-	moscow := s.warehouseID("Москва")
-	archivedLive := s.newProduct("10", "3", "0")
-	s.setProductActive(archivedLive, false)
-	gone := s.newProduct("10", "0", "0")
-	s.setProductActive(gone, false)
-	s.catMustDelete("/api/v1/products/" + gone)
-	s.setPairStock(gone, moscow, "4") // остаток пришёл после удаления (приём документа)
-
-	rows := s.catStock("&scope=all", gone, archivedLive)
-	s.NotContains(rows, archivedLive, "действующий архивный товар в отчёт не входит (as-is)")
-	s.Require().Contains(rows, gone)
-	s.True(rows[gone].IsDeleted)
-	s.Equal("4.000", rows[gone].Stock.String())
-
-	st, row, raw := s.catAdjust(gone, moscow, 0)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.True(row.IsDeleted)
-	s.NotContains(s.catStock("&scope=all", gone), gone)
-}
-
-// DS-042 + DS-021 (ревью части 5): остаток удалённого товара можно только СПИСАТЬ. Корректировка
-// допустима лишь по паре товар×склад с ненулевым остатком и только в сторону нуля: по складу,
-// где остатка нет (строка с нулём либо строки нет вовсе), → 404 PRODUCT_NOT_FOUND и строка не
-// создаётся; увеличение и смена знака → 409 PRODUCT_DELETED_WRITE_OFF_ONLY; остаток не
-// изменился, движений нет. Уменьшение и списание до нуля → 200; после нуля на всех складах
-// строка исчезает из «Остатков». Отрицательный остаток (долг) списывается к нулю так же: −3 →
-// −1 → 0, но не −4 и не +1. Остаток на АРХИВНОМ складе тоже списывается.
+// DS-042 + DS-021 (ревью части 5): остаток удалённого товара можно только СПИСАТЬ. Нулевой
+// остаток → 404 PRODUCT_NOT_FOUND; увеличение и смена знака → 409 PRODUCT_DELETED_WRITE_OFF_ONLY,
+// остаток не изменился, движений нет. Уменьшение и списание до нуля → 200; после нуля строка
+// исчезает из «Остатков». Отрицательный остаток (долг) списывается к нулю так же: −3 → −1 → 0,
+// но не −4 и не +1. Действующий архивный товар в отчёт не входит (as-is).
 func (s *OrderCardLiveSuite) TestStock_DeletedProductAdjustOnlyWriteOff() {
-	almaty, moscow := s.warehouseID("Алматы"), s.warehouseID("Москва")
-	archivedWh := s.sdScalar(`INSERT INTO warehouses (name, position, is_active) VALUES ('SD-архив ' || $1, 900, false) RETURNING id::text`, uuid.NewString()[:8])
-	expectStatus := func(productID, warehouseID string, stock any, status int, code, ctx string) {
-		st, _, raw := s.catAdjust(productID, warehouseID, stock)
+	expectStatus := func(productID string, stock any, status int, code, ctx string) {
+		st, _, raw := s.catAdjust(productID, stock)
 		s.Equal(status, st, "%s: %s", ctx, raw)
 		if code != "" {
 			s.Equal(code, s.sdErr(raw).Code, ctx)
@@ -380,53 +356,51 @@ func (s *OrderCardLiveSuite) TestStock_DeletedProductAdjustOnlyWriteOff() {
 		return s.sdScalar(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1 AND reason = 'manual'`, productID)
 	}
 
-	p := s.newProduct("10", "0", "0") // строка «Алматы» с нулём
-	s.catMustDelete("/api/v1/products/" + p)
-	s.setPairStock(p, moscow, "4") // остаток пришёл после удаления
-	s.setPairStock(p, archivedWh, "2")
+	zero := s.newProduct("10", "0", "0")
+	s.catMustDelete("/api/v1/products/" + zero)
+	expectStatus(zero, 3, http.StatusNotFound, "PRODUCT_NOT_FOUND", "нулевой остаток")
+	expectStatus(zero, 0, http.StatusNotFound, "PRODUCT_NOT_FOUND", "нулевой остаток, ноль")
 
-	// склад без остатка: строка с нулём и склад без строки — 404, строка не создаётся.
-	noRow := s.sdScalar(`INSERT INTO warehouses (name, position) VALUES ('SD-пусто ' || $1, 901) RETURNING id::text`, uuid.NewString()[:8])
-	defer func() {
-		_, err := s.Pool.Exec(context.Background(), `UPDATE warehouses SET is_active = false WHERE id = $1`, noRow)
-		s.NoError(err)
-	}()
-	expectStatus(p, almaty, 3, http.StatusNotFound, "PRODUCT_NOT_FOUND", "склад с нулевым остатком")
-	expectStatus(p, almaty, 0, http.StatusNotFound, "PRODUCT_NOT_FOUND", "склад с нулевым остатком, ноль")
-	expectStatus(p, noRow, 3, http.StatusNotFound, "PRODUCT_NOT_FOUND", "склад без строки остатка")
-	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM product_stock WHERE product_id = $1 AND warehouse_id = $2`, p, noRow), "строка остатка не создана")
+	p := s.newProduct("10", "0", "0")
+	s.setProductActive(p, false) // удалённый из архива — признак архива отчёту не мешает
+	s.catMustDelete("/api/v1/products/" + p)
+	s.catSetStock(p, "4") // остаток пришёл после удаления (возврат из заказа)
+	rows := s.catStock("&scope=all", p)
+	s.Require().Contains(rows, p)
+	s.True(rows[p].IsDeleted)
+
 	// увеличение и смена знака — отказ.
-	expectStatus(p, moscow, 5, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "увеличение")
-	expectStatus(p, moscow, 4.001, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "увеличение на тысячную")
-	expectStatus(p, moscow, -1, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "смена знака")
-	s.Equal("0.000|4.000|2.000|0", s.pairStock(p, almaty)+"|"+s.pairStock(p, moscow)+"|"+s.pairStock(p, archivedWh)+"|"+movements(p),
-		"отказы остаток и журнал не тронули")
-	st, _, raw := s.catAdjust(p, moscow, 5)
+	expectStatus(p, 5, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "увеличение")
+	expectStatus(p, 4.001, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "увеличение на тысячную")
+	expectStatus(p, -1, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "смена знака")
+	s.Equal("4.000|0", s.defaultStock(p)+"|"+movements(p), "отказы остаток и журнал не тронули")
+	st, _, raw := s.catAdjust(p, 5)
 	s.Equal("Товар удалён — его остаток можно только списать", s.sdErr(raw).Message, "%d", st)
 
-	// списание: частично, затем до нуля на каждом складе (в том числе архивном).
-	expectStatus(p, moscow, 1.5, http.StatusOK, "", "частичное списание")
-	expectStatus(p, moscow, 0, http.StatusOK, "", "списание до нуля")
-	s.Contains(s.catStock("&scope=all", p), p, "остаток на архивном складе ещё не списан — товар в отчёте")
-	expectStatus(p, archivedWh, 0, http.StatusOK, "", "списание с архивного склада")
-	s.Equal("0.000|0.000|3", s.pairStock(p, moscow)+"|"+s.pairStock(p, archivedWh)+"|"+movements(p))
-	s.NotContains(s.catStock("&scope=all", p), p, "после нуля на всех складах строка исчезла")
-	expectStatus(p, moscow, 0, http.StatusNotFound, "PRODUCT_NOT_FOUND", "остаток уже нулевой")
+	// списание: частично, затем до нуля.
+	expectStatus(p, 1.5, http.StatusOK, "", "частичное списание")
+	s.Contains(s.catStock("&scope=all", p), p, "остаток ещё не списан — товар в отчёте")
+	expectStatus(p, 0, http.StatusOK, "", "списание до нуля")
+	s.Equal("0.000|2", s.defaultStock(p)+"|"+movements(p))
+	s.NotContains(s.catStock("&scope=all", p), p, "после нуля строка исчезла")
+	expectStatus(p, 0, http.StatusNotFound, "PRODUCT_NOT_FOUND", "остаток уже нулевой")
 
 	// долг: отрицательный остаток списывается к нулю, но не увеличивается по модулю.
 	debt := s.newProduct("10", "0", "0")
 	s.catMustDelete("/api/v1/products/" + debt)
-	s.setPairStock(debt, almaty, "-3")
-	expectStatus(debt, almaty, -4, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "долг растёт")
-	expectStatus(debt, almaty, 1, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "долг → плюс")
-	expectStatus(debt, almaty, -1, http.StatusOK, "", "долг уменьшен")
-	expectStatus(debt, almaty, 0, http.StatusOK, "", "долг списан")
+	s.catSetStock(debt, "-3")
+	expectStatus(debt, -4, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "долг растёт")
+	expectStatus(debt, 1, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "долг → плюс")
+	expectStatus(debt, -1, http.StatusOK, "", "долг уменьшен")
+	expectStatus(debt, 0, http.StatusOK, "", "долг списан")
 	s.NotContains(s.catStock("&scope=all", debt), debt)
 
-	// действующему товару остаток по-прежнему можно увеличивать и заводить на любом активном складе.
+	// действующий архивный товар в отчёт не входит; действующему товару остаток можно увеличивать.
+	archivedLive := s.newProduct("10", "3", "0")
+	s.setProductActive(archivedLive, false)
+	s.NotContains(s.catStock("&scope=all", archivedLive), archivedLive, "действующий архивный товар в отчёт не входит (as-is)")
 	live := s.newProduct("10", "1", "0")
-	expectStatus(live, almaty, 7, http.StatusOK, "", "действующий товар: увеличение")
-	expectStatus(live, moscow, 2, http.StatusOK, "", "действующий товар: новый склад")
+	expectStatus(live, 7, http.StatusOK, "", "действующий товар: увеличение")
 }
 
 // ---- гонки (§3 «Конкурентность») ----
@@ -466,15 +440,13 @@ func (s *OrderCardLiveSuite) catRace(hold func(ctx context.Context) (commit func
 }
 
 // catHoldProductDelete — «удаление товара в полёте»: те же блокировки и UPDATE, что делает
-// catalog.ProductRepo.SoftDelete (товар FOR NO KEY UPDATE → строки product_stock FOR UPDATE →
-// отметка), транзакция не зафиксирована.
+// catalog.ProductRepo.SoftDelete (товар FOR NO KEY UPDATE с чтением остатка → отметка),
+// транзакция не зафиксирована.
 func (s *OrderCardLiveSuite) catHoldProductDelete(productID string) func(ctx context.Context) func() {
 	return func(ctx context.Context) func() {
 		tx, err := s.Pool.Begin(ctx)
 		s.Require().NoError(err)
 		_, err = tx.Exec(ctx, `SELECT 1 FROM products WHERE id = $1 AND deleted_at IS NULL FOR NO KEY UPDATE`, productID)
-		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM product_stock WHERE product_id = $1 ORDER BY warehouse_id FOR UPDATE`, productID)
 		s.Require().NoError(err)
 		_, err = tx.Exec(ctx, `UPDATE products SET deleted_at = now(), deleted_by = $2, delete_reason = 'Гонка' WHERE id = $1`, productID, s.catAdminID())
 		s.Require().NoError(err)
@@ -504,8 +476,8 @@ func (s *OrderCardLiveSuite) TestRace_SubtaskCreateWaitsForServiceDelete() {
 }
 
 // §3 п. 5 (DS-014): удаление товара идёт — в это окно приходит добавление товара в услугу заказа
-// в СПИСЫВАЮЩЕЙ колонке. Добавление обязано дождаться удаления (строка товара FOR SHARE, до строк
-// product_stock) и получить 400 product_id: not_found: строки нет, остаток не списан. Реализация
+// в СПИСЫВАЮЩЕЙ колонке. Добавление обязано дождаться удаления (строка товара под блокировкой) и
+// получить 400 product_id: not_found: строки нет, остаток не списан. Реализация
 // без блокировки добавила бы строку и увела остаток удалённого товара в минус.
 func (s *OrderCardLiveSuite) TestRace_SubtaskProductAddWaitsForProductDelete() {
 	taskID, _ := s.newTask(s.newClient("SD-race Клиент-товар "+uuid.NewString()[:8]), s.columnID("В работе"))
@@ -517,24 +489,24 @@ func (s *OrderCardLiveSuite) TestRace_SubtaskProductAddWaitsForProductDelete() {
 	s.Equal("not_found", s.fields(res.raw)["product_id"])
 	s.Equal("0|0.000|0", s.sdScalar(`
 		SELECT (SELECT count(*) FROM subtask_products WHERE subtask_id = $1)::text || '|' ||
-		       (SELECT stock::text FROM product_stock WHERE product_id = $2 AND warehouse_id = default_warehouse_id()) || '|' ||
+		       (SELECT stock::text FROM products WHERE id = $2) || '|' ||
 		       (SELECT count(*) FROM stock_movements WHERE product_id = $2)::text`, subtaskID, product),
 		"строки нет, остаток и журнал не тронуты")
 }
 
 // §3 п. 1 (DS-021): товар списывается заказом в незавершённой транзакции (перенос в списывающую
-// колонку: строка product_stock под FOR UPDATE, остаток 3 → 0 ещё не зафиксирован… здесь обратный
+// колонку: строка товара под блокировкой, остаток 3 → 0 ещё не зафиксирован… здесь обратный
 // случай — возврат 0 → 3) — в это окно приходит удаление товара. Удаление обязано дождаться
-// строки остатка и увидеть возвращённый остаток: 409 PRODUCT_HAS_STOCK. Реализация, читающая
+// строки товара и увидеть возвращённый остаток: 409 PRODUCT_HAS_STOCK. Реализация, читающая
 // остаток без блокировки, удалила бы товар с остатком 3.
 func (s *OrderCardLiveSuite) TestRace_ProductDeleteWaitsForStockReturn() {
 	product := s.newProduct("10", "0", "0")
 	res := s.catRace(func(ctx context.Context) func() {
 		tx, err := s.Pool.Begin(ctx)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM product_stock WHERE product_id = $1 FOR UPDATE`, product)
+		_, err = tx.Exec(ctx, `SELECT 1 FROM products WHERE id = $1 FOR NO KEY UPDATE`, product)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `UPDATE product_stock SET stock = stock + 3 WHERE product_id = $1`, product)
+		_, err = tx.Exec(ctx, `UPDATE products SET stock = stock + 3 WHERE id = $1`, product)
 		s.Require().NoError(err)
 		return func() { s.Require().NoError(tx.Commit(ctx)) }
 	}, func() (int, []byte) { return s.catDelete("/api/v1/products/" + product) })
@@ -545,46 +517,44 @@ func (s *OrderCardLiveSuite) TestRace_ProductDeleteWaitsForStockReturn() {
 
 // §3 п. 1 (DS-042): удаление товара с нулевым остатком идёт — в это окно приходит ручная
 // корректировка его остатка из отчёта «Остатки». Корректировка обязана дождаться удаления
-// (строка товара FOR SHARE первой) и получить 404 PRODUCT_NOT_FOUND — товар удалён, остаток
+// (строка товара под блокировкой) и получить 404 PRODUCT_NOT_FOUND — товар удалён, остаток
 // нулевой; остаток не изменился. Реализация без проверки записала бы остаток 5 только что
 // удалённому товару в обход запрета DS-021.
 func (s *OrderCardLiveSuite) TestRace_StockAdjustWaitsForProductDelete() {
-	almaty := s.warehouseID("Алматы")
 	product := s.newProduct("10", "0", "0")
 
 	res := s.catRace(s.catHoldProductDelete(product), func() (int, []byte) {
-		st, _, raw := s.catAdjust(product, almaty, 5)
+		st, _, raw := s.catAdjust(product, 5)
 		return st, raw
 	})
 	s.Require().Equal(http.StatusNotFound, res.status, string(res.raw))
 	s.Equal("PRODUCT_NOT_FOUND", s.sdErr(res.raw).Code)
-	s.Equal("0.000", s.pairStock(product, almaty))
+	s.Equal("0.000", s.defaultStock(product))
 }
 
-// DS-042 (ревью части 5): остаток пары удалённого товара списывается до нуля в незавершённой
-// транзакции (строка product_stock под FOR UPDATE, 4 → 0) — в это окно приходит вторая
-// корректировка той же пары (4 → 1). Она обязана дождаться блокировки строки и увидеть ноль: 404
+// DS-042 (ревью части 5): остаток удалённого товара списывается до нуля в незавершённой
+// транзакции (строка товара под блокировкой, 4 → 0) — в это окно приходит вторая
+// корректировка того же товара (4 → 1). Она обязана дождаться блокировки строки и увидеть ноль: 404
 // PRODUCT_NOT_FOUND, остаток остался нулевым. Реализация, проверяющая «остаток не ноль» до
 // блокировки строки, записала бы остаток 1 товару, у которого остатка уже нет.
 func (s *OrderCardLiveSuite) TestRace_DeletedProductAdjustWaitsForWriteOff() {
-	moscow := s.warehouseID("Москва")
 	product := s.newProduct("10", "0", "0")
 	s.catMustDelete("/api/v1/products/" + product)
-	s.setPairStock(product, moscow, "4")
+	s.catSetStock(product, "4")
 
 	res := s.catRace(func(ctx context.Context) func() {
 		tx, err := s.Pool.Begin(ctx)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM product_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`, product, moscow)
+		_, err = tx.Exec(ctx, `SELECT 1 FROM products WHERE id = $1 FOR NO KEY UPDATE`, product)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `UPDATE product_stock SET stock = 0 WHERE product_id = $1 AND warehouse_id = $2`, product, moscow)
+		_, err = tx.Exec(ctx, `UPDATE products SET stock = 0 WHERE id = $1`, product)
 		s.Require().NoError(err)
 		return func() { s.Require().NoError(tx.Commit(ctx)) }
 	}, func() (int, []byte) {
-		st, _, raw := s.catAdjust(product, moscow, 1)
+		st, _, raw := s.catAdjust(product, 1)
 		return st, raw
 	})
 	s.Require().Equal(http.StatusNotFound, res.status, string(res.raw))
 	s.Equal("PRODUCT_NOT_FOUND", s.sdErr(res.raw).Code)
-	s.Equal("0.000", s.pairStock(product, moscow))
+	s.Equal("0.000", s.defaultStock(product))
 }

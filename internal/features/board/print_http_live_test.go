@@ -139,9 +139,7 @@ func (s *PrintLiveSuite) newProductCategory() string {
 func (s *PrintLiveSuite) newProduct(name, price, stock, minStock string) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`WITH p AS (INSERT INTO products (category_id, name, unit, price) VALUES ($1, $2, 'шт', $3::numeric) RETURNING id),
-		      ps AS (INSERT INTO product_stock (product_id, warehouse_id, stock, min_stock) SELECT id, default_warehouse_id(), $4::numeric, $5::numeric FROM p)
-		 SELECT id FROM p`,
+		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, $2, 'шт', $3::numeric, $4::numeric, $5::numeric) RETURNING id`,
 		s.newProductCategory(), name, price, stock, minStock).Scan(&id))
 	return id
 }
@@ -262,7 +260,6 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Handover_FullContent() {
 	s.Contains(body, ">—<", "цена работы «по факту» — прочерк")
 	// итог: 500.00 (услуга) + 2*20.00 (товар) = 540.00 — совпадает с task.total_amount (AC-013).
 	s.Contains(body, "540.00")
-	s.NotContains(body, "Продано по накладным", "накладных у заказа нет — строки нет (transfers-sales DS-014)")
 	s.Contains(body, "Оплачено")
 	s.Contains(body, "Выдал:")
 	s.Contains(body, "Получил:")

@@ -10,7 +10,7 @@ import (
 const Root = "web/ssr/executorpayouts/templates"
 
 // SSR — экран-отчёт «Выплаты» (D69): группы «исполнитель → его услуги», итоги и массовую
-// отметку рисует js/executor-payouts.js поверх JSON API (как «Остатки»/«Перемещения»).
+// отметку рисует js/executor-payouts.js поверх JSON API (как «Остатки»).
 type SSR struct {
 	r     *ssr.Renderer
 	shell ssr.ShellBuilder

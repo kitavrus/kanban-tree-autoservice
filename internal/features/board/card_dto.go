@@ -1,7 +1,6 @@
 package board
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/kitavrus/kanban-tree/pkg/numeric"
@@ -19,28 +18,8 @@ type OrderCardResponse struct {
 	Equipment []CardEquipment `json:"equipment"`
 	Subtasks  []CardSubtask   `json:"subtasks"`
 	Stock     []CardStock     `json:"stock"`
-	// Warehouses — склады для select'а строки товара (D45/DS-005): активные по position +
-	// архивные и мягко удалённые (is_deleted), на которые ещё ссылаются строки этого заказа.
-	Warehouses []CardWarehouse `json:"warehouses"`
 	// Attachments — вложения заказа (фаза 7, D21), всегда массив, порядок загрузки.
 	Attachments []CardAttachment `json:"attachments"`
-	// Transfers — документы «Перемещение» заказа (transfers-partners DS-012), новые сверху;
-	// всегда массив.
-	Transfers []CardTransfer `json:"transfers"`
-}
-
-// CardTransfer — документ заказа в блоке «Перемещения заказа». WarehouseName — склад
-// назначения (приём от клиента) либо отправления (возврат клиенту). Amount — сумма документа
-// (transfers-sales DS-014): Σ price × qty_sent товарных строк; 0.00 для приёма от клиента и
-// накладной без товаров — в любом статусе (в итог заказа идут только «В пути» и «Получено»).
-type CardTransfer struct {
-	ID            int64          `json:"id"`
-	Direction     string         `json:"direction"` // client_to_warehouse | warehouse_to_client
-	Status        string         `json:"status"`
-	WarehouseName string         `json:"warehouse_name"`
-	ItemsCount    int            `json:"items_count"`
-	CreatedAt     time.Time      `json:"created_at"`
-	Amount        numeric.Amount `json:"amount"`
 }
 
 // CardAttachment — вложение заказа. URL — отдача файла с проверкой сессии (inline);
@@ -72,26 +51,13 @@ type CardEquipment struct {
 	// бейджем «удалён».
 	IsDeleted    bool               `json:"is_deleted"`
 	TypeName     string             `json:"type_name"`
+	PlateNumber  string             `json:"plate_number"` // госномер автомобиля
 	Brand        string             `json:"brand"`
 	Model        string             `json:"model"`
 	Serial       string             `json:"serial"`
 	Completeness string             `json:"completeness"`
 	Condition    string             `json:"condition"`
 	History      []EquipmentHistory `json:"history"`
-	// Местоположение единицы (transfers-core DS-008, читается с equipment): LocationStatus —
-	// at_client|at_warehouse|in_transit; WarehouseID/Name — склад (только at_warehouse);
-	// ActiveTransferID — незавершённый документ «Перемещение» единицы (ссылка «перемещение
-	// #N»); TransitToName — пока единица в пути: название склада назначения этого документа
-	// либо «клиент» (документ «склад → клиент», transfers-partners DS-013).
-	LocationStatus   string  `json:"location_status"`
-	WarehouseID      *string `json:"warehouse_id"`
-	WarehouseName    *string `json:"warehouse_name"`
-	ActiveTransferID *int64  `json:"active_transfer_id"`
-	TransitToName    *string `json:"transit_to_name"`
-	// ActiveTransferDirection — направление незавершённого документа единицы (null — документа
-	// нет): исполнителю «перемещение #N» — ссылка только у документов с клиентом, документ
-	// «склад → склад» ему недоступен (transfers-partners DS-018).
-	ActiveTransferDirection *string `json:"active_transfer_direction"`
 }
 
 // EquipmentHistory — другие заказы с этой же единицей оборудования (AC-006).
@@ -137,9 +103,6 @@ type CardSubtaskProduct struct {
 	Qty              numeric.Amount  `json:"qty"`
 	Price            *numeric.Amount `json:"price"`
 	LineTotal        numeric.Amount  `json:"line_total"`
-	// WarehouseID/WarehouseName — склад списания строки (DS-005).
-	WarehouseID   string `json:"warehouse_id"`
-	WarehouseName string `json:"warehouse_name"`
 }
 
 // CardSubtaskLog — запись журнала работ услуги (AC-012). CanEdit — автор == актор либо
@@ -154,23 +117,12 @@ type CardSubtaskLog struct {
 	CanEdit    bool      `json:"can_edit"`
 }
 
-// CardWarehouse — склад в select'е строки товара карточки.
-type CardWarehouse struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	IsActive bool   `json:"is_active"`
-	// IsDeleted — склад мягко удалён (soft-delete-warehouses-suppliers DS-014): присутствует,
-	// только если на него ссылаются строки заказа; в выбор склада новой строки не попадает.
-	IsDeleted bool `json:"is_deleted"`
-}
-
-// CardStock — остаток пары товар×склад, задействованной в карточке (AC-009, DS-005).
+// CardStock — остаток товара, задействованного в карточке (AC-009).
 type CardStock struct {
 	ProductID    string         `json:"product_id"`
-	WarehouseID  string         `json:"warehouse_id"`
 	Stock        numeric.Amount `json:"stock"`
 	MinStock     numeric.Amount `json:"min_stock"`
-	TaskReserved numeric.Amount `json:"task_reserved"` // task_stock.qty этого заказа по паре, 0 если нет
+	TaskReserved numeric.Amount `json:"task_reserved"` // task_stock.qty этого заказа, 0 если нет
 }
 
 // OrderCardMutationResponse — ответ всех row-мутаций карточки (POST 201 / PUT 200 /
@@ -211,30 +163,21 @@ type SubtaskUpdateRequest struct {
 	ExecutorPayout OptionalAmount  `json:"executor_payout"`
 }
 
-// SubtaskProductCreateRequest — WarehouseID пуст → склад по умолчанию (DS-005, D49).
 type SubtaskProductCreateRequest struct {
-	ProductID   string          `json:"product_id"`
-	Qty         *numeric.Amount `json:"qty"` // цена копируется из products.price (AC-008)
-	WarehouseID string          `json:"warehouse_id"`
+	ProductID string          `json:"product_id"`
+	Qty       *numeric.Amount `json:"qty"` // цена копируется из products.price (AC-008)
 }
 
-// SubtaskProductUpdateRequest — WarehouseID пуст → склад строки не меняется; смена склада
-// у списанной строки пересчитывает списание (возврат на старый, списание с нового, DS-005).
 type SubtaskProductUpdateRequest struct {
-	Qty         *numeric.Amount `json:"qty"`
-	Price       *numeric.Amount `json:"price"` // null = без цены (в итог 0)
-	WarehouseID string          `json:"warehouse_id"`
+	Qty   *numeric.Amount `json:"qty"`
+	Price *numeric.Amount `json:"price"` // null = без цены (в итог 0)
 }
 
-// TaskEquipmentCreateRequest — POST /tasks/:id/equipment (AC-004/AC-005). WarehouseID —
-// упразднённый «склад приёма» (transfers-partners DS-045): поле принимается строгим разбором
-// тела, но игнорируется при любом значении — единица остаётся там, где числится; на склад её
-// приводит документ «клиент → склад».
+// TaskEquipmentCreateRequest — POST /tasks/:id/equipment (AC-004/AC-005).
 type TaskEquipmentCreateRequest struct {
-	EquipmentID  string          `json:"equipment_id"`
-	Completeness string          `json:"completeness"`
-	Condition    string          `json:"condition"`
-	WarehouseID  json.RawMessage `json:"warehouse_id"`
+	EquipmentID  string `json:"equipment_id"`
+	Completeness string `json:"completeness"`
+	Condition    string `json:"condition"`
 }
 
 // TaskEquipmentUpdateRequest — PUT /tasks/:id/equipment/:equipment_id.

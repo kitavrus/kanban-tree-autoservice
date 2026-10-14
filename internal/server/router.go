@@ -23,9 +23,7 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/features/executorpayouts"
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
 	"github.com/kitavrus/kanban-tree/internal/features/suppliers"
-	"github.com/kitavrus/kanban-tree/internal/features/transfers"
 	"github.com/kitavrus/kanban-tree/internal/features/users"
-	"github.com/kitavrus/kanban-tree/internal/features/warehouses"
 	"github.com/kitavrus/kanban-tree/internal/filestore"
 	"github.com/kitavrus/kanban-tree/internal/observability"
 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
@@ -125,7 +123,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	boardSubtaskLogRepo := board.NewSubtaskLogRepo(pool)
 
 	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
-	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/warehouses", "/suppliers", "/transfers", "/executor-payouts", "/deleted").WithBadges(boardStockSvc)
+	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/suppliers", "/executor-payouts", "/deleted").WithBadges(boardStockSvc)
 
 	sharedR, err := ssr.NewRenderer(ssr.SharedRoot)
 	if err != nil {
@@ -156,14 +154,6 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	if err != nil {
 		return nil, err
 	}
-	warehousesR, err := ssr.NewRenderer(warehouses.Root, ssr.SharedRoot)
-	if err != nil {
-		return nil, err
-	}
-	transfersR, err := ssr.NewRenderer(transfers.Root, ssr.SharedRoot)
-	if err != nil {
-		return nil, err
-	}
 	payoutsR, err := ssr.NewRenderer(executorpayouts.Root, ssr.SharedRoot)
 	if err != nil {
 		return nil, err
@@ -190,25 +180,17 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	catSvcSvc := catalog.NewServiceService(pool)
 	catalog.Register(app, api, guard, catalog.NewCategoryHandler(catCatSvc), catalog.NewProductHandler(catProdSvc), catalog.NewServiceHandler(catSvcSvc),
 		catalog.NewSSR(catCatSvc, catProdSvc, catSvcSvc, pool, catalogR, shell, status))
-	whSvc := warehouses.NewService(pool)
-	warehouses.Register(app, api, guard, warehouses.NewHandler(whSvc), warehouses.NewSSR(whSvc, warehousesR, shell, status))
 	// Справочник «Поставщики» (suppliers DS-007): только admin.
 	suppliersSvc := suppliers.NewService(pool)
 	suppliers.Register(app, api, guard, suppliers.NewHandler(suppliersSvc),
 		suppliers.NewSSR(suppliersR, shell, status))
-	// Документ «Перемещение» (transfers-core): только admin.
-	transfersSvc := transfers.NewService(pool)
-	transfers.Register(app, api, guard, transfers.NewHandler(transfersSvc),
-		transfers.NewSSR(transfersSvc, transfersR, shell, status))
 	// Выплаты исполнителям (D62–D70): отчёт и массовая отметка — и admin, и executor.
 	executorpayouts.Register(app, api, guard, executorpayouts.NewHandler(executorpayouts.NewService(pool)),
 		executorpayouts.NewSSR(payoutsR, shell))
 	// Раздел «Удалённые» (soft-delete-core DS-011): только admin. Источники видов подключают
 	// части мастер-спеки soft-delete; часть 1 — заказы.
-	// Часть 2 (soft-delete-transfers) — документы перемещения.
 	deletedSvc := softdelete.NewService().
 		Register(softdelete.KindTasks, softdelete.NewTasksSource(pool)).
-		Register(softdelete.KindTransfers, softdelete.NewTransfersSource(pool)).
 		// Часть 3 (soft-delete-board-columns) — колонки доски.
 		Register(softdelete.KindColumns, softdelete.NewColumnsSource(pool)).
 		// Часть 4 (soft-delete-clients) — клиенты и единицы оборудования.
@@ -219,8 +201,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 		Register(softdelete.KindServices, softdelete.NewServicesSource(pool)).
 		Register(softdelete.KindCatalogCategories, softdelete.NewCatalogCategoriesSource(pool)).
 		Register(softdelete.KindEquipmentTypes, softdelete.NewEquipmentTypesSource(pool)).
-		// Часть 6 (soft-delete-warehouses-suppliers) — склады и поставщики.
-		Register(softdelete.KindWarehouses, softdelete.NewWarehousesSource(pool)).
+		// Часть 6 (soft-delete-suppliers) — поставщики.
 		Register(softdelete.KindSuppliers, softdelete.NewSuppliersSource(pool))
 	softdelete.Register(app, api, guard, softdelete.NewHandler(deletedSvc), softdelete.NewSSR(deletedR, shell, status))
 
@@ -237,9 +218,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	boardColumns := board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine))
 	board.Register(app, api, guard, &board.Handlers{
 		Columns: boardColumns,
-		// Служебная уборка вида transfers (soft-delete-transfers DS-038) — сервис документов.
 		Tasks: board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine, boardEquipmentRepo).WithFiles(files)).
-			WithPurger(string(softdelete.KindTransfers), transfersSvc.Purge).
 			// Служебная уборка вида columns (soft-delete-board-columns DS-027).
 			WithPurger(string(softdelete.KindColumns), boardColumns.Purge).
 			// Служебная уборка видов clients и equipment (soft-delete-clients DS-027).
@@ -250,8 +229,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 			WithPurger(string(softdelete.KindServices), catSvcSvc.Purge).
 			WithPurger(string(softdelete.KindCatalogCategories), catCatSvc.Purge).
 			WithPurger(string(softdelete.KindEquipmentTypes), typesSvc.Purge).
-			// Служебная уборка видов склад и поставщик (soft-delete-warehouses-suppliers DS-027).
-			WithPurger(string(softdelete.KindWarehouses), whSvc.Purge).
+			// Служебная уборка вида поставщик (soft-delete-suppliers DS-027).
 			WithPurger(string(softdelete.KindSuppliers), suppliersSvc.Purge),
 		Assignees:   board.NewAssigneesHandler(pool),
 		Stock:       board.NewStockHandler(boardStockSvc),
@@ -259,7 +237,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 		Attachments: board.NewAttachmentsHandler(boardCardSvc),
 		// Служебная уборка автотестов (soft-delete-core DS-027): только TEST_PURGE_ENABLED=true.
 		PurgeEnabled: cfg.TestPurgeEnabled,
-	}, board.NewSSR(boardR, shell, status, cfg.Firm, boardCardSvc).WithWarehouses(boardCardRepo.AllWarehouses))
+	}, board.NewSSR(boardR, shell, status, cfg.Firm, boardCardSvc))
 
 	return app, nil
 }

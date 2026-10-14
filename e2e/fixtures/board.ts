@@ -27,7 +27,7 @@ type BoardFixtures = {
   /** Отмечает оборудование клиента как принятое в заказе (POST /tasks/:id/equipment). */
   insertTaskEquipment: (taskId: number, equipmentId: string) => Promise<void>;
   /** Внутренний кэш subtaskId → taskId (для setSubtaskStatus — у PUT /subtasks/:id нет
-   *  обратной ссылки на заказ в пути). */
+   *  обратной ссылки на заказ в URL). */
   _subtaskTaskMap: Map<string, number>;
 };
 

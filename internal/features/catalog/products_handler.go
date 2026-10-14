@@ -46,7 +46,8 @@ func (h *ProductHandler) Get(c fiber.Ctx) error {
 func inputFromCreate(req ProductCreateRequest) ProductInput {
 	return ProductInput{
 		CategoryID: req.CategoryID, Name: req.Name, SKU: req.SKU, Unit: req.Unit,
-		Price: req.Price.String(), Stocks: stocksFromRequest(req.Stocks),
+		Price: req.Price.String(), Stock: req.Stock.String(), MinStock: req.MinStock.String(),
+		Box: req.Box, Place: req.Place,
 	}
 }
 
@@ -79,7 +80,8 @@ func (h *ProductHandler) Update(c fiber.Ctx) error {
 	}
 	in := ProductInput{
 		CategoryID: req.CategoryID, Name: req.Name, SKU: req.SKU, Unit: req.Unit,
-		Price: req.Price.String(), Stocks: stocksFromRequest(req.Stocks), IsActive: *req.IsActive,
+		Price: req.Price.String(), Stock: req.Stock.String(), MinStock: req.MinStock.String(),
+		Box: req.Box, Place: req.Place, IsActive: *req.IsActive,
 	}
 	resp, err := h.svc.Update(c.Context(), c.Params("id"), userID, in)
 	if err != nil {

@@ -281,110 +281,13 @@ func (s *SoftDeleteLiveSuite) TestTS009_ListFiltersEnvelopeOrder() {
 
 	// виды, чья часть мастер-спеки не смержена, — пустой список без ошибки.
 	for _, k := range softdelete.Kinds {
-		if k == softdelete.KindTasks || k == softdelete.KindTransfers || k == softdelete.KindColumns { // части 1–3 смержены
+		if k == softdelete.KindTasks || k == softdelete.KindColumns { // части 1, 3 смержены
 			continue
 		}
 		l := s.mustList("kind", string(k))
 		s.Empty(l.Items, string(k))
 		s.Equal(0, l.Total, string(k))
 	}
-}
-
-// ---- TS-009: вид transfers (часть 2, soft-delete-transfers §6.3, §8.2) ----
-
-// newTransfer — заявка «склад → склад» Алматы → Москва с одной товарной строкой, созданная b
-// через API документов того же сервера (товар — SQL-фикстура).
-func (s *SoftDeleteLiveSuite) newTransfer(b *testutil.Browser, mark string) (int64, int) {
-	ctx := context.Background()
-	var almaty, moscow, cat, product string
-	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id::text FROM warehouses WHERE name = 'Алматы'`).Scan(&almaty))
-	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id::text FROM warehouses WHERE name = 'Москва'`).Scan(&moscow))
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', $1) RETURNING id::text`, "SD "+uuid.NewString()).Scan(&cat))
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name) VALUES ($1, $2) RETURNING id::text`, cat, "Товар "+mark).Scan(&product))
-	st, raw := b.Do(http.MethodPost, "/api/v1/transfers", map[string]any{
-		"direction": "warehouse_to_warehouse", "from_warehouse_id": almaty, "to_warehouse_id": moscow,
-		"items": []map[string]any{{"kind": "product", "product_id": product, "qty_sent": 1}},
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	var doc struct {
-		ID      int64 `json:"id"`
-		Version int   `json:"version"`
-	}
-	s.Require().NoError(json.Unmarshal(raw, &doc), string(raw))
-	return doc.ID, doc.Version
-}
-
-// TS-009 (DS-011, soft-delete-transfers §6.3): вид transfers отдаёт удалённые документы —
-// title «Перемещение #N», subtitle «направление · статус», is_archived = false, deleted_with =
-// null; сортировка — deleted_at по убыванию; поиск по причине и номеру («#N»), фильтр «кто
-// удалил»; counts.transfers = total списка. Восстановленный документ из списка уходит.
-// Негатив: действующий документ в список не входит; исполнитель → 403.
-func (s *SoftDeleteLiveSuite) TestTS009_TransfersKind() {
-	mark := "sdtr" + uuid.NewString()[:8]
-	other, otherID := s.user("sd-tr-"+mark, "Второй Удаляющий", "admin")
-	del := func(b *testutil.Browser, id int64, version int, reason string) {
-		st, raw := b.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d", id), map[string]any{"reason": reason, "version": version})
-		s.Require().Equal(http.StatusOK, st, string(raw))
-	}
-
-	reqID, reqVer := s.newTransfer(s.admin, mark)
-	del(s.admin, reqID, reqVer, "Заявка "+mark)
-	cncID, cncVer := s.newTransfer(s.admin, mark)
-	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/cancel", cncID), map[string]any{"version": cncVer})
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	del(other, cncID, cncVer+1, "Отменённый "+mark)
-	liveID, _ := s.newTransfer(s.admin, mark) // действующий — в список не входит
-	req, cnc := fmt.Sprint(reqID), fmt.Sprint(cncID)
-
-	l := s.mustList("kind", "transfers", "q", mark)
-	s.Equal(2, l.Total)
-	s.Equal([]string{cnc, req}, ids(l), "новые удаления сверху")
-	s.NotContains(ids(s.mustList("kind", "transfers", "limit", "200")), fmt.Sprint(liveID))
-	top := l.Items[0]
-	s.Equal("transfers", top.Kind)
-	s.Equal("Перемещение #"+cnc, top.Title)
-	s.Equal("Склад → склад · Отменён", top.Subtitle)
-	s.Equal("Отменённый "+mark, top.DeleteReason)
-	s.Equal(otherID, top.DeletedBy.ID)
-	s.Equal("Второй Удаляющий", top.DeletedBy.Name)
-	s.False(top.IsArchived)
-	s.Nil(top.DeletedWith)
-	s.WithinDuration(time.Now(), top.DeletedAt, time.Minute)
-	s.Equal("Перемещение #"+req, l.Items[1].Title)
-	s.Equal("Склад → склад · Заявка", l.Items[1].Subtitle)
-
-	// фильтры сочетаются по «И»: номер, причина без учёта регистра, кто удалил.
-	s.Equal([]string{req}, ids(s.mustList("kind", "transfers", "q", "#"+req)))
-	s.Equal([]string{req}, ids(s.mustList("kind", "transfers", "q", strings.ToUpper("заявка "+mark))))
-	s.Equal([]string{cnc}, ids(s.mustList("kind", "transfers", "q", mark, "deleted_by", otherID)))
-	s.Empty(ids(s.mustList("kind", "transfers", "q", "#"+req, "deleted_by", otherID)))
-	// пагинация в конверте.
-	page := s.mustList("kind", "transfers", "q", mark, "limit", "1", "offset", "1")
-	s.Equal([]string{req}, ids(page))
-	s.Equal(2, page.Total)
-	s.Equal(1, page.Limit)
-	s.Equal(1, page.Offset)
-
-	// счётчик вкладки = total списка; восстановление уменьшает оба.
-	count := func() int {
-		st, raw := s.admin.Do(http.MethodGet, api+"/summary", nil)
-		s.Require().Equal(http.StatusOK, st, string(raw))
-		var out summaryDTO
-		s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
-		return out.Counts["transfers"]
-	}
-	before := count()
-	s.Equal(s.mustList("kind", "transfers", "limit", "1").Total, before)
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/transfers/"+req+"/restore", nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Equal(before-1, count())
-	s.Equal([]string{cnc}, ids(s.mustList("kind", "transfers", "q", mark)))
-
-	exec, _ := s.user("sd-tr-exec-"+mark, "Исполнитель", "executor")
-	st, _, raw = s.list(exec, "kind", "transfers")
-	s.Equal(http.StatusForbidden, st, string(raw))
 }
 
 // ---- TS-009: вид columns (часть 3, soft-delete-board-columns §6.3, §8.2) ----
@@ -511,7 +414,7 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 	prodCat := s.postID("/api/v1/catalog-categories", map[string]any{"kind": "product", "name": "Запчасти " + mark})
 	svcCat := s.postID("/api/v1/catalog-categories", map[string]any{"kind": "service", "name": "Работы " + mark})
 	goneCat := s.postID("/api/v1/catalog-categories", map[string]any{"kind": "service", "name": "Лишняя " + mark})
-	// товары без остатка (stocks не передан → строка 0 на складе по умолчанию): удаление разрешено.
+	// товары без остатка (stock не передан → 0): удаление разрешено.
 	archivedProduct := s.postID("/api/v1/products", map[string]any{"category_id": prodCat, "name": "Архивный товар " + mark, "price": 10})
 	activeProduct := s.postID("/api/v1/products", map[string]any{"category_id": prodCat, "name": "Активный товар " + mark, "price": 10})
 	liveProduct := s.postID("/api/v1/products", map[string]any{"category_id": prodCat, "name": "Действующий товар " + mark, "price": 10})
@@ -616,15 +519,14 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 	}
 }
 
-// ---- TS-009: виды warehouses и suppliers (часть 6, soft-delete-warehouses-suppliers §6.5, §8.2) ----
+// ---- TS-009: вид suppliers (часть 6, soft-delete-suppliers §6.5, §8.2) ----
 
-// TS-009 (DS-011, DS-009, soft-delete-warehouses-suppliers §6.5): виды warehouses и suppliers
-// отдают удалённые записи — title — название; subtitle — у поставщика контактное лицо, у склада
-// пустая строка; is_archived = true только у записи, удалённой из архива; deleted_with = null;
+// TS-009 (DS-011, DS-009, soft-delete-suppliers §6.5): вид suppliers отдаёт удалённые записи —
+// title — название; subtitle — контактное лицо; is_archived = true только у записи, удалённой из архива; deleted_with = null;
 // новые удаления сверху; поиск по названию и причине без учёта регистра, фильтр «кто удалил»;
 // counts вкладки = total списка; восстановленная запись из списка уходит. Негатив: действующие
-// (в том числе архивные) склад и поставщик в список не входят; исполнитель → 403.
-func (s *SoftDeleteLiveSuite) TestTS009_WarehousesSuppliersKinds() {
+// (в том числе архивные) поставщики в список не входят; исполнитель → 403.
+func (s *SoftDeleteLiveSuite) TestTS009_SuppliersKind() {
 	ctx := context.Background()
 	mark := "sdwh" + uuid.NewString()[:8]
 	other, otherID := s.user("sd-wh-"+mark, "Второй Удаляющий", "admin")
@@ -637,53 +539,19 @@ func (s *SoftDeleteLiveSuite) TestTS009_WarehousesSuppliersKinds() {
 		s.Require().Equal(http.StatusOK, st, "%s: %s", path, raw)
 	}
 
-	whArchived := s.postID("/api/v1/warehouses", map[string]any{"name": "Архивный склад " + mark})
-	whActive := s.postID("/api/v1/warehouses", map[string]any{"name": "Активный склад " + mark})
-	whLive := s.postID("/api/v1/warehouses", map[string]any{"name": "Действующий склад " + mark})
-	whLiveArchived := s.postID("/api/v1/warehouses", map[string]any{"name": "В архиве склад " + mark})
 	supArchived := s.postID("/api/v1/suppliers", map[string]any{"name": "Архивный поставщик " + mark})
 	supActive := s.postID("/api/v1/suppliers", map[string]any{"name": "Активный поставщик " + mark, "contact_name": "Иван Петров"})
 	supLive := s.postID("/api/v1/suppliers", map[string]any{"name": "Действующий поставщик " + mark})
 	// уборка фикстур (SQL: сьюта без служебного адреса purge); счётчики видов остаются нулевыми
 	// для TS-011.
 	defer func() {
-		for _, q := range []string{`DELETE FROM warehouses WHERE id = ANY($1::uuid[])`, `DELETE FROM suppliers WHERE id = ANY($1::uuid[])`} {
-			_, err := s.Pool.Exec(ctx, q, []string{whArchived, whActive, whLive, whLiveArchived, supArchived, supActive, supLive})
-			s.NoError(err)
-		}
+		_, err := s.Pool.Exec(ctx, `DELETE FROM suppliers WHERE id = ANY($1::uuid[])`, []string{supArchived, supActive, supLive})
+		s.NoError(err)
 	}()
-	archive("/api/v1/warehouses/"+whArchived, map[string]any{"name": "Архивный склад " + mark, "is_active": false})
-	archive("/api/v1/warehouses/"+whLiveArchived, map[string]any{"name": "В архиве склад " + mark, "is_active": false})
 	archive("/api/v1/suppliers/"+supArchived, map[string]any{"name": "Архивный поставщик " + mark, "is_active": false})
 
-	del(s.admin, "/api/v1/warehouses/"+whArchived, "Закрыт "+mark)
-	del(other, "/api/v1/warehouses/"+whActive, "Дубль "+mark)
 	del(s.admin, "/api/v1/suppliers/"+supArchived, "Не работаем "+mark)
 	del(other, "/api/v1/suppliers/"+supActive, "Ошибка "+mark)
-
-	// ---- склады ----
-	l := s.mustList("kind", "warehouses", "q", mark)
-	s.Equal(2, l.Total)
-	s.Equal([]string{whActive, whArchived}, ids(l), "новые удаления сверху")
-	all := ids(s.mustList("kind", "warehouses", "limit", "200"))
-	s.NotContains(all, whLive, "действующий склад в список не входит")
-	s.NotContains(all, whLiveArchived, "действующий архивный склад в список не входит")
-	top, second := l.Items[0], l.Items[1]
-	s.Equal("warehouses", top.Kind)
-	s.Equal("Активный склад "+mark, top.Title)
-	s.Equal("", top.Subtitle, "у склада подзаголовка нет")
-	s.Equal("Дубль "+mark, top.DeleteReason)
-	s.Equal(otherID, top.DeletedBy.ID)
-	s.Equal("Второй Удаляющий", top.DeletedBy.Name)
-	s.False(top.IsArchived, "удалён активным")
-	s.Nil(top.DeletedWith)
-	s.WithinDuration(time.Now(), top.DeletedAt, time.Minute)
-	s.True(second.IsArchived, "удалён из архива (DS-009)")
-	s.Equal(s.adminID, second.DeletedBy.ID)
-	s.Equal([]string{whArchived}, ids(s.mustList("kind", "warehouses", "q", strings.ToUpper("архивный склад "+mark))))
-	s.Equal([]string{whArchived}, ids(s.mustList("kind", "warehouses", "q", strings.ToUpper("закрыт "+mark))))
-	s.Equal([]string{whActive}, ids(s.mustList("kind", "warehouses", "q", mark, "deleted_by", otherID)))
-	s.Empty(ids(s.mustList("kind", "warehouses", "q", "Архивный склад "+mark, "deleted_by", otherID)))
 
 	// ---- поставщики ----
 	sp := s.mustList("kind", "suppliers", "q", mark)
@@ -710,24 +578,17 @@ func (s *SoftDeleteLiveSuite) TestTS009_WarehousesSuppliersKinds() {
 		return out.Counts
 	}
 	before := counts()
-	for _, kind := range []string{"warehouses", "suppliers"} {
-		s.Equal(s.mustList("kind", kind, "limit", "1").Total, before[kind], "счётчик %s = total списка", kind)
-		s.Equal(2, before[kind], kind)
-	}
-	for path, key := range map[string]string{"/api/v1/warehouses/" + whActive: "warehouses", "/api/v1/suppliers/" + supActive: "suppliers"} {
-		st, raw := s.admin.Do(http.MethodPost, path+"/restore", nil)
-		s.Require().Equal(http.StatusOK, st, "%s: %s", path, raw)
-		s.Equal(before[key]-1, counts()[key], key)
-	}
-	s.Equal([]string{whArchived}, ids(s.mustList("kind", "warehouses", "q", mark)), "восстановленный склад из списка ушёл")
+	s.Equal(s.mustList("kind", "suppliers", "limit", "1").Total, before["suppliers"], "счётчик = total списка")
+	s.Equal(2, before["suppliers"])
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/suppliers/"+supActive+"/restore", nil)
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	s.Equal(before["suppliers"]-1, counts()["suppliers"])
 	s.Equal([]string{supArchived}, ids(s.mustList("kind", "suppliers", "q", mark)), "восстановленный поставщик из списка ушёл")
 
 	exec, _ := s.user("sd-wh-exec-"+mark, "Исполнитель", "executor")
-	for _, kind := range []string{"warehouses", "suppliers"} {
-		st, _, raw := s.list(exec, "kind", kind)
-		s.Equal(http.StatusForbidden, st, "%s: %s", kind, raw)
-		s.Equal("Нет доступа", s.errOf(raw).Message)
-	}
+	st, _, raw = s.list(exec, "kind", "suppliers")
+	s.Equal(http.StatusForbidden, st, string(raw))
+	s.Equal("Нет доступа", s.errOf(raw).Message)
 }
 
 // ---- TS-010 ----
@@ -767,7 +628,7 @@ func (s *SoftDeleteLiveSuite) TestTS010_PeriodInUserTimezone() {
 
 // ---- TS-011 ----
 
-// TS-011 (DS-011): счётчики вкладок — по всем 11 видам реестра (ключи snake_case), каждый
+// TS-011 (DS-011): счётчики вкладок — по всем 9 видам реестра (ключи snake_case), каждый
 // совпадает с total своего списка; удаление и восстановление заказа меняют counts.tasks.
 // Негатив: исполнитель → 403.
 func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
@@ -785,7 +646,7 @@ func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
 	s.deleted(s.admin, c, "Заказ 2 "+mark, "Причина "+mark, "")
 
 	sum := summary()
-	s.Len(sum.Counts, 11)
+	s.Len(sum.Counts, 9)
 	s.Equal(before+2, sum.Counts["tasks"])
 	for _, k := range softdelete.Kinds {
 		n, ok := sum.Counts[k.CountKey()]
@@ -793,7 +654,7 @@ func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
 		s.Equal(s.mustList("kind", string(k), "limit", "1").Total, n, "счётчик %s = total списка", k)
 	}
 	for _, key := range []string{"clients", "equipment", "products", "services",
-		"catalog_categories", "equipment_types", "warehouses", "suppliers"} {
+		"catalog_categories", "equipment_types", "suppliers"} {
 		s.Equal(0, sum.Counts[key], key)
 	}
 

@@ -5,7 +5,6 @@ package clients_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -507,7 +506,7 @@ func (s *ClientsLiveSuite) TestDelete_Soft_And_RepeatDelete404() {
 
 // ---- Фикстуры заказов (минимальные строки `tasks`/`task_equipment`/`subtasks` напрямую SQL:
 // заказ не предмет тестов пакета clients). Отказы удаления по ссылкам (CLIENT_HAS_TASKS,
-// EQUIPMENT_USED_IN_TASKS, EQUIPMENT_HAS_TRANSFERS) сняты soft-delete-clients DS-014 — см.
+// EQUIPMENT_USED_IN_TASKS) сняты soft-delete-clients DS-014 — см.
 // clients_soft_delete_http_live_test.go (TS-022, TS-024). ----
 
 // insertTaskDirect — минимальная строка `tasks`, ссылающаяся на clientID (design-sql.md
@@ -670,6 +669,7 @@ type equipmentDTO struct {
 	TypeID       string    `json:"type_id"`
 	TypeName     string    `json:"type_name"`
 	TypeIsActive bool      `json:"type_is_active"`
+	PlateNumber  string    `json:"plate_number"`
 	Brand        string    `json:"brand"`
 	Model        string    `json:"model"`
 	SKU          string    `json:"sku"`
@@ -1208,6 +1208,8 @@ func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 	st, page = s.admin.Do(http.MethodGet, "/equipment/"+e.ID+"/history", nil)
 	s.Require().Equal(http.StatusOK, st)
 	s.Contains(string(page), `data-testid="history-empty"`)
+	s.NotContains(string(page), `data-testid="history-location"`, "местоположения единицы больше нет")
+	s.NotContains(string(page), `data-testid="history-transfers"`, "блока перемещений больше нет")
 
 	taskID := s.insertTaskDirect(c.ID)
 	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id, completeness, condition)
@@ -1272,201 +1274,6 @@ func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 	s.Equal(http.StatusNotFound, st)
 }
 
-// ---- История единицы: текущее местоположение и документы «Перемещение» (transfers-core
-// DS-046) — вместо склада единицы «в каждом заказе». Документ двигается реальным API
-// /api/v1/transfers; история — JSON и SSR.
-type historyLocationDTO struct {
-	Location struct {
-		LocationStatus   string  `json:"location_status"`
-		WarehouseID      *string `json:"warehouse_id"`
-		WarehouseName    *string `json:"warehouse_name"`
-		ActiveTransferID *int64  `json:"active_transfer_id"`
-		TransitToName    *string `json:"transit_to_name"`
-	} `json:"location"`
-	Transfers []struct {
-		ID                int64  `json:"id"`
-		Status            string `json:"status"`
-		FromWarehouseName string `json:"from_warehouse_name"`
-		ToWarehouseName   string `json:"to_warehouse_name"`
-		CreatedAt         string `json:"created_at"`
-	} `json:"transfers"`
-}
-
-func (s *ClientsLiveSuite) historyLocation(equipmentID string) historyLocationDTO {
-	st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment/"+equipmentID+"/history", nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	var h historyLocationDTO
-	s.Require().NoError(json.Unmarshal(raw, &h), string(raw))
-	return h
-}
-
-// transferOf — документ склад → склад с одной единицей через реальный API перемещений.
-func (s *ClientsLiveSuite) transferOf(from, to, equipmentID string, send bool) (id int64, version int) {
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/transfers", map[string]any{
-		"direction": "warehouse_to_warehouse", "from_warehouse_id": from, "to_warehouse_id": to, "send": send,
-		"items": []map[string]any{{"kind": "equipment", "equipment_id": equipmentID}},
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	var t struct {
-		ID      int64 `json:"id"`
-		Version int   `json:"version"`
-	}
-	s.Require().NoError(json.Unmarshal(raw, &t), string(raw))
-	return t.ID, t.Version
-}
-
-func (s *ClientsLiveSuite) warehouseByName(name string) string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(s.T().Context(), `SELECT id::text FROM warehouses WHERE name = $1`, name).Scan(&id))
-	return id
-}
-
-func (s *ClientsLiveSuite) TestEquipmentHistory_LocationAndTransfers() {
-	ctx := s.T().Context()
-	almaty, moscow := s.warehouseByName("Алматы"), s.warehouseByName("Москва")
-	c := s.newClient("Клиент История Перемещений")
-	_, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": s.newType("Тип для истории перемещений"), "model": "M-move"})
-	s.Require().NotEmpty(e.ID, string(raw))
-
-	// SSR: новая единица — «у клиента», блока документов нет.
-	st, page := s.admin.Do(http.MethodGet, "/equipment/"+e.ID+"/history", nil)
-	s.Require().Equal(http.StatusOK, st)
-	s.Contains(string(page), `data-testid="history-location" data-location-status="at_client">у клиента</span>`)
-	s.NotContains(string(page), `data-testid="history-transfers"`)
-	s.NotContains(string(page), `data-testid="history-active-transfer"`)
-
-	// фикстура местоположения: единица принята на «Алматы» (в продукте — добавлением в заказ).
-	_, err := s.Pool.Exec(ctx, `UPDATE equipment SET location_status = 'at_warehouse', warehouse_id = $2::uuid WHERE id = $1::uuid`, e.ID, almaty)
-	s.Require().NoError(err)
-	h := s.historyLocation(e.ID)
-	s.Equal("at_warehouse", h.Location.LocationStatus)
-	s.Require().NotNil(h.Location.WarehouseName)
-	s.Equal("Алматы", *h.Location.WarehouseName)
-	s.Nil(h.Location.ActiveTransferID)
-	s.Empty(h.Transfers)
-
-	// документ «в пути» Алматы → Москва.
-	docID, version := s.transferOf(almaty, moscow, e.ID, true)
-	h = s.historyLocation(e.ID)
-	s.Equal("in_transit", h.Location.LocationStatus)
-	s.Nil(h.Location.WarehouseID)
-	s.Require().NotNil(h.Location.ActiveTransferID)
-	s.Equal(docID, *h.Location.ActiveTransferID)
-	s.Require().NotNil(h.Location.TransitToName)
-	s.Equal("Москва", *h.Location.TransitToName)
-	s.Require().Len(h.Transfers, 1)
-	s.Equal(docID, h.Transfers[0].ID)
-	s.Equal("in_transit", h.Transfers[0].Status)
-	s.Equal("Алматы", h.Transfers[0].FromWarehouseName)
-	s.Equal("Москва", h.Transfers[0].ToWarehouseName)
-	s.NotEmpty(h.Transfers[0].CreatedAt)
-
-	_, err = s.Pool.Exec(ctx, `UPDATE transfers SET created_at = '2026-10-06T19:30:00Z' WHERE id = $1`, docID)
-	s.Require().NoError(err)
-	_, page = s.admin.Do(http.MethodGet, "/equipment/"+e.ID+"/history", nil)
-	body := string(page)
-	s.Contains(body, `data-location-status="in_transit">в пути → Москва</span>`)
-	s.Contains(body, fmt.Sprintf(`href="/transfers?id=%d" data-testid="history-active-transfer">перемещение #%d</a>`, docID, docID))
-	s.Contains(body, fmt.Sprintf(`data-testid="history-transfer" data-transfer-id="%d"`, docID))
-	s.Contains(body, "Алматы → Москва")
-	s.Contains(body, `data-testid="history-transfer-status">В пути</span>`)
-	s.Contains(body, `data-testid="history-transfer-date">07.10.2026</span>`, "дата документа — в поясе пользователя (Asia/Almaty)")
-
-	// приёмка: единица на складе назначения, документ — «Получено»; затем второй документ обратно.
-	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/receive", docID), map[string]any{"version": version})
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	backID, _ := s.transferOf(moscow, almaty, e.ID, false)
-	h = s.historyLocation(e.ID)
-	s.Equal("at_warehouse", h.Location.LocationStatus)
-	s.Require().NotNil(h.Location.WarehouseName)
-	s.Equal("Москва", *h.Location.WarehouseName)
-	s.Require().NotNil(h.Location.ActiveTransferID, "заявка занимает единицу")
-	s.Equal(backID, *h.Location.ActiveTransferID)
-	s.Nil(h.Location.TransitToName, "склад назначения — только пока единица в пути")
-	s.Require().Len(h.Transfers, 2, "новые сверху")
-	s.Equal(backID, h.Transfers[0].ID)
-	s.Equal("requested", h.Transfers[0].Status)
-	s.Equal(docID, h.Transfers[1].ID)
-	s.Equal("received", h.Transfers[1].Status)
-	_, page = s.admin.Do(http.MethodGet, "/equipment/"+e.ID+"/history", nil)
-	s.Contains(string(page), `data-location-status="at_warehouse">на складе Москва</span>`)
-	s.Contains(string(page), `data-testid="history-transfer-status">Получено</span>`)
-	s.Contains(string(page), `data-testid="history-transfer-status">Заявка</span>`)
-
-	// история доступна исполнителю (чтение, как GET единицы).
-	s.SeedUser("hist-move-exec", "password1", "История Исполнитель", "executor", true)
-	exec := s.NewBrowser()
-	exec.Login("hist-move-exec", "password1")
-	st, raw = exec.Do(http.MethodGet, "/api/v1/equipment/"+e.ID+"/history", nil)
-	s.Equal(http.StatusOK, st, string(raw))
-}
-
-// История единицы и документы с клиентом (transfers-partners DS-002, DS-013): приём от клиента
-// и возврат клиенту видны в истории единицы — точка маршрута без склада подписана «клиент»;
-// единица в пути к клиенту — «в пути → клиент».
-func (s *ClientsLiveSuite) TestEquipmentHistory_ClientDocuments() {
-	ctx := s.T().Context()
-	almaty := s.warehouseByName("Алматы")
-	c := s.newClient("Клиент История Приём Возврат")
-	_, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": s.newType("Тип для истории приёма"), "model": "M-intake"})
-	s.Require().NotEmpty(e.ID, string(raw))
-	// фикстура: заказ клиента с этой единицей (SQL — заказ не предмет теста).
-	var taskID int64
-	s.Require().NoError(s.Pool.QueryRow(ctx, `
-		INSERT INTO tasks (column_id, client_id, title, position, created_by)
-		VALUES ((SELECT id FROM columns ORDER BY position, id LIMIT 1), $1::uuid, 'Заказ истории приёма', 1,
-		        (SELECT id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1)) RETURNING id`, c.ID).Scan(&taskID))
-	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2::uuid)`, taskID, e.ID)
-	s.Require().NoError(err)
-
-	clientDoc := func(body map[string]any) (id int64, version int) {
-		body["task_id"] = taskID
-		body["items"] = []map[string]any{{"kind": "equipment", "equipment_id": e.ID}}
-		st, raw := s.admin.Do(http.MethodPost, "/api/v1/transfers", body)
-		s.Require().Equal(http.StatusCreated, st, string(raw))
-		var t struct {
-			ID      int64 `json:"id"`
-			Version int   `json:"version"`
-		}
-		s.Require().NoError(json.Unmarshal(raw, &t), string(raw))
-		return t.ID, t.Version
-	}
-	intakeID, _ := clientDoc(map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": almaty, "receive": true})
-	h := s.historyLocation(e.ID)
-	s.Equal("at_warehouse", h.Location.LocationStatus)
-	s.Require().Len(h.Transfers, 1, "приём от клиента виден в истории единицы")
-	s.Equal(intakeID, h.Transfers[0].ID)
-	s.Equal("received", h.Transfers[0].Status)
-	s.Equal("клиент", h.Transfers[0].FromWarehouseName)
-	s.Equal("Алматы", h.Transfers[0].ToWarehouseName)
-
-	backID, backVersion := clientDoc(map[string]any{"direction": "warehouse_to_client", "from_warehouse_id": almaty, "send": true})
-	h = s.historyLocation(e.ID)
-	s.Equal("in_transit", h.Location.LocationStatus)
-	s.Require().NotNil(h.Location.TransitToName)
-	s.Equal("клиент", *h.Location.TransitToName)
-	s.Require().Len(h.Transfers, 2)
-	s.Equal(backID, h.Transfers[0].ID)
-	s.Equal("Алматы", h.Transfers[0].FromWarehouseName)
-	s.Equal("клиент", h.Transfers[0].ToWarehouseName)
-	_, page := s.admin.Do(http.MethodGet, "/equipment/"+e.ID+"/history", nil)
-	s.Contains(string(page), `data-location-status="in_transit">в пути → клиент</span>`)
-	s.Contains(string(page), "Алматы → клиент")
-	s.Contains(string(page), "клиент → Алматы")
-
-	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/receive", backID), map[string]any{"version": backVersion})
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	h = s.historyLocation(e.ID)
-	s.Equal("at_client", h.Location.LocationStatus)
-	s.Nil(h.Location.TransitToName)
-	s.Nil(h.Location.ActiveTransferID)
-
-	// soft-delete-clients DS-014: заказ и завершённые документы клиента не удерживают —
-	// оборудование вернулось клиенту, удаление проходит (раньше — 409).
-	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/clients/"+c.ID, reasonBody("Клиент ушёл"))
-	s.Equal(http.StatusOK, st, string(raw))
-}
-
 // ---- GET /api/v1/equipment/:id/history — JSON для «Истории работ» в карточке заказа
 // (§API-1: {items, total, limit, offset}, snake_case, qty/price — числа).
 func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
@@ -1478,9 +1285,8 @@ func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 
 	st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID+"/history", nil)
 	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.JSONEq(`{"items":[],"total":0,"limit":0,"offset":0,"transfers":[],
-		"location":{"location_status":"at_client","warehouse_id":null,"warehouse_name":null,"active_transfer_id":null,"transit_to_name":null}}`,
-		string(raw), "новая единица — «у клиента», документов нет (transfers-core DS-008, DS-046)")
+	s.JSONEq(`{"items":[],"total":0,"limit":0,"offset":0}`, string(raw),
+		"новая единица — история пуста; полей location/transfers нет (модуль перемещений удалён)")
 
 	taskID := s.insertTaskDirect(c.ID)
 	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id, condition) VALUES ($1, $2::uuid, 'вмятина')`, taskID, e.ID)
@@ -1532,6 +1338,16 @@ func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 	s.Require().Len(o.Services[0].Products, 1)
 	s.Equal(1.5, o.Services[0].Products[0].Qty)
 	s.Equal(300.0, o.Services[0].Products[0].Price)
+	s.NotContains(string(raw), `"location"`, "местоположения единицы больше нет")
+	s.NotContains(string(raw), `"transfers"`, "документов перемещения больше нет")
+
+	// история доступна исполнителю (чтение, как GET единицы).
+	s.SeedUser("hist-api-exec", "password1", "История Исполнитель", "executor", true)
+	exec := s.NewBrowser()
+	exec.Login("hist-api-exec", "password1")
+	st, raw = exec.Do(http.MethodGet, "/api/v1/equipment/"+e.ID+"/history", nil)
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	s.Contains(string(raw), `"total":1`)
 
 	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
 		st, _ = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+id+"/history", nil)
@@ -1539,4 +1355,92 @@ func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 	}
 	st, _ = s.NewBrowser().Do(http.MethodGet, "/api/v1/equipment/"+e.ID+"/history", nil)
 	s.Equal(http.StatusUnauthorized, st, "аноним")
+}
+
+// ---- Госномер: create/update нормализуют (trim, схлопывание пробелов, верхний регистр),
+// недопустимое значение → 400 details.fields[plate_number]; поиск клиентов по госномеру
+// без учёта регистра/пробелов/дефисов ----
+
+func (s *ClientsLiveSuite) TestEquipment_PlateNumber_CreateUpdateValidate() {
+	c := s.newClient("Госномер-Клиент")
+	typeID := s.newType("Госномер Легковой")
+
+	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{
+		"type_id": typeID, "model": "Vesta", "plate_number": "  а123вс   777 ",
+	})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	s.Equal("А123ВС 777", e.PlateNumber)
+
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
+	s.Require().Equal(http.StatusOK, st)
+	var got equipmentDTO
+	s.Require().NoError(json.Unmarshal(raw, &got))
+	s.Equal("А123ВС 777", got.PlateNumber)
+
+	// без plate_number — поле необязательное, пустая строка.
+	st, e2, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "Granta"})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	s.Equal("", e2.PlateNumber)
+
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
+		"type_id": typeID, "model": "Vesta", "plate_number": "b-777-xx",
+	})
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	var upd equipmentDTO
+	s.Require().NoError(json.Unmarshal(raw, &upd))
+	s.Equal("B-777-XX", upd.PlateNumber)
+
+	for _, tc := range []struct{ plate, msg string }{
+		{strings.Repeat("А", 21), "too_long"},
+		{"А123#ВС", "invalid_format"},
+		{"А1_23", "invalid_format"},
+	} {
+		st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
+			"type_id": typeID, "model": "Vesta", "plate_number": tc.plate,
+		})
+		s.Require().Equal(http.StatusBadRequest, st, string(raw))
+		s.Equal(tc.msg, s.fields(raw)["plate_number"], "plate=%q", tc.plate)
+	}
+	// неудачные PUT не изменили госномер.
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
+	s.Require().Equal(http.StatusOK, st)
+	s.Require().NoError(json.Unmarshal(raw, &got))
+	s.Equal("B-777-XX", got.PlateNumber)
+}
+
+func (s *ClientsLiveSuite) TestList_Search_ByPlateNumber() {
+	c := s.newClient("Госномер-Поиск ООО", map[string]any{"phone": "+7 (501) 000-00-01", "note": ""})
+	other := s.newClient("Госномер-Другой ООО", map[string]any{"phone": "+7 (502) 000-00-02", "note": ""})
+	typeID := s.newType("Госномер Поиск Тип")
+	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{
+		"type_id": typeID, "model": "Octavia", "plate_number": "Т456ОР 750",
+	})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	st, eDel, raw := s.createEquipment(s.admin, other.ID, map[string]any{
+		"type_id": typeID, "model": "Rapid", "plate_number": "Т456ОР 751",
+	})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	// мягко удалённая единица в поиск клиентов не попадает.
+	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+eDel.ID, reasonBody("Машина продана"))
+	s.Require().True(st == http.StatusOK || st == http.StatusNoContent, "%d %s", st, raw)
+
+	search := func(q string) []string {
+		st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients?q="+url.QueryEscape(q), nil)
+		s.Require().Equal(http.StatusOK, st, string(raw))
+		var list struct {
+			Items []clientDTO `json:"items"`
+		}
+		s.Require().NoError(json.Unmarshal(raw, &list))
+		ids := make([]string, 0, len(list.Items))
+		for _, it := range list.Items {
+			ids = append(ids, it.ID)
+		}
+		return ids
+	}
+	for _, q := range []string{"т456ор750", "Т456ОР 750", "456 ор-750"} {
+		ids := search(q)
+		s.Contains(ids, c.ID, "q=%q", q)
+		s.NotContains(ids, other.ID, "q=%q", q)
+	}
+	s.NotContains(search("т456ор751"), other.ID, "удалённая единица не ищется")
 }

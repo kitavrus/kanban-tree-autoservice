@@ -1,6 +1,6 @@
 {{ define "content" }}
 <div id="del" data-testid="deleted-root" style="min-width:0">
-  <!-- Вкладки по видам записей со счётчиками (рисует js/deleted.js: «Заказы», «Перемещения») -->
+  <!-- Вкладки по видам записей со счётчиками (рисует js/deleted.js: «Заказы», «Колонки», …) -->
   <ul class="nav nav-tabs mb-3" id="del-tabs" data-testid="deleted-tabs" role="tablist"></ul>
 
   <!-- Фильтры: сочетание по «И», значения — в адресной строке -->
@@ -27,7 +27,7 @@
   <!-- Предупреждения после восстановления: не исчезает сам, закрывается крестиком.
        Жёлтый блок (DS-033): app.css перекрашивает .alert-warning в нейтральный серо-синий
        (--bs-secondary; в тёмной теме контраст ниже 4.5), поэтому цвета заданы родными
-       warning-токенами Bootstrap — как блок предупреждений экрана «Перемещения». -->
+       warning-токенами Bootstrap. -->
   <div class="alert alert-warning bg-warning-subtle text-warning-emphasis border-warning-subtle d-none" id="del-warnings" data-testid="deleted-warnings" role="alert">
     <button type="button" class="btn-close float-end" id="del-warnings-close" aria-label="Закрыть" data-testid="deleted-warnings-close"></button>
     <div id="del-warnings-body"></div>

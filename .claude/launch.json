@@ -5,7 +5,7 @@
       "name": "dev-server",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-c", ". scripts/dev/env.sh && go run ./cmd/server"],
-      "port": 8080
+      "port": 8090
     }
   ]
 }

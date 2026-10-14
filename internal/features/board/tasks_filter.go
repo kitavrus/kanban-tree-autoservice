@@ -42,9 +42,6 @@ type TaskFilter struct {
 	// от него считаются soon/overdue фильтра Due и subtasks_late. Берётся из Actor.Today;
 	// пусто — current_date сервера БД.
 	Today string
-	// WarehouseID — фильтр «Склад» (DS-009, D59): заказы, у которых хоть одно оборудование
-	// на складе X (at_warehouse) или едет на склад X (in_transit с назначением X).
-	WarehouseID *string
 	// ExecutorPaid — фильтр «Выплата исполнителю» (D67): "" — все; "unpaid" — у заказа есть
 	// услуга с исполнителем без отметки выплаты; "paid" — услуги с исполнителем есть и все
 	// они выплачены. Заказ без услуг с исполнителем не попадает ни в paid, ни в unpaid.
@@ -148,14 +145,6 @@ func ParseTaskFilter(c fiber.Ctx, a Actor) (TaskFilter, error) {
 		f.Due = d
 	default:
 		add("due")
-	}
-
-	if raw := strings.TrimSpace(c.Query("warehouse_id")); raw != "" {
-		if uuid.Validate(raw) != nil {
-			add("warehouse_id")
-		} else {
-			f.WarehouseID = &raw
-		}
 	}
 
 	// pagination DS-002: column_id/per_column — аддитивные опциональные параметры.

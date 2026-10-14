@@ -85,6 +85,7 @@ type Equipment struct {
 	// TypeIsDeleted — тип единицы мягко удалён: единица остаётся действующей, тип показывается
 	// с бейджем «удалён» (soft-delete-catalog §6.9, DS-014).
 	TypeIsDeleted bool
+	PlateNumber   string
 	Brand         string
 	Model         string
 	SKU           string
@@ -106,14 +107,14 @@ type TypeOption struct {
 	IsDeleted bool
 }
 
-const equipmentColumns = `e.id, e.client_id, e.type_id, t.name, t.is_active, e.brand, e.model, e.sku, e.serial,
+const equipmentColumns = `e.id, e.client_id, e.type_id, t.name, t.is_active, e.plate_number, e.brand, e.model, e.sku, e.serial,
 	e.specs, e.note, e.created_at, e.updated_at, t.deleted_at IS NOT NULL`
 
 func scanEquipment(row pgx.Row) (*Equipment, error) {
 	var e Equipment
 	var specsRaw []byte
 	if err := row.Scan(&e.ID, &e.ClientID, &e.TypeID, &e.TypeName, &e.TypeIsActive,
-		&e.Brand, &e.Model, &e.SKU, &e.Serial, &specsRaw, &e.Note, &e.CreatedAt, &e.UpdatedAt, &e.TypeIsDeleted); err != nil {
+		&e.PlateNumber, &e.Brand, &e.Model, &e.SKU, &e.Serial, &specsRaw, &e.Note, &e.CreatedAt, &e.UpdatedAt, &e.TypeIsDeleted); err != nil {
 		return nil, err
 	}
 	if len(specsRaw) > 0 {
@@ -127,9 +128,11 @@ func scanEquipment(row pgx.Row) (*Equipment, error) {
 // ListParams — фильтры списка. Digits/DigitsAlt — цифры телефона для сравнения (ADR-003,
 // searchDigits в service.go); "" значит соответствующее сравнение не применяется.
 type ListParams struct {
-	Q             string
-	Digits        string
-	DigitsAlt     string
+	Q         string
+	Digits    string
+	DigitsAlt string
+	// PlateLike — LIKE-шаблон госномера (sqlutil.PlatePattern); "" — не применяется.
+	PlateLike     string
 	Limit, Offset int
 }
 
@@ -162,8 +165,11 @@ func (r *Repo) ListClients(ctx context.Context, p ListParams) ([]Client, int, er
 		if p.DigitsAlt != "" {
 			digitsAltLike = "%" + p.DigitsAlt + "%"
 		}
-		args = []any{likeQ, digitsLike, digitsAltLike}
+		args = []any{likeQ, digitsLike, digitsAltLike, p.PlateLike}
 		where = ` AND (c.company_name ILIKE $1 OR c.contact_name ILIKE $1
+			OR ($4 <> '' AND EXISTS (SELECT 1 FROM equipment e
+			           WHERE e.client_id = c.id AND e.deleted_at IS NULL
+			             AND ` + sqlutil.PlateCompactSQL("e.plate_number") + ` LIKE $4))
 			OR EXISTS (SELECT 1 FROM client_phones p
 			           WHERE p.client_id = c.id
 			             AND (p.phone ILIKE $1
@@ -453,10 +459,10 @@ func (r *Repo) CreateEquipment(ctx context.Context, clientID string, in Equipmen
 	}
 	var id string
 	err = tx.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, type_id, brand, model, sku, serial, specs, note)
-		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8)
+		`INSERT INTO equipment (client_id, type_id, brand, model, sku, serial, specs, note, plate_number)
+		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8, $9)
 		 RETURNING id`,
-		clientID, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note).Scan(&id)
+		clientID, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note, in.PlateNumber).Scan(&id)
 	if err != nil {
 		return nil, mapEquipmentFKViolation(err)
 	}
@@ -498,9 +504,9 @@ func (r *Repo) UpdateEquipment(ctx context.Context, id string, in EquipmentInput
 	var updatedID string
 	err = tx.QueryRow(ctx,
 		`UPDATE equipment SET type_id = $2::uuid, brand = $3, model = $4, sku = $5, serial = $6,
-		        specs = $7::jsonb, note = $8, updated_at = now()
+		        specs = $7::jsonb, note = $8, plate_number = $9, updated_at = now()
 		 WHERE id = $1::uuid AND deleted_at IS NULL RETURNING id`,
-		id, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note).Scan(&updatedID)
+		id, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note, in.PlateNumber).Scan(&updatedID)
 	if err != nil {
 		// 23503 на type_id (тип удалён параллельно между check(curTypeID) выше и этим
 		// UPDATE) — раньше уходило в 500 (code review LOW#1), теперь errTypeGone → сервис

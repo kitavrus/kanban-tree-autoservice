@@ -11,7 +11,6 @@ type Kind string
 
 const (
 	KindTasks             Kind = "tasks"
-	KindTransfers         Kind = "transfers"
 	KindColumns           Kind = "columns"
 	KindClients           Kind = "clients"
 	KindEquipment         Kind = "equipment"
@@ -19,15 +18,14 @@ const (
 	KindServices          Kind = "services"
 	KindCatalogCategories Kind = "catalog-categories"
 	KindEquipmentTypes    Kind = "equipment-types"
-	KindWarehouses        Kind = "warehouses"
 	KindSuppliers         Kind = "suppliers"
 )
 
 // Kinds — реестр видов (DS-001), порядок — порядок вкладок раздела. Вид, чей источник ещё не
 // подключён (его часть мастер-спеки не смержена), отдаёт пустой список и счётчик 0.
 var Kinds = []Kind{
-	KindTasks, KindTransfers, KindColumns, KindClients, KindEquipment, KindProducts,
-	KindServices, KindCatalogCategories, KindEquipmentTypes, KindWarehouses, KindSuppliers,
+	KindTasks, KindColumns, KindClients, KindEquipment, KindProducts,
+	KindServices, KindCatalogCategories, KindEquipmentTypes, KindSuppliers,
 }
 
 // IsKind — v входит в реестр.

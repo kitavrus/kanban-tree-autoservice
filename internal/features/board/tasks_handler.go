@@ -149,7 +149,7 @@ const purgeKindTasks = "tasks"
 // автотестов). Виды других пакетов подключаются WithPurger: board их не импортирует.
 type Purger func(ctx context.Context, id string) error
 
-// WithPurger — подключить уборку вида kind (часть 2 мастер-спеки soft-delete: transfers).
+// WithPurger — подключить уборку вида kind (виды других пакетов soft-delete).
 func (h *TasksHandler) WithPurger(kind string, p Purger) *TasksHandler {
 	if h.purgers == nil {
 		h.purgers = map[string]Purger{}
@@ -160,7 +160,7 @@ func (h *TasksHandler) WithPurger(kind string, p Purger) *TasksHandler {
 
 // Purge — DELETE /api/v1/test/purge/:kind/:id (admin): служебная физическая уборка тестовых
 // данных автотестами. Роут регистрируется только при TEST_PURGE_ENABLED=true (DS-027).
-// Вид tasks — заказ; прочие виды — подключённые WithPurger (transfers, DS-038); неизвестный
+// Вид tasks — заказ; прочие виды — подключённые WithPurger; неизвестный
 // вид → 404 NOT_FOUND.
 func (h *TasksHandler) Purge(c fiber.Ctx) error {
 	id := c.Params("id")

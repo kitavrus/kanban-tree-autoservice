@@ -22,13 +22,11 @@ var menu = []NavGroup{
 	{Label: "Работа", Items: []NavItem{
 		{Title: "Доска", Icon: "▦", URL: "/"},
 		{Title: "Остатки", Icon: "📊", URL: "/stock"},
-		{Title: "Перемещения", Icon: "🚚", URL: "/transfers"}, // исполнителю — документы с клиентом (transfers-partners DS-018)
 		{Title: "Выплаты", Icon: "💸", URL: "/executor-payouts"},
 	}},
 	{Label: "Справочники", Items: []NavItem{
 		{Title: "Клиенты", Icon: "🏢", URL: "/clients", AdminOnly: true},
 		{Title: "Каталог", Icon: "🧰", URL: "/catalog", AdminOnly: true},
-		{Title: "Склады", Icon: "🏬", URL: "/warehouses", AdminOnly: true},
 		{Title: "Поставщики", Icon: "🚛", URL: "/suppliers", AdminOnly: true},
 	}},
 	{Label: "Администрирование", Items: []NavItem{

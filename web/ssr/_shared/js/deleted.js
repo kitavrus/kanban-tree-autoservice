@@ -26,23 +26,9 @@
       notFound: 'Заказ не найден',
       openLink: function (id) { return { href: '/?task=' + encodeURIComponent(id), text: 'Открыть заказ #' + id }; }
     },
-    {
-      // часть 2 (soft-delete-transfers §8.2): документы перемещения. Отказы восстановления 409
-      // EQUIPMENT_IN_TRANSFER, TRANSFER_CLIENT_MISMATCH и TRANSFER_EQUIPMENT_NOT_IN_TASK — тост с
-      // текстом сервера, строка остаётся.
-      kind: 'transfers', label: 'Перемещения', countKey: 'transfers',
-      restoreUrl: function (id) { return '/api/v1/transfers/' + encodeURIComponent(id) + '/restore'; },
-      notFound: 'Перемещение не найдено',
-      openLink: function (id) { return { href: '/transfers?id=' + encodeURIComponent(id), text: 'Открыть перемещение #' + id }; }
-    },
-    // часть 6 (soft-delete-warehouses-suppliers §8.2): склады и поставщики — перед вкладкой
-    // «Колонки». Запись возвращается с прежним признаком архива; отказ 409 NAME_TAKEN — тост с
-    // текстом сервера, строка остаётся. Своего экрана «Открыть» у удалённой записи нет.
-    {
-      kind: 'warehouses', label: 'Склады', countKey: 'warehouses',
-      restoreUrl: function (id) { return '/api/v1/warehouses/' + encodeURIComponent(id) + '/restore'; },
-      notFound: 'Склад не найден', confirmText: archivedConfirm
-    },
+    // часть 6 (soft-delete-suppliers §8.2): поставщики — перед вкладкой «Колонки». Запись
+    // возвращается с прежним признаком архива; отказ 409 NAME_TAKEN — тост с текстом сервера,
+    // строка остаётся. Своего экрана «Открыть» у удалённой записи нет.
     {
       kind: 'suppliers', label: 'Поставщики', countKey: 'suppliers',
       restoreUrl: function (id) { return '/api/v1/suppliers/' + encodeURIComponent(id) + '/restore'; },
@@ -343,8 +329,8 @@
     (resp.warnings || []).forEach(function (w) {
       var stock = String(w.stock).replace(/^-/, '−');
       lines.push(w.kind === 'negative'
-        ? 'Не хватает товара «' + w.name + '» на складе «' + w.warehouse_name + '»: остаток ' + stock
-        : 'Товар «' + w.name + '» на складе «' + w.warehouse_name + '» на минимуме: остаток ' + stock);
+        ? 'Не хватает товара «' + w.name + '»: остаток ' + stock
+        : 'Товар «' + w.name + '» на минимуме: остаток ' + stock);
     });
     (resp.notices || []).forEach(function (n) { lines.push(n.message); });
     if (!lines.length) return;

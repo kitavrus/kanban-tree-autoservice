@@ -199,10 +199,6 @@ test.describe('OC: оборудование заказа', () => {
 
     await card.chooseCombobox(card.equipmentAdd, 'BrandOC006');
     await expect(card.equipmentRows).toHaveCount(1);
-    // transfers-partners DS-045: добавление в заказ местоположение не меняет — единица «у
-    // клиента»; select «Склад приёма» из формы убран (хвост TS-036).
-    await expect(card.equipmentLocation(eq.id)).toHaveText('у клиента');
-    await expect(card.equipmentWarehouse).toHaveCount(0);
 
     await card.equipmentCompleteness(eq.id).fill('Полный комплект');
     await card.equipmentCompleteness(eq.id).blur();

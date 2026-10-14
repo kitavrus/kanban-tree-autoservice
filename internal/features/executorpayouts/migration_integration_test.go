@@ -17,7 +17,7 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/testutil"
 )
 
-// ExecutorPayoutsMigrationSuite — TS-018: миграция 0011 (docs/plan.md D63). На 0010
+// ExecutorPayoutsMigrationSuite — TS-018: миграция 0008 (docs/plan.md D63). На 0007
 // заводится услуга заказа; up → у неё is_executor_paid=false, дата и сумма NULL, CHECK
 // суммы ≥ 0 и частичный индекс на месте; down → колонки и индекс сняты, услуга цела.
 type ExecutorPayoutsMigrationSuite struct {
@@ -29,8 +29,8 @@ func TestExecutorPayoutsMigrationSuite(t *testing.T) {
 }
 
 const (
-	epmAdminID  = "aaaaaaaa-0011-4011-8011-000000000001"
-	epmClientID = "bbbbbbbb-0011-4011-8011-000000000001"
+	epmAdminID  = "aaaaaaaa-0008-4011-8011-000000000001"
+	epmClientID = "bbbbbbbb-0008-4011-8011-000000000001"
 )
 
 var epmColumns = []string{"is_executor_paid", "executor_paid_at", "executor_payout"}
@@ -61,7 +61,7 @@ func (s *ExecutorPayoutsMigrationSuite) TestTS018_UpAddsPayoutColumns_DownDropsT
 	s.Require().NoError(err)
 	defer func() { _, _ = mig.Close() }()
 
-	s.Require().NoError(mig.Migrate(10))
+	s.Require().NoError(mig.Migrate(7))
 	defer func() {
 		// вернуть схему на последнюю версию при любом исходе (на ней уже — ErrNoChange).
 		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
@@ -69,10 +69,10 @@ func (s *ExecutorPayoutsMigrationSuite) TestTS018_UpAddsPayoutColumns_DownDropsT
 		}
 	}()
 	for _, c := range epmColumns {
-		s.False(s.columnExists(c), "на 0010 колонки subtasks.%s ещё нет", c)
+		s.False(s.columnExists(c), "на 0007 колонки subtasks.%s ещё нет", c)
 	}
 
-	// --- данные «до выплат» (схема 0010) ---
+	// --- данные «до выплат» (схема 0007) ---
 	_, err = s.Pool.Exec(ctx, `INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'epm-admin', 'x', 'Admin', 'admin')`, epmAdminID)
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `INSERT INTO clients (id, company_name) VALUES ($1, 'EPM Co')`, epmClientID)
@@ -89,8 +89,8 @@ func (s *ExecutorPayoutsMigrationSuite) TestTS018_UpAddsPayoutColumns_DownDropsT
 		`INSERT INTO subtasks (task_id, service_id, status, assignee_id, price) VALUES ($1, $2, 'done', $3, 1500) RETURNING id`,
 		taskID, serviceID, epmAdminID).Scan(&subtaskID))
 
-	// --- up 0011 ---
-	s.Require().NoError(mig.Migrate(11))
+	// --- up 0008 ---
+	s.Require().NoError(mig.Migrate(8))
 	for _, c := range epmColumns {
 		s.True(s.columnExists(c), "subtasks.%s добавлена", c)
 	}
@@ -135,8 +135,8 @@ func (s *ExecutorPayoutsMigrationSuite) TestTS018_UpAddsPayoutColumns_DownDropsT
 	s.Nil(assignee)
 	s.True(paid)
 
-	// --- down → 0010 ---
-	s.Require().NoError(mig.Migrate(10))
+	// --- down → 0007 ---
+	s.Require().NoError(mig.Migrate(7))
 	for _, c := range epmColumns {
 		s.False(s.columnExists(c), "subtasks.%s снята", c)
 	}
@@ -147,7 +147,7 @@ func (s *ExecutorPayoutsMigrationSuite) TestTS018_UpAddsPayoutColumns_DownDropsT
 	s.Equal("1500.00", price)
 
 	// --- повторный up: миграция накатывается заново поверх данных ---
-	s.Require().NoError(mig.Migrate(11))
+	s.Require().NoError(mig.Migrate(8))
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT is_executor_paid FROM subtasks WHERE id = $1`, subtaskID).Scan(&paid))
 	s.False(paid, "после down/up отметки сброшены")
 }

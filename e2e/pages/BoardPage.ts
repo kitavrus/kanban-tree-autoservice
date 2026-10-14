@@ -13,8 +13,6 @@ export class BoardPage {
   readonly filterPaid: Locator;
   readonly filterAssignee: Locator;
   readonly filterDue: Locator;
-  /** warehouses DS-009: фильтр «Склад» (комбобокс, опции рендерит SSR). */
-  readonly filterWarehouse: Locator;
   readonly filterReset: Locator;
   readonly found: Locator;
 
@@ -54,7 +52,6 @@ export class BoardPage {
     this.filterPaid = page.getByTestId('filter-paid');
     this.filterAssignee = page.getByTestId('filter-assignee');
     this.filterDue = page.getByTestId('filter-due');
-    this.filterWarehouse = page.getByTestId('filter-warehouse');
     this.filterReset = page.getByTestId('filter-reset');
     this.found = page.getByTestId('board-total'); // pagination DS-004: счётчик «Заказов: M»
 
@@ -125,11 +122,6 @@ export class BoardPage {
   /** pagination DS-001: кнопка «Показать ещё» внизу колонки. */
   columnMore(id: string): Locator {
     return this.page.getByTestId(`column-more-${id}`);
-  }
-
-  /** Бейдж «в пути» на карточке доски (DS-009). */
-  inTransitBadge(id: number | string): Locator {
-    return this.card(id).getByTestId('task-card-in-transit');
   }
 
   /** Метка «к выплате: N» на карточке доски (executor-payouts D68). */

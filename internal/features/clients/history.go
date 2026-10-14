@@ -14,8 +14,7 @@ import (
 
 // История единицы оборудования: заказы, куда она принималась (task_equipment) или где по
 // ней выполнялись услуги (subtasks.equipment_id), + услуги, товары комплекта услуг и
-// журнал работ; текущее местоположение единицы и её документы «Перемещение» (transfers-core
-// DS-046 — вместо склада единицы «в каждом заказе»). Привязка «услуга → оборудование» уже хранится в subtasks.equipment_id,
+// журнал работ. Привязка «услуга → оборудование» уже хранится в subtasks.equipment_id,
 // товары и журнал — через услугу; таблицы доски читаются напрямую SQL (как TypeOptions,
 // ADR-102), без Go-импорта пакета board.
 
@@ -32,124 +31,6 @@ type HistoryOrder struct {
 	Completeness string
 	Condition    string
 	Services     []HistoryService
-}
-
-// EquipmentLocation — текущее местоположение единицы (equipment, transfers-core DS-008).
-type EquipmentLocation struct {
-	Status           string // at_client | at_warehouse | in_transit
-	WarehouseID      *string
-	WarehouseName    *string
-	ActiveTransferID *int64  // незавершённый документ единицы
-	TransitToName    *string // пока единица в пути: склад назначения документа либо «клиент»
-}
-
-// Label — подпись бейджа: «у клиента» / «на складе X» / «в пути → Y».
-func (l EquipmentLocation) Label() string {
-	switch l.Status {
-	case LocationAtWarehouse:
-		if l.WarehouseName != nil {
-			return "на складе " + *l.WarehouseName
-		}
-		return "на складе"
-	case LocationInTransit:
-		if l.TransitToName != nil {
-			return "в пути → " + *l.TransitToName
-		}
-		return "в пути"
-	}
-	return "у клиента"
-}
-
-// BadgeClass — цвет бейджа местоположения (обе темы — классы Bootstrap text-bg-*).
-func (l EquipmentLocation) BadgeClass() string {
-	switch l.Status {
-	case LocationAtWarehouse:
-		return "text-bg-info"
-	case LocationInTransit:
-		return "text-bg-warning"
-	}
-	return "text-bg-secondary"
-}
-
-// HistoryTransfer — документ «Перемещение», в строках которого стоит единица.
-type HistoryTransfer struct {
-	ID        int64
-	Status    string // requested | in_transit | received | cancelled
-	FromName  string
-	ToName    string
-	CreatedAt time.Time
-}
-
-func (t HistoryTransfer) StatusLabel() string {
-	switch t.Status {
-	case "in_transit":
-		return "В пути"
-	case "received":
-		return "Получено"
-	case "cancelled":
-		return "Отменён"
-	}
-	return "Заявка"
-}
-
-func (t HistoryTransfer) StatusClass() string {
-	switch t.Status {
-	case "in_transit":
-		return "text-bg-warning"
-	case "received":
-		return "text-bg-success"
-	case "cancelled":
-		return "text-bg-secondary"
-	}
-	return "text-bg-primary"
-}
-
-// EquipmentLocation — местоположение единицы. ErrNoRows → ErrNotFound.
-func (r *Repo) EquipmentLocation(ctx context.Context, equipmentID string) (*EquipmentLocation, error) {
-	var l EquipmentLocation
-	err := r.pool.QueryRow(ctx, `
-		SELECT e.location_status, e.warehouse_id::text, w.name, e.active_transfer_id,
-		       CASE WHEN e.location_status <> 'in_transit' THEN NULL
-		            WHEN tr.direction = 'warehouse_to_client' THEN 'клиент'
-		            ELSE wt.name END
-		FROM equipment e
-		LEFT JOIN warehouses w  ON w.id = e.warehouse_id
-		LEFT JOIN transfers tr  ON tr.id = e.active_transfer_id
-		LEFT JOIN warehouses wt ON wt.id = tr.to_warehouse_id
-		WHERE e.id = $1::uuid AND e.deleted_at IS NULL`, equipmentID).
-		Scan(&l.Status, &l.WarehouseID, &l.WarehouseName, &l.ActiveTransferID, &l.TransitToName)
-	if err != nil {
-		return nil, err
-	}
-	return &l, nil
-}
-
-// EquipmentTransfers — документы единицы, новые сверху. У документа с клиентом
-// (transfers-partners DS-002) одна из точек маршрута — не склад: приём «клиент → склад X»,
-// возврат «склад X → клиент»; единица бывает только в документах со складом хотя бы на одном
-// конце, поэтому отсутствующая точка — всегда клиент.
-func (r *Repo) EquipmentTransfers(ctx context.Context, equipmentID string) ([]HistoryTransfer, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT t.id, t.status, coalesce(fw.name, 'клиент'), coalesce(tw.name, 'клиент'), t.created_at
-		FROM transfer_items i
-		JOIN transfers t        ON t.id = i.transfer_id
-		LEFT JOIN warehouses fw ON fw.id = t.from_warehouse_id
-		LEFT JOIN warehouses tw ON tw.id = t.to_warehouse_id
-		WHERE i.equipment_id = $1::uuid AND t.deleted_at IS NULL
-		ORDER BY t.id DESC`, equipmentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []HistoryTransfer{}
-	for rows.Next() {
-		var t HistoryTransfer
-		if err := rows.Scan(&t.ID, &t.Status, &t.FromName, &t.ToName, &t.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
 }
 
 // HistoryService — услуга заказа, выполнявшаяся по этой единице.
@@ -333,16 +214,13 @@ func trimNumber(s string) string {
 	return strings.TrimSuffix(s, ".")
 }
 
-// EquipmentHistoryData — единица, её заказы, текущее местоположение и документы.
+// EquipmentHistoryData — единица и её заказы.
 type EquipmentHistoryData struct {
 	Equipment EquipmentResponse
 	Orders    []HistoryOrder
-	Location  EquipmentLocation
-	Transfers []HistoryTransfer
 }
 
-// EquipmentHistory — единица + её заказы + местоположение + документы. Невалидный/
-// несуществующий id → ErrEquipmentNotFound.
+// EquipmentHistory — единица + её заказы. Невалидный/несуществующий id → ErrEquipmentNotFound.
 func (s *Service) EquipmentHistory(ctx context.Context, id string) (*EquipmentHistoryData, error) {
 	e, err := s.GetEquipment(ctx, id)
 	if err != nil {
@@ -352,18 +230,7 @@ func (s *Service) EquipmentHistory(ctx context.Context, id string) (*EquipmentHi
 	if err != nil {
 		return nil, err
 	}
-	loc, err := s.repo.EquipmentLocation(ctx, id)
-	if errors.Is(err, ErrNotFound) {
-		return nil, ErrEquipmentNotFound // удалена между запросами
-	}
-	if err != nil {
-		return nil, err
-	}
-	transfers, err := s.repo.EquipmentTransfers(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return &EquipmentHistoryData{Equipment: *e, Orders: orders, Location: *loc, Transfers: transfers}, nil
+	return &EquipmentHistoryData{Equipment: *e, Orders: orders}, nil
 }
 
 // EquipmentHistoryVM — страница «История оборудования».
@@ -373,8 +240,6 @@ type EquipmentHistoryVM struct {
 	ClientName string
 	Orders     []HistoryOrder
 	Services   int
-	Location   EquipmentLocation
-	Transfers  []HistoryTransfer
 }
 
 // eqHistory — GET /equipment/:id/history.
@@ -386,7 +251,7 @@ func (h *SSR) eqHistory(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	vm := EquipmentHistoryVM{Equipment: d.Equipment, Orders: d.Orders, Location: d.Location, Transfers: d.Transfers}
+	vm := EquipmentHistoryVM{Equipment: d.Equipment, Orders: d.Orders}
 	if cl, err := h.svc.Get(c.Context(), d.Equipment.ClientID); err == nil {
 		vm.ClientName = cl.CompanyName
 	}
@@ -399,9 +264,7 @@ func (h *SSR) eqHistory(c fiber.Ctx) error {
 
 // --- JSON API: GET /api/v1/equipment/:id/history (§API-1: snake_case, список —
 // {items, total, limit, offset}; отдаётся целиком, без пагинации — история одной единицы
-// невелика). Карточка заказа раскрывает по нему «Историю работ» (доступно и executor).
-// transfers-core DS-046: рядом с конвертом заказов — location (текущее местоположение
-// единицы) и transfers (её документы «Перемещение», новые сверху). ---
+// невелика). Карточка заказа раскрывает по нему «Историю работ» (доступно и executor). ---
 
 type HistoryOrderDTO struct {
 	TaskID       int64               `json:"task_id"`
@@ -415,24 +278,6 @@ type HistoryOrderDTO struct {
 	Completeness string              `json:"completeness"`
 	Condition    string              `json:"condition"`
 	Services     []HistoryServiceDTO `json:"services"`
-}
-
-// EquipmentLocationDTO — текущее местоположение единицы.
-type EquipmentLocationDTO struct {
-	LocationStatus   string  `json:"location_status"`
-	WarehouseID      *string `json:"warehouse_id"`
-	WarehouseName    *string `json:"warehouse_name"`
-	ActiveTransferID *int64  `json:"active_transfer_id"`
-	TransitToName    *string `json:"transit_to_name"`
-}
-
-// HistoryTransferDTO — документ «Перемещение» единицы (#N, маршрут, статус, дата).
-type HistoryTransferDTO struct {
-	ID                int64     `json:"id"`
-	Status            string    `json:"status"`
-	FromWarehouseName string    `json:"from_warehouse_name"`
-	ToWarehouseName   string    `json:"to_warehouse_name"`
-	CreatedAt         time.Time `json:"created_at"`
 }
 
 type HistoryServiceDTO struct {
@@ -460,12 +305,10 @@ type HistoryLogDTO struct {
 }
 
 type EquipmentHistoryListResponse struct {
-	Items     []HistoryOrderDTO    `json:"items"`
-	Total     int                  `json:"total"`
-	Limit     int                  `json:"limit"`
-	Offset    int                  `json:"offset"`
-	Location  EquipmentLocationDTO `json:"location"`
-	Transfers []HistoryTransferDTO `json:"transfers"` // всегда массив
+	Items  []HistoryOrderDTO `json:"items"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
 }
 
 func amountPtr(s string) *numeric.Amount {
@@ -478,14 +321,6 @@ func amountPtr(s string) *numeric.Amount {
 
 func historyDTO(d *EquipmentHistoryData) EquipmentHistoryListResponse {
 	orders := d.Orders
-	transfers := make([]HistoryTransferDTO, len(d.Transfers))
-	for i, t := range d.Transfers {
-		transfers[i] = HistoryTransferDTO{ID: t.ID, Status: t.Status, FromWarehouseName: t.FromName,
-			ToWarehouseName: t.ToName, CreatedAt: t.CreatedAt}
-	}
-	location := EquipmentLocationDTO{LocationStatus: d.Location.Status, WarehouseID: d.Location.WarehouseID,
-		WarehouseName: d.Location.WarehouseName, ActiveTransferID: d.Location.ActiveTransferID,
-		TransitToName: d.Location.TransitToName}
 	items := make([]HistoryOrderDTO, len(orders))
 	for i, o := range orders {
 		svcs := make([]HistoryServiceDTO, len(o.Services))
@@ -510,8 +345,7 @@ func historyDTO(d *EquipmentHistoryData) EquipmentHistoryListResponse {
 			ColumnColor: o.ColumnColor, IsFinal: o.IsFinal, IsPaid: o.IsPaid, CreatedAt: o.CreatedAt,
 			Accepted: o.Accepted, Completeness: o.Completeness, Condition: o.Condition, Services: svcs}
 	}
-	return EquipmentHistoryListResponse{Items: items, Total: len(items), Limit: len(items), Offset: 0,
-		Location: location, Transfers: transfers}
+	return EquipmentHistoryListResponse{Items: items, Total: len(items), Limit: len(items), Offset: 0}
 }
 
 // EquipmentHistory — GET /api/v1/equipment/:id/history (RequireAPI, без admin — чтение).

@@ -22,12 +22,11 @@ import (
 // is_active не трогают.
 //
 // Порядок блокировок товара (общий со всеми путями, которые берут строку products явно): товар
-// → категория → product_stock (по возрастанию warehouse_id). Удаление берёт товар FOR NO KEY
-// UPDATE — этот режим не конфликтует с FOR KEY SHARE, который пути склада (списание и возврат
-// по заказам, проведение документов, журнал stock_movements) берут на строку products ПОСЛЕ
-// product_stock вставкой по внешнему ключу; поэтому встречного ожидания «product_stock → товар»
-// нет. Пути, добавляющие НОВУЮ ссылку на товар (строка услуги заказа, состав услуги каталога,
-// строка документа), берут товар FOR SHARE с условием «не удалён» до любых строк product_stock.
+// → категория. Остаток живёт в самой строке товара: удаление берёт её FOR NO KEY UPDATE и под
+// этой блокировкой читает остаток — правка остатка (форма товара, ручная корректировка,
+// списание и возврат по заказам) пишет ту же строку и потому либо уже видна, либо ждёт.
+// Пути, добавляющие НОВУЮ ссылку на товар (строка услуги заказа, состав услуги каталога), берут
+// товар с условием «не удалён» под блокировкой строки.
 
 // Actor — пользователь запроса: удаляет и восстанавливает только администратор (DS-003).
 type Actor struct {
@@ -58,13 +57,11 @@ var (
 // SoftDelete — мягкое удаление товара (§3, DS-021, DS-024). Одна транзакция:
 //   - строка товара под FOR NO KEY UPDATE с условием «не удалён»: нет либо уже удалён →
 //     ErrProductNotFound (второй одновременный запрос ждёт и получает 404);
-//   - все строки product_stock товара под FOR UPDATE по возрастанию warehouse_id (те же строки
-//     блокируют правка остатков формой товара, ручная корректировка, списание по заказам и
-//     проведение документов): остаток не равен нулю хотя бы на одном складе →
-//     errProductHasStock, отметка не ставится;
+//   - остаток товара (под той же блокировкой) не равен нулю → errProductHasStock, отметка не
+//     ставится;
 //   - UPDATE трёх полей удаления; is_active не меняется (DS-009).
 //
-// Ссылки из услуг, заказов, документов и журнала склада не читаются — удалению не мешают
+// Ссылки из услуг, заказов и журнала склада не читаются — удалению не мешают
 // (DS-014).
 func (r *ProductRepo) SoftDelete(ctx context.Context, id, userID, reason string) (time.Time, error) {
 	var at time.Time
@@ -74,26 +71,9 @@ func (r *ProductRepo) SoftDelete(ctx context.Context, id, userID, reason string)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var one int
-	if err := tx.QueryRow(ctx, `SELECT 1 FROM products WHERE id = $1::uuid AND deleted_at IS NULL FOR NO KEY UPDATE`, id).Scan(&one); err != nil {
+	var hasStock bool
+	if err := tx.QueryRow(ctx, `SELECT stock <> 0 FROM products WHERE id = $1::uuid AND deleted_at IS NULL FOR NO KEY UPDATE`, id).Scan(&hasStock); err != nil {
 		return at, err // pgx.ErrNoRows == ErrProductNotFound
-	}
-	rows, err := tx.Query(ctx, `SELECT stock <> 0 FROM product_stock WHERE product_id = $1::uuid ORDER BY warehouse_id FOR UPDATE`, id)
-	if err != nil {
-		return at, err
-	}
-	hasStock := false
-	for rows.Next() {
-		var nonZero bool
-		if err := rows.Scan(&nonZero); err != nil {
-			rows.Close()
-			return at, err
-		}
-		hasStock = hasStock || nonZero
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return at, err
 	}
 	if hasStock {
 		return at, errProductHasStock
@@ -149,7 +129,7 @@ WHERE id = $1::uuid AND deleted_at IS NOT NULL`, id)
 }
 
 // Restore — восстановление товара (§6.2). За время удаления остаток мог появиться (возврат из
-// заказа, приём документа — DS-042), категория — уйти в удалённые (DS-014): ни то, ни другое
+// заказа — DS-042), категория — уйти в удалённые (DS-014): ни то, ни другое
 // восстановлению не мешает и перепроверки не требует.
 func (r *ProductRepo) Restore(ctx context.Context, id string) error {
 	return restoreRow(ctx, r.pool, "products", id)

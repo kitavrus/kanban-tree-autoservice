@@ -134,7 +134,7 @@ func TestOffsetLabel(t *testing.T) {
 	assert.Equal(t, "UTC+5:45", offsetLabel(fixtureMoment, "Asia/Kathmandu"))
 }
 
-// TS-023 (unit, transfers-partners DS-034): границы календарного дня в поясе пользователя —
+// TS-023 (unit, DS-034): границы календарного дня в поясе пользователя —
 // момент времени для сравнения с timestamptz. fixtureMoment попадает в 7 октября по Алматы и
 // в 6 октября по Москве.
 func TestTS023_DayStartAndNextDay(t *testing.T) {

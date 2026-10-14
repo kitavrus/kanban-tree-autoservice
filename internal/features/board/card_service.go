@@ -113,14 +113,6 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
 	if err != nil {
 		return nil, err
 	}
-	warehouses, err := s.card.Warehouses(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	transfers, err := s.card.Transfers(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 
 	return &OrderCardResponse{
 		Task:        toTaskResponse(*task),
@@ -128,9 +120,7 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
 		Equipment:   equipment,
 		Subtasks:    subtasks,
 		Stock:       stock,
-		Warehouses:  warehouses,
 		Attachments: toCardAttachments(a, attachments),
-		Transfers:   transfers,
 	}, nil
 }
 

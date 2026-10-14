@@ -152,9 +152,7 @@ func (s *BoardLiveSuite) createProduct(stock, minStock string) string {
 		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'BoardLive ' || gen_random_uuid()) RETURNING id`).Scan(&categoryID))
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`WITH p AS (INSERT INTO products (category_id, name) VALUES ($1, 'Товар') RETURNING id),
-		      ps AS (INSERT INTO product_stock (product_id, warehouse_id, stock, min_stock) SELECT id, default_warehouse_id(), $2::numeric, $3::numeric FROM p)
-		 SELECT id FROM p`,
+		`INSERT INTO products (category_id, name, stock, min_stock) VALUES ($1, 'Товар', $2::numeric, $3::numeric) RETURNING id`,
 		categoryID, stock, minStock).Scan(&productID))
 	return productID
 }
@@ -162,7 +160,7 @@ func (s *BoardLiveSuite) createProduct(stock, minStock string) string {
 func (s *BoardLiveSuite) productStock(id string) string {
 	var stock string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`SELECT coalesce((SELECT stock FROM product_stock WHERE product_id = $1 AND warehouse_id = default_warehouse_id()), 0)::text`, id).Scan(&stock))
+		`SELECT stock::text FROM products WHERE id = $1`, id).Scan(&stock))
 	return stock
 }
 
@@ -682,6 +680,53 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 	s.NotContains(search("<p>"), target.ID)
 }
 
+// Госномер: поиск доски находит заказ по госномеру оборудования без учёта регистра,
+// пробелов и дефисов («а123вс777» → «А123ВС 777»); карточка заказа отдаёт plate_number.
+func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchByPlateNumber() {
+	ctx := context.Background()
+	client := s.newClient("Госномер-Поиск-Клиент")
+	target := s.newTask(client, s.columnID("Новые"))
+	other := s.newTask(client, s.columnID("Новые"))
+
+	var typeID, equipmentID string
+	s.Require().NoError(s.Pool.QueryRow(ctx,
+		`INSERT INTO equipment_types (name) VALUES ('Госномер-тип ' || gen_random_uuid()) RETURNING id`).Scan(&typeID))
+	s.Require().NoError(s.Pool.QueryRow(ctx,
+		`INSERT INTO equipment (client_id, type_id, model, plate_number) VALUES ($1, $2, 'Vesta', 'Х987КМ 199') RETURNING id`,
+		client, typeID).Scan(&equipmentID))
+	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2)`, target.ID, equipmentID)
+	s.Require().NoError(err)
+
+	search := func(q string) []int64 {
+		st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks?client_id="+client+"&q="+url.QueryEscape(q), nil)
+		s.Require().Equal(http.StatusOK, st, string(raw))
+		var list taskListDTO
+		s.Require().NoError(json.Unmarshal(raw, &list), string(raw))
+		ids := make([]int64, 0, len(list.Items))
+		for _, it := range list.Items {
+			ids = append(ids, it.ID)
+		}
+		return ids
+	}
+	for _, q := range []string{"Х987КМ 199", "х987км199", "987 км", "км-199"} {
+		ids := search(q)
+		s.Contains(ids, target.ID, "q=%q", q)
+		s.NotContains(ids, other.ID, "q=%q", q)
+	}
+	s.Empty(search("Х000ХХ"), "лишние совпадения")
+
+	st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", target.ID), nil)
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	var card struct {
+		Equipment []struct {
+			PlateNumber string `json:"plate_number"`
+		} `json:"equipment"`
+	}
+	s.Require().NoError(json.Unmarshal(raw, &card), string(raw))
+	s.Require().Len(card.Equipment, 1)
+	s.Equal("Х987КМ 199", card.Equipment[0].PlateNumber)
+}
+
 // LV-021/AC-014.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_AssigneeDefaultByRole() {
 	s.SeedUser("board-exec-assignee", "password1", "Доска Исп Ответственный", "executor", true)
@@ -940,8 +985,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_PurgeDisabledByDefault() {
 	t := s.newTask(c, s.columnID("Новые"))
 
 	for _, b := range []*testutil.Browser{s.admin, s.newExecutor("board-exec-purge")} {
-		// вид transfers (soft-delete-transfers TS-051, DS-038) — тот же адрес: без переменной его нет.
-		for _, path := range []string{"/api/v1/test/purge/tasks/" + itoa(t.ID), "/api/v1/test/purge/transfers/1"} {
+		for _, path := range []string{"/api/v1/test/purge/tasks/" + itoa(t.ID)} {
 			st, raw := b.Do(http.MethodDelete, path, nil)
 			s.Equal(http.StatusNotFound, st, "%s: %s", path, raw)
 		}

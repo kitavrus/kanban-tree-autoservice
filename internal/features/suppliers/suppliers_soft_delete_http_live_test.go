@@ -5,7 +5,6 @@ package suppliers_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,11 +15,10 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/testutil"
 )
 
-// Мягкое удаление поставщиков (docs/features/soft-delete-warehouses-suppliers/draft-spec.md
-// §4.2, §6.3, §6.4, §6.5, §11) — методы SuppliersLiveSuite (§TD-8: боевой бинарь, реальный
-// логин): TS-032 (удаление при наличии документов, пометка supplier_is_deleted, название
-// свободно, NAME_TAKEN при восстановлении), TS-033 (права), причина удаления, служебная уборка и
-// гонки §3. Документы создаются через API перемещений того же сервера.
+// Мягкое удаление поставщиков (docs/features/soft-delete-suppliers/draft-spec.md §4.2, §6.3,
+// §6.4, §6.5, §11) — методы SuppliersLiveSuite (§TD-8: боевой бинарь, реальный логин): TS-032
+// (удаление, название свободно, NAME_TAKEN при восстановлении), TS-033 (права), причина
+// удаления, служебная уборка и гонки §3.
 
 // ---- wire-типы (§TD-6.2) ----
 
@@ -36,16 +34,6 @@ type sdRestoreDTO struct {
 type sdErrDTO struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-}
-
-// sdDocDTO — документ «Перемещение»: поставщик и признак его удаления (§6.5).
-type sdDocDTO struct {
-	ID                int64  `json:"id"`
-	Status            string `json:"status"`
-	Version           int    `json:"version"`
-	SupplierID        string `json:"supplier_id"`
-	SupplierName      string `json:"supplier_name"`
-	SupplierIsDeleted bool   `json:"supplier_is_deleted"`
 }
 
 // ---- помощники ----
@@ -112,41 +100,6 @@ func (s *SuppliersLiveSuite) listedSup(id, isActive string) bool {
 	return false
 }
 
-// sdProduct — товар (SQL-фикстура каталога) для строк документов.
-func (s *SuppliersLiveSuite) sdProduct() string {
-	m := sdMark()
-	cat := s.sdScalar(`INSERT INTO catalog_categories (kind, name) VALUES ('product', $1) RETURNING id::text`, "SUP-SD "+m)
-	return s.sdScalar(`INSERT INTO products (category_id, name) VALUES ($1, $2) RETURNING id::text`, cat, "SUP-SD товар "+m)
-}
-
-// supply — документ «поставщик → склад» (Алматы) через API перемещений; send — сразу «в пути».
-func (s *SuppliersLiveSuite) supply(supplierID, productID string, send bool) (int, sdDocDTO, []byte) {
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/transfers", map[string]any{
-		"direction": "supplier_to_warehouse", "supplier_id": supplierID, "send": send,
-		"to_warehouse_id": s.sdScalar(`SELECT id::text FROM warehouses WHERE name = 'Алматы'`),
-		"items":           []map[string]any{{"kind": "product", "product_id": productID, "qty_sent": 2}},
-	})
-	var d sdDocDTO
-	if st == http.StatusCreated {
-		s.Require().NoError(json.Unmarshal(raw, &d), string(raw))
-	}
-	return st, d, raw
-}
-
-func (s *SuppliersLiveSuite) mustSupply(supplierID, productID string, send bool) sdDocDTO {
-	st, d, raw := s.supply(supplierID, productID, send)
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	return d
-}
-
-func (s *SuppliersLiveSuite) doc(id int64) sdDocDTO {
-	st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/transfers/%d", id), nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	var d sdDocDTO
-	s.Require().NoError(json.Unmarshal(raw, &d), string(raw))
-	return d
-}
-
 func (s *SuppliersLiveSuite) sdExecutor(login string) *testutil.Browser {
 	s.SeedUser(login, "password1", "Поставщики Исполнитель", "executor", true)
 	b := s.NewBrowser()
@@ -156,40 +109,24 @@ func (s *SuppliersLiveSuite) sdExecutor(login string) *testutil.Browser {
 
 // ---- TS-032 ----
 
-// TS-032 (DS-014, DS-026): поставщик с документами в разных статусах («Заявка», «В пути»,
-// «Отменён») удаляется — 200 {id, deleted_at}; отметка «кто, когда, почему» записана, причина
-// обрезана, признак архива не изменился; документы остаются и отдают supplier_is_deleted = true
-// (и название поставщика), у документа действующего поставщика — false. Для обычных адресов
-// поставщика больше нет: список при любом фильтре архива, PUT, повторное удаление — 404.
-// Негатив: удалённый поставщик в новом документе → 400 supplier_id: not_found.
-func (s *SuppliersLiveSuite) TestTS032_DeleteSupplierWithDocuments() {
+// TS-032 (DS-014, DS-026): поставщик удаляется — 200 {id, deleted_at}; отметка «кто, когда,
+// почему» записана, причина обрезана, признак архива не изменился; соседний действующий
+// поставщик не тронут. Для обычных адресов поставщика больше нет: список при любом фильтре
+// архива, PUT, повторное удаление — 404.
+func (s *SuppliersLiveSuite) TestTS032_DeleteSupplier() {
 	m := sdMark()
 	sup := s.create(map[string]any{"name": "TS032 Поставщик " + m, "contact_name": "Иван"})
 	other := s.create(map[string]any{"name": "TS032 Действующий " + m})
-	p := s.sdProduct()
-	requested := s.mustSupply(sup.ID, p, false)
-	inTransit := s.mustSupply(sup.ID, p, true)
-	cancelled := s.mustSupply(sup.ID, p, false)
-	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/cancel", cancelled.ID), map[string]any{"version": cancelled.Version})
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	foreign := s.mustSupply(other.ID, p, false)
-	s.False(s.doc(requested.ID).SupplierIsDeleted, "до удаления пометки нет")
 
 	before := time.Now().Add(-time.Minute)
 	st, d, raw := s.deleteSup(s.admin, sup.ID, "  Больше не работаем  ")
-	s.Require().Equal(http.StatusOK, st, "документы поставщика удалению не мешают: %s", raw)
+	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.Equal(sup.ID, d.ID)
 	s.True(d.DeletedAt.After(before), "deleted_at — момент удаления")
 	s.Equal(time.UTC, d.DeletedAt.Location(), "deleted_at — UTC")
 	s.Equal("true|true|Больше не работаем|"+s.sdAdminID(), s.supState(sup.ID))
 
-	for name, id := range map[string]int64{"заявка": requested.ID, "в пути": inTransit.ID, "отменён": cancelled.ID} {
-		got := s.doc(id)
-		s.True(got.SupplierIsDeleted, "%s: supplier_is_deleted", name)
-		s.Equal(sup.ID, got.SupplierID, name)
-		s.Equal(sup.Name, got.SupplierName, "%s: название удалённого поставщика в документе остаётся", name)
-	}
-	s.False(s.doc(foreign.ID).SupplierIsDeleted, "документ действующего поставщика — без пометки")
+	s.True(strings.HasPrefix(s.supState(other.ID), "false|"), "действующий поставщик не тронут")
 
 	for _, f := range []string{"", "true", "false"} {
 		s.False(s.listedSup(sup.ID, f), "удалённого поставщика нет в списке (is_active=%q)", f)
@@ -204,24 +141,18 @@ func (s *SuppliersLiveSuite) TestTS032_DeleteSupplierWithDocuments() {
 	s.Equal("SUPPLIER_NOT_FOUND", s.sdErr(raw).Code)
 	s.Equal("Поставщик не найден", s.sdErr(raw).Message)
 	s.Equal("true|true|Больше не работаем|"+s.sdAdminID(), s.supState(sup.ID), "отметка удаления не тронута")
-
-	// негатив: выбрать удалённого поставщика в новом документе нельзя.
-	st, _, raw = s.supply(sup.ID, p, false)
-	s.Require().Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal(map[string]string{"supplier_id": "not_found"}, s.fields(raw))
 }
 
 // TS-032 (DS-017, DS-009; §6.4): название удалённого поставщика свободно — создание и
 // переименование с тем же названием проходят; восстановление при занятом названии → 409
 // NAME_TAKEN, поставщик остаётся удалённым; после переименования действующего — 200 {id}, отметка
-// стёрта, документ снова без пометки. Повтор восстановления → 409 NOT_DELETED; несуществующий →
+// стёрта. Повтор восстановления → 409 NOT_DELETED; несуществующий →
 // 404. Поставщик, удалённый из архива, возвращается в архив. Негатив (as-is): название
 // действующего поставщика при создании по-прежнему занято — 400 name: duplicate.
 func (s *SuppliersLiveSuite) TestTS032_NameFreeAfterDelete_Restore() {
 	m := sdMark()
 	name := "Поставщик имя " + m
 	first := s.create(map[string]any{"name": name})
-	docID := s.mustSupply(first.ID, s.sdProduct(), false).ID
 	s.mustDeleteSup(first.ID)
 
 	twin := s.create(map[string]any{"name": "  " + strings.ToUpper(name) + " "}) // название свободно (без учёта регистра)
@@ -234,7 +165,6 @@ func (s *SuppliersLiveSuite) TestTS032_NameFreeAfterDelete_Restore() {
 	s.Equal("NAME_TAKEN", s.sdErr(raw).Code)
 	s.Equal("Название занято — переименуйте действующую запись", s.sdErr(raw).Message)
 	s.True(strings.HasPrefix(s.supState(first.ID), "true|"), "поставщик остался удалённым")
-	s.True(s.doc(docID).SupplierIsDeleted)
 
 	s.update(twin.ID, map[string]any{"name": name + " второй", "is_active": true})
 	st, raw = s.restoreSup(s.admin, first.ID)
@@ -244,7 +174,6 @@ func (s *SuppliersLiveSuite) TestTS032_NameFreeAfterDelete_Restore() {
 	s.Equal(first.ID, r.ID)
 	s.Equal("false|true||", s.supState(first.ID), "отметка стёрта, архив прежний")
 	s.True(s.listedSup(first.ID, "true"))
-	s.False(s.doc(docID).SupplierIsDeleted, "пометка в документе исчезла")
 
 	st, raw = s.restoreSup(s.admin, first.ID)
 	s.Equal(http.StatusConflict, st, string(raw))
@@ -324,29 +253,20 @@ func (s *SuppliersLiveSuite) TestDeleteReasonValidation() {
 // ---- служебная уборка ----
 
 // DS-027 (§6.5): DELETE /api/v1/test/purge/suppliers/:id (TEST_PURGE_ENABLED=true) — действующий и
-// мягко удалённый поставщик стираются физически; поставщик, на которого ссылается документ (в том
-// числе когда сам поставщик мягко удалён), → 409 CONFLICT «Запись используется» и остаётся; нет
-// поставщика либо битый идентификатор → 404 NOT_FOUND. Негатив: исполнитель → 403.
+// мягко удалённый поставщик стираются физически; нет поставщика либо битый идентификатор → 404
+// NOT_FOUND. Негатив: исполнитель → 403.
 func (s *SuppliersLiveSuite) TestPurge_Suppliers() {
 	m := sdMark()
 	purge := func(b *testutil.Browser, id string) (int, []byte) {
 		return b.Do(http.MethodDelete, "/api/v1/test/purge/suppliers/"+id, nil)
 	}
-	held := s.create(map[string]any{"name": "Purge С документом " + m})
-	s.mustSupply(held.ID, s.sdProduct(), false)
-	s.mustDeleteSup(held.ID) // мягкое удаление ссылку документа не снимает
-
-	st, raw := purge(s.sdExecutor("sup-purge-exec-"+m), held.ID)
-	s.Equal(http.StatusForbidden, st, string(raw))
-	st, raw = purge(s.admin, held.ID)
-	s.Equal(http.StatusConflict, st, string(raw))
-	s.Equal("CONFLICT", s.sdErr(raw).Code)
-	s.Equal("Запись используется", s.sdErr(raw).Message)
-	s.NotEmpty(s.supState(held.ID), "поставщик с документом на месте")
-
 	live := s.create(map[string]any{"name": "Purge Свободный " + m})
 	gone := s.create(map[string]any{"name": "Purge Удалённый " + m})
 	s.mustDeleteSup(gone.ID)
+
+	st, raw := purge(s.sdExecutor("sup-purge-exec-"+m), live.ID)
+	s.Equal(http.StatusForbidden, st, string(raw))
+	s.NotEmpty(s.supState(live.ID), "исполнитель уборку не выполнил")
 	for _, id := range []string{live.ID, gone.ID} {
 		st, raw = purge(s.admin, id)
 		s.Require().Equal(http.StatusOK, st, string(raw))

@@ -41,11 +41,7 @@ type Task struct {
 	// нужно TaskService.Update, когда description в теле — nil, «не менять»).
 	DescriptionHTML string
 	TotalAmount     numeric.Amount
-	// TransfersAmount — «Продано по накладным» (transfers-sales DS-014); считает только Get.
-	TransfersAmount numeric.Amount
 	LastLog         *TaskLastLog
-	// HasInTransit — оборудование заказа в пути (DS-009); заполняет только Get.
-	HasInTransit bool
 	// ExecutorUnpaidDone — выполненные услуги с исполнителем без выплаты (D68); только Get.
 	ExecutorUnpaidDone int
 }
@@ -111,28 +107,15 @@ const lastLogJoinSQL = `
 	    FROM subtasks ls JOIN subtask_logs l ON l.subtask_id = ls.id JOIN users lu ON lu.id = l.user_id
 	    WHERE ls.task_id = t.id ORDER BY l.created_at DESC, l.id DESC LIMIT 1) ll ON true`
 
-// transfersAmountSQL — «Продано по накладным» (transfers-sales DS-014): Σ сумм накладных
-// «склад → клиент» заказа t в статусах «В пути» и «Получено» (заявка и отменённая не входят);
-// сумма накладной — Σ round(price × qty_sent, 2) товарных строк (DS-038). NUMERIC-скаляр,
-// коррелирован с t.id.
-const transfersAmountSQL = `
-	(SELECT round(coalesce(sum(round(si.price * si.qty_sent, 2)), 0), 2)
-	 FROM transfers st JOIN transfer_items si ON si.transfer_id = st.id
-	 WHERE st.task_id = t.id AND st.deleted_at IS NULL AND st.direction = 'warehouse_to_client'
-	   AND st.status IN ('in_transit', 'received') AND si.kind = 'product')`
-
-// transfersAmountSelectSQL — transfersAmountSQL текстом (task.transfers_amount карточки).
-const transfersAmountSelectSQL = transfersAmountSQL + `::text`
-
 // totalAmountSelectSQL — design-sql.md §Totals Expression, скаляр-фрагмент коррелирован с
 // t.id (алиас s2 — во избежание конфликта с внешними алиасами Get/List). Итог заказа =
-// услуги + товары услуг + накладные (transfers-sales DS-014); единственное выражение итога
+// услуги + товары услуг; единственное выражение итога
 // на проект — им пользуются карточка (Get) и доска (boardListSQL).
 const totalAmountSelectSQL = `
-	((SELECT round(coalesce(sum(coalesce(s2.price, 0) +
+	(SELECT round(coalesce(sum(coalesce(s2.price, 0) +
 	        coalesce((SELECT sum(round(sp.qty * coalesce(sp.price, 0), 2))
 	                  FROM subtask_products sp WHERE sp.subtask_id = s2.id), 0)), 0), 2)
-	 FROM subtasks s2 WHERE s2.task_id = t.id) + ` + transfersAmountSQL + `)::text`
+	 FROM subtasks s2 WHERE s2.task_id = t.id)::text`
 
 // buildLastLog — nil, если записей журнала у заказа нет вовсе (ll.text IS NULL).
 func buildLastLog(text, author sql.NullString, cut sql.NullBool, createdAt sql.NullTime) *TaskLastLog {
@@ -411,7 +394,7 @@ func (r *TaskRepo) ActiveAssigneeExists(ctx context.Context, tx pgx.Tx, id strin
 // DS-032, тот же источник, что TaskFilter.Today в List); пусто — current_date БД.
 func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, error) {
 	var t Task
-	var totalAmount, transfersAmount string
+	var totalAmount string
 	var llText, llAuthor sql.NullString
 	var llCut sql.NullBool
 	var llCreatedAt sql.NullTime
@@ -425,10 +408,8 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id),
 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done'),
 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done' AND s.due_date < COALESCE($2::date, current_date)),
-		       t.description_html, `+totalAmountSelectSQL+`, `+transfersAmountSelectSQL+`,
+		       t.description_html, `+totalAmountSelectSQL+`,
 		       ll.text, ll.cut, ll.author_name, ll.created_at,
-		       EXISTS (SELECT 1 FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-		               WHERE te.task_id = t.id AND e.location_status = 'in_transit'),
 		       `+executorUnpaidDoneSQL+`
 		FROM tasks t
 		JOIN clients cl ON cl.id = t.client_id
@@ -437,8 +418,8 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
 		WHERE t.id = $1 AND t.deleted_at IS NULL`, id, todayArg).
 		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.ClientName, &t.ClientIsDeleted, &t.Title, &t.AssigneeID, &t.AssigneeName,
 			&t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
-			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount, &transfersAmount,
-			&llText, &llCut, &llAuthor, &llCreatedAt, &t.HasInTransit, &t.ExecutorUnpaidDone)
+			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount,
+			&llText, &llCut, &llAuthor, &llCreatedAt, &t.ExecutorUnpaidDone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errNotFound
 	}
@@ -446,7 +427,6 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
 		return nil, err
 	}
 	t.TotalAmount = numeric.Amount(totalAmount)
-	t.TransfersAmount = numeric.Amount(transfersAmount)
 	t.LastLog = buildLastLog(llText, llAuthor, llCut, llCreatedAt)
 	return &t, nil
 }
@@ -479,28 +459,24 @@ WITH base AS (
                     WHERE s.task_id = t.id AND pr.name ILIKE '%' || $2 || '%' ESCAPE '\')
          OR EXISTS (SELECT 1 FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
                     WHERE te.task_id = t.id AND (e.model ILIKE '%' || $2 || '%' ESCAPE '\'
-                                              OR e.serial ILIKE '%' || $2 || '%' ESCAPE '\')))
+                                              OR e.serial ILIKE '%' || $2 || '%' ESCAPE '\'
+                                              OR replace(replace(e.plate_number, ' ', ''), '-', '')
+                                                 ILIKE '%' || replace(replace($2, ' ', ''), '-', '') || '%' ESCAPE '\')))
     AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM subtasks s JOIN services sv ON sv.id = s.service_id
                                      WHERE s.task_id = t.id AND sv.category_id = $4))
     AND ($5::boolean IS NULL OR t.is_paid = $5)
     AND ($6::uuid IS NULL OR t.assignee_id = $6
          OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.assignee_id = $6))
     AND ($7::text IS NULL OR (NOT c.is_final AND (
-           ($7 = 'overdue' AND t.due_date < COALESCE($15::date, current_date))
-        OR ($7 = 'soon'    AND t.due_date <= COALESCE($15::date, current_date) + 1)
+           ($7 = 'overdue' AND t.due_date < COALESCE($14::date, current_date))
+        OR ($7 = 'soon'    AND t.due_date <= COALESCE($14::date, current_date) + 1)
         OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
-                   AND s.due_date < COALESCE($15::date, current_date)))))
+                   AND s.due_date < COALESCE($14::date, current_date)))))
     AND ($10::uuid IS NULL OR t.column_id = $10)
-    AND ($13::uuid IS NULL OR EXISTS (SELECT 1 FROM task_equipment te
-           JOIN equipment e ON e.id = te.equipment_id
-           LEFT JOIN transfers tr ON tr.id = e.active_transfer_id
-           WHERE te.task_id = t.id
-             AND ((e.location_status = 'at_warehouse' AND e.warehouse_id = $13)
-               OR (e.location_status = 'in_transit' AND tr.to_warehouse_id = $13))))
-    AND ($14::text IS NULL
-         OR ($14 = 'unpaid' AND EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
+    AND ($13::text IS NULL
+         OR ($13 = 'unpaid' AND EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
                 AND s.assignee_id IS NOT NULL AND NOT s.is_executor_paid))
-         OR ($14 = 'paid' AND EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
+         OR ($13 = 'paid' AND EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
                 AND s.assignee_id IS NOT NULL)
              AND NOT EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
                 AND s.assignee_id IS NOT NULL AND NOT s.is_executor_paid)))
@@ -518,12 +494,10 @@ SELECT t.id, t.column_id, t.client_id, cl.company_name, cl.deleted_at IS NOT NUL
        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id)                       AS subtasks_total,
        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done') AS subtasks_done,
        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
-                                           AND s.due_date < COALESCE($15::date, current_date)) AS subtasks_late,
+                                           AND s.due_date < COALESCE($14::date, current_date)) AS subtasks_late,
        ` + totalAmountSelectSQL + ` AS total_amount,
        ll.text, ll.cut, ll.author_name, ll.created_at,
        p.column_total, p.total,
-       EXISTS (SELECT 1 FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-		               WHERE te.task_id = t.id AND e.location_status = 'in_transit') AS has_in_transit,
        ` + executorUnpaidDoneSQL + ` AS executor_unpaid_done
 FROM page p
 JOIN tasks t    ON t.id = p.id
@@ -554,7 +528,7 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
 
 	rows, err := r.pool.Query(ctx, boardListSQL,
 		f.ClientID, q, f.TaskNo, f.CategoryID, f.Paid, f.AssigneeID, due, f.Limit, f.Offset,
-		f.ColumnID, f.PerColumn, qDesc, f.WarehouseID, executorPaid, today)
+		f.ColumnID, f.PerColumn, qDesc, executorPaid, today)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -570,7 +544,7 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
 		var llCreatedAt sql.NullTime
 		if err := rows.Scan(&c.ID, &c.ColumnID, &c.ClientID, &c.ClientName, &c.ClientIsDeleted, &c.Title, &c.AssigneeID, &c.AssigneeName,
 			&c.DueDate, &c.IsPaid, &c.Position, &c.Version, &c.SubtasksTotal, &c.SubtasksDone, &c.SubtasksLate,
-			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &c.ColumnTotal, &total, &c.HasInTransit, &c.ExecutorUnpaidDone); err != nil {
+			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &c.ColumnTotal, &total, &c.ExecutorUnpaidDone); err != nil {
 			return nil, 0, err
 		}
 		c.TotalAmount = numeric.Amount(totalAmount)

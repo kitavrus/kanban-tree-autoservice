@@ -41,6 +41,7 @@ const (
 	equipmentSKUMax    = 200
 	equipmentSerialMax = 200
 	equipmentNoteMax   = 1000
+	equipmentPlateMax  = 20
 	specsMax           = 50
 	specKMax           = 100
 	specVMax           = 500
@@ -48,6 +49,27 @@ const (
 
 // phoneDigitRe — телефон обязан содержать хотя бы одну цифру.
 var phoneDigitRe = regexp.MustCompile(`[0-9]`)
+
+// plateNumberRe — допустимые символы госномера: буквы (кириллица/латиница), цифры,
+// пробел, дефис. Проверяется ПОСЛЕ NormalizePlateNumber.
+var plateNumberRe = regexp.MustCompile(`^[\p{L}0-9 -]*$`)
+
+// plateSpacesRe — серия пробельных символов, включая неразрывный пробел (схлопывается в
+// один пробел).
+var plateSpacesRe = regexp.MustCompile(`[\s\p{Zs}]+`)
+
+// NormalizePlateNumber — trim, схлопывание пробелов, верхний регистр («а123вс  777» →
+// «А123ВС 777»). Используется и при сохранении, и в тестах.
+func NormalizePlateNumber(s string) string {
+	s = strings.TrimSpace(s)
+	if sqlutil.HasInvalidText(s) {
+		// битый UTF-8 / NUL не трогаем: ToUpper заменил бы байты на U+FFFD и validate()
+		// не увидел бы invalid_text.
+		return s
+	}
+	s = plateSpacesRe.ReplaceAllString(s, " ")
+	return strings.ToUpper(s)
+}
 
 // ClientInput — нормализованные поля карточки клиента + телефонов (общие для API и
 // SSR-формы).
@@ -143,18 +165,20 @@ func (in ClientInput) validate() []errorspkg.Field {
 
 // EquipmentInput — нормализованные поля единицы оборудования (общие для API и SSR-формы).
 type EquipmentInput struct {
-	TypeID string
-	Brand  string
-	Model  string
-	SKU    string
-	Serial string
-	Note   string
-	Specs  []SpecDTO
+	TypeID      string
+	PlateNumber string
+	Brand       string
+	Model       string
+	SKU         string
+	Serial      string
+	Note        string
+	Specs       []SpecDTO
 }
 
 // normalize — trim; пары характеристик с пустыми k И v отбрасываются; nil specs → [].
 func (in EquipmentInput) normalize() EquipmentInput {
 	in.TypeID = strings.TrimSpace(in.TypeID)
+	in.PlateNumber = NormalizePlateNumber(in.PlateNumber)
 	in.Brand = strings.TrimSpace(in.Brand)
 	in.Model = strings.TrimSpace(in.Model)
 	in.SKU = strings.TrimSpace(in.SKU)
@@ -185,6 +209,15 @@ func (in EquipmentInput) validate() []errorspkg.Field {
 		add("type_id", msgRequired)
 	case uuid.Validate(in.TypeID) != nil:
 		add("type_id", msgInvalid)
+	}
+
+	switch {
+	case sqlutil.HasInvalidText(in.PlateNumber):
+		add("plate_number", msgInvalidText)
+	case utf8.RuneCountInString(in.PlateNumber) > equipmentPlateMax:
+		add("plate_number", msgTooLong)
+	case !plateNumberRe.MatchString(in.PlateNumber):
+		add("plate_number", msgInvalidFormat)
 	}
 
 	switch n := utf8.RuneCountInString(in.Model); {

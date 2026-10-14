@@ -1,6 +1,4 @@
 import { test, expect } from '../fixtures/board';
-import { ClientsPage } from '../pages/ClientsPage';
-import { EquipmentPage } from '../pages/EquipmentPage';
 import { CatalogPage } from '../pages/CatalogPage';
 import { BoardPage } from '../pages/BoardPage';
 import { OrderCardPage } from '../pages/OrderCardPage';
@@ -8,77 +6,9 @@ import { OrderCardPage } from '../pages/OrderCardPage';
 // Фаза 8 (D26) → soft-delete-catalog DS-014, TS-F4: товар и услуга каталога, на которые
 // ссылается заказ, больше не удерживаются — удаляются мягко с причиной, в карточке заказа
 // остаются с бейджем «удалён» (BD-019a / BD-019b).
-// Клиент и оборудование (soft-delete-clients DS-014, DS-041, TS-F4): заказы и документы их
-// больше не удерживают — удаление мягкое (SDCL-001, soft-delete-clients.spec.ts); отказ остался
-// один — оборудование не у клиента (на нашем складе, в пути либо в незавершённом перемещении).
+// Клиент и оборудование (soft-delete-clients DS-014, TS-F4): заказы их не удерживают —
+// удаление мягкое (SDCL-001, soft-delete-clients.spec.ts).
 test.use({ colorScheme: 'light' });
-
-test.describe('BD: нельзя удалить клиента, пока его оборудование на складе (DS-041)', () => {
-  test('BD-017 (TS-053): удаление клиента с оборудованием на нашем складе — «Оборудование клиента на складе или в пути — сначала верните его клиенту», клиент остаётся', async ({
-    adminPage: page,
-    adminApi,
-    uniq,
-    allowHttpErrors,
-  }) => {
-    const company = uniq('BD-017 клиент с оборудованием на складе');
-    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990001111', note: '' }] });
-    const type = await adminApi.createEquipmentType({ name: uniq('BD-017 тип') });
-    const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq('BD-017 модель') });
-    const columns = (await adminApi.listColumns()).items;
-    const task = await adminApi.createTask({ title: uniq('BD-017 заказ'), client_id: client.id, column_id: columns[0].id });
-    const warehouse = await adminApi.defaultWarehouse();
-    await adminApi.addTaskEquipmentAt(task.id, equipment.id, warehouse.id); // принята на склад документом
-
-    allowHttpErrors((url, status) => url.endsWith(`/clients/${client.id}/delete`) && status === 409);
-
-    const clients = new ClientsPage(page);
-    await clients.goto(`?q=${company}`);
-    await clients.open(company);
-    await clients.confirmDelete(uniq('BD-017 попытка'));
-
-    // карточка перерисована с красным блоком (POST не редиректит на список — форма остаётся
-    // с данными клиента, не голый JSON из FiberErrorHandler).
-    await expect(clients.formError).toHaveText('Оборудование клиента на складе или в пути — сначала верните его клиенту');
-    await expect(clients.companyName).toHaveValue(company);
-
-    // клиент по-прежнему присутствует в списке.
-    await clients.goto(`?q=${company}`);
-    await expect(clients.row(company)).toBeVisible();
-  });
-});
-
-test.describe('BD: нельзя удалить оборудование, пока оно на складе (DS-041)', () => {
-  test('BD-018 (TS-053): удаление единицы на нашем складе — «Оборудование на складе или в пути — сначала верните его клиенту», оборудование остаётся', async ({
-    adminPage: page,
-    adminApi,
-    uniq,
-    allowHttpErrors,
-  }) => {
-    const company = uniq('BD-018 клиент оборудования');
-    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990002222', note: '' }] });
-    const type = await adminApi.createEquipmentType({ name: uniq('BD-018 тип') });
-    const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq('BD-018 модель') });
-    const columns = (await adminApi.listColumns()).items;
-    const task = await adminApi.createTask({ title: uniq('BD-018 заказ'), client_id: client.id, column_id: columns[0].id });
-    const warehouse = await adminApi.defaultWarehouse();
-    await adminApi.addTaskEquipmentAt(task.id, equipment.id, warehouse.id); // принята на склад документом
-
-    allowHttpErrors((url, status) => url.endsWith(`/equipment/${equipment.id}/delete`) && status === 409);
-
-    const eq = new EquipmentPage(page);
-    await eq.gotoEdit(equipment.id);
-    await eq.confirmDelete(uniq('BD-018 попытка'));
-
-    // оборудование остаётся на карточке — форма показывает красный блок.
-    await expect(eq.formError).toHaveText('Оборудование на складе или в пути — сначала верните его клиенту');
-
-    // оборудование по-прежнему присутствует у клиента.
-    const clients = new ClientsPage(page);
-    await clients.goto(`?q=${company}`);
-    await clients.open(company);
-    await expect(page.getByTestId('equipment-table')).toContainText(equipment.model);
-  });
-});
 
 test.describe('BD: товар и услуга каталога удаляются при наличии заказов (soft-delete-catalog DS-014)', () => {
   test('BD-019a (TS-027): товар в услуге действующего заказа удаляется с причиной — список без товара, тост; в карточке заказа у товара бейдж «удалён», строка остаётся', async ({

@@ -27,7 +27,7 @@ type StockService struct {
 func NewStockService(repo *StockRepo) *StockService {
 	s := &StockService{repo: repo}
 	s.badge = newNavBadgeCache(navBadgeTTL, func(ctx context.Context) (int, error) {
-		summary, err := repo.Summary(ctx, "")
+		summary, err := repo.Summary(ctx)
 		if err != nil {
 			return 0, err
 		}
@@ -36,33 +36,18 @@ func NewStockService(repo *StockRepo) *StockService {
 	return s
 }
 
-// List — GET /api/v1/stock?scope=&q=&warehouse_id=&limit=&offset= (лимиты/дефолты —
-// stock_handler.go; warehouse_id уже проверен как uuid).
+// List — GET /api/v1/stock?scope=&q=&limit=&offset= (лимиты/дефолты — stock_handler.go).
 func (s *StockService) List(ctx context.Context, p StockListParams) (*StockListResponse, error) {
-	if p.WarehouseID != "" {
-		// Мягко удалённый склад без остатка для отчёта не существует (DS-026, §6.5).
-		hidden, err := s.repo.WarehouseHidden(ctx, p.WarehouseID)
-		if err != nil {
-			return nil, err
-		}
-		if hidden {
-			return nil, errorspkg.Validation(errorspkg.Field{Name: "warehouse_id", Message: msgNotFound})
-		}
-	}
 	items, total, err := s.repo.List(ctx, p)
 	if err != nil {
 		return nil, err
 	}
-	whs, err := s.repo.Warehouses(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &StockListResponse{Warehouses: whs, Items: items, Total: total, Limit: p.Limit, Offset: p.Offset}, nil
+	return &StockListResponse{Items: items, Total: total, Limit: p.Limit, Offset: p.Offset}, nil
 }
 
-// Summary — GET /api/v1/stock/summary?warehouse_id= (KPI по парам товар×склад, DS-004).
-func (s *StockService) Summary(ctx context.Context, warehouseID string) (*StockSummaryResponse, error) {
-	return s.repo.Summary(ctx, warehouseID)
+// Summary — GET /api/v1/stock/summary.
+func (s *StockService) Summary(ctx context.Context) (*StockSummaryResponse, error) {
+	return s.repo.Summary(ctx)
 }
 
 // Adjust — PUT /api/v1/stock/:product_id (admin, D44).
@@ -76,24 +61,12 @@ func (s *StockService) Adjust(ctx context.Context, productID, userID string, in 
 	if code := in.Stock.Validate(stockScale, true); code != "" { // D44: остаток может быть < 0
 		return nil, errorspkg.Validation(errorspkg.Field{Name: "stock", Message: code})
 	}
-	switch {
-	case in.WarehouseID == "":
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "warehouse_id", Message: msgRequired})
-	case uuid.Validate(in.WarehouseID) != nil:
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "warehouse_id", Message: msgInvalid})
-	}
 
-	row, err := s.repo.Adjust(ctx, productID, in.WarehouseID, userID, *in.Stock)
+	row, err := s.repo.Adjust(ctx, productID, userID, *in.Stock)
 	if err != nil {
 		switch {
 		case errors.Is(err, errNotFound):
 			return nil, ErrStockProductNotFound
-		case errors.Is(err, errWarehouseNotFound):
-			return nil, errorspkg.Validation(errorspkg.Field{Name: "warehouse_id", Message: msgInvalid})
-		case errors.Is(err, errWarehouseDeleted):
-			return nil, errorspkg.Validation(errorspkg.Field{Name: "warehouse_id", Message: msgNotFound})
-		case errors.Is(err, errWarehouseWriteOffOnly):
-			return nil, ErrStockWarehouseWriteOffOnly
 		case errors.Is(err, errStockIncrease):
 			return nil, ErrStockDeletedWriteOffOnly
 		case errors.Is(err, errStockOverflow):

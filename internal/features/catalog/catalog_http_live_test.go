@@ -3,7 +3,6 @@
 package catalog_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,33 +32,6 @@ func (s *CatalogLiveSuite) SetupSuite() {
 	s.SeedUser("catalog4-admin", "password1", "Каталог4 Админ", "admin", true)
 	s.admin = s.NewBrowser()
 	s.admin.Login("catalog4-admin", "password1")
-	loadTestWarehouses(&s.LiveSuite)
-}
-
-// testAlmatyID/testMoscowID — склады сида миграции 0008 (warehouses D45) в БД ТЕКУЩЕЙ
-// сьюты: SetupSuite каждой сьюты пакета перечитывает их (сьюты идут последовательно).
-var testAlmatyID, testMoscowID string
-
-func loadTestWarehouses(ls *testutil.LiveSuite) {
-	ls.Require().NoError(ls.Pool.QueryRow(context.Background(), `SELECT id FROM warehouses WHERE name = 'Алматы'`).Scan(&testAlmatyID))
-	ls.Require().NoError(ls.Pool.QueryRow(context.Background(), `SELECT id FROM warehouses WHERE name = 'Москва'`).Scan(&testMoscowID))
-}
-
-// withStocks — короткие ключи тела товара (stock/min_stock/box/place, как до складов)
-// сворачиваются в stocks[] со строкой склада «Алматы» (D46: wire — только stocks[]).
-func withStocks(m map[string]any) map[string]any {
-	row := map[string]any{}
-	for _, k := range []string{"stock", "min_stock", "box", "place"} {
-		if v, ok := m[k]; ok {
-			row[k] = v
-			delete(m, k)
-		}
-	}
-	if len(row) > 0 {
-		row["warehouse_id"] = testAlmatyID
-		m["stocks"] = []map[string]any{row}
-	}
-	return m
 }
 
 type categoryDTO struct {
@@ -76,37 +48,17 @@ type categoryDTO struct {
 type amount = json.Number
 
 type productDTO struct {
-	ID         string            `json:"id"`
-	CategoryID string            `json:"category_id"`
-	Name       string            `json:"name"`
-	SKU        string            `json:"sku"`
-	Unit       string            `json:"unit"`
-	Price      amount            `json:"price"`
-	IsActive   bool              `json:"is_active"`
-	Stocks     []productStockDTO `json:"stocks"`
-	TotalStock amount            `json:"total_stock"`
-}
-
-// productStockDTO — строка блока «Склады» товара (warehouses DS-002).
-type productStockDTO struct {
-	WarehouseID   string `json:"warehouse_id"`
-	WarehouseName string `json:"warehouse_name"`
-	IsActive      bool   `json:"is_active"`
-	Tracked       bool   `json:"tracked"`
-	Stock         amount `json:"stock"`
-	MinStock      amount `json:"min_stock"`
-	Box           string `json:"box"`
-	Place         string `json:"place"`
-}
-
-// at — строка склада warehouseID (пустая, если склада нет в ответе).
-func (p productDTO) at(warehouseID string) productStockDTO {
-	for _, st := range p.Stocks {
-		if st.WarehouseID == warehouseID {
-			return st
-		}
-	}
-	return productStockDTO{}
+	ID         string `json:"id"`
+	CategoryID string `json:"category_id"`
+	Name       string `json:"name"`
+	SKU        string `json:"sku"`
+	Unit       string `json:"unit"`
+	Price      amount `json:"price"`
+	IsActive   bool   `json:"is_active"`
+	Stock      amount `json:"stock"`
+	MinStock   amount `json:"min_stock"`
+	Box        string `json:"box"`
+	Place      string `json:"place"`
 }
 
 // delReason — тело DELETE мягкого удаления (soft-delete-catalog DS-020, DS-028).
@@ -151,7 +103,7 @@ func productBody(categoryID string, patch map[string]any) map[string]any {
 	for k, v := range patch {
 		m[k] = v
 	}
-	return withStocks(m)
+	return m
 }
 
 func (s *CatalogLiveSuite) newProduct(b *testutil.Browser, categoryID string, patch map[string]any) productDTO {
@@ -165,14 +117,13 @@ func (s *CatalogLiveSuite) newProduct(b *testutil.Browser, categoryID string, pa
 func productPutBody(p productDTO, patch map[string]any) map[string]any {
 	m := map[string]any{
 		"category_id": p.CategoryID, "name": p.Name, "sku": p.SKU, "unit": p.Unit,
-		"price": p.Price, "is_active": p.IsActive,
+		"price": p.Price, "stock": p.Stock, "min_stock": p.MinStock, "box": p.Box, "place": p.Place,
+		"is_active": p.IsActive,
 	}
-	alm := p.at(testAlmatyID)
-	m["stock"], m["min_stock"], m["box"], m["place"] = alm.Stock, alm.MinStock, alm.Box, alm.Place
 	for k, v := range patch {
 		m[k] = v
 	}
-	return withStocks(m)
+	return m
 }
 
 // ---- happy path: категории + товары CRUD ----
@@ -383,9 +334,9 @@ func (s *CatalogLiveSuite) TestProduct_NumericBoundaries400() {
 		{"цена 12345678901 — переполнение целой части", map[string]any{"price": 12345678901}, "price", "too_large"},
 		{"цена 1.239 — лишняя точность", map[string]any{"price": 1.239}, "price", "too_precise"},
 		{"цена -1 — отрицательная", map[string]any{"price": -1}, "price", "invalid"},
-		{"min_stock 0.0001 — лишняя точность", map[string]any{"min_stock": 0.0001}, "stocks[0].min_stock", "too_precise"},
-		{"min_stock 1000000000 — переполнение", map[string]any{"min_stock": 1000000000}, "stocks[0].min_stock", "too_large"},
-		{"stock 0.0004 — лишняя точность", map[string]any{"stock": 0.0004}, "stocks[0].stock", "too_precise"},
+		{"min_stock 0.0001 — лишняя точность", map[string]any{"min_stock": 0.0001}, "min_stock", "too_precise"},
+		{"min_stock 1000000000 — переполнение", map[string]any{"min_stock": 1000000000}, "min_stock", "too_large"},
+		{"stock 0.0004 — лишняя точность", map[string]any{"stock": 0.0004}, "stock", "too_precise"},
 	} {
 		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, tc.patch))
 		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
@@ -402,14 +353,11 @@ func (s *CatalogLiveSuite) TestProduct_NumericBoundaries400() {
 		field string
 		body  string
 	}{
-		{"цена 1e10 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e10,"stocks":[]}`},
-		{"цена 1e5 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e5,"stocks":[]}`},
-		{"stock 1e10 — экспонента", "stocks[0].stock", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":0,"stocks":[{"warehouse_id":%q,"stock":1e10}]}`},
+		{"цена 1e10 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e10,"stock":0,"min_stock":0,"box":"","place":""}`},
+		{"цена 1e5 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e5,"stock":0,"min_stock":0,"box":"","place":""}`},
+		{"stock 1e10 — экспонента", "stock", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":0,"stock":1e10,"min_stock":0,"box":"","place":""}`},
 	} {
-		body := fmt.Sprintf(tc.body, cat.ID, testAlmatyID)
-		if tc.field == "price" {
-			body = fmt.Sprintf(tc.body, cat.ID)
-		}
+		body := fmt.Sprintf(tc.body, cat.ID)
 		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", body)
 		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
 		s.NotEqual(http.StatusInternalServerError, st, "%s → 500 недопустим", tc.name)
@@ -428,7 +376,7 @@ func (s *CatalogLiveSuite) TestProduct_StockDeltaOverflow400() {
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, productPutBody(p, map[string]any{"stock": 600000000}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.NotEqual(http.StatusInternalServerError, st)
-	s.Equal("too_large", s.fields(raw)["stocks[0].stock"])
+	s.Equal("too_large", s.fields(raw)["stock"])
 }
 
 // ---- IDOR/битый uuid → 404 ----
@@ -531,73 +479,82 @@ func (s *CatalogLiveSuite) TestSSR_RootRedirect_ProductFormFlow() {
 
 	cat := s.newCategory(s.admin, "product", "SSR категория")
 	form := url.Values{"category_id": {cat.ID}, "name": {"SSR Товар"}, "sku": {"SSR-1"}, "unit": {"шт"}, "price": {"10"},
-		"wh_id": {testAlmatyID}, "wh_name": {"Алматы"}, "wh_stock": {"1"}, "wh_min_stock": {"0"}, "wh_box": {""}, "wh_place": {""}}
+		"stock": {"1"}, "min_stock": {"0"}, "box": {"SSR-К"}, "place": {"SSR-полка"}}
 	resp = s.admin.Request(http.MethodPost, "/catalog/products", form, nil)
 	resp.Body.Close()
 	s.Equal(http.StatusSeeOther, resp.StatusCode)
 	s.Equal("/catalog/products?flash=created", resp.Header.Get("Location"))
+
+	var stock, box, place string
+	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
+		`SELECT stock::text, box, place FROM products WHERE sku = 'SSR-1' AND category_id = $1::uuid`, cat.ID).Scan(&stock, &box, &place))
+	s.Equal("1.000", stock)
+	s.Equal("SSR-К", box)
+	s.Equal("SSR-полка", place)
 }
 
-// ---- warehouses (DS-002/DS-003, TS-003): блок «Склады» товара ----
+// ---- единый остаток товара (склады убраны): плоские поля stock/min_stock/box/place,
+// создание не пишет движение, поиск q по коробке/месту, отрицательный остаток допустим,
+// min_stock < 0 и старый формат stocks[] → 400; SSR-форма — одиночные поля. ----
 
-// TS-003 через карточку товара: правка остатка на складе «Москва» → строка product_stock +
-// movement manual с warehouse_id; «Алматы» не меняется; «Итого» — сумма по складам.
-func (s *CatalogLiveSuite) TestWarehouses_ProductStocksByWarehouse() {
-	cat := s.newCategory(s.admin, "product", "Склады товара")
-	p := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "WH-1", "stock": 10, "min_stock": 2})
+func (s *CatalogLiveSuite) TestProduct_SingleStock() {
+	cat := s.newCategory(s.admin, "product", "Единый остаток")
+	p := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "ONE-1", "stock": 10, "min_stock": 2, "box": "Б-9", "place": "Полка-единая"})
+	s.Equal("10.000", p.Stock.String())
+	s.Equal("2.000", p.MinStock.String())
+	s.Equal("Б-9", p.Box)
+	s.Equal("Полка-единая", p.Place)
 
-	s.Require().GreaterOrEqual(len(p.Stocks), 2, "блок «Склады» — все активные склады")
-	s.Equal("Алматы", p.Stocks[0].WarehouseName)
-	s.Equal("10.000", p.at(testAlmatyID).Stock.String())
-	s.True(p.at(testAlmatyID).Tracked)
-	s.Equal("0", p.at(testMoscowID).Stock.String(), "нет строки — 0")
-	s.False(p.at(testMoscowID).Tracked, "пустая строка Москвы не создаётся (D48)")
-	s.Equal("10.000", p.TotalStock.String())
+	var cnt int
+	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
+		`SELECT count(*) FROM stock_movements WHERE product_id = $1::uuid`, p.ID).Scan(&cnt))
+	s.Equal(0, cnt, "создание товара движение не пишет")
 
-	body := productPutBody(p, nil)
-	body["stocks"] = []map[string]any{{"warehouse_id": testMoscowID, "stock": 4, "min_stock": 1, "box": "М-1", "place": "Москва-полка"}}
-	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, body)
+	st, raw := s.admin.Do(http.MethodGet, "/api/v1/products/"+p.ID, nil)
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	var resp map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &resp))
+	for _, k := range []string{"stock", "min_stock", "box", "place", "category_is_deleted", "created_at", "updated_at"} {
+		s.Contains(resp, k)
+	}
+	s.NotContains(resp, "stocks")
+	s.NotContains(resp, "total_stock")
+
+	for _, q := range []string{"Б-9", "Полка-единая"} {
+		st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?category_id="+cat.ID+"&q="+url.QueryEscape(q), nil)
+		s.Require().Equal(http.StatusOK, st, string(raw))
+		s.Contains(string(raw), p.ID, "поиск q=%s", q)
+	}
+
+	// отрицательный остаток допустим (уходит в минус при списании).
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, productPutBody(p, map[string]any{"stock": -3}))
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var upd productDTO
 	s.Require().NoError(json.Unmarshal(raw, &upd))
-	s.Equal("4.000", upd.at(testMoscowID).Stock.String())
-	s.Equal("М-1", upd.at(testMoscowID).Box)
-	s.Equal("10.000", upd.at(testAlmatyID).Stock.String(), "Алматы не тронута")
-	s.Equal("14.000", upd.TotalStock.String())
-
-	var wh, delta, reason string
+	s.Equal("-3.000", upd.Stock.String())
+	var delta, reason string
 	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
-		`SELECT warehouse_id::text, qty_delta::text, reason FROM stock_movements WHERE product_id = $1::uuid`, p.ID).Scan(&wh, &delta, &reason))
-	s.Equal(testMoscowID, wh)
-	s.Equal("4.000", delta)
+		`SELECT qty_delta::text, reason FROM stock_movements WHERE product_id = $1::uuid`, p.ID).Scan(&delta, &reason))
+	s.Equal("-13.000", delta)
 	s.Equal("manual", reason)
 
-	// поиск по коробке/месту на любом складе.
-	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?q="+url.QueryEscape("Москва-полка"), nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Contains(string(raw), p.ID)
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, productPutBody(upd, map[string]any{"min_stock": -1}))
+	s.Equal(http.StatusBadRequest, st, string(raw))
+	s.Contains(s.fields(raw), "min_stock")
 
-	// несуществующий склад / дубль склада / мусор → 400 по полю строки.
-	for _, tc := range []struct {
-		stocks []map[string]any
-		field  string
-	}{
-		{[]map[string]any{{"warehouse_id": "00000000-0000-0000-0000-000000000000", "stock": 1}}, "stocks[0].warehouse_id"},
-		{[]map[string]any{{"warehouse_id": testMoscowID, "stock": 1}, {"warehouse_id": testMoscowID, "stock": 2}}, "stocks[1].warehouse_id"},
-		{[]map[string]any{{"warehouse_id": "msk", "stock": 1}}, "stocks[0].warehouse_id"},
-		{[]map[string]any{{"warehouse_id": testMoscowID, "min_stock": -1}}, "stocks[0].min_stock"},
-	} {
-		b := productPutBody(upd, nil)
-		b["stocks"] = tc.stocks
-		st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, b)
-		s.Equal(http.StatusBadRequest, st, "%v → %s", tc.stocks, raw)
-		s.Contains(s.fields(raw), tc.field, string(raw))
-	}
+	// старый формат stocks[] — неизвестное поле, строгий JSON → 400.
+	body := productBody(cat.ID, map[string]any{"sku": "ONE-2"})
+	body["stocks"] = []map[string]any{{"stock": 1}}
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", body)
+	s.Equal(http.StatusBadRequest, st, string(raw))
 
-	// SSR-форма товара — строка на каждый активный склад.
+	// SSR-форма товара — одиночные поля остатка, без таблицы складов.
 	st, page := s.admin.Do(http.MethodGet, "/catalog/products/"+p.ID, nil)
 	s.Require().Equal(http.StatusOK, st)
-	s.Contains(string(page), `data-testid="product-stocks"`)
-	s.Contains(string(page), `data-warehouse="Алматы"`)
-	s.Contains(string(page), `data-warehouse="Москва"`)
+	for _, tid := range []string{"product-stock", "product-min-stock", "product-box", "product-place"} {
+		s.Contains(string(page), `data-testid="`+tid+`"`)
+	}
+	s.Contains(string(page), `name="stock"`)
+	s.NotContains(string(page), `data-testid="product-stocks"`)
+	s.NotContains(string(page), `name="wh_`)
 }

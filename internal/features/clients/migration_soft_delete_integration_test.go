@@ -18,7 +18,7 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/testutil"
 )
 
-// ClientsSoftDeleteMigrationSuite — миграция 0021 (soft-delete-clients §4.1, §4.2, TS-012):
+// ClientsSoftDeleteMigrationSuite — миграция 0013 (soft-delete-clients §4.1, §4.2, TS-012):
 // три колонки удаления на clients и equipment (deleted_at, deleted_by FK users RESTRICT,
 // delete_reason), у equipment — ещё deleted_with_client; CHECK «три поля вместе» с причиной
 // 1–500 символов после обрезки, CHECK «вместе с клиентом — только у удалённой единицы» и
@@ -33,8 +33,8 @@ func TestClientsSoftDeleteMigrationSuite(t *testing.T) {
 }
 
 const (
-	csdAdminID  = "aaaaaaaa-0021-0021-0021-000000000001"
-	csdSecondID = "aaaaaaaa-0021-0021-0021-000000000002"
+	csdAdminID  = "aaaaaaaa-0013-0013-0013-000000000001"
+	csdSecondID = "aaaaaaaa-0013-0013-0013-000000000002"
 )
 
 func migrationsURL() string {
@@ -86,28 +86,28 @@ func (s *ClientsSoftDeleteMigrationSuite) TestTS012_Migration0021_UpDown() {
 	s.Require().NoError(err)
 	defer func() { _, _ = mig.Close() }()
 
-	s.Require().NoError(mig.Migrate(20))
+	s.Require().NoError(mig.Migrate(12))
 	defer func() {
 		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 			s.Require().NoError(err)
 		}
 	}()
-	s.Empty(s.columns("clients"), "0020: колонок удаления на clients нет")
-	s.Empty(s.columns("equipment"), "0020: колонок удаления на equipment нет")
+	s.Empty(s.columns("clients"), "0012: колонок удаления на clients нет")
+	s.Empty(s.columns("equipment"), "0012: колонок удаления на equipment нет")
 
-	// ---- данные «до» (0020): клиент с телефоном и единицей ----
+	// ---- данные «до» (0012): клиент с телефоном и единицей ----
 	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'csd-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, csdAdminID)
 	var clientID, typeID, unitID string
-	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO clients (company_name) VALUES ('Клиент до миграции 0021') RETURNING id`).Scan(&clientID))
+	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO clients (company_name) VALUES ('Клиент до миграции 0013') RETURNING id`).Scan(&clientID))
 	defer s.exec(`DELETE FROM clients WHERE id = $1`, clientID)
 	s.exec(`INSERT INTO client_phones (client_id, position, phone) VALUES ($1, 0, '111')`, clientID)
-	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO equipment_types (name) VALUES ('Тип до миграции 0021') RETURNING id`).Scan(&typeID))
+	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO equipment_types (name) VALUES ('Тип до миграции 0013') RETURNING id`).Scan(&typeID))
 	defer s.exec(`DELETE FROM equipment_types WHERE id = $1`, typeID)
-	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO equipment (client_id, type_id, model) VALUES ($1, $2, 'M-0021') RETURNING id`, clientID, typeID).Scan(&unitID))
+	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO equipment (client_id, type_id, model) VALUES ($1, $2, 'M-0013') RETURNING id`, clientID, typeID).Scan(&unitID))
 	defer s.exec(`DELETE FROM equipment WHERE id = $1`, unitID)
 
-	// ---- up → 0021 ----
-	s.Require().NoError(mig.Migrate(21))
+	// ---- up → 0013 ----
+	s.Require().NoError(mig.Migrate(13))
 	s.Equal("delete_reason:text:YES,deleted_at:timestamp with time zone:YES,deleted_by:uuid:YES", s.columns("clients"))
 	s.Equal("delete_reason:text:YES,deleted_at:timestamp with time zone:YES,deleted_by:uuid:YES,deleted_with_client:boolean:NO", s.columns("equipment"))
 	for _, c := range []string{"clients_deleted_chk", "equipment_deleted_chk", "equipment_deleted_with_client_chk"} {
@@ -135,7 +135,7 @@ func (s *ClientsSoftDeleteMigrationSuite) TestTS012_Migration0021_UpDown() {
 		s.fails(chk, table+": причина 501 символ",
 			`UPDATE `+table+` SET deleted_at = now(), deleted_by = $2, delete_reason = $3 WHERE id = $1`, id, csdAdminID, strings.Repeat("я", 501))
 		s.fails(table+"_deleted_by_fkey", table+": несуществующий удаливший",
-			`UPDATE `+table+` SET deleted_at = now(), deleted_by = 'aaaaaaaa-0021-0021-0021-00000000dead', delete_reason = 'x' WHERE id = $1`, id)
+			`UPDATE `+table+` SET deleted_at = now(), deleted_by = 'aaaaaaaa-0013-0013-0013-00000000dead', delete_reason = 'x' WHERE id = $1`, id)
 	}
 	// DS-015: «вместе с клиентом» — только у удалённой единицы.
 	s.fails("equipment_deleted_with_client_chk", "флаг у действующей единицы",
@@ -156,8 +156,8 @@ func (s *ClientsSoftDeleteMigrationSuite) TestTS012_Migration0021_UpDown() {
 	_, err = s.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, csdSecondID)
 	s.Error(err, "удаление пользователя, удалившего единицу (RESTRICT)")
 
-	// ---- down → 0020: колонки и ограничения ушли, записи остались ----
-	s.Require().NoError(mig.Migrate(20))
+	// ---- down → 0012: колонки и ограничения ушли, записи остались ----
+	s.Require().NoError(mig.Migrate(12))
 	s.Empty(s.columns("clients"))
 	s.Empty(s.columns("equipment"))
 	for _, c := range []string{"clients_deleted_chk", "equipment_deleted_chk", "equipment_deleted_with_client_chk"} {
@@ -171,7 +171,7 @@ func (s *ClientsSoftDeleteMigrationSuite) TestTS012_Migration0021_UpDown() {
 	s.exec(`DELETE FROM users WHERE id = $1`, csdSecondID) // FK ушёл вместе с колонкой
 
 	// повторный up поверх отката проходит; записи снова действующие.
-	s.Require().NoError(mig.Migrate(21))
+	s.Require().NoError(mig.Migrate(13))
 	s.Equal("0", s.scalar(`SELECT count(*)::text FROM clients WHERE id = $1 AND deleted_at IS NOT NULL`, clientID))
 	s.Equal("0", s.scalar(`SELECT count(*)::text FROM equipment WHERE id = $1 AND (deleted_at IS NOT NULL OR deleted_with_client)`, unitID))
 }

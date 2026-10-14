@@ -43,7 +43,10 @@ type ProductFormVM struct {
 	SKU        string
 	Unit       string
 	Price      string
-	Stocks     []ProductStockVM // блок «Склады» (DS-003, D46)
+	Stock      string
+	MinStock   string
+	Box        string
+	Place      string
 	IsActive   bool
 	Units      []string
 	Categories []CategoryOptionVM
@@ -58,76 +61,17 @@ type ProductFormVM struct {
 	DeleteError  string
 }
 
-// ProductStockVM — строка блока «Склады» формы товара. Поля формы повторяются
-// (wh_id/wh_name/wh_stock/wh_min_stock/wh_box/wh_place) в порядке строк.
-type ProductStockVM struct {
-	WarehouseID   string
-	WarehouseName string
-	Stock         string
-	MinStock      string
-	Box           string
-	Place         string
-}
-
-// IsLow — остаток пары товар×склад на грани минимума (DS-004). Пара без строки
-// product_stock (Tracked=false) — не учитывается (D48).
-func (s ProductStockResponse) IsLow() bool {
-	stock, err1 := strconv.ParseFloat(s.Stock.String(), 64)
-	min, err2 := strconv.ParseFloat(s.MinStock.String(), 64)
-	return s.Tracked && err1 == nil && err2 == nil && stock <= min
-}
-
-// IsDebt — отрицательный остаток пары товар×склад («долг», task.md).
-func (s ProductStockResponse) IsDebt() bool {
-	stock, err := strconv.ParseFloat(s.Stock.String(), 64)
-	return err == nil && stock < 0
-}
-
-// IsLow — хоть на одном складе остаток на грани минимума (выделение в таблице).
+// IsLow — остаток на грани минимума (выделение в таблице, task.md).
 func (p ProductResponse) IsLow() bool {
-	for _, s := range p.Stocks {
-		if s.IsLow() {
-			return true
-		}
-	}
-	return false
+	stock, err1 := strconv.ParseFloat(p.Stock.String(), 64)
+	min, err2 := strconv.ParseFloat(p.MinStock.String(), 64)
+	return err1 == nil && err2 == nil && stock <= min
 }
 
-// IsDebt — хоть на одном складе отрицательный остаток.
+// IsDebt — отрицательный остаток («долг», task.md).
 func (p ProductResponse) IsDebt() bool {
-	for _, s := range p.Stocks {
-		if s.IsDebt() {
-			return true
-		}
-	}
-	return false
-}
-
-func stockVMsFromResponse(rows []ProductStockResponse) []ProductStockVM {
-	out := make([]ProductStockVM, len(rows))
-	for i, s := range rows {
-		out[i] = ProductStockVM{WarehouseID: s.WarehouseID, WarehouseName: s.WarehouseName,
-			Stock: s.Stock.String(), MinStock: s.MinStock.String(), Box: s.Box, Place: s.Place}
-	}
-	return out
-}
-
-func stockVMsFromForm(c fiber.Ctx) []ProductStockVM {
-	args := c.Request().PostArgs()
-	ids := args.PeekMulti("wh_id")
-	at := func(key string, i int) string {
-		v := args.PeekMulti(key)
-		if i < len(v) {
-			return string(v[i])
-		}
-		return ""
-	}
-	out := make([]ProductStockVM, len(ids))
-	for i, id := range ids {
-		out[i] = ProductStockVM{WarehouseID: string(id), WarehouseName: at("wh_name", i),
-			Stock: at("wh_stock", i), MinStock: at("wh_min_stock", i), Box: at("wh_box", i), Place: at("wh_place", i)}
-	}
-	return out
+	stock, err := strconv.ParseFloat(p.Stock.String(), 64)
+	return err == nil && stock < 0
 }
 
 // list — GET /catalog/products.
@@ -172,8 +116,8 @@ func (h *SSR) productVM(c fiber.Ctx, p *ProductResponse) (ProductFormVM, error) 
 	}
 	return ProductFormVM{
 		ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
-		Price: p.Price.String(), Stocks: stockVMsFromResponse(p.Stocks),
-		IsActive: p.IsActive, Categories: opts, CatTrunc: catTrunc,
+		Price: p.Price.String(), Stock: p.Stock.String(), MinStock: p.MinStock.String(),
+		Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts, CatTrunc: catTrunc,
 	}, nil
 }
 
@@ -182,32 +126,21 @@ func (h *SSR) productFormNew(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	whs, err := h.prodSvc.ActiveWarehouses(c.Context())
-	if err != nil {
-		return err
-	}
-	stocks := make([]ProductStockVM, len(whs))
-	for i, w := range whs {
-		stocks[i] = ProductStockVM{WarehouseID: w.ID, WarehouseName: w.Name}
-	}
-	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{IsNew: true, IsActive: true, CategoryID: c.Query("category"), Categories: opts, CatTrunc: catTrunc, Stocks: stocks})
+	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{IsNew: true, IsActive: true, CategoryID: c.Query("category"), Categories: opts, CatTrunc: catTrunc})
 }
 
 func productFormFrom(c fiber.Ctx) ProductFormVM {
 	return ProductFormVM{
 		CategoryID: c.FormValue("category_id"), Name: c.FormValue("name"), SKU: c.FormValue("sku"),
-		Unit: c.FormValue("unit"), Price: c.FormValue("price"), Stocks: stockVMsFromForm(c),
+		Unit: c.FormValue("unit"), Price: c.FormValue("price"), Stock: c.FormValue("stock"),
+		MinStock: c.FormValue("min_stock"), Box: c.FormValue("box"), Place: c.FormValue("place"),
 	}
 }
 
 func inputFromForm(vm ProductFormVM) ProductInput {
-	stocks := make([]ProductStockInput, len(vm.Stocks))
-	for i, s := range vm.Stocks {
-		stocks[i] = ProductStockInput{WarehouseID: s.WarehouseID, Stock: s.Stock, MinStock: s.MinStock, Box: s.Box, Place: s.Place}
-	}
 	return ProductInput{
 		CategoryID: vm.CategoryID, Name: vm.Name, SKU: vm.SKU, Unit: vm.Unit,
-		Price: vm.Price, Stocks: stocks, IsActive: vm.IsActive,
+		Price: vm.Price, Stock: vm.Stock, MinStock: vm.MinStock, Box: vm.Box, Place: vm.Place, IsActive: vm.IsActive,
 	}
 }
 
@@ -355,8 +288,6 @@ func fieldText(code string) string {
 		return "Недопустимое значение"
 	case msgNotFound:
 		return "Запись удалена — выберите другую"
-	case msgDuplicate:
-		return "Склад указан дважды"
 	}
 	return "Недопустимое значение"
 }

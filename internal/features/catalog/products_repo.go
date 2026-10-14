@@ -24,6 +24,10 @@ type Product struct {
 	Unit       string
 	Price      string
 	IsActive   bool
+	Stock      string
+	MinStock   string
+	Box        string
+	Place      string
 	// CategoryIsDeleted — категория товара мягко удалена (soft-delete-catalog §6.9).
 	CategoryIsDeleted bool
 	CreatedAt         time.Time
@@ -42,19 +46,24 @@ var (
 	errProductCategoryInvalid = errors.New("catalog: product category invalid")
 	// errCategoryDeleted — выбранная категория мягко удалена (400 category_id: not_found, DS-014).
 	errCategoryDeleted = errors.New("catalog: category deleted")
+	// errStockDeltaOutOfRange — переполнение qty_delta (см. Update ниже): PG 22003 на
+	// вставку в stock_movements, не на карточку товара — маппится отдельно от
+	// mapProductWriteErr (та ветка — про поля самой карточки).
+	errStockDeltaOutOfRange = errors.New("catalog: stock delta out of range")
 )
 
 // productColumns — колонки товара; признак «категория удалена» — подзапросом, чтобы список
 // работал и в RETURNING (INSERT/UPDATE), и в SELECT. Категория соединяется без условия «не
 // удалена»: товар удалённой категории остаётся действующим (DS-014).
 const productColumns = `id, category_id, name, sku, unit, price::text, is_active,
+	stock::text, min_stock::text, box, place,
 	(SELECT c.deleted_at IS NOT NULL FROM catalog_categories c WHERE c.id = products.category_id),
 	created_at, updated_at`
 
 func scanProduct(row pgx.Row) (*Product, error) {
 	var p Product
 	if err := row.Scan(&p.ID, &p.CategoryID, &p.Name, &p.SKU, &p.Unit, &p.Price, &p.IsActive,
-		&p.CategoryIsDeleted, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		&p.Stock, &p.MinStock, &p.Box, &p.Place, &p.CategoryIsDeleted, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -67,7 +76,7 @@ type ProductListParams struct {
 	Limit, Offset   int
 }
 
-// List — q ищет по name/sku и коробке/месту на любом складе (ILIKE, DS-002); карточка неактивной категории всё
+// List — q ищет по name/sku/box/place (ILIKE); карточка неактивной категории всё
 // равно отдаёт товары (фильтр по товару, не по категории). Мягко удалённые товары не отдаются
 // ни при каком значении фильтра архива (soft-delete-catalog §6.9, DS-009).
 func (r *ProductRepo) List(ctx context.Context, p ProductListParams) ([]Product, int, error) {
@@ -87,7 +96,7 @@ func (r *ProductRepo) List(ctx context.Context, p ProductListParams) ([]Product,
 		like := "%" + sqlutil.EscapeLike(p.Q) + "%"
 		args = append(args, like)
 		n := len(args)
-		conds = append(conds, fmt.Sprintf("(name ILIKE $%d OR sku ILIKE $%d OR EXISTS (SELECT 1 FROM product_stock ps WHERE ps.product_id = products.id AND (ps.box ILIKE $%d OR ps.place ILIKE $%d)))", n, n, n, n))
+		conds = append(conds, fmt.Sprintf("(name ILIKE $%d OR sku ILIKE $%d OR box ILIKE $%d OR place ILIKE $%d)", n, n, n, n))
 	}
 	where := ""
 	if len(conds) > 0 {
@@ -141,7 +150,8 @@ func lockCategory(ctx context.Context, tx pgx.Tx, id, kind, keepID string, inval
 }
 
 // Create — категория обязана существовать, иметь kind='product' и не быть удалённой
-// (lockCategory, FOR SHARE до конца транзакции). Строки складов (in.Stocks) пишутся той же транзакцией (D46).
+// (lockCategory, FOR SHARE до конца транзакции). Начальный остаток в stock_movements не пишется
+// (нет «старого» значения для дельты).
 func (r *ProductRepo) Create(ctx context.Context, in ProductInput) (*Product, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -152,19 +162,13 @@ func (r *ProductRepo) Create(ctx context.Context, in ProductInput) (*Product, er
 		return nil, err
 	}
 	row := tx.QueryRow(ctx, `
-		INSERT INTO products (category_id, name, sku, unit, price)
-		VALUES ($1::uuid, $2, $3, $4, $5::numeric)
+		INSERT INTO products (category_id, name, sku, unit, price, stock, min_stock, box, place)
+		VALUES ($1::uuid, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8, $9)
 		RETURNING `+productColumns,
-		in.CategoryID, in.Name, in.SKU, in.Unit, in.Price)
+		in.CategoryID, in.Name, in.SKU, in.Unit, in.Price, in.Stock, in.MinStock, in.Box, in.Place)
 	p, err := scanProduct(row)
 	if err != nil {
 		return nil, mapProductWriteErr(err, true)
-	}
-	if err := checkStockWarehouses(ctx, tx, in.Stocks); err != nil {
-		return nil, err
-	}
-	if err := insertStocks(ctx, tx, p.ID, in.Stocks); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -174,10 +178,9 @@ func (r *ProductRepo) Create(ctx context.Context, in ProductInput) (*Product, er
 
 // Update — полная замена карточки в одной транзакции: строка товара под FOR NO KEY UPDATE с
 // условием «не удалён» (удалённый → ErrProductNotFound, DS-026; порядок блокировок «товар →
-// категория → product_stock» общий с удалением товара), проверка категории, UPDATE, и —
-// по перечисленным складам (in.Stocks) — правка строк product_stock с записью
-// stock_movements(reason=manual, warehouse_id, delta=новое-старое, user) при изменении
-// остатка (task.md: «delta=0 → записи нет»; DS-003). Дельта считается в SQL.
+// категория» общий с удалением товара), проверка категории, UPDATE, и — если остаток
+// изменился — запись stock_movements(reason=manual, delta=новое-старое, user) той же
+// транзакцией (task.md: «delta=0 → записи нет»). Дельта считается в SQL (NUMERIC - NUMERIC).
 func (r *ProductRepo) Update(ctx context.Context, id, userID string, in ProductInput) (*Product, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -185,9 +188,11 @@ func (r *ProductRepo) Update(ctx context.Context, id, userID string, in ProductI
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	var curCategory string
-	if err := tx.QueryRow(ctx, `SELECT category_id::text FROM products WHERE id = $1::uuid AND deleted_at IS NULL FOR NO KEY UPDATE`,
-		id).Scan(&curCategory); err != nil {
+	// oldStock — значение ДО записи, под блокировкой строки: дельта считается относительно
+	// него, а не относительно уже применённого нового значения.
+	var curCategory, oldStock string
+	if err := tx.QueryRow(ctx, `SELECT category_id::text, stock::text FROM products WHERE id = $1::uuid AND deleted_at IS NULL FOR NO KEY UPDATE`,
+		id).Scan(&curCategory, &oldStock); err != nil {
 		return nil, err // pgx.ErrNoRows == ErrProductNotFound
 	}
 	if err := lockCategory(ctx, tx, in.CategoryID, KindProduct, curCategory, errProductCategoryInvalid); err != nil {
@@ -196,18 +201,27 @@ func (r *ProductRepo) Update(ctx context.Context, id, userID string, in ProductI
 
 	row := tx.QueryRow(ctx, `
 		UPDATE products SET category_id = $2::uuid, name = $3, sku = $4, unit = $5, price = $6::numeric,
-			is_active = $7, updated_at = now()
+			stock = $7::numeric, min_stock = $8::numeric, box = $9, place = $10, is_active = $11, updated_at = now()
 		WHERE id = $1::uuid AND deleted_at IS NULL
 		RETURNING `+productColumns,
-		id, in.CategoryID, in.Name, in.SKU, in.Unit, in.Price, in.IsActive)
+		id, in.CategoryID, in.Name, in.SKU, in.Unit, in.Price, in.Stock, in.MinStock, in.Box, in.Place, in.IsActive)
 	p, err := scanProduct(row)
 	if err != nil {
 		return nil, mapProductWriteErr(err, false)
 	}
-	if err := checkStockWarehouses(ctx, tx, in.Stocks); err != nil {
-		return nil, err
-	}
-	if err := updateStocks(ctx, tx, id, userID, in.Stocks); err != nil {
+
+	// delta = новое-старое: оба конца уже провалидированы validateAmount(qtyScale), но
+	// РАЗНОСТЬ двух валидных значений у противоположных границ сама может выйти за
+	// IntDigits колонки (code review Блокер 1) → 400 на поле "stock", не 500.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO stock_movements (product_id, qty_delta, reason, user_id)
+		SELECT $1::uuid, $2::numeric - $3::numeric, 'manual', $4::uuid
+		WHERE ($2::numeric - $3::numeric) <> 0`,
+		id, in.Stock, oldStock, userID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "22003" {
+			return nil, errStockDeltaOutOfRange
+		}
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -229,9 +243,8 @@ func (r *ProductRepo) SetActive(ctx context.Context, id string, active bool) err
 
 // Purge — служебная ФИЗИЧЕСКАЯ уборка товара автотестами (§6.9, DS-027): действующий либо мягко
 // удалённый товар. Журнал склада товара (stock_movements) ссылкой не считается и убирается
-// вместе с ним — он производный: заказ и документ, чьи движения в нём записаны, держат товар
-// своими строками; строки остатков уходят каскадом FK. FK-нарушение (услуги, заказы,
-// документы; RESTRICT) → errProductInUse, журнал при отказе остаётся (одна транзакция).
+// вместе с ним — он производный: заказ, чьи движения в нём записаны, держит товар своими
+// строками. FK-нарушение (услуги, заказы; RESTRICT) → errProductInUse, журнал при отказе остаётся (одна транзакция).
 func (r *ProductRepo) Purge(ctx context.Context, id string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

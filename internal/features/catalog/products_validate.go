@@ -38,7 +38,10 @@ type ProductInput struct {
 	SKU        string
 	Unit       string
 	Price      string
-	Stocks     []ProductStockInput // D46: остатки по складам (перечисленные склады)
+	Stock      string
+	MinStock   string
+	Box        string
+	Place      string
 	IsActive   bool
 }
 
@@ -57,13 +60,16 @@ func (in ProductInput) normalize() ProductInput {
 	in.Name = normStr(in.Name)
 	in.SKU = normStr(in.SKU)
 	in.Unit = normStr(in.Unit)
+	in.Box = normStr(in.Box)
+	in.Place = normStr(in.Place)
 	in.Price = normAmount(in.Price)
-	in.Stocks = normStocks(in.Stocks)
+	in.Stock = normAmount(in.Stock)
+	in.MinStock = normAmount(in.MinStock)
 	return in
 }
 
-// validate — ошибки полей после normalize(). Остатки по складам — validateStocks
-// (остаток может быть < 0, D44; минимум — нет).
+// validate — ошибки полей после normalize(). Остаток товара может быть отрицательным
+// (D44/task.md «может быть < 0»), цена и минимум остатка — нет.
 func (in ProductInput) validate() []errorspkg.Field {
 	var f []errorspkg.Field
 	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
@@ -93,6 +99,14 @@ func (in ProductInput) validate() []errorspkg.Field {
 	if !isValidUnit(in.Unit) {
 		add("unit", msgInvalid)
 	}
+	for _, kv := range [][2]string{{"box", in.Box}, {"place", in.Place}} {
+		if utf8.RuneCountInString(kv[1]) > boxPlaceMax {
+			add(kv[0], msgTooLong)
+		}
+		if sqlutil.HasInvalidText(kv[1]) {
+			add(kv[0], msgInvalidText)
+		}
+	}
 
 	addAmount := func(field, val string, scale amountScale, allowNegative bool) {
 		if code := validateAmount(val, scale, allowNegative); code != "" {
@@ -100,6 +114,7 @@ func (in ProductInput) validate() []errorspkg.Field {
 		}
 	}
 	addAmount("price", in.Price, priceScale, false)
-	f = append(f, validateStocks(in.Stocks)...)
+	addAmount("stock", in.Stock, qtyScale, true)
+	addAmount("min_stock", in.MinStock, qtyScale, false)
 	return f
 }

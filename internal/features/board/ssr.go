@@ -1,8 +1,6 @@
 package board
 
 import (
-	"context"
-
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/kitavrus/kanban-tree/internal/config"
@@ -19,9 +17,6 @@ type BoardVM struct {
 	Shell    ssr.Shell
 	ViewerID string
 	IsAdmin  bool
-	// Warehouses — опции фильтра «Склад» (DS-009, D59): рендерятся сервером, т.к.
-	// /api/v1/warehouses — только admin, а фильтр доступен и executor.
-	Warehouses []CardWarehouse
 }
 
 // StockVM — каркас страницы «/stock»; наполнение — фаза 07.
@@ -37,14 +32,6 @@ type SSR struct {
 	status *ssr.StatusPages
 	firm   config.FirmInfo
 	card   printService
-	// warehouses — источник опций фильтра «Склад» (WithWarehouses; nil — фильтр без опций).
-	warehouses func(context.Context) ([]CardWarehouse, error)
-}
-
-// WithWarehouses — источник складов фильтра доски (сеттер: сигнатура NewSSR не меняется).
-func (s *SSR) WithWarehouses(fn func(context.Context) ([]CardWarehouse, error)) *SSR {
-	s.warehouses = fn
-	return s
 }
 
 func NewSSR(r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages, firm config.FirmInfo, card printService) *SSR {
@@ -54,14 +41,7 @@ func NewSSR(r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages, fi
 // board — GET / (доска заказов занимает корень, ADR-100 — home снят в этой фазе).
 func (s *SSR) board(c fiber.Ctx) error {
 	sh := s.shell.Build(c, "Доска заказов")
-	vm := BoardVM{Shell: sh, ViewerID: middleware.CurrentPrincipal(c).ID, IsAdmin: sh.IsAdmin, Warehouses: []CardWarehouse{}}
-	if s.warehouses != nil {
-		list, err := s.warehouses(c.Context())
-		if err != nil {
-			return err
-		}
-		vm.Warehouses = list
-	}
+	vm := BoardVM{Shell: sh, ViewerID: middleware.CurrentPrincipal(c).ID, IsAdmin: sh.IsAdmin}
 	return s.r.Page(c, "board", vm)
 }
 

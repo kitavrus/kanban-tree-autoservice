@@ -236,7 +236,7 @@
     mutate(function () { return KT.api.put(API + '/' + encodeURIComponent(cur.id), body); });
   }
 
-  // «Удалить» (soft-delete-warehouses-suppliers §8.1): общее окно «Удаление» с обязательной
+  // «Удалить» (soft-delete-suppliers §8.1): общее окно «Удаление» с обязательной
   // причиной; DELETE /api/v1/suppliers/:id {reason}. 400 по причине — под полем окна, окно
   // остаётся; 404 — тост, форма закрывается, список перезапрашивается; 403 — тост «Нет доступа».
   function removeSupplier() {
@@ -244,7 +244,7 @@
     if (!cur || state.busy) return;
     KT.uiDeleteDialog({
       title: 'Удалить «' + cur.name + '»?',
-      text: 'Документы поставщика останутся с пометкой «удалён». Поставщика можно восстановить в разделе «Удалённые»',
+      text: 'Поставщика можно восстановить в разделе «Удалённые»',
       submit: function (reason) { return KT.api.delWith(API + '/' + encodeURIComponent(cur.id), { reason: reason }); },
       onOffline: function () { toast('Нет связи с сервером', true); }
     }).then(function (out) {

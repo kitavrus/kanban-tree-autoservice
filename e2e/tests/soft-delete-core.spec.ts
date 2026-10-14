@@ -30,27 +30,13 @@ async function order(adminApi: AdminApi, uniq: Uniq, tag: string, columnName = '
   return { client, columns, column, task };
 }
 
-/** Товар с остатком stock на складе по умолчанию («Алматы») + услуга каталога. */
+/** Товар с остатком stock + услуга каталога. */
 async function goods(adminApi: AdminApi, uniq: Uniq, tag: string, stock: number) {
   const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq(`${tag} категория товаров`) });
   const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq(`${tag} товар`), stock });
   const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq(`${tag} категория услуг`) });
   const service = await adminApi.createService({ category_id: svcCat.id, name: uniq(`${tag} услуга`) });
   return { product, service };
-}
-
-/** Мягко удалённая заявка «склад → склад» (вкладка «Перемещения», soft-delete-transfers §8.2);
- *  физически убирает _boardCleanup (purgeTransfer). */
-async function deletedTransfer(adminApi: AdminApi, uniq: Uniq, tag: string, reason: string) {
-  const almaty = await adminApi.warehouseByName('Алматы');
-  const moscow = await adminApi.warehouseByName('Москва');
-  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${tag} категория документа`) });
-  const product = await adminApi.createProduct({ category_id: cat.id, name: uniq(`${tag} товар документа`), stock: 1 });
-  const doc = await adminApi.createTransfer({
-    from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'product', product_id: product.id, qty_sent: 1 }],
-  });
-  await adminApi.softDelete('transfers', doc.id, reason);
-  return doc;
 }
 
 async function stockOf(adminApi: AdminApi, productName: string): Promise<number> {
@@ -234,7 +220,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     await second.close();
   });
 
-  test('SD-004 (TS-037): восстановление при нехватке товара — жёлтый блок с товаром, складом и остатком, ссылка «Открыть заказ #N»; блок не исчезает сам и закрывается крестиком; негатив: заказ всё равно восстановлен', async ({
+  test('SD-004 (TS-037): восстановление при нехватке товара — жёлтый блок с товаром и остатком, ссылка «Открыть заказ #N»; блок не исчезает сам и закрывается крестиком; негатив: заказ всё равно восстановлен', async ({
     adminPage: page,
     adminApi,
     uniq,
@@ -256,7 +242,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     await expect(del.warnings).toBeVisible();
     await expect(del.warnings).toContainText(`Восстановлено: #${task.id} ${task.title}`);
     await expect(del.warningLines).toHaveCount(1);
-    await expect(del.warningLines).toHaveText(`Не хватает товара «${product.name}» на складе «Алматы»: остаток −2`);
+    await expect(del.warningLines).toHaveText(`Не хватает товара «${product.name}»: остаток −2`);
     await expect(del.warningOpen).toHaveText(`Открыть заказ #${task.id}`);
     await expect(del.warningOpen).toHaveAttribute('href', `/?task=${task.id}`);
 
@@ -432,13 +418,6 @@ test.describe('SD: мягкое удаление заказа и раздел «
     await del.dialogCancel.click();
     await expect(del.dialog).toBeHidden();
 
-    // вкладка «Перемещения» (soft-delete-transfers §8.2, TS-046 расширением): то же на 360×640.
-    const doc = await deletedTransfer(adminApi, uniq, 'SD-007', uniq('SD-007 ' + 'оченьдлиннаяпричинадокументабезпробелов'.repeat(5)));
-    await del.goto(`kind=transfers&q=${encodeURIComponent(`#${doc.id}`)}`);
-    await expect(del.tab('transfers')).toHaveClass(/active/);
-    await expect(del.row(doc.id)).toBeVisible();
-    await del.expectNoHorizontalScroll();
-
     // вкладка «Колонки» (soft-delete-board-columns §8.2, TS-046 расширением): то же на 360×640.
     const goneCol = (await adminApi.createColumn({ name: uniq('SD-007 колонка').slice(0, 60), color: '#445566', is_final: true, consumes_stock: false })).column;
     await adminApi.deleteColumn(goneCol.id, uniq('SD-007 ' + 'оченьдлиннаяпричинаколонкибезпробелов'.repeat(5)));
@@ -501,15 +480,6 @@ test.describe('SD: мягкое удаление заказа и раздел «
       await expect(del.warnings).toBeVisible();
       expect(await contrastOf(del.warningLines.first()), `${theme}: жёлтый блок`).toBeGreaterThanOrEqual(4.5);
       expect(await contrastOf(del.warningOpen), `${theme}: ссылка в жёлтом блоке`).toBeGreaterThanOrEqual(4.5);
-
-      // вкладка «Перемещения» (soft-delete-transfers §8.2, TS-047 расширением).
-      const doc = await deletedTransfer(adminApi, uniq, `SD-008 ${theme}`, uniq(`SD-008 причина документа ${theme}`));
-      await del.goto(`kind=transfers&q=${encodeURIComponent(`#${doc.id}`)}`);
-      await expect(del.rowTitle(doc.id)).toHaveText(`Перемещение #${doc.id}`);
-      expect(await contrastOf(del.tab('transfers')), `${theme}: вкладка «Перемещения»`).toBeGreaterThanOrEqual(4.5);
-      expect(await contrastOf(del.rowTitle(doc.id)), `${theme}: документ`).toBeGreaterThanOrEqual(4.5);
-      expect(await contrastOf(del.rowSubtitle(doc.id)), `${theme}: направление и статус`).toBeGreaterThanOrEqual(4.5);
-      expect(await contrastOf(del.restoreBtn(doc.id)), `${theme}: «Восстановить» документа`).toBeGreaterThanOrEqual(3);
 
       // вкладка «Колонки» (soft-delete-board-columns §8.2, TS-047 расширением).
       const goneCol = (await adminApi.createColumn({ name: uniq(`SD-008 колонка ${theme}`).slice(0, 60), color: '#445566', is_final: true, consumes_stock: false })).column;

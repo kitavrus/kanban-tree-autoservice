@@ -18,22 +18,15 @@ import (
 )
 
 // Мягкое удаление клиентов и единиц оборудования (docs/features/soft-delete-clients/draft-spec.md,
-// §11): TS-022, TS-023, TS-024, TS-025, TS-026, TS-033, TS-053, TS-058, вкладки раздела
+// §11): TS-022, TS-023, TS-024, TS-025, TS-026, TS-033, вкладки раздела
 // «Удалённые», служебная уборка, SSR-формы удаления и гонки §3. Сьюта — ClientsLiveSuite
-// (§TD-8: боевой бинарь, реальный логин); заказы и документы создаются через API того же сервера.
+// (§TD-8: боевой бинарь, реальный логин); заказы создаются через API того же сервера.
 
 // ---- wire-типы (§TD-6.2) ----
 
 type sdDetails struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-	Details struct {
-		EquipmentIDs []string `json:"equipment_ids"`
-		TransferIDs  []int64  `json:"transfer_ids"`
-		TransferID   int64    `json:"transfer_id"`
-		Kind         string   `json:"kind"`
-		ID           string   `json:"id"`
-	} `json:"details"`
 }
 
 type clientDeleteDTO struct {
@@ -71,17 +64,6 @@ type sdCardDTO struct {
 		ID          string  `json:"id"`
 		EquipmentID *string `json:"equipment_id"`
 	} `json:"subtasks"`
-}
-
-type sdDocDTO struct {
-	ID              int64  `json:"id"`
-	Version         int    `json:"version"`
-	Status          string `json:"status"`
-	ClientIsDeleted bool   `json:"client_is_deleted"`
-	Items           []struct {
-		EquipmentID        *string `json:"equipment_id"`
-		EquipmentIsDeleted bool    `json:"equipment_is_deleted"`
-	} `json:"items"`
 }
 
 type sdDeletedItem struct {
@@ -184,13 +166,6 @@ func (s *ClientsLiveSuite) unitState(id string) string {
 		                 FROM equipment e LEFT JOIN users u ON u.id = e.deleted_by WHERE e.id = $1::uuid), '')`, id)
 }
 
-// unitLoc — «местоположение|склад|документ» единицы (DS-008: удалением не меняется).
-func (s *ClientsLiveSuite) unitLoc(id string) string {
-	return s.sdScalar(`
-		SELECT e.location_status || '|' || coalesce(w.name, '') || '|' || coalesce(e.active_transfer_id::text, '')
-		FROM equipment e LEFT JOIN warehouses w ON w.id = e.warehouse_id WHERE e.id = $1::uuid`, id)
-}
-
 const liveState = "false|||false"
 
 func (s *ClientsLiveSuite) columnID() string {
@@ -225,68 +200,6 @@ func (s *ClientsLiveSuite) taskCard(taskID int64) sdCardDTO {
 	return c
 }
 
-// clientDoc — документ с клиентом (приём «клиент → склад» либо возврат «склад → клиент») по
-// заказу taskID с единицами unitIDs; extra — направление, склад, send / receive.
-func (s *ClientsLiveSuite) clientDoc(taskID int64, unitIDs []string, extra map[string]any) (int, sdDocDTO, []byte) {
-	items := make([]map[string]any, len(unitIDs))
-	for i, u := range unitIDs {
-		items[i] = map[string]any{"kind": "equipment", "equipment_id": u}
-	}
-	body := map[string]any{"task_id": taskID, "items": items}
-	for k, v := range extra {
-		body[k] = v
-	}
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/transfers", body)
-	var d sdDocDTO
-	if st == http.StatusCreated {
-		s.Require().NoError(json.Unmarshal(raw, &d), string(raw))
-	}
-	return st, d, raw
-}
-
-func (s *ClientsLiveSuite) mustClientDoc(taskID int64, unitIDs []string, extra map[string]any) sdDocDTO {
-	st, d, raw := s.clientDoc(taskID, unitIDs, extra)
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	return d
-}
-
-func (s *ClientsLiveSuite) getDoc(id int64) sdDocDTO {
-	st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/transfers/%d", id), nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	var d sdDocDTO
-	s.Require().NoError(json.Unmarshal(raw, &d), string(raw))
-	return d
-}
-
-func (s *ClientsLiveSuite) docAction(id int64, action string, version int) sdDocDTO {
-	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/%s", id, action), map[string]any{"version": version})
-	s.Require().Equal(http.StatusOK, st, "%s: %s", action, raw)
-	var d sdDocDTO
-	s.Require().NoError(json.Unmarshal(raw, &d), string(raw))
-	return d
-}
-
-func (s *ClientsLiveSuite) deleteDoc(d sdDocDTO) {
-	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d", d.ID), map[string]any{"reason": "Создан по ошибке", "version": d.Version})
-	s.Require().Equal(http.StatusOK, st, string(raw))
-}
-
-func (s *ClientsLiveSuite) restoreDoc(id int64) (int, []byte) {
-	return s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/restore", id), nil)
-}
-
-// intakeAndReturn — завершённая история единиц: приём от клиента на «Алматы» и возврат
-// клиенту, оба документа получены; единицы снова у клиента.
-func (s *ClientsLiveSuite) intakeAndReturn(taskID int64, unitIDs ...string) {
-	almaty := s.warehouseByName("Алматы")
-	s.mustClientDoc(taskID, unitIDs, map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": almaty, "receive": true})
-	back := s.mustClientDoc(taskID, unitIDs, map[string]any{"direction": "warehouse_to_client", "from_warehouse_id": almaty, "send": true})
-	s.docAction(back.ID, "receive", back.Version)
-	for _, u := range unitIDs {
-		s.Require().Equal("at_client||", s.unitLoc(u))
-	}
-}
-
 func (s *ClientsLiveSuite) deletedList(kind, q string) []sdDeletedItem {
 	st, raw := s.admin.Do(http.MethodGet, "/api/v1/deleted?kind="+kind+"&limit=200&q="+url.QueryEscape(q), nil)
 	s.Require().Equal(http.StatusOK, st, string(raw))
@@ -308,12 +221,12 @@ func (s *ClientsLiveSuite) executor(login string) *testutil.Browser {
 
 // ---- TS-022 ----
 
-// TS-022 (DS-014, DS-015): клиент с действующим заказом и завершёнными документами удаляется —
+// TS-022 (DS-014, DS-015): клиент с действующим заказом удаляется —
 // 200; он и ВСЕ его действующие единицы помечены одной причиной и одним моментом,
 // deleted_with_client = true, equipment_deleted = числу действующих единиц (удалённая раньше
 // отдельно в счёт не входит и свою причину сохраняет); заказ остаётся на доске с
-// client_is_deleted = true; телефоны и местоположение единиц не тронуты. Причина обязательна.
-// Негатив: отказов 409 CLIENT_HAS_TASKS / EQUIPMENT_HAS_TRANSFERS больше нет.
+// client_is_deleted = true; телефоны не тронуты. Причина обязательна.
+// Негатив: отказа 409 CLIENT_HAS_TASKS нет.
 func (s *ClientsLiveSuite) TestTS022_DeleteClientWithTasksAndDocuments() {
 	m := mark()
 	c := s.newClient("SD-022 Клиент " + m)
@@ -321,7 +234,6 @@ func (s *ClientsLiveSuite) TestTS022_DeleteClientWithTasksAndDocuments() {
 	u1, u2 := s.unit(c.ID, typeID, "M-022-1"), s.unit(c.ID, typeID, "M-022-2")
 	early := s.unit(c.ID, typeID, "M-022-раньше")
 	task := s.apiTask(s.admin, c.ID, "SD-022 заказ "+m, u1, u2, early)
-	s.intakeAndReturn(task.ID, u1) // завершённые документы клиента и единицы
 	s.mustDeleteUnit(early, "Списана раньше клиента")
 
 	// причина обязательна (DS-020): клиент не удалён.
@@ -349,7 +261,6 @@ func (s *ClientsLiveSuite) TestTS022_DeleteClientWithTasksAndDocuments() {
 	s.Equal("true|clients-admin|Клиент закрылся", s.clientState(c.ID), "причина обрезана")
 	for _, u := range []string{u1, u2} {
 		s.Equal("true|clients-admin|Клиент закрылся|true", s.unitState(u), "единица ушла вместе с клиентом")
-		s.Equal("at_client||", s.unitLoc(u), "местоположение не изменилось (DS-008)")
 	}
 	s.Equal("true|clients-admin|Списана раньше клиента|false", s.unitState(early), "удалённая отдельно сохраняет свою причину")
 	s.Equal("2", s.sdScalar(`
@@ -447,19 +358,16 @@ func (s *ClientsLiveSuite) TestTS023_RestoreClient() {
 
 // ---- TS-024 ----
 
-// TS-024 (DS-014, DS-008): единица, бывшая в заказе, в услуге заказа и в завершённых документах,
-// удаляется — 200 (отказов EQUIPMENT_USED_IN_TASKS / EQUIPMENT_HAS_TRANSFERS нет), местоположение
-// и склад не меняются, deleted_with_client = false. Единица в незавершённом документе → 409
-// EQUIPMENT_IN_TRANSFER с номером документа, не удалена. Причина обязательна. Удалённая единица
+// TS-024 (DS-014): единица, бывшая в заказе и в услуге заказа, удаляется — 200 (отказа
+// EQUIPMENT_USED_IN_TASKS нет), deleted_with_client = false. Причина обязательна. Удалённая единица
 // для обычных адресов не существует. Негатив: добавление удалённой единицы в заказ и назначение
 // её услуге → 400 equipment_id: not_found; уже назначенная услуге остаётся.
 func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 	m := mark()
 	c := s.newClient("SD-024 Клиент " + m)
 	typeID := s.newType("SD-024 Тип " + m)
-	used, busy, spare := s.unit(c.ID, typeID, "M-024-в-заказе"), s.unit(c.ID, typeID, "M-024-в-заявке"), s.unit(c.ID, typeID, "M-024-свободна")
-	task := s.apiTask(s.admin, c.ID, "SD-024 заказ "+m, used, busy, spare)
-	s.intakeAndReturn(task.ID, used)
+	used, spare := s.unit(c.ID, typeID, "M-024-в-заказе"), s.unit(c.ID, typeID, "M-024-свободна")
+	task := s.apiTask(s.admin, c.ID, "SD-024 заказ "+m, used, spare)
 
 	// услуга заказа с этой единицей (subtasks.equipment_id).
 	svc := s.newServiceDirect("SD-024 услуга " + m)
@@ -477,16 +385,6 @@ func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 	st, raw = putSub(assigned, used)
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
-	// незавершённый документ (заявка приёма) занимает единицу busy.
-	req := s.mustClientDoc(task.ID, []string{busy}, map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": s.warehouseByName("Алматы")})
-	st, _, raw = s.deleteUnit(s.admin, busy, "Списана")
-	s.Require().Equal(http.StatusConflict, st, string(raw))
-	e := s.sdErr(raw)
-	s.Equal("EQUIPMENT_IN_TRANSFER", e.Code)
-	s.Equal(req.ID, e.Details.TransferID)
-	s.Equal(fmt.Sprintf("Оборудование в перемещении #%d — сначала отмените его", req.ID), e.Message)
-	s.Equal(liveState, s.unitState(busy), "при отказе единица не удалена")
-
 	// причина обязательна.
 	st, _, raw = s.deleteUnit(s.admin, used, " ")
 	s.Equal(http.StatusBadRequest, st, string(raw))
@@ -498,7 +396,6 @@ func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 	s.Equal(used, out.ID)
 	s.False(out.DeletedAt.IsZero())
 	s.Equal("true|clients-admin|Списана клиентом|false", s.unitState(used), "удалена отдельно — без пометки «вместе с клиентом»")
-	s.Equal("at_client||", s.unitLoc(used), "местоположение и склад не изменились (DS-008)")
 	s.Equal("false||", s.clientState(c.ID), "клиент не затронут")
 
 	// для обычных адресов удалённая единица не существует (DS-026).
@@ -539,15 +436,15 @@ func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 // ---- TS-025 ----
 
 // TS-025 (DS-014, DS-026): удалённые не выбираются и не видны. Новый заказ и смена клиента
-// заказа на удалённого → 400 client_id: not_found; списки клиентов, единиц клиента и поиск
-// единиц удалённых не содержат; equipment_count — только действующие. Негатив: чтение и правка
+// заказа на удалённого → 400 client_id: not_found; списки клиентов и единиц клиента
+// удалённых не содержат; equipment_count — только действующие. Негатив: чтение и правка
 // удалённого клиента, список и создание его оборудования (доступно исполнителю) → 404.
 func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 	m := mark()
 	gone := s.newClient("SD-025 Удалённый " + m)
 	live := s.newClient("SD-025 Действующий " + m)
 	typeID := s.newType("SD-025 Тип " + m)
-	goneUnit := s.unit(gone.ID, typeID, "M-025-ушла-"+m)
+	s.unit(gone.ID, typeID, "M-025-ушла-"+m)
 	keep, dropped := s.unit(live.ID, typeID, "M-025-живая-"+m), s.unit(live.ID, typeID, "M-025-удалена-"+m)
 	task := s.apiTask(s.admin, live.ID, "SD-025 заказ "+m)
 	s.mustDeleteUnit(dropped, "Списана")
@@ -590,17 +487,6 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 	s.Require().Len(units.Items, 1)
 	s.Equal(1, units.Total)
 	s.Equal(keep, units.Items[0].ID)
-
-	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment?limit=200&q="+url.QueryEscape("M-025"), nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Require().NoError(json.Unmarshal(raw, &units), string(raw))
-	found := map[string]bool{}
-	for _, it := range units.Items {
-		found[it.ID] = true
-	}
-	s.True(found[keep], "действующая единица в поиске есть")
-	s.False(found[dropped], "удалённая отдельно в поиске не выдаётся")
-	s.False(found[goneUnit], "ушедшая с клиентом в поиске не выдаётся")
 
 	// негатив: удалённый клиент для обычных адресов не существует.
 	exec := s.executor("sd-025-exec-" + m)
@@ -738,172 +624,6 @@ func (s *ClientsLiveSuite) TestTS033_SoftDeleteAdminOnly() {
 	s.Equal("true|clients-admin|Фикстура", s.clientState(deletedClient.ID), "удалённый клиент не восстановлен")
 }
 
-// ---- TS-053 ----
-
-// TS-053 (DS-041): оборудование не у клиента. Клиент с единицей «на складе» → 409
-// CLIENT_EQUIPMENT_AT_WAREHOUSE с details.equipment_ids (только такие единицы); с единицей
-// «в пути» → тот же отказ; с единицей в заявке → 409 CLIENT_EQUIPMENT_IN_TRANSFER с
-// details.transfer_ids; отдельная единица «на складе» → 409 EQUIPMENT_AT_WAREHOUSE. После
-// возврата оборудования клиенту документом удаление проходит. Негатив: при каждом отказе ни
-// клиент, ни одна его единица (в том числе стоящая у клиента) не помечены удалёнными.
-func (s *ClientsLiveSuite) TestTS053_EquipmentNotAtClient() {
-	m := mark()
-	almaty := s.warehouseByName("Алматы")
-	c := s.newClient("SD-053 Клиент " + m)
-	typeID := s.newType("SD-053 Тип " + m)
-	moving, home := s.unit(c.ID, typeID, "M-053-ездит"), s.unit(c.ID, typeID, "M-053-у-клиента")
-	task := s.apiTask(s.admin, c.ID, "SD-053 заказ "+m, moving, home)
-
-	untouched := func(ctx string) {
-		s.Equal("false||", s.clientState(c.ID), "%s: клиент не удалён", ctx)
-		s.Equal(liveState, s.unitState(moving), "%s: единица не у клиента не помечена", ctx)
-		s.Equal(liveState, s.unitState(home), "%s: единица у клиента не помечена", ctx)
-	}
-	refuse := func(ctx, code string) sdDetails {
-		st, _, raw := s.deleteClient(s.admin, c.ID, "Попытка")
-		s.Require().Equal(http.StatusConflict, st, "%s: %s", ctx, raw)
-		e := s.sdErr(raw)
-		s.Equal(code, e.Code, ctx)
-		untouched(ctx)
-		return e
-	}
-
-	// заявка приёма: единица у клиента, но занята документом.
-	req := s.mustClientDoc(task.ID, []string{moving}, map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": almaty})
-	e := refuse("в заявке", "CLIENT_EQUIPMENT_IN_TRANSFER")
-	s.Equal([]int64{req.ID}, e.Details.TransferIDs)
-	s.Equal(fmt.Sprintf("Оборудование клиента в перемещениях: #%d — сначала отмените их", req.ID), e.Message)
-
-	// отправили — единица в пути.
-	sent := s.docAction(req.ID, "send", req.Version)
-	s.Require().Equal(fmt.Sprintf("in_transit||%d", req.ID), s.unitLoc(moving))
-	e = refuse("в пути", "CLIENT_EQUIPMENT_AT_WAREHOUSE")
-	s.Equal([]string{moving}, e.Details.EquipmentIDs, "только единица не у клиента")
-	s.Equal("Оборудование клиента на складе или в пути — сначала верните его клиенту", e.Message)
-
-	// получили — единица на нашем складе, документов в работе нет.
-	s.docAction(req.ID, "receive", sent.Version)
-	s.Require().Equal("at_warehouse|Алматы|", s.unitLoc(moving))
-	e = refuse("на складе", "CLIENT_EQUIPMENT_AT_WAREHOUSE")
-	s.Equal([]string{moving}, e.Details.EquipmentIDs)
-
-	// отдельная единица на складе.
-	st, _, raw := s.deleteUnit(s.admin, moving, "Списана")
-	s.Require().Equal(http.StatusConflict, st, string(raw))
-	ue := s.sdErr(raw)
-	s.Equal("EQUIPMENT_AT_WAREHOUSE", ue.Code)
-	s.Equal("Оборудование на складе или в пути — сначала верните его клиенту", ue.Message)
-	untouched("единица на складе")
-
-	// возврат клиенту документом — удаление проходит.
-	back := s.mustClientDoc(task.ID, []string{moving}, map[string]any{"direction": "warehouse_to_client", "from_warehouse_id": almaty, "send": true})
-	refuse("возврат в пути", "CLIENT_EQUIPMENT_AT_WAREHOUSE")
-	s.docAction(back.ID, "receive", back.Version)
-	s.Require().Equal("at_client||", s.unitLoc(moving))
-
-	out := s.mustDeleteClient(c.ID, "Оборудование вернули")
-	s.Equal(2, out.EquipmentDeleted)
-	s.Equal("true|clients-admin|Оборудование вернули|true", s.unitState(moving))
-	s.Equal("true|clients-admin|Оборудование вернули|true", s.unitState(home))
-
-	// документы удалённого клиента и строки удалённых единиц остаются с пометками (§6.5).
-	doc := s.getDoc(back.ID)
-	s.True(doc.ClientIsDeleted, "клиент документа помечен")
-	s.Require().Len(doc.Items, 1)
-	s.True(doc.Items[0].EquipmentIsDeleted, "единица строки помечена")
-}
-
-// ---- TS-058 ----
-
-// TS-058 (DS-045, DS-041, DS-018): удалённая заявка единицу не удерживает — единица (у клиента)
-// удаляется из справочника, 200; восстановление заявки → 409 TRANSFER_HAS_DELETED_REFS с
-// details.kind = equipment и details.id, заявка остаётся удалённой и единицу не занимает; после
-// восстановления единицы заявка восстанавливается и занимает её снова. То же — когда единица
-// ушла вместе с клиентом. Негатив: отменённый документ с удалённой единицей восстанавливается.
-func (s *ClientsLiveSuite) TestTS058_DeletedRequestAndDeletedUnit() {
-	m := mark()
-	almaty := s.warehouseByName("Алматы")
-	c := s.newClient("SD-058 Клиент " + m)
-	typeID := s.newType("SD-058 Тип " + m)
-	u, cancelledUnit := s.unit(c.ID, typeID, "M-058-заявка"), s.unit(c.ID, typeID, "M-058-отмена")
-	task := s.apiTask(s.admin, c.ID, "SD-058 заказ "+m, u, cancelledUnit)
-	intake := map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": almaty}
-
-	req := s.mustClientDoc(task.ID, []string{u}, intake)
-	s.deleteDoc(req)
-	s.Require().Equal("at_client||", s.unitLoc(u), "удалённая заявка единицу освободила")
-
-	s.mustDeleteUnit(u, "Списана") // строки удалённой заявки единицу не удерживают
-
-	refused := func(ctx string) {
-		st, raw := s.restoreDoc(req.ID)
-		s.Require().Equal(http.StatusConflict, st, "%s: %s", ctx, raw)
-		e := s.sdErr(raw)
-		s.Equal("TRANSFER_HAS_DELETED_REFS", e.Code, ctx)
-		s.Equal("В перемещении есть удалённые записи — сначала восстановите их", e.Message, ctx)
-		s.Equal("equipment", e.Details.Kind, ctx)
-		s.Equal(u, e.Details.ID, ctx)
-		s.Equal("true", s.sdScalar(`SELECT (deleted_at IS NOT NULL)::text FROM transfers WHERE id = $1`, req.ID), "%s: заявка остаётся удалённой", ctx)
-		s.Equal("at_client||", s.unitLoc(u), "%s: удалённая единица документом не занята", ctx)
-	}
-	refused("единица удалена отдельно")
-
-	st, raw := s.restoreUnit(s.admin, u)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-
-	// единица ушла вместе с клиентом — тот же отказ.
-	s.mustDeleteClient(c.ID, "Закрылся")
-	refused("единица ушла с клиентом")
-	st, _, raw = s.restoreClient(s.admin, c.ID)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-
-	st, raw = s.restoreDoc(req.ID)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Equal(fmt.Sprintf("at_client||%d", req.ID), s.unitLoc(u), "восстановленная заявка снова занимает единицу")
-	// теперь единица в незавершённом документе — удалить её нельзя (инвариант DS-041).
-	st, _, raw = s.deleteUnit(s.admin, u, "Списана")
-	s.Equal(http.StatusConflict, st, string(raw))
-	s.Equal("EQUIPMENT_IN_TRANSFER", s.sdErr(raw).Code)
-
-	// негатив: отменённый документ не проверяется.
-	doc := s.mustClientDoc(task.ID, []string{cancelledUnit}, intake)
-	cancelled := s.docAction(doc.ID, "cancel", doc.Version)
-	s.deleteDoc(cancelled)
-	s.mustDeleteUnit(cancelledUnit, "Списана")
-	st, raw = s.restoreDoc(doc.ID)
-	s.Require().Equal(http.StatusOK, st, "отменённый документ с удалённой единицей восстанавливается: %s", raw)
-	got := s.getDoc(doc.ID)
-	s.Equal("cancelled", got.Status)
-	s.Require().Len(got.Items, 1)
-	s.True(got.Items[0].EquipmentIsDeleted, "строка отменённого документа — с пометкой")
-	s.Equal("at_client||", s.unitLoc(cancelledUnit), "отменённый документ единицу не занимает")
-}
-
-// Abuse case 2 (DS-014): идентификатор удалённой единицы в новой строке документа в обход
-// выпадающего списка → 400 items[i].equipment_id: not_found, документ не создан. Негатив:
-// та же строка с действующей единицей проходит.
-func (s *ClientsLiveSuite) TestTransfer_DeletedUnitNotAccepted() {
-	m := mark()
-	almaty := s.warehouseByName("Алматы")
-	c := s.newClient("SD-doc Клиент " + m)
-	typeID := s.newType("SD-doc Тип " + m)
-	live, gone := s.unit(c.ID, typeID, "M-doc-живая"), s.unit(c.ID, typeID, "M-doc-удалена")
-	task := s.apiTask(s.admin, c.ID, "SD-doc заказ "+m, live, gone)
-	s.mustDeleteUnit(gone, "Списана")
-
-	intake := map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": almaty}
-	st, _, raw := s.clientDoc(task.ID, []string{live, gone}, intake)
-	s.Require().Equal(http.StatusBadRequest, st, string(raw))
-	f := s.fields(raw)
-	s.Equal("not_found", f["items[1].equipment_id"], string(raw))
-	s.NotContains(f, "items[0].equipment_id")
-	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM transfers WHERE task_id = $1`, task.ID), "документ не создан")
-	s.Equal("at_client||", s.unitLoc(live), "действующая единица не занята")
-
-	st, _, raw = s.clientDoc(task.ID, []string{live}, intake)
-	s.Equal(http.StatusCreated, st, string(raw))
-}
-
 // ---- раздел «Удалённые» (§6.5, §8.2) ----
 
 // Виды clients и equipment раздела «Удалённые» (DS-011, DS-015): клиент — title = название
@@ -971,7 +691,7 @@ func (s *ClientsLiveSuite) TestDeletedTabs_ClientsAndEquipment() {
 
 // Виды clients и equipment адреса DELETE /api/v1/test/purge/:kind/:id: действующая и мягко
 // удалённая запись стираются физически (клиент — вместе с телефонами и единицами); запись, на
-// которую ссылаются заказы либо строки документов, → 409 CONFLICT «Запись используется» и
+// которую ссылаются заказы, → 409 CONFLICT «Запись используется» и
 // остаётся; нет записи либо битый идентификатор → 404 NOT_FOUND. Негатив: исполнитель → 403.
 func (s *ClientsLiveSuite) TestPurge_ClientsAndEquipment() {
 	m := mark()
@@ -1047,16 +767,14 @@ func (s *ClientsLiveSuite) postForm(path string, form url.Values) (int, string, 
 }
 
 // SSR POST /clients/:id/delete и /equipment/:id/delete: поле reason обязательно — без причины
-// форма возвращается (422) с окном «Удаление» и текстом под полем, запись не удалена; отказ 409
-// — форма с красным блоком и текстом сервера; успех — PRG и тост с числом единиц. Удалённая
+// форма возвращается (422) с окном «Удаление» и текстом под полем, запись не удалена; успех — PRG и тост с числом единиц. Удалённая
 // запись — страница 404. Негатив: длинная причина — свой текст, введённая причина сохранена.
 func (s *ClientsLiveSuite) TestSSR_SoftDeleteForms() {
 	m := mark()
-	almaty := s.warehouseByName("Алматы")
 	c := s.newClient("SD-ssr Клиент " + m)
 	typeID := s.newType("SD-ssr Тип " + m)
 	u1, u2 := s.unit(c.ID, typeID, "M-ssr-1"), s.unit(c.ID, typeID, "M-ssr-2")
-	task := s.apiTask(s.admin, c.ID, "SD-ssr заказ "+m, u1, u2)
+	s.apiTask(s.admin, c.ID, "SD-ssr заказ "+m, u1, u2)
 
 	// форма клиента: окно «Удаление» с пояснением и числом единиц.
 	st, page := s.admin.Do(http.MethodGet, "/clients/"+c.ID, nil)
@@ -1079,20 +797,6 @@ func (s *ClientsLiveSuite) TestSSR_SoftDeleteForms() {
 	s.Contains(body, `data-delete-error="Укажите причину удаления"`)
 	s.Equal("false||", s.clientState(c.ID))
 	s.Equal(liveState, s.unitState(u1))
-
-	// 409: единица в заявке — красный блок в форме единицы и в форме клиента.
-	req := s.mustClientDoc(task.ID, []string{u1}, map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": almaty})
-	status, _, body = s.postForm("/equipment/"+u1+"/delete", url.Values{"reason": {"Списана"}})
-	s.Equal(http.StatusConflict, status)
-	s.Contains(body, `data-testid="form-error"`)
-	s.Contains(body, fmt.Sprintf("Оборудование в перемещении #%d — сначала отмените его", req.ID))
-	status, _, body = s.postForm("/clients/"+c.ID+"/delete", url.Values{"reason": {"Закрылся"}})
-	s.Equal(http.StatusConflict, status)
-	s.Contains(body, `data-testid="form-error"`)
-	s.Contains(body, fmt.Sprintf("Оборудование клиента в перемещениях: #%d — сначала отмените их", req.ID))
-	s.Contains(body, `data-testid="equipment-table"`, "блок оборудования при отказе не пропадает")
-	s.Equal("false||", s.clientState(c.ID))
-	s.docAction(req.ID, "cancel", req.Version)
 
 	// успех: единица → карточка клиента с тостом; клиент → список с тостом и числом единиц.
 	status, loc, _ := s.postForm("/equipment/"+u2+"/delete", url.Values{"reason": {"Списана клиентом"}})
@@ -1157,39 +861,6 @@ func (s *ClientsLiveSuite) race(hold func(ctx context.Context) (commit func()), 
 	return <-done
 }
 
-// §3 п. 1 (DS-041): единица клиента меняет местоположение в незавершённой транзакции (документ
-// привёз её на склад, строка equipment под FOR NO KEY UPDATE) — в это окно приходит удаление
-// клиента. Удаление обязано дождаться блокировки строки единицы и увидеть её на складе: 409
-// CLIENT_EQUIPMENT_AT_WAREHOUSE, ни клиент, ни единицы не помечены. Реализация, читающая
-// местоположение до блокировки, удалила бы клиента.
-func (s *ClientsLiveSuite) TestRace_ClientDeleteWaitsForUnitMove() {
-	m := mark()
-	almaty := s.warehouseByName("Алматы")
-	c := s.newClient("SD-race Клиент-переезд " + m)
-	typeID := s.newType("SD-race Тип-переезд " + m)
-	u, home := s.unit(c.ID, typeID, "M-race-едет"), s.unit(c.ID, typeID, "M-race-дома")
-
-	res := s.race(func(ctx context.Context) func() {
-		tx, err := s.Pool.Begin(ctx)
-		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM equipment WHERE id = $1::uuid FOR NO KEY UPDATE`, u)
-		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `UPDATE equipment SET location_status = 'at_warehouse', warehouse_id = $2::uuid WHERE id = $1::uuid`, u, almaty)
-		s.Require().NoError(err)
-		return func() { s.Require().NoError(tx.Commit(ctx)) }
-	}, func() (int, []byte) {
-		st, _, raw := s.deleteClient(s.admin, c.ID, "Гонка")
-		return st, raw
-	})
-	s.Require().Equal(http.StatusConflict, res.status, string(res.raw))
-	e := s.sdErr(res.raw)
-	s.Equal("CLIENT_EQUIPMENT_AT_WAREHOUSE", e.Code)
-	s.Equal([]string{u}, e.Details.EquipmentIDs)
-	s.Equal("false||", s.clientState(c.ID), "клиент не удалён")
-	s.Equal(liveState, s.unitState(u))
-	s.Equal(liveState, s.unitState(home), "единица у клиента тоже не помечена")
-}
-
 // holdClientDelete — «удаление клиента в полёте»: те же блокировки и UPDATE, что делает
 // Repo.SoftDeleteClient (клиент FOR UPDATE → его действующие единицы FOR NO KEY UPDATE по id →
 // отметки), транзакция не зафиксирована. Возвращает фиксацию.
@@ -1210,28 +881,6 @@ func (s *ClientsLiveSuite) holdClientDelete(clientID string) func(ctx context.Co
 		s.Require().NoError(err)
 		return func() { s.Require().NoError(tx.Commit(ctx)) }
 	}
-}
-
-// §3 п. 1 (DS-041): удаление клиента идёт (клиент под FOR UPDATE, единицы помечены, транзакция
-// не зафиксирована) — в это окно приходит создание документа с его единицей. Документ обязан
-// дождаться удаления и получить 400 items[0].equipment_id: not_found: документ не создан,
-// удалённая единица не занята. Реализация, проверяющая «единица не удалена» только до
-// блокировки, создала бы заявку с удалённой единицей (нарушение DS-041).
-func (s *ClientsLiveSuite) TestRace_TransferWaitsForClientDelete() {
-	m := mark()
-	c := s.newClient("SD-race Клиент-документ " + m)
-	u := s.unit(c.ID, s.newType("SD-race Тип-документ "+m), "M-race-уходит")
-	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m, u)
-
-	res := s.race(s.holdClientDelete(c.ID), func() (int, []byte) {
-		st, _, raw := s.clientDoc(task.ID, []string{u}, map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": s.warehouseByName("Алматы")})
-		return st, raw
-	})
-	s.Require().Equal(http.StatusBadRequest, res.status, string(res.raw))
-	s.Equal("not_found", s.fields(res.raw)["items[0].equipment_id"])
-	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM transfers WHERE task_id = $1`, task.ID), "документ не создан")
-	s.Equal("at_client||", s.unitLoc(u), "удалённая единица документом не занята")
-	s.Equal("true|clients-admin|Гонка|true", s.unitState(u))
 }
 
 // §3 п. 5 (DS-014, DS-024): удаление клиента идёт — в это окно приходит создание заказа для
@@ -1272,39 +921,6 @@ func (s *ClientsLiveSuite) TestRace_EquipmentCreateWaitsForClientDelete() {
 		FROM equipment WHERE client_id = $1::uuid`, c.ID), "новая единица не добавлена, действующих нет")
 }
 
-// §3 п. 3 (DS-014): документ занимает единицу (строка equipment под FOR NO KEY UPDATE,
-// active_transfer_id выставлен, транзакция не зафиксирована) — в это окно приходит удаление
-// единицы. Удаление обязано дождаться и увидеть занятую единицу: 409 EQUIPMENT_IN_TRANSFER с
-// номером документа, единица не удалена — гонка «удалить ↔ занять» даёт ровно один успех.
-func (s *ClientsLiveSuite) TestRace_UnitDeleteWaitsForClaim() {
-	m := mark()
-	c := s.newClient("SD-race Клиент-занятие " + m)
-	typeID := s.newType("SD-race Тип-занятие " + m)
-	u, other := s.unit(c.ID, typeID, "M-race-занимают"), s.unit(c.ID, typeID, "M-race-в-заявке")
-	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m, u, other)
-	// настоящий незавершённый документ — его номер получит единица u «в полёте».
-	doc := s.mustClientDoc(task.ID, []string{other}, map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": s.warehouseByName("Алматы")})
-
-	res := s.race(func(ctx context.Context) func() {
-		tx, err := s.Pool.Begin(ctx)
-		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM equipment WHERE id = $1::uuid FOR NO KEY UPDATE`, u)
-		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `UPDATE equipment SET active_transfer_id = $2 WHERE id = $1::uuid AND active_transfer_id IS NULL AND deleted_at IS NULL`, u, doc.ID)
-		s.Require().NoError(err)
-		return func() { s.Require().NoError(tx.Commit(ctx)) }
-	}, func() (int, []byte) {
-		st, _, raw := s.deleteUnit(s.admin, u, "Гонка")
-		return st, raw
-	})
-	s.Require().Equal(http.StatusConflict, res.status, string(res.raw))
-	e := s.sdErr(res.raw)
-	s.Equal("EQUIPMENT_IN_TRANSFER", e.Code)
-	s.Equal(doc.ID, e.Details.TransferID)
-	s.Equal(liveState, s.unitState(u), "единица не удалена")
-	s.Equal(fmt.Sprintf("at_client||%d", doc.ID), s.unitLoc(u), "единица занята документом")
-}
-
 // §3 п. 4 (DS-015): удаление клиента идёт — в это окно приходит восстановление его единицы,
 // удалённой раньше отдельно. Восстановление читает клиента FOR KEY SHARE: дожидается удаления
 // и получает 409 CLIENT_DELETED; единица остаётся удалённой — действующей единицы у удалённого
@@ -1319,104 +935,6 @@ func (s *ClientsLiveSuite) TestRace_UnitRestoreWaitsForClientDelete() {
 	s.Require().Equal(http.StatusConflict, res.status, string(res.raw))
 	s.Equal("CLIENT_DELETED", s.sdErr(res.raw).Code)
 	s.Equal("true|clients-admin|Списана раньше|false", s.unitState(u), "единица остаётся удалённой")
-}
-
-// ---- DS-041 × отмена проведения (ревью: обход запрета через Unreceive) ----
-
-func (s *ClientsLiveSuite) unreceive(d sdDocDTO) (int, []byte) {
-	return s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/unreceive", d.ID),
-		map[string]any{"version": d.Version, "reason": "Ошибочное проведение"})
-}
-
-// returnedDoc — полученный документ «склад → клиент»: единица u принята на склад и возвращена
-// клиенту — у клиента и свободна (её и клиента можно удалить). Возвращает документ возврата.
-func (s *ClientsLiveSuite) returnedDoc(taskID int64, u string) sdDocDTO {
-	almaty := s.warehouseByName("Алматы")
-	s.mustClientDoc(taskID, []string{u}, map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": almaty, "receive": true})
-	back := s.mustClientDoc(taskID, []string{u}, map[string]any{"direction": "warehouse_to_client", "from_warehouse_id": almaty, "send": true})
-	got := s.docAction(back.ID, "receive", back.Version)
-	s.Require().Equal("at_client||", s.unitLoc(u))
-	return got
-}
-
-// TS-053 / TS-058 (DS-041, DS-045 — распространён на отмену проведения): документ «склад →
-// клиент» получен, единица у клиента и свободна — её (вариант 1) либо клиента целиком (вариант 2)
-// удаляют. Отмена проведения документа вернула бы удалённую единицу «в путь» и заняла её
-// незавершённым документом — отказ 409 TRANSFER_HAS_DELETED_REFS (details.kind = equipment,
-// details.id); документ остаётся «получен», единица — удалённой, у клиента и свободной. После
-// восстановления единицы (клиента) отмена проведения проходит. Негатив: при отказе ни статус
-// документа, ни местоположение, ни занятость единицы не изменились.
-func (s *ClientsLiveSuite) TestTS053_UnreceiveRefusesDeletedUnit() {
-	for _, tc := range []struct {
-		name    string
-		remove  func(clientID, unitID string)
-		restore func(clientID, unitID string)
-		deleted string
-	}{
-		{"единица удалена отдельно",
-			func(_, u string) { s.mustDeleteUnit(u, "Списана") },
-			func(_, u string) {
-				st, raw := s.restoreUnit(s.admin, u)
-				s.Require().Equal(http.StatusOK, st, string(raw))
-			},
-			"true|clients-admin|Списана|false"},
-		{"единица ушла вместе с клиентом",
-			func(c, _ string) { s.mustDeleteClient(c, "Закрылся") },
-			func(c, _ string) {
-				st, _, raw := s.restoreClient(s.admin, c)
-				s.Require().Equal(http.StatusOK, st, string(raw))
-			},
-			"true|clients-admin|Закрылся|true"},
-	} {
-		s.Run(tc.name, func() {
-			m := mark()
-			c := s.newClient("SD-unreceive Клиент " + m)
-			u := s.unit(c.ID, s.newType("SD-unreceive Тип "+m), "M-unreceive")
-			task := s.apiTask(s.admin, c.ID, "SD-unreceive заказ "+m, u)
-			back := s.returnedDoc(task.ID, u)
-
-			tc.remove(c.ID, u)
-			s.Require().Equal(tc.deleted, s.unitState(u))
-
-			st, raw := s.unreceive(back)
-			s.Require().Equal(http.StatusConflict, st, string(raw))
-			e := s.sdErr(raw)
-			s.Equal("TRANSFER_HAS_DELETED_REFS", e.Code)
-			s.Equal("В перемещении есть удалённые записи — сначала восстановите их", e.Message)
-			s.Equal("equipment", e.Details.Kind)
-			s.Equal(u, e.Details.ID)
-			s.Equal("received", s.sdScalar(`SELECT status FROM transfers WHERE id = $1`, back.ID), "документ остаётся полученным")
-			s.Equal("at_client||", s.unitLoc(u), "удалённая единица не «в пути» и не занята")
-			s.Equal(tc.deleted, s.unitState(u))
-
-			tc.restore(c.ID, u)
-			st, raw = s.unreceive(back)
-			s.Require().Equal(http.StatusOK, st, "после восстановления отмена проведения проходит: %s", raw)
-			s.Equal(fmt.Sprintf("in_transit||%d", back.ID), s.unitLoc(u))
-			s.Equal(liveState, s.unitState(u))
-		})
-	}
-}
-
-// §3 (DS-041): удаление единицы идёт (строка equipment под блокировкой, отметка не
-// зафиксирована) — в это окно приходит отмена проведения документа, привёзшего её клиенту.
-// Отмена обязана дождаться блокировки строки единицы и увидеть её удалённой: 409
-// TRANSFER_HAS_DELETED_REFS; единица не «в пути». Реализация без проверки под блокировкой
-// вернула бы удалённую единицу в путь.
-func (s *ClientsLiveSuite) TestRace_UnreceiveWaitsForUnitDelete() {
-	m := mark()
-	c := s.newClient("SD-race Клиент-откат " + m)
-	u := s.unit(c.ID, s.newType("SD-race Тип-откат "+m), "M-race-откат")
-	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m, u)
-	back := s.returnedDoc(task.ID, u)
-
-	res := s.race(s.holdUnitDelete(u), func() (int, []byte) { return s.unreceive(back) })
-	s.Require().Equal(http.StatusConflict, res.status, string(res.raw))
-	e := s.sdErr(res.raw)
-	s.Equal("TRANSFER_HAS_DELETED_REFS", e.Code)
-	s.Equal(u, e.Details.ID)
-	s.Equal("at_client||", s.unitLoc(u))
-	s.Equal("received", s.sdScalar(`SELECT status FROM transfers WHERE id = $1`, back.ID))
 }
 
 // holdUnitDelete — «удаление единицы в полёте»: та же блокировка и UPDATE, что делает
@@ -1508,9 +1026,8 @@ func (s *ClientsLiveSuite) TestRace_SubtaskAssignWaitsForUnitDelete() {
 
 // §3 п. 2, 4 (DS-015, ревью): восстановление клиента идёт (клиент под FOR UPDATE, отметки
 // клиента и его единиц сняты, транзакция не зафиксирована).
-//   - Операции с его единицей, ушедшей вместе с ним, — принять в заказ и создать документ —
-//     блокировку не ждут: до фиксации единица для всех остаётся удалённой, оба запроса сразу
-//     получают 400 not_found (частично восстановленного состояния никто не видит).
+//   - Операция с его единицей, ушедшей вместе с ним, — принять в заказ — блокировку не ждёт:
+//     до фиксации единица для всех остаётся удалённой, запрос сразу получает 400 not_found (частично восстановленного состояния никто не видит).
 //   - Восстановление его единицы, удалённой раньше отдельно, читает клиента FOR KEY SHARE:
 //     обязано дождаться восстановления клиента и пройти (200) — без ожидания получило бы 409
 //     CLIENT_DELETED по уже неактуальному состоянию.
@@ -1521,11 +1038,10 @@ func (s *ClientsLiveSuite) TestRace_ClientRestoreVsUnitOperations() {
 	c := s.newClient("SD-race Клиент-возврат " + m)
 	typeID := s.newType("SD-race Тип-возврат " + m)
 	with, alone := s.unit(c.ID, typeID, "M-race-с-клиентом"), s.unit(c.ID, typeID, "M-race-отдельно")
-	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m, with)
+	s.apiTask(s.admin, c.ID, "SD-race заказ "+m, with)
 	second := s.apiTask(s.admin, c.ID, "SD-race второй заказ "+m)
 	s.mustDeleteUnit(alone, "Списана раньше")
 	s.mustDeleteClient(c.ID, "Удалён по ошибке")
-	intake := map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": s.warehouseByName("Алматы")}
 
 	var inFlight bool
 	res := s.race(func(ctx context.Context) func() {
@@ -1552,10 +1068,6 @@ func (s *ClientsLiveSuite) TestRace_ClientRestoreVsUnitOperations() {
 		}
 		for name, req := range map[string]func() (int, []byte){
 			"в заказ": func() (int, []byte) { return s.addUnit(s.admin, second.ID, with) },
-			"в документ": func() (int, []byte) {
-				st, _, raw := s.clientDoc(task.ID, []string{with}, intake)
-				return st, raw
-			},
 		} {
 			done := make(chan quick, 1)
 			go func() {
@@ -1577,11 +1089,8 @@ func (s *ClientsLiveSuite) TestRace_ClientRestoreVsUnitOperations() {
 	s.Equal(liveState, s.unitState(alone))
 	s.Equal(liveState, s.unitState(with))
 	s.Equal("false||", s.clientState(c.ID))
-	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM transfers WHERE task_id = $1`, task.ID), "документ во время восстановления не создан")
 
 	// после фиксации единица действует — операции проходят.
 	st, raw := s.addUnit(s.admin, second.ID, with)
-	s.Equal(http.StatusCreated, st, string(raw))
-	st, _, raw = s.clientDoc(task.ID, []string{with}, intake)
 	s.Equal(http.StatusCreated, st, string(raw))
 }

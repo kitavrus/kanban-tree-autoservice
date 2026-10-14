@@ -14,6 +14,11 @@
       </select>
       {{ with index .Errors "type_id" }}<div class="invalid-feedback d-block" data-testid="error-type_id">{{ . }}</div>{{ end }}
     </div>
+    <div class="mb-3">
+      <label for="plate_number" class="form-label">Госномер</label>
+      <input id="plate_number" name="plate_number" class="form-control text-uppercase mw-260{{ if index .Errors "plate_number" }} is-invalid{{ end }}" value="{{ .PlateNumber }}" maxlength="20" autocomplete="off" placeholder="А123ВС 777" data-testid="equipment-plate-number">
+      {{ with index .Errors "plate_number" }}<div class="invalid-feedback" data-testid="error-plate_number">{{ . }}</div>{{ end }}
+    </div>
     <div class="row g-3 mb-3">
       <div class="col-sm-6">
         <label for="brand" class="form-label">Производитель</label>

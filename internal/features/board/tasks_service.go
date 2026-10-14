@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -52,18 +50,6 @@ func (s *TaskService) WithFiles(fs filestore.FileStore) *TaskService {
 }
 
 func (s *TaskService) List(ctx context.Context, f TaskFilter) (*TaskListResponse, error) {
-	if f.WarehouseID != nil {
-		// Фильтр по мягко удалённому складу — 400 (soft-delete-warehouses-suppliers §6.5, DS-014):
-		// для обычных адресов такого склада нет.
-		var deleted bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM warehouses WHERE id = $1::uuid AND deleted_at IS NOT NULL)`,
-			*f.WarehouseID).Scan(&deleted); err != nil {
-			return nil, err
-		}
-		if deleted {
-			return nil, errorspkg.Validation(errorspkg.Field{Name: "warehouse_id", Message: msgNotFound})
-		}
-	}
 	items, total, err := s.repo.List(ctx, f)
 	if err != nil {
 		return nil, err
@@ -226,26 +212,12 @@ func (s *TaskService) Update(ctx context.Context, a Actor, idStr string, in Task
 		// блокирует смену (409); иначе чужие task_equipment тихо убираются из заказа в той
 		// же tx (design-sql.md §Foreign Equipment Query, AC-004).
 		if current.ClientID != in.ClientID {
-			// D84: у заказа есть документы «Перемещение» (в любом статусе) — клиент не меняется.
-			// Проверка первая, до любых изменений; заказ уже заблокирован (LockTask).
-			if err := clientLockedByTransfers(ctx, tx, id); err != nil {
-				return err
-			}
 			open, err := s.equipment.ForeignInUse(ctx, tx, id, in.ClientID)
 			if err != nil {
 				return err
 			}
 			if len(open) > 0 {
 				return ErrTaskEquipmentInUse.WithDetail("subtasks", open)
-			}
-			// transfers-core DS-026: единица в незавершённом документе «Перемещение» из заказа
-			// не убирается — и «тихо», сменой клиента, тоже.
-			transferID, err := s.equipment.ForeignInTransfer(ctx, tx, id, in.ClientID)
-			if err != nil {
-				return err
-			}
-			if transferID != nil {
-				return equipmentInTransfer(*transferID)
 			}
 			if err := s.equipment.DeleteForeign(ctx, tx, id, in.ClientID); err != nil {
 				return err
@@ -366,90 +338,11 @@ func (s *TaskService) Move(ctx context.Context, a Actor, idStr string, in TaskMo
 	return s.mutationResponse(ctx, a, id, reconcile)
 }
 
-// codeTaskHasTransfers — служебная уборка заказа с неотменёнными действующими документами
-// «Перемещение» (soft-delete-core DS-036): details.transfer_ids — номера мешающих документов
-// по возрастанию. Продуктовое (мягкое) удаление заказа этот отказ больше не возвращает
-// (soft-delete-transfers DS-006).
-const codeTaskHasTransfers = "TASK_HAS_TRANSFERS"
-
-// errTaskHasTransfers — 409 TASK_HAS_TRANSFERS «Сначала отмените перемещения: #N, #M».
-func errTaskHasTransfers(ids []int64) error {
-	nums := make([]string, len(ids))
-	for i, id := range ids {
-		nums[i] = "#" + strconv.FormatInt(id, 10)
-	}
-	return errorspkg.New(codeTaskHasTransfers, http.StatusConflict,
-		"Сначала отмените перемещения: "+strings.Join(nums, ", ")).WithDetail("transfer_ids", ids)
-}
-
-// codeTaskClientLockedByTransfers — смена клиента заказа, у которого есть документы
-// «Перемещение» (D84): details.transfer_ids — номера документов заказа по возрастанию.
-const codeTaskClientLockedByTransfers = "TASK_CLIENT_LOCKED_BY_TRANSFERS"
-
-// clientLockedByTransfers — запрет смены клиента заказа с документами «Перемещение» (D84):
-// есть хотя бы один ДЕЙСТВУЮЩИЙ документ заказа в любом статусе (включая «Получено» и
-// «Отменён») → 409 TASK_CLIENT_LOCKED_BY_TRANSFERS с их номерами. transfers.client_id — снимок
-// клиента заказа на момент создания документа; смена клиента заказа рассогласовала бы историю
-// перемещений (документ клиента А у заказа клиента Б). Мягко удалённые документы смене не
-// мешают (soft-delete-transfers DS-040): такой документ после смены клиента восстановить
-// нельзя (409 TRANSFER_CLIENT_MISMATCH, пакет transfers).
-//
-// Вызывается под блокировкой заказа (LockTask FOR UPDATE): создание и восстановление документа
-// заказа ждут её (FOR KEY SHARE в пакете transfers), новых действующих документов до конца
-// транзакции не появится. Строки transfers не блокируются: порядок блокировок пакета
-// transfers — документ → заказ, обратный порядок здесь дал бы взаимную блокировку.
-func clientLockedByTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error {
-	rows, err := tx.Query(ctx, `SELECT id FROM transfers WHERE task_id = $1 AND deleted_at IS NULL ORDER BY id`, taskID)
-	if err != nil {
-		return err
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
-		return err
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	return errorspkg.New(codeTaskClientLockedByTransfers, http.StatusConflict,
-		"У заказа есть перемещения — сменить клиента нельзя").WithDetail("transfer_ids", ids)
-}
-
-// deleteTaskTransfers — документы «Перемещение» ФИЗИЧЕСКИ удаляемого заказа (служебная
-// уборка, soft-delete-core DS-036, soft-delete-transfers DS-038): действующие неотменённые
-// (requested / in_transit / received) → errTaskHasTransfers, ничего не удалено; иначе
-// удаляются отменённые и все мягко удалённые документы заказа (строки — каскадом FK,
-// stock_movements.transfer_id → NULL: журнал остатков сохраняется; единицы мягко удалённой
-// заявки уже свободны). Мягкое удаление заказа документы не читает и не трогает (DS-006).
-//
-// Вызывается под блокировкой заказа (LockTaskAny FOR UPDATE): создание документа заказа ждёт
-// её, «Отменён» терминален. Строки transfers при чтении НЕ блокируются (порядок блокировок
-// пакета transfers — документ → заказ). Документами владеет пакет transfers, но удаляет их
-// здесь board — тем же SQL-способом, каким он уже читает таблицу transfers (итог заказа):
-// импорт transfers → цикл пакетов не нужен. Страховка от гонки — FK transfers.task_id RESTRICT.
-func deleteTaskTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error {
-	rows, err := tx.Query(ctx, `
-SELECT id FROM transfers WHERE task_id = $1 AND status <> 'cancelled' AND deleted_at IS NULL ORDER BY id`, taskID)
-	if err != nil {
-		return err
-	}
-	blocking, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
-		return err
-	}
-	if len(blocking) > 0 {
-		return errTaskHasTransfers(blocking)
-	}
-	_, err = tx.Exec(ctx, `DELETE FROM transfers WHERE task_id = $1 AND (status = 'cancelled' OR deleted_at IS NOT NULL)`, taskID)
-	return err
-}
-
 // Delete — МЯГКОЕ удаление заказа (soft-delete-core §6.1): только admin (роут + повторная
 // проверка роли в сервисе — первой, до поиска записи, DS-003), причина обязательна (DS-020).
 // Одна транзакция под блокировкой заказа: StockEngine.Reconcile(false) возвращает все товары
-// заказа на склад (DS-004) → отметка «кто, когда, почему». Документы «Перемещение» заказа не
-// читаются и не меняются — заказ удаляется с документами в любом статусе, они остаются в
-// «Перемещениях» с пометкой «заказ удалён» (soft-delete-transfers DS-006, DS-007). Строка, части заказа и файлы вложений
-// остаются (DS-013). Заказ уже удалён либо не существует → 404 (DS-024).
+// заказа на склад (DS-004) → отметка «кто, когда, почему». Строка, части заказа и файлы
+// вложений остаются (DS-013). Заказ уже удалён либо не существует → 404 (DS-024).
 func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string, in softdelete.DeleteRequest) (*TaskDeleteResponse, error) {
 	if !a.IsAdmin {
 		return nil, errorspkg.Forbidden("Нет доступа")
@@ -500,7 +393,7 @@ const (
 )
 
 // Restore — восстановление мягко удалённого заказа (soft-delete-core §6.2): только admin.
-// Одна транзакция, Lock Order общий (columns → tasks → product_stock): колонка заказа и все
+// Одна транзакция, Lock Order общий (columns → tasks → products): колонка заказа и все
 // нефинальные колонки под FOR SHARE (порядок id — как ColumnRepo.LockAll, без взаимной
 // блокировки с правкой колонок), затем заказ FOR UPDATE. Заказ не удалён → 409 NOT_DELETED
 // (DS-024). Колонка заказа за время удаления стала финальной, а у заказа есть незавершённые
@@ -634,8 +527,7 @@ func firstNonFinal(cols []restoreColumn) *restoreColumn {
 
 // Purge — служебная ФИЗИЧЕСКАЯ уборка заказа автотестами (soft-delete-core §6.5, DS-027,
 // DS-036): прежнее безвозвратное удаление заказа, работает и для действующего, и для мягко
-// удалённого. Действующие неотменённые документы → 409, отменённые и мягко удалённые удаляются
-// (DS-038); товары возвращаются на склад
+// удалённого. Товары возвращаются на склад
 // (у удалённого заказа уже возвращены — Reconcile ничего не двигает); строка tasks удаляется
 // (части — каскадом FK); файлы вложений — с диска после commit. Заказа нет → errNotFound
 // наружу как 404 NOT_FOUND (сервис уборки не раскрывает вид записи).
@@ -654,9 +546,6 @@ func (s *TaskService) Purge(ctx context.Context, a Actor, idStr string) error {
 			if errors.Is(err, errNotFound) {
 				return errPurgeNotFound()
 			}
-			return err
-		}
-		if err := deleteTaskTransfers(ctx, tx, id); err != nil {
 			return err
 		}
 		if _, err := s.engine.Reconcile(ctx, tx, id, false, a.ID); err != nil {
@@ -715,11 +604,10 @@ func toTaskResponse(t Task) TaskResponse {
 			Title:           t.Title, AssigneeID: t.AssigneeID, AssigneeName: t.AssigneeName,
 			DueDate: t.DueDate, IsPaid: t.IsPaid, Position: t.Position, Version: t.Version,
 			SubtasksTotal: t.SubtasksTotal, SubtasksDone: t.SubtasksDone, SubtasksLate: t.SubtasksLate,
-			TotalAmount: t.TotalAmount, LastLog: t.LastLog, HasInTransit: t.HasInTransit,
+			TotalAmount: t.TotalAmount, LastLog: t.LastLog,
 			ExecutorUnpaidDone: t.ExecutorUnpaidDone,
 		},
 		PaidAt: t.PaidAt, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, DescriptionHTML: t.DescriptionHTML,
-		TransfersAmount: t.TransfersAmount,
 	}
 }
 

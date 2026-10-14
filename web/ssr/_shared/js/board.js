@@ -106,8 +106,7 @@
       // неизвестное значение из адреса → «все» (сервер на мусор ответил бы 400).
       executor_paid: ({ paid: 'paid', unpaid: 'unpaid' })[p.get('executor_paid')] || 'all',
       assignee: p.get('assignee') || assigneeDefault(),
-      due: p.get('due') || 'all',
-      warehouse_id: p.get('warehouse_id') || ''
+      due: p.get('due') || 'all'
     };
   }
 
@@ -120,7 +119,6 @@
     if (f.executor_paid && f.executor_paid !== 'all') p.set('executor_paid', f.executor_paid);
     if (f.assignee && f.assignee !== assigneeDefault()) p.set('assignee', f.assignee);
     if (f.due && f.due !== 'all') p.set('due', f.due);
-    if (f.warehouse_id) p.set('warehouse_id', f.warehouse_id);
     var s = p.toString();
     return s ? '?' + s : '';
   }
@@ -135,8 +133,6 @@
     if (f.executor_paid && f.executor_paid !== 'all') p.set('executor_paid', f.executor_paid);
     p.set('assignee', f.assignee || assigneeDefault());
     if (f.due && f.due !== 'all') p.set('due', f.due);
-    // warehouses DS-009: фильтр «Склад» (оборудование на складе/едет на склад X).
-    if (f.warehouse_id) p.set('warehouse_id', f.warehouse_id);
     // pagination DS-001: окно per_column — не более PER_COLUMN первых (position,id)
     // карточек каждой колонки ОДНИМ запросом (глобальная постраничность по колонкам слева
     // направо оставляла бы правые колонки пустыми); остальное — «Показать ещё» по колонке.
@@ -336,14 +332,10 @@
     $('#filter-executor-paid').value = f.executor_paid;
     $('#filter-assignee').value = f.assignee;
     $('#filter-due').value = f.due;
-    // DS-009: опции склада рендерит сервер; неизвестный id из URL → «Все склады».
-    var wSel = $('#filter-warehouse');
-    wSel.value = f.warehouse_id;
-    if (wSel.value !== f.warehouse_id) { wSel.value = ''; f.warehouse_id = ''; }
     // Все 5 select-фильтров превращены в комбобоксы (js/combobox.js) — после программной
     // смены .value видимая кнопка не обновляется сама, нужен ручной _cbSync() на каждом
     // (баг фазы 06: filter-paid/filter-due не синхронизировались после reload — BD-013).
-    ['#filter-client', '#filter-category', '#filter-paid', '#filter-executor-paid', '#filter-assignee', '#filter-due', '#filter-warehouse'].forEach(function (sel) {
+    ['#filter-client', '#filter-category', '#filter-paid', '#filter-executor-paid', '#filter-assignee', '#filter-due'].forEach(function (sel) {
       var el = $(sel);
       if (el && el._cbSync) el._cbSync();
     });
@@ -363,7 +355,6 @@
     onChange('#filter-executor-paid', 'executor_paid');
     onChange('#filter-assignee', 'assignee');
     onChange('#filter-due', 'due');
-    onChange('#filter-warehouse', 'warehouse_id');
 
     var qTimer = null;
     $('#filter-q').addEventListener('input', function (e) {
@@ -377,7 +368,7 @@
     });
 
     $('#filter-reset').addEventListener('click', function () {
-      state.filters = { client_id: '', q: '', category_id: '', paid: 'all', executor_paid: 'all', assignee: assigneeDefault(), due: 'all', warehouse_id: '' };
+      state.filters = { client_id: '', q: '', category_id: '', paid: 'all', executor_paid: 'all', assignee: assigneeDefault(), due: 'all' };
       applyFiltersToForm();
       pushFiltersToUrl();
       reloadAndRender();
@@ -432,8 +423,6 @@
       '      <ul class="dropdown-menu dropdown-menu-end" data-task-move-menu="' + t.id + '"></ul>' +
       '    </div>' +
       '  </div>' +
-      // warehouses DS-009: бейдж «в пути» — у заказа есть оборудование in_transit.
-      (t.has_in_transit ? '<div class="mb-1"><span class="badge text-bg-warning" data-testid="task-card-in-transit">🚚 в пути</span></div>' : '') +
       '  <div class="task-card-client">🏢 <span class="name">' + esc(t.client_name) + '</span>' +
       // клиент заказа мягко удалён (soft-delete-clients §8.3 п.1) — серый бейдж справа от имени
       (t.client_is_deleted ? '<span class="badge text-bg-secondary ms-1" data-testid="task-card-client-deleted">удалён</span>' : '') +

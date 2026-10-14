@@ -72,13 +72,11 @@ export class CatalogPage {
     this.category = page.getByTestId('product-category');
     this.unit = page.getByTestId('product-unit');
     this.price = page.getByTestId('product-price');
-    // Блок «Склады» (warehouses DS-003): строка на каждый активный склад; короткие поля
-    // формы — строка склада по умолчанию «Алматы», прочие — stockRow(name).
-    const almaty = this.stockRow('Алматы');
-    this.stock = almaty.getByTestId('product-stock');
-    this.minStock = almaty.getByTestId('product-min-stock');
-    this.box = almaty.getByTestId('product-box');
-    this.place = almaty.getByTestId('product-place');
+    // Остаток живёт в товаре: поля остатка, минимума, коробки и места — прямо в форме.
+    this.stock = page.getByTestId('product-stock');
+    this.minStock = page.getByTestId('product-min-stock');
+    this.box = page.getByTestId('product-box');
+    this.place = page.getByTestId('product-place');
     this.save = page.getByTestId('product-save');
     this.formError = page.getByTestId('form-error');
     this.deleteButton = page.getByTestId('product-delete');
@@ -194,11 +192,6 @@ export class CatalogPage {
 
   async chooseUnit(unit: string) {
     await this.chooseInCombobox(this.unit, unit);
-  }
-
-  /** Строка блока «Склады» формы товара по названию склада. */
-  stockRow(warehouseName: string): Locator {
-    return this.page.locator(`[data-testid="product-stock-row"][data-warehouse="${warehouseName}"]`);
   }
 
   async fill(p: {

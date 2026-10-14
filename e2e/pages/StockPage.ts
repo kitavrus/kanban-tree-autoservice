@@ -11,14 +11,12 @@ export class StockPage {
   readonly kpiOut: Locator;
   readonly kpiWillLow: Locator;
   readonly scope: Locator;
-  readonly warehouse: Locator;
   readonly q: Locator;
   readonly table: Locator;
   readonly empty: Locator;
   readonly dropdown: Locator;
 
   readonly form: Locator;
-  readonly modalWarehouse: Locator;
   readonly value: Locator;
   readonly save: Locator;
   readonly error: Locator;
@@ -30,14 +28,12 @@ export class StockPage {
     this.kpiOut = page.getByTestId('stock-kpi-out');
     this.kpiWillLow = page.getByTestId('stock-kpi-will-low');
     this.scope = page.getByTestId('stock-scope');
-    this.warehouse = page.getByTestId('stock-warehouse');
     this.q = page.getByTestId('stock-q');
     this.table = page.getByTestId('stock-table');
     this.empty = page.getByTestId('stock-empty');
     this.dropdown = page.getByTestId('combobox-dropdown');
 
     this.form = page.getByTestId('stock-form');
-    this.modalWarehouse = page.getByTestId('stock-modal-warehouse');
     this.value = page.getByTestId('stock-value');
     this.save = page.getByTestId('stock-save');
     this.error = page.getByTestId('stock-error');
@@ -52,14 +48,9 @@ export class StockPage {
     return this.page.getByTestId(`stock-row-${productId}`);
   }
 
-  /** Бейдж «удалён» у товара, удалённого из каталога, чей остаток числится на складе (DS-042). */
+  /** Бейдж «удалён» у товара, удалённого из каталога, у которого остался остаток (DS-042). */
   rowDeleted(productId: string): Locator {
     return this.row(productId).getByTestId('stock-row-deleted');
-  }
-
-  /** Бейдж «в архиве» у архивного товара, чей остаток числится на удалённом складе. */
-  rowArchived(productId: string): Locator {
-    return this.row(productId).getByTestId('stock-row-archived');
   }
 
   editBtn(productId: string): Locator {
@@ -71,32 +62,6 @@ export class StockPage {
     await this.scope.click();
     await expect(this.dropdown).toBeVisible();
     await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
-  }
-
-  /** Фильтр «Склад» (warehouses DS-004) — тот же combobox, что scope. */
-  async chooseWarehouse(optionText: string) {
-    await this.warehouse.click();
-    await expect(this.dropdown).toBeVisible();
-    await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
-  }
-
-  /** Заголовок колонки склада по названию (с бейджем «в архиве» / «удалён» у недействующих складов
-   *  с остатком — soft-delete-warehouses-suppliers §8.3 п.4). */
-  col(warehouseName: string): Locator {
-    return this.page.locator('[data-testid="stock-col-wh"]', { hasText: warehouseName });
-  }
-  colDeleted(warehouseName: string): Locator { return this.col(warehouseName).getByTestId('stock-col-wh-deleted'); }
-  colArchived(warehouseName: string): Locator { return this.col(warehouseName).getByTestId('stock-col-wh-archived'); }
-
-  /** Ячейка склада в строке товара (колонки складов). */
-  cell(productId: string, warehouseName: string): Locator {
-    return this.row(productId).locator(`[data-testid="stock-cell-wh"][data-warehouse="${warehouseName}"]`);
-  }
-
-  /** Склады, которые предлагает окно корректировки (опции исходного select'а под комбобоксом):
-   *  у удалённого и архивного товара — только склады с его остатком (DS-048, DS-049). */
-  get modalWarehouseOptions(): Locator {
-    return this.page.locator('#stock-modal-warehouse option');
   }
 
   async openEdit(productId: string) {

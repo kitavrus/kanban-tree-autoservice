@@ -39,42 +39,30 @@
         {{ with index .Errors "price" }}<div class="invalid-feedback" data-testid="error-price">{{ . }}</div>{{ end }}
       </div>
     </div>
-    <div class="section-title text-body-secondary small text-uppercase mb-2">Склады</div>
-    <div class="table-responsive mb-4">
-    <table class="table table-sm align-middle" data-testid="product-stocks">
-      <thead><tr><th>Склад</th><th>Остаток</th><th>Минимум</th><th>Коробка</th><th>Место</th></tr></thead>
-      <tbody>
-      {{ range $i, $s := .Stocks }}
-        {{ $eStock := index $.Errors (printf "stocks[%d].stock" $i) }}{{ $eMin := index $.Errors (printf "stocks[%d].min_stock" $i) }}{{ $eBox := index $.Errors (printf "stocks[%d].box" $i) }}{{ $ePlace := index $.Errors (printf "stocks[%d].place" $i) }}{{ $eWh := index $.Errors (printf "stocks[%d].warehouse_id" $i) }}
-        <tr data-testid="product-stock-row" data-warehouse="{{ $s.WarehouseName }}">
-          <td class="fw-semibold">
-            <input type="hidden" name="wh_id" value="{{ $s.WarehouseID }}">
-            <input type="hidden" name="wh_name" value="{{ $s.WarehouseName }}">
-            {{ $s.WarehouseName }}
-            {{ with $eWh }}<div class="text-danger small" data-testid="error-warehouse">{{ . }}</div>{{ end }}
-          </td>
-          <td style="min-width:110px">
-            <input name="wh_stock" type="number" step="0.001" class="form-control form-control-sm{{ if $eStock }} is-invalid{{ end }}" value="{{ $s.Stock }}" aria-label="Остаток {{ $s.WarehouseName }}" data-testid="product-stock">
-            {{ with $eStock }}<div class="invalid-feedback" data-testid="error-stock">{{ . }}</div>{{ end }}
-          </td>
-          <td style="min-width:110px">
-            <input name="wh_min_stock" type="number" min="0" step="0.001" class="form-control form-control-sm{{ if $eMin }} is-invalid{{ end }}" value="{{ $s.MinStock }}" aria-label="Минимум {{ $s.WarehouseName }}" data-testid="product-min-stock">
-            {{ with $eMin }}<div class="invalid-feedback" data-testid="error-min_stock">{{ . }}</div>{{ end }}
-          </td>
-          <td style="min-width:110px">
-            <input name="wh_box" class="form-control form-control-sm{{ if $eBox }} is-invalid{{ end }}" value="{{ $s.Box }}" maxlength="100" autocomplete="off" aria-label="Коробка {{ $s.WarehouseName }}" data-testid="product-box">
-            {{ with $eBox }}<div class="invalid-feedback" data-testid="error-box">{{ . }}</div>{{ end }}
-          </td>
-          <td style="min-width:130px">
-            <input name="wh_place" class="form-control form-control-sm{{ if $ePlace }} is-invalid{{ end }}" value="{{ $s.Place }}" maxlength="100" autocomplete="off" aria-label="Место {{ $s.WarehouseName }}" data-testid="product-place">
-            {{ with $ePlace }}<div class="invalid-feedback" data-testid="error-place">{{ . }}</div>{{ end }}
-          </td>
-        </tr>
-      {{ else }}
-        <tr><td colspan="5" class="text-body-secondary">Нет активных складов.</td></tr>
-      {{ end }}
-      </tbody>
-    </table>
+    <div class="section-title text-body-secondary small text-uppercase mb-2">Наличие и хранение</div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-6">
+        <label for="stock" class="form-label">Количество в наличии</label>
+        <input id="stock" name="stock" type="number" step="0.001" class="form-control{{ if index .Errors "stock" }} is-invalid{{ end }}" value="{{ .Stock }}" data-testid="product-stock">
+        {{ with index .Errors "stock" }}<div class="invalid-feedback" data-testid="error-stock">{{ . }}</div>{{ end }}
+      </div>
+      <div class="col-md-6">
+        <label for="min_stock" class="form-label">Минимальный остаток</label>
+        <input id="min_stock" name="min_stock" type="number" min="0" step="0.001" class="form-control{{ if index .Errors "min_stock" }} is-invalid{{ end }}" value="{{ .MinStock }}" data-testid="product-min-stock">
+        {{ with index .Errors "min_stock" }}<div class="invalid-feedback" data-testid="error-min_stock">{{ . }}</div>{{ end }}
+      </div>
+    </div>
+    <div class="row g-3 mb-4">
+      <div class="col-md-6">
+        <label for="box" class="form-label">Коробка</label>
+        <input id="box" name="box" class="form-control{{ if index .Errors "box" }} is-invalid{{ end }}" value="{{ .Box }}" maxlength="100" autocomplete="off" data-testid="product-box">
+        {{ with index .Errors "box" }}<div class="invalid-feedback" data-testid="error-box">{{ . }}</div>{{ end }}
+      </div>
+      <div class="col-md-6">
+        <label for="place" class="form-label">Место хранения</label>
+        <input id="place" name="place" class="form-control{{ if index .Errors "place" }} is-invalid{{ end }}" value="{{ .Place }}" maxlength="100" autocomplete="off" data-testid="product-place">
+        {{ with index .Errors "place" }}<div class="invalid-feedback" data-testid="error-place">{{ . }}</div>{{ end }}
+      </div>
     </div>
     <div class="d-flex gap-2">
       <button type="submit" class="btn btn-primary" data-testid="product-save">Сохранить</button>

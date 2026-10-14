@@ -26,7 +26,7 @@ type SuppliersLiveSuite struct {
 }
 
 func TestSuppliersLiveSuite(t *testing.T) {
-	// TEST_PURGE_ENABLED=true — служебная уборка вида suppliers (soft-delete-warehouses-suppliers
+	// TEST_PURGE_ENABLED=true — служебная уборка вида suppliers (soft-delete-suppliers
 	// DS-027, TestPurge_Suppliers).
 	suite.Run(t, &SuppliersLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server", ExtraEnv: []string{"TEST_PURGE_ENABLED=true"}}})
 }
@@ -234,7 +234,7 @@ func (s *SuppliersLiveSuite) TestTS020_Validation() {
 }
 
 // TS-020: is_active обязателен в PUT; несуществующий и битый id → 404 SUPPLIER_NOT_FOUND
-// (не 500); удаление — только с причиной (soft-delete-warehouses-suppliers DS-020).
+// (не 500); удаление — только с причиной (soft-delete-suppliers DS-020).
 func (s *SuppliersLiveSuite) TestTS020_PutIsActiveRequired_NotFound_NoDelete() {
 	d := s.create(map[string]any{"name": "Поставщик-PUT"})
 
@@ -253,7 +253,7 @@ func (s *SuppliersLiveSuite) TestTS020_PutIsActiveRequired_NotFound_NoDelete() {
 		s.Contains(string(raw), "SUPPLIER_NOT_FOUND", id)
 	}
 
-	// soft-delete-warehouses-suppliers §6.3: удаление появилось, но только с причиной — без тела
+	// soft-delete-suppliers §6.3: удаление появилось, но только с причиной — без тела
 	// поставщик остаётся на месте (полный цикл удаления — suppliers_soft_delete_http_live_test.go).
 	st, raw = s.admin.Do(http.MethodDelete, supAPI+"/"+d.ID, nil)
 	s.Equal(http.StatusBadRequest, st, string(raw))

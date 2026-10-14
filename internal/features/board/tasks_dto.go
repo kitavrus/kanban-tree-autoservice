@@ -37,9 +37,6 @@ type TaskCard struct {
 	// (без учёта окна per_column и limit/offset). Всегда присутствует в GET /tasks; в
 	// GET /tasks/:id и mutation-ответах — 0 (не вычисляется, клиент его там не читает).
 	ColumnTotal int `json:"column_total"`
-	// HasInTransit — у заказа есть оборудование в пути (DS-009, бейдж «в пути» на доске).
-	// Вычисляется в GET /tasks и GET /tasks/:id (Get), а значит и в mutation-ответах.
-	HasInTransit bool `json:"has_in_transit"`
 	// ExecutorUnpaidDone — число услуг заказа со статусом done и назначенным исполнителем,
 	// за которые исполнителю ещё не выплачено (D68, метка на карточке доски; 0 — метки нет).
 	// Вычисляется в GET /tasks и GET /tasks/:id.
@@ -76,9 +73,6 @@ type TaskResponse struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	DescriptionHTML string     `json:"description_html"` // хранимый HTML (ADR-006); клиент берёт текст через DOMParser
-	// TransfersAmount — «Продано по накладным» (transfers-sales DS-014): Σ сумм накладных
-	// «склад → клиент» заказа в статусах «В пути» и «Получено»; уже входит в total_amount.
-	TransfersAmount numeric.Amount `json:"transfers_amount"`
 }
 
 // TaskCreateRequest — POST /api/v1/tasks. IsPaid: executor — nil|false, иначе 403

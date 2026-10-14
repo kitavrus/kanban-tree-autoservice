@@ -33,7 +33,7 @@ type SupplierCreateRequest struct {
 }
 
 // SupplierUpdateRequest — PUT /api/v1/suppliers/:id: правка полей + архив/возврат.
-// is_active не передан (nil) — 400 is_active: required (как warehouses).
+// is_active не передан (nil) — 400 is_active: required .
 type SupplierUpdateRequest struct {
 	Name        string `json:"name"`
 	ContactName string `json:"contact_name"`

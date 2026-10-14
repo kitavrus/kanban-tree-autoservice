@@ -18,7 +18,7 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/testutil"
 )
 
-// CatalogSoftDeleteMigrationSuite — миграция 0022 (soft-delete-catalog §4.1–§4.4, TS-012): три
+// CatalogSoftDeleteMigrationSuite — миграция 0014 (soft-delete-catalog §4.1–§4.4, TS-012): три
 // колонки удаления (deleted_at, deleted_by FK users RESTRICT, delete_reason) на products,
 // services, catalog_categories, equipment_types; CHECK «три поля вместе» с причиной 1–500
 // символов после обрезки; частичные индексы списков удалённого; уникальные индексы названий
@@ -33,8 +33,8 @@ func TestCatalogSoftDeleteMigrationSuite(t *testing.T) {
 }
 
 const (
-	catAdminID  = "aaaaaaaa-0022-0022-0022-000000000001"
-	catSecondID = "aaaaaaaa-0022-0022-0022-000000000002"
+	catAdminID  = "aaaaaaaa-0014-0014-0014-000000000001"
+	catSecondID = "aaaaaaaa-0014-0014-0014-000000000002"
 )
 
 // catTables — таблицы части 5.
@@ -89,23 +89,23 @@ func (s *CatalogSoftDeleteMigrationSuite) indexDef(name string) string {
 // остаётся архивной; CHECK отклоняет частичное заполнение, пустую и слишком длинную причину;
 // название удалённой категории (в пределах вида) и удалённого типа свободно, среди действующих
 // — по-прежнему уникально; down / up. Негатив: только deleted_at без deleted_by → ошибка CHECK.
-func (s *CatalogSoftDeleteMigrationSuite) TestTS012_Migration0022_UpDown() {
+func (s *CatalogSoftDeleteMigrationSuite) TestTS012_Migration0014_UpDown() {
 	ctx := context.Background()
 	mig, err := migrate.New(migrationsURL(), s.DSN)
 	s.Require().NoError(err)
 	defer func() { _, _ = mig.Close() }()
 
-	s.Require().NoError(mig.Migrate(21))
+	s.Require().NoError(mig.Migrate(13))
 	defer func() {
 		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 			s.Require().NoError(err)
 		}
 	}()
 	for _, t := range catTables {
-		s.Empty(s.columns(t), "0021: колонок удаления на %s нет", t)
+		s.Empty(s.columns(t), "0013: колонок удаления на %s нет", t)
 	}
 
-	// ---- данные «до» (0021): категории обоих видов, товар с остатком, архивная услуга, тип ----
+	// ---- данные «до» (0013): категории обоих видов, товар с остатком, архивная услуга, тип ----
 	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'cat-mig-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, catAdminID)
 	ids := map[string]string{}
 	one := func(key, q string, args ...any) {
@@ -113,22 +113,22 @@ func (s *CatalogSoftDeleteMigrationSuite) TestTS012_Migration0022_UpDown() {
 		s.Require().NoError(s.Pool.QueryRow(ctx, q, args...).Scan(&id), q)
 		ids[key] = id
 	}
-	one("catalog_categories", `INSERT INTO catalog_categories (kind, name) VALUES ('product', 'Категория до 0022') RETURNING id`)
-	one("svc_category", `INSERT INTO catalog_categories (kind, name) VALUES ('service', 'Категория до 0022') RETURNING id`)
-	one("products", `INSERT INTO products (category_id, name) VALUES ($1, 'Товар до 0022') RETURNING id`, ids["catalog_categories"])
-	one("services", `INSERT INTO services (category_id, name, is_active) VALUES ($1, 'Услуга до 0022', false) RETURNING id`, ids["svc_category"])
-	one("equipment_types", `INSERT INTO equipment_types (name) VALUES ('Тип до 0022') RETURNING id`)
-	s.exec(`INSERT INTO product_stock (product_id, warehouse_id, stock) SELECT $1, id, 7 FROM warehouses ORDER BY position, id LIMIT 1`, ids["products"])
+	one("catalog_categories", `INSERT INTO catalog_categories (kind, name) VALUES ('product', 'Категория до 0014') RETURNING id`)
+	one("svc_category", `INSERT INTO catalog_categories (kind, name) VALUES ('service', 'Категория до 0014') RETURNING id`)
+	one("products", `INSERT INTO products (category_id, name) VALUES ($1, 'Товар до 0014') RETURNING id`, ids["catalog_categories"])
+	one("services", `INSERT INTO services (category_id, name, is_active) VALUES ($1, 'Услуга до 0014', false) RETURNING id`, ids["svc_category"])
+	one("equipment_types", `INSERT INTO equipment_types (name) VALUES ('Тип до 0014') RETURNING id`)
+	s.exec(`UPDATE products SET stock = 7 WHERE id = $1`, ids["products"])
 	defer func() {
 		// порядок — от ссылающихся к справочникам (FK RESTRICT).
 		s.exec(`DELETE FROM products WHERE category_id = ANY($1::uuid[])`, []string{ids["catalog_categories"]})
 		s.exec(`DELETE FROM services WHERE category_id = ANY($1::uuid[])`, []string{ids["svc_category"]})
-		s.exec(`DELETE FROM catalog_categories WHERE name IN ('Категория до 0022', 'Категория 0022 новая')`)
-		s.exec(`DELETE FROM equipment_types WHERE name IN ('Тип до 0022', 'Тип 0022 второй')`)
+		s.exec(`DELETE FROM catalog_categories WHERE name IN ('Категория до 0014', 'Категория 0014 новая')`)
+		s.exec(`DELETE FROM equipment_types WHERE name IN ('Тип до 0014', 'Тип 0014 второй')`)
 	}()
 
-	// ---- up → 0022 ----
-	s.Require().NoError(mig.Migrate(22))
+	// ---- up → 0014 ----
+	s.Require().NoError(mig.Migrate(14))
 	for _, t := range catTables {
 		s.Equal("delete_reason:text:YES,deleted_at:timestamp with time zone:YES,deleted_by:uuid:YES", s.columns(t), t)
 		s.True(s.exists("constraint", t+"_deleted_chk"), t)
@@ -138,7 +138,7 @@ func (s *CatalogSoftDeleteMigrationSuite) TestTS012_Migration0022_UpDown() {
 			"все существующие записи %s — действующие", t)
 	}
 	s.Equal("false", s.scalar(`SELECT is_active::text FROM services WHERE id = $1`, ids["services"]), "признак архива не изменился")
-	s.Equal("7.000", s.scalar(`SELECT stock::text FROM product_stock WHERE product_id = $1`, ids["products"]), "остаток на месте")
+	s.Equal("7.000", s.scalar(`SELECT stock::text FROM products WHERE id = $1`, ids["products"]), "остаток на месте")
 	// уникальные индексы названий — частичные (DS-017).
 	for _, i := range []string{"catalog_categories_kind_name_lower_uq", "equipment_types_name_lower_uq"} {
 		def := s.indexDef(i)
@@ -159,34 +159,34 @@ func (s *CatalogSoftDeleteMigrationSuite) TestTS012_Migration0022_UpDown() {
 		s.fails(chk, table+": причина 501 символ",
 			`UPDATE `+table+` SET deleted_at = now(), deleted_by = $2, delete_reason = $3 WHERE id = $1`, id, catAdminID, strings.Repeat("я", 501))
 		s.fails(table+"_deleted_by_fkey", table+": несуществующий удаливший",
-			`UPDATE `+table+` SET deleted_at = now(), deleted_by = 'aaaaaaaa-0022-0022-0022-00000000dead', delete_reason = 'x' WHERE id = $1`, id)
+			`UPDATE `+table+` SET deleted_at = now(), deleted_by = 'aaaaaaaa-0014-0014-0014-00000000dead', delete_reason = 'x' WHERE id = $1`, id)
 	}
 
 	// позитив: полное заполнение проходит; причина 500 символов (символов, не байт) допустима.
 	for _, table := range catTables {
 		s.exec(`UPDATE `+table+` SET deleted_at = now(), deleted_by = $2, delete_reason = $3 WHERE id = $1`, ids[table], catAdminID, strings.Repeat("я", 500))
 	}
-	// мягкое удаление товара остатки не трогает (каскад FK не срабатывает).
-	s.Equal("1", s.scalar(`SELECT count(*)::text FROM product_stock WHERE product_id = $1`, ids["products"]))
+	// мягкое удаление товара остаток не трогает.
+	s.Equal("7.000", s.scalar(`SELECT stock::text FROM products WHERE id = $1`, ids["products"]))
 
 	// DS-017: название удалённой категории свободно в её виде — и только среди действующих оно
 	// уникально (без учёта регистра и крайних пробелов).
-	s.exec(`INSERT INTO catalog_categories (kind, name) VALUES ('product', '  КАТЕГОРИЯ ДО 0022 ')`)
+	s.exec(`INSERT INTO catalog_categories (kind, name) VALUES ('product', '  КАТЕГОРИЯ ДО 0014 ')`)
 	s.fails("catalog_categories_kind_name_lower_uq", "две действующие категории одного вида",
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'категория до 0022')`)
+		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'категория до 0014')`)
 	s.fails("catalog_categories_kind_name_lower_uq", "восстановление при занятом названии",
 		`UPDATE catalog_categories SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL WHERE id = $1`, ids["catalog_categories"])
 	s.fails("catalog_categories_kind_name_lower_uq", "тот же вид service — категория действует",
-		`INSERT INTO catalog_categories (kind, name) VALUES ('service', 'Категория до 0022')`)
-	s.exec(`UPDATE catalog_categories SET name = 'Категория 0022 новая' WHERE kind = 'product' AND deleted_at IS NULL AND lower(btrim(name)) = 'категория до 0022'`)
+		`INSERT INTO catalog_categories (kind, name) VALUES ('service', 'Категория до 0014')`)
+	s.exec(`UPDATE catalog_categories SET name = 'Категория 0014 новая' WHERE kind = 'product' AND deleted_at IS NULL AND lower(btrim(name)) = 'категория до 0014'`)
 	s.exec(`UPDATE catalog_categories SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL WHERE id = $1`, ids["catalog_categories"])
 	// то же для типов.
-	s.exec(`INSERT INTO equipment_types (name) VALUES ('тип ДО 0022')`)
+	s.exec(`INSERT INTO equipment_types (name) VALUES ('тип ДО 0014')`)
 	s.fails("equipment_types_name_lower_uq", "два действующих типа",
-		`INSERT INTO equipment_types (name) VALUES ('Тип до 0022')`)
+		`INSERT INTO equipment_types (name) VALUES ('Тип до 0014')`)
 	s.fails("equipment_types_name_lower_uq", "восстановление типа при занятом названии",
 		`UPDATE equipment_types SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL WHERE id = $1`, ids["equipment_types"])
-	s.exec(`UPDATE equipment_types SET name = 'Тип 0022 второй' WHERE deleted_at IS NULL AND lower(btrim(name)) = 'тип до 0022'`)
+	s.exec(`UPDATE equipment_types SET name = 'Тип 0014 второй' WHERE deleted_at IS NULL AND lower(btrim(name)) = 'тип до 0014'`)
 	s.exec(`UPDATE equipment_types SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL WHERE id = $1`, ids["equipment_types"])
 
 	// FK deleted_by → users RESTRICT: автора удаления стереть нельзя.
@@ -195,8 +195,8 @@ func (s *CatalogSoftDeleteMigrationSuite) TestTS012_Migration0022_UpDown() {
 	_, err = s.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, catSecondID)
 	s.Error(err, "удаление пользователя, удалившего услугу (RESTRICT)")
 
-	// ---- down → 0021: колонки и ограничения ушли, записи остались, индексы названий — полные ----
-	s.Require().NoError(mig.Migrate(21))
+	// ---- down → 0013: колонки и ограничения ушли, записи остались, индексы названий — полные ----
+	s.Require().NoError(mig.Migrate(13))
 	for _, t := range catTables {
 		s.Empty(s.columns(t), t)
 		s.False(s.exists("constraint", t+"_deleted_chk"), t)
@@ -209,7 +209,7 @@ func (s *CatalogSoftDeleteMigrationSuite) TestTS012_Migration0022_UpDown() {
 	s.exec(`DELETE FROM users WHERE id = $1`, catSecondID) // FK ушёл вместе с колонкой
 
 	// повторный up поверх отката проходит; записи снова действующие.
-	s.Require().NoError(mig.Migrate(22))
+	s.Require().NoError(mig.Migrate(14))
 	for _, t := range catTables {
 		s.Equal("0", s.scalar(`SELECT count(*)::text FROM `+t+` WHERE id = $1 AND deleted_at IS NOT NULL`, ids[t]), t)
 	}

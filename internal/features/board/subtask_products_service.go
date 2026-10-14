@@ -63,17 +63,7 @@ func (s *CardService) CreateSubtaskProduct(ctx context.Context, a Actor, subtask
 			return errorspkg.Validation(errorspkg.Field{Name: "product_id", Message: msgArchived})
 		}
 
-		warehouseID := in.WarehouseID
-		if warehouseID == "" {
-			warehouseID, err = s.products.DefaultWarehouse(spanCtx, tx, subtaskID)
-			if err != nil {
-				return err
-			}
-		} else if err := s.checkWarehouse(spanCtx, tx, warehouseID, ""); err != nil {
-			return err
-		}
-
-		productID, err := s.products.Insert(spanCtx, tx, subtaskID, in.ProductID, in.Qty.String(), warehouseID)
+		productID, err := s.products.Insert(spanCtx, tx, subtaskID, in.ProductID, in.Qty.String())
 		if err != nil {
 			if errors.Is(err, errNotFound) {
 				return errorspkg.Validation(errorspkg.Field{Name: "product_id", Message: msgNotFound})
@@ -145,34 +135,7 @@ func (s *CardService) UpdateSubtaskProduct(ctx context.Context, a Actor, id stri
 			v := in.Price.String()
 			priceStr = &v
 		}
-		curWarehouse, err := s.products.WarehouseOf(spanCtx, tx, id)
-		if err != nil {
-			if errors.Is(err, errNotFound) {
-				return ErrSubtaskProductNotFound
-			}
-			return err
-		}
-		warehouseID := curWarehouse
-		if in.WarehouseID != "" && in.WarehouseID != curWarehouse {
-			if err := s.checkWarehouse(spanCtx, tx, in.WarehouseID, curWarehouse); err != nil {
-				return err
-			}
-			warehouseID = in.WarehouseID
-		} else {
-			// склад строки не меняется: если он мягко удалён, количество можно только уменьшить —
-			// увеличение списало бы новый товар с удалённого склада (409 WAREHOUSE_DELETED).
-			blocked, err := s.products.QtyIncreaseOnDeletedWarehouse(spanCtx, tx, id, curWarehouse, in.Qty.String())
-			if errors.Is(err, errNotFound) {
-				return ErrSubtaskProductNotFound
-			}
-			if err != nil {
-				return err
-			}
-			if blocked {
-				return ErrSubtaskWarehouseDeleted
-			}
-		}
-		if err := s.products.Update(spanCtx, tx, id, in.Qty.String(), priceStr, warehouseID); err != nil {
+		if err := s.products.Update(spanCtx, tx, id, in.Qty.String(), priceStr); err != nil {
 			if errors.Is(err, errNotFound) {
 				return ErrSubtaskProductNotFound
 			}
@@ -250,29 +213,4 @@ func (s *CardService) DeleteSubtaskProduct(ctx context.Context, a Actor, id stri
 		return nil, err
 	}
 	return s.cardMutation(ctx, a, taskID, reconcile)
-}
-
-// checkWarehouse — склад строки товара существует и активен (архивный — только если это
-// текущий склад строки, current). 400 field warehouse_id.
-func (s *CardService) checkWarehouse(ctx context.Context, tx pgx.Tx, id, current string) error {
-	if id == current {
-		return nil
-	}
-	return s.checkWarehouseField(ctx, tx, "warehouse_id", id)
-}
-
-// checkWarehouseField — склад существует и активен, иначе 400 по полю field (общая часть
-// checkWarehouse и склада оборудования заказа, DS-008).
-func (s *CardService) checkWarehouseField(ctx context.Context, tx pgx.Tx, field, id string) error {
-	exists, active, err := s.products.WarehouseState(ctx, tx, id)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return errorspkg.Validation(errorspkg.Field{Name: field, Message: msgNotFound})
-	}
-	if !active {
-		return errorspkg.Validation(errorspkg.Field{Name: field, Message: msgArchived})
-	}
-	return nil
 }

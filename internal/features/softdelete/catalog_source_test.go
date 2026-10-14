@@ -25,8 +25,7 @@ func TestCatalogSourcesKindAndTable(t *testing.T) {
 		{NewServicesSource(nil), KindServices, "services"},
 		{NewCatalogCategoriesSource(nil), KindCatalogCategories, "catalog_categories"},
 		{NewEquipmentTypesSource(nil), KindEquipmentTypes, "equipment_types"},
-		// часть 6 (soft-delete-warehouses-suppliers): склады и поставщики — та же форма строки.
-		{NewWarehousesSource(nil), KindWarehouses, "warehouses"},
+		// часть 6 (soft-delete-suppliers): поставщики — та же форма строки.
 		{NewSuppliersSource(nil), KindSuppliers, "suppliers"},
 	}
 	for _, c := range cases {
@@ -36,18 +35,13 @@ func TestCatalogSourcesKindAndTable(t *testing.T) {
 	}
 }
 
-// Часть 6 (soft-delete-warehouses-suppliers §6.5): подзаголовок строки удалённого поставщика —
-// контактное лицо, у склада — пустая строка; оба вида есть в реестре с ключами счётчиков.
-func TestWarehousesSuppliersSources(t *testing.T) {
-	if got := NewWarehousesSource(nil).subtitleSQL; got != "''" {
-		t.Fatalf("склад: подзаголовок должен быть пустым, получено %q", got)
-	}
+// Часть 6 (soft-delete-suppliers §6.5): подзаголовок строки удалённого поставщика — контактное
+// лицо; вид есть в реестре с ключом счётчика.
+func TestSuppliersSource(t *testing.T) {
 	if got := NewSuppliersSource(nil).subtitleSQL; got != "r.contact_name" {
 		t.Fatalf("поставщик: подзаголовок — контактное лицо, получено %q", got)
 	}
-	for _, k := range []Kind{KindWarehouses, KindSuppliers} {
-		if !IsKind(string(k)) || k.CountKey() != string(k) {
-			t.Fatalf("вид %s: нет в реестре либо неверный ключ счётчика %q", k, k.CountKey())
-		}
+	if !IsKind(string(KindSuppliers)) || KindSuppliers.CountKey() != string(KindSuppliers) {
+		t.Fatalf("вид %s: нет в реестре либо неверный ключ счётчика %q", KindSuppliers, KindSuppliers.CountKey())
 	}
 }

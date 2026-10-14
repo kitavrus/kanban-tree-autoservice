@@ -5,7 +5,6 @@ package board
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
@@ -25,15 +24,6 @@ var (
 	// (soft-delete-catalog DS-042, DS-021): увеличение либо смена знака — отказ.
 	ErrStockDeletedWriteOffOnly = errorspkg.New("PRODUCT_DELETED_WRITE_OFF_ONLY", http.StatusConflict,
 		"Товар удалён — его остаток можно только списать")
-	// ErrStockWarehouseWriteOffOnly — остаток на мягко удалённом складе можно только списать
-	// (soft-delete-warehouses-suppliers DS-048): увеличение либо смена знака — отказ.
-	ErrStockWarehouseWriteOffOnly = errorspkg.New("WAREHOUSE_DELETED_WRITE_OFF_ONLY", http.StatusConflict,
-		"Склад удалён — остаток на нём можно только списать")
-	// ErrSubtaskWarehouseDeleted — количество в строке товара заказа, склад которой мягко удалён,
-	// нельзя увеличить (fix-loop 1 части 6): иначе заказ списывал бы новый товар с удалённого
-	// склада. Уменьшение, удаление строки и смена склада на действующий разрешены.
-	ErrSubtaskWarehouseDeleted = errorspkg.New("WAREHOUSE_DELETED", http.StatusConflict,
-		"Склад строки удалён — выберите другой склад")
 	ErrPaidAdminOnly = errorspkg.New("PAID_ADMIN_ONLY", http.StatusForbidden, "Оплату меняет только администратор")
 
 	// Sentinel'ы фазы 6 (design-errors.md §Codes 16-22, карточка заказа).
@@ -48,12 +38,6 @@ var (
 	// ErrSubtaskExecutorPaid — смена/снятие исполнителя у услуги с отметкой «Выплачено
 	// исполнителю» (D66): сначала снять отметку.
 	ErrSubtaskExecutorPaid = errorspkg.New("SUBTASK_EXECUTOR_PAID", http.StatusConflict, "Услуга уже выплачена исполнителю — сначала снимите отметку о выплате")
-
-	// ErrEquipmentInTransfer — единица стоит в незавершённом документе «Перемещение»
-	// (transfers-core DS-026): убрать её из заказа нельзя; текст с номером документа и
-	// details.transfer_id собирает equipmentInTransfer (копия, sentinel не мутируется).
-	ErrEquipmentInTransfer = errorspkg.New("EQUIPMENT_IN_TRANSFER", http.StatusConflict, "Оборудование в перемещении — сначала отмените его")
-	ErrNoActiveWarehouse   = errorspkg.New("NO_ACTIVE_WAREHOUSE", http.StatusConflict, "Нет ни одного активного склада — добавьте склад в справочнике «Склады»")
 
 	// Sentinel'ы фазы 7 (вложения заказа, D21). ATTACHMENT_TOO_LARGE — текст по виду файла
 	// собирает attachmentTooLarge (копия, sentinel не мутируется).
@@ -71,13 +55,6 @@ var ErrNotDeleted = softdelete.ErrNotDeleted
 func attachmentTooLarge(kind string) *errorspkg.AppError {
 	e := ErrAttachmentTooLarge.WithDetail("max_bytes", attachmentLimit(kind))
 	e.Message = attachmentLimitMessage(kind)
-	return e
-}
-
-// equipmentInTransfer — 409 EQUIPMENT_IN_TRANSFER с номером мешающего документа.
-func equipmentInTransfer(transferID int64) *errorspkg.AppError {
-	e := ErrEquipmentInTransfer.WithDetail("transfer_id", transferID)
-	e.Message = fmt.Sprintf("Оборудование в перемещении #%d — сначала отмените его", transferID)
 	return e
 }
 

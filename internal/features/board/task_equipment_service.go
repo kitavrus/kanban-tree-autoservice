@@ -14,8 +14,7 @@ import (
 
 // AddEquipment — POST /api/v1/tasks/:id/equipment (AC-004/AC-005): LockTask (без колонки —
 // design-sql.md §Lock Order, оборудование её не читает), проверка принадлежности клиенту
-// заказа, Insert идемпотентно. Местоположение единицы не меняется (transfers-partners
-// DS-045): она остаётся там, где числится; на склад её приводит документ «клиент → склад».
+// заказа, Insert идемпотентно.
 func (s *CardService) AddEquipment(ctx context.Context, a Actor, taskID string, in TaskEquipmentCreateRequest) (*OrderCardMutationResponse, error) {
 	id, ok := parseTaskID(taskID)
 	if !ok {
@@ -95,8 +94,7 @@ func (s *CardService) UpdateEquipment(ctx context.Context, a Actor, taskID, equi
 }
 
 // RemoveEquipment — DELETE /api/v1/tasks/:id/equipment/:equipment_id. Единица выбрана в
-// открытых услугах заказа → 409 TASK_EQUIPMENT_IN_USE + details.subtasks (AC-004); единица
-// в незавершённом документе «Перемещение» → 409 EQUIPMENT_IN_TRANSFER (transfers-core DS-026).
+// открытых услугах заказа → 409 TASK_EQUIPMENT_IN_USE + details.subtasks (AC-004).
 func (s *CardService) RemoveEquipment(ctx context.Context, a Actor, taskID, equipmentID string) (*OrderCardMutationResponse, error) {
 	id, ok := parseTaskID(taskID)
 	if !ok {
@@ -120,16 +118,6 @@ func (s *CardService) RemoveEquipment(ctx context.Context, a Actor, taskID, equi
 		}
 		if len(open) > 0 {
 			return ErrTaskEquipmentInUse.WithDetail("subtasks", open)
-		}
-		transferID, err := s.equipment.ActiveTransfer(spanCtx, tx, id, equipmentID)
-		if errors.Is(err, errNotFound) {
-			return ErrTaskEquipmentNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if transferID != nil {
-			return equipmentInTransfer(*transferID)
 		}
 		if err := s.equipment.Delete(spanCtx, tx, id, equipmentID); err != nil {
 			if errors.Is(err, errNotFound) {

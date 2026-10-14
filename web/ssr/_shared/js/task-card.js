@@ -139,21 +139,9 @@
   // карточку; 400 с полями → показать текст у поля (card-warning), если у строки есть такой
   // слот, иначе (409/403/прочее) — общий KT.uiAlert + перечитать карточку (откат к серверным
   // значениям).
-  // fieldErrorText — текст ошибки поля строки: склад строки удалён, пока карточка открыта
-  // (soft-delete-warehouses-suppliers §8.3) — «Склад не найден»; прочие — код сервера, как раньше.
+  // fieldErrorText — текст ошибки поля строки (код сервера).
   function fieldErrorText(f) {
-    return f.name === 'warehouse_id' && f.message === 'not_found' ? 'Склад не найден' : f.message;
-  }
-
-  // currentProductQty — количество строки товара по последнему состоянию сервера (key —
-  // reqKeyProduct); null — строки в карточке нет.
-  function currentProductQty(key) {
-    var id = String(key).replace(/^product:/, '');
-    var found = null;
-    ((card && card.subtasks) || []).forEach(function (sub) {
-      (sub.products || []).forEach(function (p) { if (p.id === id) found = p.qty; });
-    });
-    return found;
+    return f.message;
   }
 
   function onRowError(key, err) {
@@ -161,21 +149,6 @@
     if (code === 'SUBTASK_NOT_FOUND' || code === 'SUBTASK_PRODUCT_NOT_FOUND' || code === 'SUBTASK_LOG_NOT_FOUND' || code === 'TASK_EQUIPMENT_NOT_FOUND') {
       KT.uiAlert('Строка уже удалена', 'Не удалось сохранить').then(function () { loadCard(taskId); });
       return;
-    }
-    // количество в строке, склад которой удалён, увеличить нельзя (409 WAREHOUSE_DELETED) — текст
-    // отказа у самой строки; значения откатываются к серверным без перерисовки по таймеру
-    if (code === 'WAREHOUSE_DELETED') {
-      var whRow = document.querySelector('[data-row-key="' + cssesc(key) + '"]');
-      var whTr = whRow && whRow.closest ? whRow.closest('[data-testid="card-product-row"]') : null;
-      var whWarn = whTr && whTr.querySelector('[data-testid="card-warning"]');
-      if (whWarn) {
-        whWarn.textContent = err.message || 'Склад строки удалён — выберите другой склад';
-        whWarn.classList.remove('d-none');
-        var qtyEl = whTr.querySelector('[data-field="qty"]');
-        var srv = currentProductQty(key);
-        if (qtyEl && srv != null) qtyEl.value = srv;
-        return;
-      }
     }
     if (err && err.status === 400 && err.fields && err.fields.length) {
       var rowEl = document.querySelector('[data-row-key="' + cssesc(key) + '"]');
@@ -350,7 +323,6 @@
     $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить оборудование</p>';
     $('#card-subtasks').innerHTML = '<p class="text-body-secondary small" data-testid="card-subtasks-locked">Сохраните заказ, чтобы добавить услуги</p>';
     $('#card-attachments').innerHTML = '<p class="text-body-secondary small" data-testid="card-attachments-locked">Сохраните заказ, чтобы добавить фото, видео или PDF</p>';
-    $('#card-transfers').innerHTML = '<p class="text-body-secondary small" data-testid="card-transfers-locked">Сохраните заказ, чтобы принять оборудование от клиента</p>';
   }
 
   // ---------- полный рендер (после loadCard/applyCard) ----------
@@ -392,7 +364,6 @@
 
     renderPrintActions(t.id);
     renderEquipment();
-    renderTransfers();
     renderSubtasks();
     renderAttachments();
     renderTotal();
@@ -502,15 +473,11 @@
       '<div class="card mb-2" data-testid="card-equipment-row" data-row-key="' + key + '" data-equipment-id="' + esc(eq.equipment_id) + '">' +
       '  <div class="card-body py-2">' +
       '    <div class="d-flex justify-content-between align-items-start gap-2">' +
-      '      <div class="card-eq-title"><strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') +
+      '      <div class="card-eq-title">' + plateBadge(eq.plate_number) + '<strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') +
       // единица мягко удалена (soft-delete-clients §8.3 п.3) — в заказе остаётся с бейджем
       (eq.is_deleted ? deletedBadge('card-equipment-deleted') : '') + '</div>' +
-      // DS-026: единицу в незавершённом документе «Перемещение» убрать нельзя — кнопки нет
-      // (API тоже отвечает 409 EQUIPMENT_IN_TRANSFER).
-      (eq.active_transfer_id != null ? '' :
-      '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>') +
+      '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>' +
       '    </div>' +
-      equipmentLocationHtml(eq) +
       '    <div class="row g-2 mt-1">' +
       '      <div class="col-6"><label class="form-label small mb-0">Комплектность</label>' +
       '        <input class="form-control form-control-sm" data-field="completeness" data-row-key="' + key + '" data-testid="card-equipment-completeness" maxlength="1000" value="' + esc(eq.completeness) + '"></div>' +
@@ -522,92 +489,6 @@
       (eq.is_deleted ? '' : equipmentHistoryHtml(eq.equipment_id)) +
       '  </div>' +
       '</div>';
-  }
-
-  // ---------- Местоположение оборудования заказа (transfers-core DS-003, DS-008) ----------
-
-  // equipmentLocationHtml — бейдж местоположения единицы («у клиента» / «на складе X» /
-  // «в пути → Y» / «в пути → клиент», DS-008, DS-013) и ссылка «перемещение #N», если единица
-  // стоит в незавершённом документе (экран /transfers доступен и исполнителю — документы с
-  // клиентом, transfers-partners DS-018). Оборудование двигается только документом (DS-003):
-  // при добавлении в заказ склад не выбирается (DS-045), кнопки — в блоке «Перемещения заказа».
-  function equipmentLocationHtml(eq) {
-    var label, cls;
-    switch (eq.location_status) {
-      case 'at_warehouse':
-        label = 'на складе ' + (eq.warehouse_name || '');
-        cls = 'text-bg-info';
-        break;
-      case 'in_transit':
-        label = 'в пути → ' + (eq.transit_to_name || '');
-        cls = 'text-bg-warning';
-        break;
-      default:
-        label = 'у клиента';
-        cls = 'text-bg-secondary';
-    }
-    var html = '<span class="badge ' + cls + '" data-testid="card-equipment-location" data-location-status="' + esc(eq.location_status) + '">' + esc(label) + '</span>';
-    if (eq.active_transfer_id != null) {
-      var text = 'перемещение #' + esc(eq.active_transfer_id);
-      // исполнителю доступны только документы с клиентом (DS-018): «склад → склад» — текстом,
-      // иначе ссылка вела бы на «Перемещение не найдено».
-      var reachable = host.getData().isAdmin || !!TRANSFER_DIRECTION[eq.active_transfer_direction];
-      html += reachable
-        ? '<a class="small" href="/transfers?id=' + encodeURIComponent(eq.active_transfer_id) + '" data-testid="card-equipment-transfer">' + text + '</a>'
-        : '<span class="small text-body-secondary" data-testid="card-equipment-transfer">' + text + '</span>';
-    }
-    return '<div class="d-flex flex-wrap align-items-center gap-2 mt-1">' + html + '</div>';
-  }
-
-  // ---------- Перемещения заказа (transfers-partners §8.2, DS-012) ----------
-
-  var TRANSFER_STATUS = {
-    requested: ['Заявка', 'text-bg-primary'], in_transit: ['В пути', 'text-bg-warning'],
-    received: ['Получено', 'text-bg-success'], cancelled: ['Отменён', 'text-bg-secondary']
-  };
-  var TRANSFER_DIRECTION = { client_to_warehouse: 'Приём от клиента', warehouse_to_client: 'Возврат клиенту' };
-
-  // transferActionHtml — кнопка-переход на форму нового документа заказа
-  // (/transfers?new=1&direction=…&task_id=N); enabled=false — неактивна, с подсказкой.
-  function transferActionHtml(direction, label, cls, testid, enabled, hint) {
-    if (!enabled) {
-      return '<span class="d-inline-block" tabindex="0" title="' + esc(hint) + '" data-testid="' + testid + '-hint">' +
-        '<button type="button" class="btn ' + cls + ' btn-sm" data-testid="' + testid + '" disabled aria-disabled="true">' + esc(label) + '</button></span>';
-    }
-    return '<a class="btn ' + cls + ' btn-sm" data-testid="' + testid + '" href="/transfers?new=1&amp;direction=' + direction + '&amp;task_id=' + encodeURIComponent(card.task.id) + '">' + esc(label) + '</a>';
-  }
-
-  function transferRowHtml(t) {
-    var st = TRANSFER_STATUS[t.status] || [t.status, 'text-bg-secondary'];
-    return '<div class="list-group-item d-flex flex-wrap align-items-center gap-2" data-testid="card-transfer-row" data-id="' + esc(t.id) + '" data-direction="' + esc(t.direction) + '" data-status="' + esc(t.status) + '">' +
-      '<a class="fw-semibold" href="/transfers?id=' + encodeURIComponent(t.id) + '" data-testid="card-transfer-link">#' + esc(t.id) + '</a>' +
-      '<span data-testid="card-transfer-direction">' + esc(TRANSFER_DIRECTION[t.direction] || t.direction) + '</span>' +
-      '<span class="text-body-secondary text-break" data-testid="card-transfer-warehouse">' + esc(t.warehouse_name) + '</span>' +
-      '<span class="badge ' + st[1] + '" data-testid="card-transfer-status">' + esc(st[0]) + '</span>' +
-      '<span class="small text-body-secondary">строк: <span data-testid="card-transfer-count">' + esc(t.items_count) + '</span></span>' +
-      '<span class="small text-body-secondary ms-auto" data-testid="card-transfer-date">' + esc(fmtDate(t.created_at)) + '</span>' +
-      // сумма накладной — справа, только если больше нуля (transfers-sales §8.2 п.1)
-      (num(t.amount) > 0 ? '<span class="fw-semibold text-nowrap" data-testid="card-transfer-amount">' + money(t.amount) + '</span>' : '') +
-      '</div>';
-  }
-
-  // renderTransfers — блок «Перемещения заказа»: «Принять от клиента» (есть единицы «у
-  // клиента») и «Вернуть клиенту» (есть единицы на складе) + документы заказа, новые сверху.
-  function renderTransfers() {
-    var container = $('#card-transfers');
-    if (!container || !card) return;
-    var units = card.equipment || [];
-    var atClient = units.some(function (e) { return e.location_status === 'at_client'; });
-    var atWarehouse = units.some(function (e) { return e.location_status === 'at_warehouse'; });
-    var list = card.transfers || [];
-    container.innerHTML =
-      '<div class="d-flex flex-wrap justify-content-end gap-2 mb-2" data-testid="card-transfers-actions">' +
-      transferActionHtml('client_to_warehouse', 'Принять от клиента', 'btn-primary', 'card-transfer-intake', atClient, 'Нет оборудования у клиента') +
-      transferActionHtml('warehouse_to_client', 'Вернуть клиенту', 'btn-outline-secondary', 'card-transfer-return', atWarehouse, 'Нет оборудования на складе') +
-      '</div>' +
-      (list.length
-        ? '<div class="list-group" data-testid="card-transfers-list">' + list.map(transferRowHtml).join('') + '</div>'
-        : '<p class="text-body-secondary small mb-0" data-testid="card-transfers-empty">Перемещений нет</p>');
   }
 
   var SERVICE_STATUS = { 'new': ['Новая', 'text-bg-secondary'], in_progress: ['В работе', 'text-bg-primary'], done: ['Выполнена', 'text-bg-success'] };
@@ -656,7 +537,6 @@
     return '<div class="small mb-2" data-testid="card-equipment-history-order">' +
       '<a href="/?task=' + o.task_id + '" data-testid="card-equipment-history-link">#' + o.task_id + ' ' + esc(o.title) + '</a>' +
       ' <span class="badge" style="background-color:' + esc(o.column_color) + '">' + esc(o.column_name) + '</span>' +
-      (o.location ? ' <span class="badge text-bg-light border" data-testid="card-equipment-history-location">' + esc(o.location) + '</span>' : '') +
       ' <span class="text-body-secondary">от ' + fmtDate(o.created_at) + '</span>' +
       intake + (services || '<div class="text-body-secondary">Услуг по этому оборудованию не было</div>') + '</div>';
   }
@@ -679,10 +559,22 @@
     renderEquipment();
   }
 
+  // plateBadge — госномер автомобиля бейджем перед названием единицы ('' — госномера нет).
+  function plateBadge(plate) {
+    return plate ? '<span class="badge text-bg-light border me-1 text-nowrap" data-testid="card-equipment-plate">' + esc(plate) + '</span> ' : '';
+  }
+
+  // PLATE_ERROR_TEXT — коды ошибок поля plate_number (details.fields[].message) → текст.
+  var PLATE_ERROR_TEXT = {
+    too_long: 'Госномер: не больше 20 символов',
+    invalid_format: 'Госномер: только буквы, цифры, пробел и дефис',
+    invalid_text: 'Госномер: недопустимые символы'
+  };
+
   function equipmentAddHtml(options) {
     return '<select class="form-select form-select-sm" data-testid="card-equipment-add"><option value="">+ Добавить оборудование клиента…</option>' +
       (options || []).map(function (e) {
-        return '<option value="' + esc(e.id) + '">' + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + (e.serial ? ' · ' + esc(e.serial) : '') + '</option>';
+        return '<option value="' + esc(e.id) + '">' + (e.plate_number ? esc(e.plate_number) + ' — ' : '') + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + (e.serial ? ' · ' + esc(e.serial) : '') + '</option>';
       }).join('') + '</select>';
   }
 
@@ -693,6 +585,7 @@
       '    <div class="row g-2">' +
       '      <div class="col-12"><label class="form-label small mb-0">Тип *</label>' +
       '        <select class="form-select form-select-sm" data-testid="card-equipment-new-type"><option value="">Выберите тип</option></select></div>' +
+      '      <div class="col-6"><label class="form-label small mb-0">Госномер</label><input class="form-control form-control-sm text-uppercase" maxlength="20" placeholder="А123ВС 777" data-testid="card-equipment-new-plate"></div>' +
       '      <div class="col-6"><label class="form-label small mb-0">Бренд</label><input class="form-control form-control-sm" data-testid="card-equipment-new-brand"></div>' +
       '      <div class="col-6"><label class="form-label small mb-0">Модель *</label><input class="form-control form-control-sm" data-testid="card-equipment-new-model"></div>' +
       '      <div class="col-6"><label class="form-label small mb-0">Серийный №</label><input class="form-control form-control-sm" data-testid="card-equipment-new-serial"></div>' +
@@ -740,8 +633,8 @@
             host.onChanged();
           }).catch(function (err) {
             KT.uiAlert((err && err.message) || 'Не удалось убрать оборудование', 'Ошибка');
-            // 409: единица занята документом «Перемещение» либо услугой — карточка устарела;
-            // перечитываем, чтобы «Убрать» и бейдж местоположения показали актуальное состояние.
+            // 409: единица занята услугой — карточка устарела; перечитываем, чтобы показать
+            // актуальное состояние.
             if (err && err.status === 409) refetchCard();
           });
         });
@@ -798,6 +691,7 @@
       var brand = $('[data-testid="card-equipment-new-brand"]', container).value.trim();
       var model = $('[data-testid="card-equipment-new-model"]', container).value.trim();
       var serial = $('[data-testid="card-equipment-new-serial"]', container).value.trim();
+      var plate = $('[data-testid="card-equipment-new-plate"]', container).value.trim();
       var errEl = $('[data-testid="card-equipment-new-error"]', container);
       if (!typeId || !model) {
         errEl.textContent = 'Укажите тип и модель';
@@ -806,7 +700,7 @@
       }
       errEl.classList.add('d-none');
       var ticket = beginRequest();
-      KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { type_id: typeId, brand: brand, model: model, sku: '', serial: serial, specs: [], note: '' })
+      KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { type_id: typeId, plate_number: plate, brand: brand, model: model, sku: '', serial: serial, specs: [], note: '' })
         .then(function (equipment) {
           return KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: equipment.id, completeness: '', condition: '' });
         }).then(function (resp) {
@@ -815,7 +709,7 @@
           if (!applyCard(resp.card, ticket)) return;
           host.onChanged();
         }).catch(function (err) {
-          errEl.textContent = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return f.message; }).join('; ') : ((err && err.message) || 'Не удалось создать оборудование');
+          errEl.textContent = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return (f.name === 'plate_number' && PLATE_ERROR_TEXT[f.message]) || f.message; }).join('; ') : ((err && err.message) || 'Не удалось создать оборудование');
           errEl.classList.remove('d-none');
         });
     });
@@ -829,18 +723,18 @@
 
   var SUBTASK_STATUSES = [{ v: 'new', t: 'Новая' }, { v: 'in_progress', t: 'В работе' }, { v: 'done', t: 'Выполнена' }];
 
-  // Остаток — по паре товар × склад строки (warehouses DS-005).
-  function stockOf(productId, warehouseId) {
-    return (card.stock || []).filter(function (s) { return s.product_id === productId && s.warehouse_id === warehouseId; })[0] || { stock: 0, min_stock: 0, task_reserved: 0 };
+  // Остаток товара — card.stock по product_id.
+  function stockOf(productId) {
+    return (card.stock || []).filter(function (s) { return s.product_id === productId; })[0] || { stock: 0, min_stock: 0, task_reserved: 0 };
   }
   // stockHint — AC-009: avail = stock + task_reserved (этого заказа), need = Σ qty ЭТОГО
-  // товара с ЭТОГО склада по ВСЕМ услугам карточки (включая текущую строку).
-  function stockHint(productId, warehouseId) {
-    var st = stockOf(productId, warehouseId);
+  // товара по ВСЕМ услугам карточки (включая текущую строку).
+  function stockHint(productId) {
+    var st = stockOf(productId);
     var avail = num(st.stock) + num(st.task_reserved);
     var need = 0;
     card.subtasks.forEach(function (s) {
-      s.products.forEach(function (p) { if (p.product_id === productId && p.warehouse_id === warehouseId) need += num(p.qty); });
+      s.products.forEach(function (p) { if (p.product_id === productId) need += num(p.qty); });
     });
     var rest = avail - need;
     if (rest < 0) return 'в наличии только ' + avail;
@@ -871,7 +765,7 @@
     var equipmentOptions = '<option value="">Без оборудования</option>' + card.equipment.filter(function (e) {
       return !e.is_deleted || e.equipment_id === sub.equipment_id;
     }).map(function (e) {
-      return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + '</option>';
+      return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + (e.plate_number ? esc(e.plate_number) + ' — ' : '') + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + '</option>';
     }).join('');
     var assigneeOptions = '<option value="">Не назначен</option>' + host.getData().assignees.map(function (a) {
       return '<option value="' + esc(a.id) + '"' + (sub.assignee_id === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.is_active === false ? ' (неактивен)' : '') + '</option>';
@@ -932,25 +826,14 @@
         '    <div class="invalid-feedback d-block d-none small" data-testid="card-warning"></div>' +
         '  </td>' +
         '  <td style="max-width:100px"><input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + pkey + '" data-testid="card-product-price" value="' + (p.price == null ? '' : esc(p.price)) + '"></td>' +
-        '  <td style="min-width:110px"><select class="form-select form-select-sm" data-field="warehouse_id" data-row-key="' + pkey + '" data-testid="card-product-warehouse" aria-label="Склад">' +
-             (card.warehouses || []).map(function (w) {
-               // мягко удалённый склад (soft-delete-warehouses-suppliers §8.3 п.3) — только как уже
-               // выбранный склад строки; в выбор для другой строки не попадает
-               var off = (w.is_deleted || !w.is_active) && w.id !== p.warehouse_id;
-               return '<option value="' + esc(w.id) + '"' + (w.id === p.warehouse_id ? ' selected' : '') + (off ? ' disabled' : '') + '>' + esc(w.name) + (w.is_deleted ? ' (удалён)' : (w.is_active ? '' : ' (архив)')) + '</option>';
-             }).join('') +
-        '  </select>' +
-             ((card.warehouses || []).some(function (w) { return w.id === p.warehouse_id && w.is_deleted; })
-               ? ' <span class="badge text-bg-secondary" data-testid="card-product-warehouse-deleted">удалён</span>' : '') +
-        '</td>' +
-        '  <td class="small text-body-secondary" data-testid="card-product-hint">' + esc(stockHint(p.product_id, p.warehouse_id)) + '</td>' +
+        '  <td class="small text-body-secondary" data-testid="card-product-hint">' + esc(stockHint(p.product_id)) + '</td>' +
         '  <td data-testid="card-subtask-product-total">' + money(p.line_total) + '</td>' +
         '  <td><button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-product-delete" data-product-row-id="' + esc(p.id) + '">×</button></td>' +
         '</tr>';
     }).join('');
     return '' +
       '<div class="table-responsive"><table class="table table-sm align-middle mb-1">' +
-      '  <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Склад</th><th>Остаток</th><th>Сумма</th><th></th></tr></thead>' +
+      '  <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Остаток</th><th>Сумма</th><th></th></tr></thead>' +
       '  <tbody>' + rows + '</tbody>' +
       '</table></div>' +
       '<select class="form-select form-select-sm" data-testid="card-product-add" data-subtask-id="' + esc(sub.id) + '"><option value="">+ Добавить товар…</option></select>';
@@ -1119,7 +1002,7 @@
         rowWarning.classList.add('d-none');
         enqueueRow(reqKeyProduct(prodRowId), { qty: n }, function (source) {
           var p = currentProduct(subId, prodRowId, source) || {};
-          return { qty: num(p.qty), price: p.price == null ? null : num(p.price), warehouse_id: p.warehouse_id || '' };
+          return { qty: num(p.qty), price: p.price == null ? null : num(p.price) };
         }, function (body) {
           return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
         });
@@ -1145,18 +1028,7 @@
         rowWarning.classList.add('d-none');
         enqueueRow(reqKeyProduct(prodRowId), { price: value }, function (source) {
           var p = currentProduct(subId, prodRowId, source) || {};
-          return { qty: num(p.qty), price: p.price == null ? null : num(p.price), warehouse_id: p.warehouse_id || '' };
-        }, function (body) {
-          return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
-        });
-      });
-
-      // Склад строки (DS-005): смена у списанной строки — сервер пересчитывает списание.
-      var whSelect = $('[data-testid="card-product-warehouse"]', rowEl);
-      whSelect.addEventListener('change', function () {
-        enqueueRow(reqKeyProduct(prodRowId), { warehouse_id: whSelect.value }, function (source) {
-          var p = currentProduct(subId, prodRowId, source) || {};
-          return { qty: num(p.qty), price: p.price == null ? null : num(p.price), warehouse_id: p.warehouse_id || '' };
+          return { qty: num(p.qty), price: p.price == null ? null : num(p.price) };
         }, function (body) {
           return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
         });
@@ -1431,12 +1303,9 @@
     });
   }
 
-  // renderTotal — итог заказа; над ним — «Продано по накладным» (transfers-sales DS-014), пока
-  // сумма больше нуля: она уже входит в total_amount.
+  // renderTotal — итог заказа (услуги + товары).
   function renderTotal() {
-    var sold = num(card.task.transfers_amount);
     $('#card-total').innerHTML =
-      (sold > 0 ? '<div class="mb-1" data-testid="card-transfers-amount-row">Продано по накладным: <span data-testid="card-transfers-amount">' + money(sold) + '</span></div>' : '') +
       '<strong data-testid="card-total">Итог заказа: ' + money(card.task.total_amount) + '</strong>';
   }
 
@@ -1461,25 +1330,6 @@
   function showHeaderError(msg) {
     var el = $('#task-error');
     el.textContent = msg;
-    el.classList.remove('d-none');
-  }
-
-  // showTransfersError — отказ смены клиента заказа с действующими документами (409
-  // TASK_CLIENT_LOCKED_BY_TRANSFERS, D84): текст prefix и номера документов ссылками. Как и
-  // прочие ошибки карточки — в шапке; не скрывается, пока карточка не перечитана. (Отказа
-  // удаления заказа «Сначала отмените перемещения» больше нет — soft-delete-transfers DS-006.)
-  function showTransfersError(ids, prefix) {
-    var el = $('#task-error');
-    el.textContent = prefix;
-    ids.forEach(function (n, i) {
-      if (i) el.appendChild(document.createTextNode(', '));
-      var a = document.createElement('a');
-      a.href = '/transfers?id=' + encodeURIComponent(n);
-      a.className = 'alert-link';
-      a.setAttribute('data-testid', 'task-error-transfer-link');
-      a.textContent = '#' + n;
-      el.appendChild(a);
-    });
     el.classList.remove('d-none');
   }
 
@@ -1536,17 +1386,6 @@
           KT.uiAlert(err.message || 'Заказ уже изменён, обновите', 'Конфликт версии').then(function () { if (taskId) loadCard(taskId); });
           return;
         }
-        if (err && err.code === 'TASK_CLIENT_LOCKED_BY_TRANSFERS') {
-          // D84: у заказа есть документы перемещения — клиент не меняется; выбор в форме
-          // возвращается к сохранённому, остальные правки шапки остаются в форме.
-          var sel = $('#task-client');
-          if (card) { sel.value = card.task.client_id; if (sel._cbSync) sel._cbSync(); }
-          var lockIds = err.details && err.details.transfer_ids;
-          if (lockIds && lockIds.length) {
-            showTransfersError(lockIds, 'У заказа есть перемещения — сменить клиента нельзя: ');
-            return;
-          }
-        }
         if (err && err.fields && err.fields.length) {
           // клиента удалили, пока форма открыта (soft-delete-clients §8.3) — текст под полем
           var clientGone = err.fields.some(function (f) { return f.name === 'client_id' && f.message === 'not_found'; });
@@ -1563,16 +1402,11 @@
       if (!taskId) return;
       var id = taskId;
       // Мягкое удаление с причиной (soft-delete-core §8.2, §8.3): окно «Удаление» само
-      // показывает ошибку причины (400) и остаётся открытым. Заказ удаляется с документами
-      // перемещения в любом статусе (soft-delete-transfers §8.3, DS-006): они остаются в
-      // «Перемещениях» с пометкой «заказ удалён» — об этом вторая строка пояснения (число
-      // документов — из уже загруженного блока перемещений карточки).
+      // показывает ошибку причины (400) и остаётся открытым.
       var title = (card && card.task && card.task.title) || '';
-      var hasTransfers = !!(card && card.transfers && card.transfers.length);
       KT.uiDeleteDialog({
         title: 'Удалить «#' + id + (title ? ' ' + title : '') + '»?',
         text: 'Товары заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».',
-        note: hasTransfers ? 'Перемещения заказа останутся в разделе «Перемещения» с пометкой «заказ удалён»' : '',
         submit: function (reason) { return KT.api.delWith('/api/v1/tasks/' + id, { reason: reason }); },
         onOffline: function () { KT.uiToast('Нет связи с сервером', true); }
       }).then(function (out) {

@@ -38,10 +38,12 @@ CREATE TABLE equipment (
     model      text NOT NULL CHECK (btrim(model) <> ''),
     sku        text NOT NULL DEFAULT '',
     serial     text NOT NULL DEFAULT '',
-    specs      jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(specs) = 'array'),
+    plate_number text NOT NULL DEFAULT '' CHECK (char_length(plate_number) <= 20), -- госномер автомобиля
+    specs     jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(specs) = 'array'),
     note       text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX equipment_client_id_idx ON equipment (client_id);
-CREATE INDEX equipment_type_id_idx   ON equipment (type_id);   -- RESTRICT-проверка и equipment_count типа
+CREATE INDEX equipment_plate_number_idx ON equipment (plate_number) WHERE plate_number <> '';
+CREATE INDEX equipment_type_id_idx  ON equipment (type_id);   -- RESTRICT-проверка и equipment_count типа

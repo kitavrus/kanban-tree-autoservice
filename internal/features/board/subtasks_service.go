@@ -61,12 +61,7 @@ func (s *CardService) CreateSubtask(ctx context.Context, a Actor, taskID string,
 			return err
 		}
 		span.SetAttributes(attribute.String("subtask_id", subtaskID))
-		// DS-005: комплект услуги копируется со складом по умолчанию строки товара.
-		warehouseID, err := s.products.DefaultWarehouse(spanCtx, tx, subtaskID)
-		if err != nil {
-			return err
-		}
-		if err := s.subtasks.CopyKit(spanCtx, tx, subtaskID, in.ServiceID, warehouseID); err != nil {
+		if err := s.subtasks.CopyKit(spanCtx, tx, subtaskID, in.ServiceID); err != nil {
 			return err
 		}
 

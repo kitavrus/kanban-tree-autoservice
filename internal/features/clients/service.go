@@ -71,7 +71,8 @@ func (s *Service) List(ctx context.Context, q ListQuery) (*ClientListResponse, e
 	}
 	digits, digitsAlt := searchDigits(query)
 	items, total, err := s.repo.ListClients(ctx, ListParams{
-		Q: query, Digits: digits, DigitsAlt: digitsAlt, Limit: limit, Offset: offset,
+		Q: query, Digits: digits, DigitsAlt: digitsAlt, PlateLike: sqlutil.PlatePattern(query),
+		Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return nil, err
@@ -321,7 +322,7 @@ func toEquipmentResponse(e Equipment) EquipmentResponse {
 	}
 	return EquipmentResponse{
 		ID: e.ID, ClientID: e.ClientID, TypeID: e.TypeID, TypeName: e.TypeName, TypeIsActive: e.TypeIsActive, TypeIsDeleted: e.TypeIsDeleted,
-		Brand: e.Brand, Model: e.Model, SKU: e.SKU, Serial: e.Serial, Specs: specs, Note: e.Note,
+		PlateNumber: e.PlateNumber, Brand: e.Brand, Model: e.Model, SKU: e.SKU, Serial: e.Serial, Specs: specs, Note: e.Note,
 		CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,
 	}
 }

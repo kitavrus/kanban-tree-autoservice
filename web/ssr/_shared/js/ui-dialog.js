@@ -3,7 +3,7 @@
    Bootstrap Modal. Все функции возвращают Promise:
      KT.uiDialog({title, text, input, ok, cancel, danger}) → true|false | строка|null
      KT.uiDialog({title, text, select: [{value, text}], value}) → value выбранной опции|null
-       (нативный <select data-native>, не комбобокс; warehouses DS-008 — выбор склада)
+       (нативный <select data-native>, не комбобокс)
      KT.uiPrompt(title, value) → строка|null
      KT.uiConfirm(text, ok='Удалить') → true|false
      KT.uiAlert(text, title='Нельзя') → true
@@ -153,7 +153,7 @@
         p.setAttribute('data-testid', 'ui-dialog-text');
         body.append(p);
       }
-      if (opts.note) { // вторая строка пояснения (soft-delete-transfers §8.3)
+      if (opts.note) { // вторая строка пояснения
         var note = el('p', null, opts.note);
         note.setAttribute('data-testid', 'ui-dialog-note');
         body.append(note);

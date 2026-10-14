@@ -3,7 +3,7 @@
 {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
 {{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
 <form class="d-flex flex-wrap gap-2 mb-3" method="get" action="/clients" data-testid="clients-filters">
-  <input class="form-control" style="max-width:320px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск: компания, представитель, телефон" aria-label="Поиск" data-testid="filter-q">
+  <input class="form-control" style="max-width:320px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск: компания, представитель, телефон, госномер" aria-label="Поиск" data-testid="filter-q">
   <button class="btn btn-outline-secondary" type="submit">Найти</button>
   {{ if .Q }}<a class="btn btn-link" href="/clients" data-testid="filter-reset">Сбросить</a>{{ end }}
 </form>

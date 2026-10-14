@@ -8,7 +8,7 @@ import type { Page } from '@playwright/test';
 // Справочник «Поставщики» (docs/features/suppliers/draft-spec.md §8.1, DS-007/DS-043) —
 // TS-035: admin заводит, правит, архивирует и возвращает поставщика; дубль названия — под
 // полем; executor — без пункта меню и с 403; вьюпорт 375×812 без горизонтальной прокрутки.
-// Общая dev-БД (§TD-6.2): свои поставщики через uniq(). Уборка (soft-delete-warehouses-suppliers
+// Общая dev-БД (§TD-6.2): свои поставщики через uniq(). Уборка (soft-delete-suppliers
 // TS-F11): созданные тестом записи убираются ФИЗИЧЕСКИ служебным адресом purge — purgeAll по
 // префиксу (в том числе заведённые через экран) и autouse partnersCleanup (созданные через
 // adminApi и мягко удалённые тестом); раньше они только архивировались и копились.
@@ -117,7 +117,7 @@ test.describe('SUP: справочник «Поставщики»', () => {
       await sup.showArchived(false);
       await expect(sup.row(data.name)).toBeVisible();
 
-      // «Удалить» с причиной (soft-delete-warehouses-suppliers §8.1): окно «Удаление», тост,
+      // «Удалить» с причиной (soft-delete-suppliers §8.1): окно «Удаление», тост,
       // поставщика нет в списке — и среди архивных.
       await sup.openRow(data.name);
       const reason = `${prefix} создан по ошибке`;

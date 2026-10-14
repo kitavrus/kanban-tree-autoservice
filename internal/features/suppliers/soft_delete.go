@@ -15,7 +15,7 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 )
 
-// Мягкое удаление поставщиков (docs/features/soft-delete-warehouses-suppliers/draft-spec.md
+// Мягкое удаление поставщиков (docs/features/soft-delete-suppliers/draft-spec.md
 // §4.2, §6.3, §6.4, часть 6 мастер-спеки soft-delete): удаление с причиной, восстановление,
 // служебная уборка. Архив (is_active) и удаление независимы (DS-009).
 
@@ -36,19 +36,13 @@ type RestoreResponse struct {
 	ID string `json:"id"`
 }
 
-// ErrPurgeInUse — служебная уборка: на поставщика ссылаются документы (§6.5).
-var ErrPurgeInUse = errorspkg.Conflict("Запись используется")
-
 var (
 	errNotDeleted       = errors.New("suppliers: not deleted")
 	errRestoreNameTaken = errors.New("suppliers: restore name taken")
-	errPurgeInUse       = errors.New("suppliers: purge in use")
 )
 
 // SoftDelete — мягкое удаление поставщика: один UPDATE с условием «ещё не удалён»; 0 строк →
-// ErrNotFound (второй одновременный запрос — тоже, DS-024). Документы поставщика в любом статусе
-// не читаются и не мешают: UPDATE вместо DELETE, внешний ключ transfers.supplier_id не
-// срабатывает (DS-014). is_active не меняется.
+// ErrNotFound (второй одновременный запрос — тоже, DS-024). is_active не меняется.
 func (r *Repo) SoftDelete(ctx context.Context, id, userID, reason string) (time.Time, error) {
 	var at time.Time
 	err := r.pool.QueryRow(ctx, `
@@ -85,14 +79,10 @@ WHERE id = $1::uuid AND deleted_at IS NOT NULL`, id)
 }
 
 // Purge — физическое удаление поставщика (служебная уборка автотестов, DS-027): действующего
-// либо удалённого; на него ссылаются документы (FK RESTRICT) → errPurgeInUse.
+// либо удалённого.
 func (r *Repo) Purge(ctx context.Context, id string) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM suppliers WHERE id = $1::uuid`, id)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "23001") {
-			return errPurgeInUse
-		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
@@ -102,7 +92,7 @@ func (r *Repo) Purge(ctx context.Context, id string) error {
 }
 
 // Delete — МЯГКОЕ удаление поставщика (§6.3): только admin — роль проверяется первой, до поиска
-// записи (DS-003); причина обязательна (DS-020); документы не мешают (DS-014).
+// записи (DS-003); причина обязательна (DS-020).
 func (s *Service) Delete(ctx context.Context, a Actor, id string, in softdelete.DeleteRequest) (*DeleteResponse, error) {
 	if !a.IsAdmin {
 		return nil, errorspkg.Forbidden("Нет доступа")
@@ -152,17 +142,14 @@ func (s *Service) Restore(ctx context.Context, a Actor, id string) (*RestoreResp
 
 // Purge — вид suppliers служебного адреса DELETE /api/v1/test/purge/:kind/:id (роут и гард
 // admin — в пакете board, только при TEST_PURGE_ENABLED=true, DS-027): вид записи не
-// раскрывается (404 NOT_FOUND); на поставщика ссылаются документы → 409 CONFLICT.
+// раскрывается (404 NOT_FOUND).
 func (s *Service) Purge(ctx context.Context, id string) error {
 	if uuid.Validate(id) != nil {
 		return errorspkg.NotFound("Не найдено")
 	}
 	err := s.repo.Purge(ctx, id)
-	switch {
-	case errors.Is(err, ErrNotFound):
+	if errors.Is(err, ErrNotFound) {
 		return errorspkg.NotFound("Не найдено")
-	case errors.Is(err, errPurgeInUse):
-		return ErrPurgeInUse
 	}
 	return err
 }

@@ -119,18 +119,10 @@ func (s *CatalogLiveSuite) sdRestore(b *testutil.Browser, path string) (int, []b
 	return b.Do(http.MethodPost, path+"/restore", nil)
 }
 
-// sdProduct — товар категории categoryID; stocks — остатки по складам (nil — нулевой остаток на
-// складе по умолчанию).
-func (s *CatalogLiveSuite) sdProduct(categoryID, name string, stocks map[string]any) string {
-	rows := []map[string]any{{"warehouse_id": testAlmatyID, "stock": 0}}
-	if stocks != nil {
-		rows = rows[:0]
-		for wh, stock := range stocks {
-			rows = append(rows, map[string]any{"warehouse_id": wh, "stock": stock})
-		}
-	}
+// sdProduct — товар категории categoryID с остатком stock (0 — нулевой остаток).
+func (s *CatalogLiveSuite) sdProduct(categoryID, name string, stock float64) string {
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{
-		"category_id": categoryID, "name": name, "sku": "SD-" + sdMark(), "unit": "шт", "price": 100, "stocks": rows,
+		"category_id": categoryID, "name": name, "sku": "SD-" + sdMark(), "unit": "шт", "price": 100, "stock": stock,
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var p sdProductDTO
@@ -201,44 +193,42 @@ func (s *CatalogLiveSuite) sdSubtask(serviceID, productID string) string {
 		VALUES ($1::uuid, $2::uuid, 'SD-каталог заказ', 1024, $3::uuid) RETURNING id`, columnID, clientID, s.sdAdminID()).Scan(&taskID))
 	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO subtasks (task_id, service_id) VALUES ($1, $2::uuid) RETURNING id`, taskID, serviceID).Scan(&subtaskID))
 	if productID != "" {
-		s.sdExec(`INSERT INTO subtask_products (subtask_id, product_id, qty, price, position, warehouse_id) VALUES ($1::uuid, $2::uuid, 2, 100, 1, $3::uuid)`,
-			subtaskID, productID, testAlmatyID)
+		s.sdExec(`INSERT INTO subtask_products (subtask_id, product_id, qty, price, position) VALUES ($1::uuid, $2::uuid, 2, 100, 1)`,
+			subtaskID, productID)
 	}
 	return subtaskID
 }
 
 // ---- TS-027 ----
 
-// TS-027 (DS-021, DS-014): товар с нулевым остатком на всех складах удаляется (200, тело id +
-// deleted_at, «кто, когда, почему» на строке, причина обрезана); ненулевой остаток хотя бы на
-// одном складе — 409 PRODUCT_HAS_STOCK, строка не тронута. Данные подобраны против неверных
-// реализаций: остаток только на ВТОРОМ складе (проверка одного склада по умолчанию прошла бы),
-// ОТРИЦАТЕЛЬНЫЙ остаток (проверка «> 0» прошла бы), сумма остатков по складам равна нулю
-// (+3 и −3 — проверка суммы прошла бы). Ссылки из услуг каталога, заказов и журнала склада
-// удалению не мешают. Удалённый товар для обычных адресов не существует (DS-026).
+// TS-027 (DS-021, DS-014): товар с нулевым остатком удаляется (200, тело id + deleted_at,
+// «кто, когда, почему» на строке, причина обрезана); ненулевой остаток — 409 PRODUCT_HAS_STOCK,
+// строка не тронута. Данные подобраны против неверных реализаций: ОТРИЦАТЕЛЬНЫЙ остаток
+// (проверка «> 0» прошла бы) и дробный остаток меньше единицы (проверка «>= 1» / округление до
+// целого прошли бы). Ссылки из услуг каталога, заказов и журнала склада удалению не мешают. Удалённый товар для обычных адресов не существует (DS-026).
 func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 	m := sdMark()
 	cat := s.newCategory(s.admin, "product", "SD-027 Категория "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-027 Работы "+m)
 
-	onSecond := s.sdProduct(cat.ID, "SD-027 На втором складе "+m, map[string]any{testAlmatyID: 0, testMoscowID: 3})
-	negative := s.sdProduct(cat.ID, "SD-027 Долг "+m, map[string]any{testAlmatyID: -2})
-	zeroSum := s.sdProduct(cat.ID, "SD-027 Сумма ноль "+m, map[string]any{testAlmatyID: 3, testMoscowID: -3})
-	for name, id := range map[string]string{"второй склад": onSecond, "отрицательный": negative, "сумма ноль": zeroSum} {
+	positive := s.sdProduct(cat.ID, "SD-027 Остаток "+m, 3)
+	negative := s.sdProduct(cat.ID, "SD-027 Долг "+m, -2)
+	fraction := s.sdProduct(cat.ID, "SD-027 Дробный "+m, 0.001)
+	for name, id := range map[string]string{"положительный": positive, "отрицательный": negative, "дробный": fraction} {
 		st, _, raw := s.sdDelete(s.admin, "/api/v1/products/"+id, "Создан по ошибке")
 		s.Require().Equal(http.StatusConflict, st, "%s: %s", name, raw)
 		e := s.sdErr(raw)
 		s.Equal("PRODUCT_HAS_STOCK", e.Code, name)
-		s.Equal("У товара есть остаток на складе — сначала переместите или спишите его", e.Message, name)
+		s.Equal("У товара есть остаток на складе — сначала спишите его", e.Message, name)
 		s.Equal(sdLiveActive, s.sdState("products", id), "%s: товар не помечен", name)
 	}
 
 	// товар в комплекте услуги, в заказе и в журнале склада, остаток нулевой — удаляется.
-	used := s.sdProduct(cat.ID, "SD-027 В заказах "+m, nil)
+	used := s.sdProduct(cat.ID, "SD-027 В заказах "+m, 0)
 	svc := s.sdService(svcCat.ID, "SD-027 Услуга "+m, used)
 	subtaskID := s.sdSubtask(svc, used)
-	s.sdExec(`INSERT INTO stock_movements (product_id, warehouse_id, qty_delta, reason, user_id) VALUES ($1::uuid, $2::uuid, 1, 'manual', $3::uuid)`,
-		used, testAlmatyID, s.sdAdminID())
+	s.sdExec(`INSERT INTO stock_movements (product_id, qty_delta, reason, user_id) VALUES ($1::uuid, 1, 'manual', $2::uuid)`,
+		used, s.sdAdminID())
 	st, del, raw := s.sdDelete(s.admin, "/api/v1/products/"+used, "  Создан по ошибке  ")
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.Equal(used, del.ID)
@@ -247,8 +237,8 @@ func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 	s.Equal("1|1|1", s.sdScalar(`
 		SELECT (SELECT count(*) FROM service_products WHERE product_id = $1::uuid)::text || '|' ||
 		       (SELECT count(*) FROM subtask_products WHERE subtask_id = $2::uuid AND product_id = $1::uuid)::text || '|' ||
-		       (SELECT count(*) FROM product_stock WHERE product_id = $1::uuid)::text`, used, subtaskID),
-		"строки комплекта, заказа и остатков остались")
+		       (SELECT count(*) FROM stock_movements WHERE product_id = $1::uuid)::text`, used, subtaskID),
+		"строки комплекта, заказа и журнала склада остались")
 
 	// DS-026: удалённого товара для обычных адресов нет; повтор удаления — 404.
 	st, _, raw = s.sdGetProduct(used)
@@ -263,16 +253,15 @@ func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 		st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?category_id="+cat.ID+"&limit=500"+q, nil)
 		s.Require().Equal(http.StatusOK, st)
 		s.NotContains(string(raw), used, "удалённого товара в списке нет (%q)", q)
-		s.Contains(string(raw), onSecond)
+		s.Contains(string(raw), positive)
 	}
 
-	// остаток списан до нуля на всех складах — товар удаляется.
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+onSecond, map[string]any{
-		"category_id": cat.ID, "name": "SD-027 На втором складе " + m, "price": 100, "is_active": true,
-		"stocks": []map[string]any{{"warehouse_id": testMoscowID, "stock": 0}},
+	// остаток списан до нуля — товар удаляется.
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+positive, map[string]any{
+		"category_id": cat.ID, "name": "SD-027 Остаток " + m, "price": 100, "is_active": true, "stock": 0,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
-	st, _, raw = s.sdDelete(s.admin, "/api/v1/products/"+onSecond, "Списан")
+	st, _, raw = s.sdDelete(s.admin, "/api/v1/products/"+positive, "Списан")
 	s.Equal(http.StatusOK, st, string(raw))
 }
 
@@ -293,7 +282,7 @@ func (s *CatalogLiveSuite) TestTS028_ArchiveAndDeleteIndependent() {
 		if archived {
 			suffix = " архивная " + m
 		}
-		p := s.sdProduct(prodCat.ID, "SD-028 Товар"+suffix, nil)
+		p := s.sdProduct(prodCat.ID, "SD-028 Товар"+suffix, 0)
 		sv := s.sdService(svcCat.ID, "SD-028 Услуга"+suffix)
 		c := s.newCategory(s.admin, "service", "SD-028 Категория"+suffix)
 		if archived {
@@ -407,12 +396,12 @@ func (s *CatalogLiveSuite) TestTS033_CatalogSoftDeleteAdminOnly() {
 	prodCat := s.newCategory(s.admin, "product", "SD-033 Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-033 Работы "+m)
 	live := map[string]string{
-		"products":           s.sdProduct(prodCat.ID, "SD-033 Товар "+m, nil),
+		"products":           s.sdProduct(prodCat.ID, "SD-033 Товар "+m, 0),
 		"services":           s.sdService(svcCat.ID, "SD-033 Услуга "+m),
 		"catalog_categories": s.newCategory(s.admin, "product", "SD-033 Категория "+m).ID,
 	}
 	gone := map[string]string{
-		"products":           s.sdProduct(prodCat.ID, "SD-033 Удалённый товар "+m, nil),
+		"products":           s.sdProduct(prodCat.ID, "SD-033 Удалённый товар "+m, 0),
 		"services":           s.sdService(svcCat.ID, "SD-033 Удалённая услуга "+m),
 		"catalog_categories": s.newCategory(s.admin, "product", "SD-033 Удалённая категория "+m).ID,
 	}
@@ -456,7 +445,7 @@ func (s *CatalogLiveSuite) TestDeleteReasonValidation() {
 	prodCat := s.newCategory(s.admin, "product", "SD-reason Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-reason Работы "+m)
 	recs := map[string]string{
-		"products":           "/api/v1/products/" + s.sdProduct(prodCat.ID, "SD-reason Товар "+m, nil),
+		"products":           "/api/v1/products/" + s.sdProduct(prodCat.ID, "SD-reason Товар "+m, 0),
 		"services":           "/api/v1/services/" + s.sdService(svcCat.ID, "SD-reason Услуга "+m),
 		"catalog_categories": "/api/v1/catalog-categories/" + s.newCategory(s.admin, "product", "SD-reason Категория "+m).ID,
 	}
@@ -500,12 +489,12 @@ func (s *CatalogLiveSuite) TestDeletedCategory_FlagCountAndSelection() {
 	gone := s.newCategory(s.admin, "product", "SD-cat Удаляемая "+m)
 	goneSvc := s.newCategory(s.admin, "service", "SD-cat Удаляемые работы "+m)
 	live := s.newCategory(s.admin, "product", "SD-cat Действующая "+m)
-	active := s.sdProduct(gone.ID, "SD-cat Активный "+m, nil)
-	archived := s.sdProduct(gone.ID, "SD-cat Архивный "+m, nil)
+	active := s.sdProduct(gone.ID, "SD-cat Активный "+m, 0)
+	archived := s.sdProduct(gone.ID, "SD-cat Архивный "+m, 0)
 	s.sdArchiveProduct(archived, gone.ID, "SD-cat Архивный "+m)
-	deleted := s.sdProduct(gone.ID, "SD-cat Удалённый "+m, nil)
+	deleted := s.sdProduct(gone.ID, "SD-cat Удалённый "+m, 0)
 	s.sdMustDelete("/api/v1/products/"+deleted, "Фикстура")
-	elsewhere := s.sdProduct(live.ID, "SD-cat В другой категории "+m, nil)
+	elsewhere := s.sdProduct(live.ID, "SD-cat В другой категории "+m, 0)
 	svc := s.sdService(goneSvc.ID, "SD-cat Услуга "+m)
 
 	st, raw := s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+gone.ID, nil)
@@ -589,10 +578,10 @@ func (s *CatalogLiveSuite) TestDeletedProduct_ServiceKit() {
 	m := sdMark()
 	prodCat := s.newCategory(s.admin, "product", "SD-kit Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-kit Работы "+m)
-	keep := s.sdProduct(prodCat.ID, "SD-kit Остаётся "+m, nil)
-	inKit := s.sdProduct(prodCat.ID, "SD-kit Удалят из каталога "+m, nil)
-	other := s.sdProduct(prodCat.ID, "SD-kit Удалён заранее "+m, nil)
-	archived := s.sdProduct(prodCat.ID, "SD-kit Архивный "+m, nil)
+	keep := s.sdProduct(prodCat.ID, "SD-kit Остаётся "+m, 0)
+	inKit := s.sdProduct(prodCat.ID, "SD-kit Удалят из каталога "+m, 0)
+	other := s.sdProduct(prodCat.ID, "SD-kit Удалён заранее "+m, 0)
+	archived := s.sdProduct(prodCat.ID, "SD-kit Архивный "+m, 0)
 	s.sdArchiveProduct(archived, prodCat.ID, "SD-kit Архивный "+m)
 	svc := s.sdService(svcCat.ID, "SD-kit Услуга "+m, keep, inKit)
 	s.sdMustDelete("/api/v1/products/"+inKit, "Снят с продажи")
@@ -659,12 +648,12 @@ func (s *CatalogLiveSuite) TestPurge_CatalogKinds() {
 		return s.sdScalar(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1::uuid`, productID)
 	}
 	addJournal := func(productID string) {
-		s.sdExec(`INSERT INTO stock_movements (product_id, warehouse_id, qty_delta, reason, user_id) VALUES ($1::uuid, $2::uuid, 1, 'manual', $3::uuid)`,
-			productID, testAlmatyID, s.sdAdminID())
+		s.sdExec(`INSERT INTO stock_movements (product_id, qty_delta, reason, user_id) VALUES ($1::uuid, 1, 'manual', $2::uuid)`,
+			productID, s.sdAdminID())
 	}
 	prodCat := s.newCategory(s.admin, "product", "SD-purge Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-purge Работы "+m)
-	heldProduct := s.sdProduct(prodCat.ID, "SD-purge В комплекте "+m, nil)
+	heldProduct := s.sdProduct(prodCat.ID, "SD-purge В комплекте "+m, 0)
 	heldService := s.sdService(svcCat.ID, "SD-purge В заказе "+m, heldProduct)
 	s.sdSubtask(heldService, "")
 	addJournal(heldProduct)
@@ -689,8 +678,8 @@ func (s *CatalogLiveSuite) TestPurge_CatalogKinds() {
 	freeCat := s.newCategory(s.admin, "product", "SD-purge Свободная "+m)
 	goneCat := s.newCategory(s.admin, "service", "SD-purge Удалённая "+m)
 	s.sdMustDelete("/api/v1/catalog-categories/"+goneCat.ID, "Фикстура")
-	freeProduct := s.sdProduct(prodCat.ID, "SD-purge Свободный "+m, map[string]any{testAlmatyID: 4}) // остаток уборке не мешает
-	goneProduct := s.sdProduct(prodCat.ID, "SD-purge Удалённый "+m, nil)
+	freeProduct := s.sdProduct(prodCat.ID, "SD-purge Свободный "+m, 4) // остаток уборке не мешает
+	goneProduct := s.sdProduct(prodCat.ID, "SD-purge Удалённый "+m, 0)
 	addJournal(freeProduct) // журнал склада уборке не мешает — уходит вместе с товаром
 	addJournal(goneProduct)
 	s.sdMustDelete("/api/v1/products/"+goneProduct, "Фикстура")
@@ -742,8 +731,8 @@ func (s *CatalogLiveSuite) TestSSR_ProductAndServiceDeleteForms() {
 	m := sdMark()
 	prodCat := s.newCategory(s.admin, "product", "SD-ssr Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-ssr Работы "+m)
-	withStock := s.sdProduct(prodCat.ID, "SD-ssr С остатком "+m, map[string]any{testAlmatyID: 0, testMoscowID: 2})
-	product := s.sdProduct(prodCat.ID, "SD-ssr Товар "+m, nil)
+	withStock := s.sdProduct(prodCat.ID, "SD-ssr С остатком "+m, 2)
+	product := s.sdProduct(prodCat.ID, "SD-ssr Товар "+m, 0)
 	service := s.sdService(svcCat.ID, "SD-ssr Услуга "+m, product)
 
 	st, page := s.page("/catalog/products/" + product)
@@ -770,8 +759,8 @@ func (s *CatalogLiveSuite) TestSSR_ProductAndServiceDeleteForms() {
 	status, _, body := s.postForm("/catalog/products/"+withStock+"/delete", url.Values{"reason": {"Не нужен"}})
 	s.Equal(http.StatusConflict, status)
 	s.Contains(body, `data-testid="form-error"`)
-	s.Contains(body, "У товара есть остаток на складе — сначала переместите или спишите его")
-	s.Contains(body, `data-testid="product-stocks"`, "форма товара перерисована целиком")
+	s.Contains(body, "У товара есть остаток на складе — сначала спишите его")
+	s.Contains(body, `data-testid="product-stock"`, "форма товара перерисована целиком")
 	s.NotContains(body, "data-delete-error")
 	s.Equal(sdLiveActive, s.sdState("products", withStock))
 
@@ -813,8 +802,8 @@ func (s *CatalogLiveSuite) TestSSR_CategoryDeleteForm() {
 	m := sdMark()
 	gone := s.newCategory(s.admin, "product", "SD-ssr Удаляемая "+m)
 	stay := s.newCategory(s.admin, "product", "SD-ssr Остаётся "+m)
-	product := s.sdProduct(gone.ID, "SD-ssr Товар категории "+m, nil)
-	s.sdProduct(stay.ID, "SD-ssr Товар соседней категории "+m, nil)
+	product := s.sdProduct(gone.ID, "SD-ssr Товар категории "+m, 0)
+	s.sdProduct(stay.ID, "SD-ssr Товар соседней категории "+m, 0)
 	// список товаров этого теста (сьюта общая — фильтр по метке).
 	mine := "/catalog/products?q=" + url.QueryEscape(m)
 
@@ -903,15 +892,13 @@ func (s *CatalogLiveSuite) race(hold func(ctx context.Context) (commit func()), 
 }
 
 // holdProductDelete — «удаление товара в полёте»: те же блокировки и UPDATE, что делает
-// ProductRepo.SoftDelete (товар FOR NO KEY UPDATE → его строки product_stock FOR UPDATE →
-// отметка), транзакция не зафиксирована. Возвращает фиксацию.
+// ProductRepo.SoftDelete (строка товара — с остатком — FOR NO KEY UPDATE → отметка),
+// транзакция не зафиксирована. Возвращает фиксацию.
 func (s *CatalogLiveSuite) holdProductDelete(productID string) func(ctx context.Context) func() {
 	return func(ctx context.Context) func() {
 		tx, err := s.Pool.Begin(ctx)
 		s.Require().NoError(err)
 		_, err = tx.Exec(ctx, `SELECT 1 FROM products WHERE id = $1::uuid AND deleted_at IS NULL FOR NO KEY UPDATE`, productID)
-		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM product_stock WHERE product_id = $1::uuid ORDER BY warehouse_id FOR UPDATE`, productID)
 		s.Require().NoError(err)
 		_, err = tx.Exec(ctx, `UPDATE products SET deleted_at = now(), deleted_by = $2::uuid, delete_reason = 'Гонка' WHERE id = $1::uuid`, productID, s.sdAdminID())
 		s.Require().NoError(err)
@@ -919,22 +906,22 @@ func (s *CatalogLiveSuite) holdProductDelete(productID string) func(ctx context.
 	}
 }
 
-// §3 п. 1 (DS-021, abuse case 3): остаток товара меняется в незавершённой транзакции (приход на
-// склад: строка product_stock под FOR UPDATE, stock 0 → 5) — в это окно приходит удаление
-// товара. Удаление обязано дождаться блокировки строки остатка и увидеть остаток: 409
+// §3 п. 1 (DS-021, abuse case 3): остаток товара меняется в незавершённой транзакции (приход:
+// строка товара под FOR NO KEY UPDATE, products.stock 0 → 5) — в это окно приходит удаление
+// товара. Удаление обязано дождаться блокировки строки товара и увидеть остаток: 409
 // PRODUCT_HAS_STOCK, товар не помечен. Реализация, читающая остаток без блокировки, увидела бы
 // ноль и удалила товар с остатком.
 func (s *CatalogLiveSuite) TestRace_ProductDeleteWaitsForStockChange() {
 	m := sdMark()
 	cat := s.newCategory(s.admin, "product", "SD-race Приход "+m)
-	p := s.sdProduct(cat.ID, "SD-race Товар-приход "+m, nil)
+	p := s.sdProduct(cat.ID, "SD-race Товар-приход "+m, 0)
 
 	res := s.race(func(ctx context.Context) func() {
 		tx, err := s.Pool.Begin(ctx)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM product_stock WHERE product_id = $1::uuid AND warehouse_id = $2::uuid FOR UPDATE`, p, testAlmatyID)
+		_, err = tx.Exec(ctx, `SELECT 1 FROM products WHERE id = $1::uuid FOR NO KEY UPDATE`, p)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `UPDATE product_stock SET stock = 5 WHERE product_id = $1::uuid AND warehouse_id = $2::uuid`, p, testAlmatyID)
+		_, err = tx.Exec(ctx, `UPDATE products SET stock = 5 WHERE id = $1::uuid`, p)
 		s.Require().NoError(err)
 		return func() { s.Require().NoError(tx.Commit(ctx)) }
 	}, func() (int, []byte) {
@@ -946,7 +933,7 @@ func (s *CatalogLiveSuite) TestRace_ProductDeleteWaitsForStockChange() {
 	s.Equal(sdLiveActive, s.sdState("products", p), "товар не удалён")
 }
 
-// §3 п. 1: удаление товара идёт (товар и строки остатка заблокированы, отметка поставлена,
+// §3 п. 1: удаление товара идёт (строка товара заблокирована, отметка поставлена,
 // транзакция не зафиксирована) — в это окно приходит правка остатка через карточку товара (PUT).
 // Правка обязана дождаться удаления и получить 404 PRODUCT_NOT_FOUND; остаток не изменился,
 // движения нет. Реализация без условия «не удалён» в UPDATE карточки записала бы остаток 7
@@ -954,19 +941,18 @@ func (s *CatalogLiveSuite) TestRace_ProductDeleteWaitsForStockChange() {
 func (s *CatalogLiveSuite) TestRace_ProductStockEditWaitsForDelete() {
 	m := sdMark()
 	cat := s.newCategory(s.admin, "product", "SD-race Правка "+m)
-	p := s.sdProduct(cat.ID, "SD-race Товар-правка "+m, nil)
+	p := s.sdProduct(cat.ID, "SD-race Товар-правка "+m, 0)
 
 	res := s.race(s.holdProductDelete(p), func() (int, []byte) {
 		return s.admin.Do(http.MethodPut, "/api/v1/products/"+p, map[string]any{
-			"category_id": cat.ID, "name": "SD-race Товар-правка " + m, "price": 100, "is_active": true,
-			"stocks": []map[string]any{{"warehouse_id": testAlmatyID, "stock": 7}},
+			"category_id": cat.ID, "name": "SD-race Товар-правка " + m, "price": 100, "is_active": true, "stock": 7,
 		})
 	})
 	s.Require().Equal(http.StatusNotFound, res.status, string(res.raw))
 	s.Equal("PRODUCT_NOT_FOUND", s.sdErr(res.raw).Code)
 	s.Equal("0.000|0", s.sdScalar(`
-		SELECT (SELECT stock::text FROM product_stock WHERE product_id = $1::uuid AND warehouse_id = $2::uuid) || '|' ||
-		       (SELECT count(*) FROM stock_movements WHERE product_id = $1::uuid)::text`, p, testAlmatyID), "остаток и журнал не тронуты")
+		SELECT (SELECT stock::text FROM products WHERE id = $1::uuid) || '|' ||
+		       (SELECT count(*) FROM stock_movements WHERE product_id = $1::uuid)::text`, p), "остаток и журнал не тронуты")
 	s.Equal("true|catalog4-admin|Гонка|true", s.sdState("products", p))
 }
 
@@ -978,7 +964,7 @@ func (s *CatalogLiveSuite) TestRace_ServiceKitWaitsForProductDelete() {
 	m := sdMark()
 	prodCat := s.newCategory(s.admin, "product", "SD-race Комплект "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-race Работы "+m)
-	p := s.sdProduct(prodCat.ID, "SD-race Товар-комплект "+m, nil)
+	p := s.sdProduct(prodCat.ID, "SD-race Товар-комплект "+m, 0)
 	name := "SD-race Услуга-комплект " + m
 
 	res := s.race(s.holdProductDelete(p), func() (int, []byte) {
@@ -1043,7 +1029,7 @@ func (s *CatalogLiveSuite) TestRace_CategoryRestoreWaitsForCreateSameName() {
 func (s *CatalogLiveSuite) TestRace_SecondProductDeleteGets404() {
 	m := sdMark()
 	cat := s.newCategory(s.admin, "product", "SD-race Двойное "+m)
-	p := s.sdProduct(cat.ID, "SD-race Товар-двойное "+m, nil)
+	p := s.sdProduct(cat.ID, "SD-race Товар-двойное "+m, 0)
 
 	res := s.race(s.holdProductDelete(p), func() (int, []byte) {
 		st, _, raw := s.sdDelete(s.admin, "/api/v1/products/"+p, "Второй запрос")

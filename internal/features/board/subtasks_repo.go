@@ -80,21 +80,20 @@ func (r *SubtaskRepo) Insert(ctx context.Context, tx pgx.Tx, taskID int64, servi
 // CopyKit — design-sql.md §Insert Subtask Query (вторая половина): типовой комплект
 // товаров услуги, цена — ТЕКУЩАЯ products.price на момент добавления (AC-008), не
 // service_products (там своей цены нет).
-// Склад строк — warehouseID (склад по умолчанию услуги, DS-005). Товары комплекта, мягко
-// удалённые из каталога, в заказ не подставляются (soft-delete-catalog §6.9, DS-014);
-// действующие товары комплекта сначала берутся FOR SHARE по возрастанию id (до строк
-// product_stock, которые возьмёт Reconcile) — удаление товара либо уже видно, либо ждёт.
-func (r *SubtaskRepo) CopyKit(ctx context.Context, tx pgx.Tx, subtaskID, serviceID, warehouseID string) error {
+// Товары комплекта, мягко удалённые из каталога, в заказ не подставляются (soft-delete-catalog §6.9, DS-014);
+// действующие товары комплекта сначала берутся FOR NO KEY UPDATE по возрастанию id (тем же
+// режимом, что затем у Reconcile) — удаление товара либо уже видно, либо ждёт.
+func (r *SubtaskRepo) CopyKit(ctx context.Context, tx pgx.Tx, subtaskID, serviceID string) error {
 	if _, err := tx.Exec(ctx, `
 		SELECT p.id FROM service_products spr JOIN products p ON p.id = spr.product_id
-		WHERE spr.service_id = $1 AND p.deleted_at IS NULL ORDER BY p.id FOR SHARE OF p`, serviceID); err != nil {
+		WHERE spr.service_id = $1 AND p.deleted_at IS NULL ORDER BY p.id FOR NO KEY UPDATE OF p`, serviceID); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `
-		INSERT INTO subtask_products (subtask_id, product_id, qty, price, position, warehouse_id)
-		SELECT $1, spr.product_id, spr.qty, p.price, row_number() OVER (ORDER BY spr.position, spr.product_id), $3::uuid
+		INSERT INTO subtask_products (subtask_id, product_id, qty, price, position)
+		SELECT $1, spr.product_id, spr.qty, p.price, row_number() OVER (ORDER BY spr.position, spr.product_id)
 		FROM service_products spr JOIN products p ON p.id = spr.product_id
-		WHERE spr.service_id = $2 AND p.deleted_at IS NULL`, subtaskID, serviceID, warehouseID)
+		WHERE spr.service_id = $2 AND p.deleted_at IS NULL`, subtaskID, serviceID)
 	return err
 }
 

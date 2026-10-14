@@ -56,20 +56,12 @@ func (r *CardRepo) Column(ctx context.Context, id string) (*CardColumn, error) {
 // удалённая единица остаётся в заказе и отдаётся с is_deleted = true.
 func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT te.equipment_id, e.deleted_at IS NOT NULL, et.name, e.brand, e.model, e.serial, te.completeness, te.condition,
+		SELECT te.equipment_id, e.deleted_at IS NOT NULL, et.name, e.plate_number, e.brand, e.model, e.serial, te.completeness, te.condition,
 		       coalesce((SELECT json_agg(json_build_object('task_id', o.id, 'title', o.title, 'created_at', o.created_at) ORDER BY o.id DESC)
 		                 FROM task_equipment x JOIN tasks o ON o.id = x.task_id
 		                 WHERE x.equipment_id = te.equipment_id AND x.task_id <> te.task_id
-		                   AND o.deleted_at IS NULL), '[]'::json),
-		       e.location_status, e.warehouse_id::text, wc.name, e.active_transfer_id,
-		       CASE WHEN e.location_status <> 'in_transit' THEN NULL
-		            WHEN tr.direction = 'warehouse_to_client' THEN 'клиент'
-		            ELSE wt.name END,
-		       tr.direction
+		                   AND o.deleted_at IS NULL), '[]'::json)
 		FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id JOIN equipment_types et ON et.id = e.type_id
-		LEFT JOIN warehouses wc ON wc.id = e.warehouse_id
-		LEFT JOIN transfers tr ON tr.id = e.active_transfer_id
-		LEFT JOIN warehouses wt ON wt.id = tr.to_warehouse_id
 		WHERE te.task_id = $1 ORDER BY et.name, e.brand, e.model, e.id`, taskID)
 	if err != nil {
 		return nil, err
@@ -80,10 +72,8 @@ func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment
 	for rows.Next() {
 		var eq CardEquipment
 		var historyJSON []byte
-		if err := rows.Scan(&eq.EquipmentID, &eq.IsDeleted, &eq.TypeName, &eq.Brand, &eq.Model, &eq.Serial,
-			&eq.Completeness, &eq.Condition, &historyJSON,
-			&eq.LocationStatus, &eq.WarehouseID, &eq.WarehouseName, &eq.ActiveTransferID, &eq.TransitToName,
-			&eq.ActiveTransferDirection); err != nil {
+		if err := rows.Scan(&eq.EquipmentID, &eq.IsDeleted, &eq.TypeName, &eq.PlateNumber, &eq.Brand, &eq.Model, &eq.Serial,
+			&eq.Completeness, &eq.Condition, &historyJSON); err != nil {
 			return nil, err
 		}
 		eq.History = []EquipmentHistory{}
@@ -93,35 +83,6 @@ func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment
 			}
 		}
 		out = append(out, eq)
-	}
-	return out, rows.Err()
-}
-
-// Transfers — действующие документы «Перемещение» заказа (transfers-partners DS-012), новые
-// сверху; мягко удалённые не входят (soft-delete-transfers DS-026).
-// Склад — назначения (приём от клиента) либо отправления (возврат клиенту).
-func (r *CardRepo) Transfers(ctx context.Context, taskID int64) ([]CardTransfer, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT t.id, t.direction, t.status, coalesce(w.name, ''),
-		       (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id)::int, t.created_at,
-		       (SELECT round(coalesce(sum(round(i.price * i.qty_sent, 2)), 0), 2)
-		        FROM transfer_items i WHERE i.transfer_id = t.id AND i.kind = 'product')::text
-		FROM transfers t
-		LEFT JOIN warehouses w ON w.id = coalesce(t.to_warehouse_id, t.from_warehouse_id)
-		WHERE t.task_id = $1 AND t.deleted_at IS NULL ORDER BY t.id DESC`, taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []CardTransfer{}
-	for rows.Next() {
-		var t CardTransfer
-		var amount string
-		if err := rows.Scan(&t.ID, &t.Direction, &t.Status, &t.WarehouseName, &t.ItemsCount, &t.CreatedAt, &amount); err != nil {
-			return nil, err
-		}
-		t.Amount = numeric.Amount(amount)
-		out = append(out, t)
 	}
 	return out, rows.Err()
 }
@@ -193,9 +154,8 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
 func (r *CardRepo) Products(ctx context.Context, taskID int64) (map[string][]CardSubtaskProduct, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT sp.id, sp.subtask_id, sp.product_id, p.name, p.unit, sp.position, sp.qty::text, sp.price::text,
-		       round(sp.qty * coalesce(sp.price, 0), 2)::text, sp.warehouse_id::text, w.name, p.deleted_at IS NOT NULL
+		       round(sp.qty * coalesce(sp.price, 0), 2)::text, p.deleted_at IS NOT NULL
 		FROM subtask_products sp JOIN subtasks s ON s.id = sp.subtask_id JOIN products p ON p.id = sp.product_id
-		JOIN warehouses w ON w.id = sp.warehouse_id
 		WHERE s.task_id = $1 ORDER BY sp.subtask_id, sp.position, sp.id`, taskID)
 	if err != nil {
 		return nil, err
@@ -210,7 +170,7 @@ func (r *CardRepo) Products(ctx context.Context, taskID int64) (map[string][]Car
 		var price sql.NullString
 		var lineTotal string
 		if err := rows.Scan(&pr.ID, &subtaskID, &pr.ProductID, &pr.Name, &pr.Unit, &pr.Position,
-			&qty, &price, &lineTotal, &pr.WarehouseID, &pr.WarehouseName, &pr.ProductIsDeleted); err != nil {
+			&qty, &price, &lineTotal, &pr.ProductIsDeleted); err != nil {
 			return nil, err
 		}
 		pr.Qty = numeric.Amount(qty)
@@ -247,21 +207,18 @@ func (r *CardRepo) Logs(ctx context.Context, taskID int64) (map[string][]subtask
 	return out, rows.Err()
 }
 
-// Stock — запрос 7, остатки пар товар×склад, задействованных в карточке (AC-009,
-// DS-005): пары строк товаров заказа + пары уже списанного (task_stock); отсутствующая
-// строка product_stock = 0/0.
+// Stock — запрос 7, остатки товаров, задействованных в карточке (AC-009): товары строк
+// заказа + уже списанные (task_stock).
 func (r *CardRepo) Stock(ctx context.Context, taskID int64) ([]CardStock, error) {
 	rows, err := r.pool.Query(ctx, `
-		WITH pairs AS (
-		    SELECT sp.product_id, sp.warehouse_id FROM subtask_products sp JOIN subtasks s ON s.id = sp.subtask_id WHERE s.task_id = $1
+		WITH ids AS (
+		    SELECT sp.product_id FROM subtask_products sp JOIN subtasks s ON s.id = sp.subtask_id WHERE s.task_id = $1
 		    UNION
-		    SELECT product_id, warehouse_id FROM task_stock WHERE task_id = $1)
-		SELECT pr.product_id, pr.warehouse_id, coalesce(ps.stock, 0)::text, coalesce(ps.min_stock, 0)::text,
-		       round(coalesce(ts.qty, 0), 3)::text
-		FROM pairs pr
-		LEFT JOIN product_stock ps ON ps.product_id = pr.product_id AND ps.warehouse_id = pr.warehouse_id
-		LEFT JOIN task_stock ts ON ts.task_id = $1 AND ts.product_id = pr.product_id AND ts.warehouse_id = pr.warehouse_id
-		ORDER BY pr.product_id, pr.warehouse_id`, taskID)
+		    SELECT product_id FROM task_stock WHERE task_id = $1)
+		SELECT p.id, p.stock::text, p.min_stock::text, round(coalesce(ts.qty, 0), 3)::text
+		FROM ids JOIN products p ON p.id = ids.product_id
+		LEFT JOIN task_stock ts ON ts.task_id = $1 AND ts.product_id = p.id
+		ORDER BY p.id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -271,58 +228,11 @@ func (r *CardRepo) Stock(ctx context.Context, taskID int64) ([]CardStock, error)
 	for rows.Next() {
 		var cs CardStock
 		var stock, minStock, reserved string
-		if err := rows.Scan(&cs.ProductID, &cs.WarehouseID, &stock, &minStock, &reserved); err != nil {
+		if err := rows.Scan(&cs.ProductID, &stock, &minStock, &reserved); err != nil {
 			return nil, err
 		}
 		cs.Stock, cs.MinStock, cs.TaskReserved = numeric.Amount(stock), numeric.Amount(minStock), numeric.Amount(reserved)
 		out = append(out, cs)
-	}
-	return out, rows.Err()
-}
-
-// Warehouses — склады select'а строки товара: активные + архивные и мягко удалённые (is_deleted,
-// soft-delete-warehouses-suppliers DS-014), на которые ссылаются строки этого заказа (иначе
-// выбранный склад пропал бы из select'а; удалённый — показывается с бейджем, в выбор не входит). Склады единиц
-// оборудования заказа (DS-008) — тоже, чтобы бейдж показал архивный склад.
-func (r *CardRepo) Warehouses(ctx context.Context, taskID int64) ([]CardWarehouse, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT w.id, w.name, w.is_active, w.deleted_at IS NOT NULL FROM warehouses w
-		WHERE (w.is_active AND w.deleted_at IS NULL) OR w.id IN (
-		    SELECT sp.warehouse_id FROM subtask_products sp JOIN subtasks s ON s.id = sp.subtask_id WHERE s.task_id = $1
-		    UNION SELECT e.warehouse_id FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-		          WHERE te.task_id = $1)
-		ORDER BY w.position, w.id`, taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []CardWarehouse{}
-	for rows.Next() {
-		var w CardWarehouse
-		if err := rows.Scan(&w.ID, &w.Name, &w.IsActive, &w.IsDeleted); err != nil {
-			return nil, err
-		}
-		out = append(out, w)
-	}
-	return out, rows.Err()
-}
-
-// AllWarehouses — действующие склады по position (вкл. архивные), для фильтра «Склад» доски
-// (DS-009): архивный склад может ещё держать оборудование; мягко удалённых в списке нет
-// (soft-delete-warehouses-suppliers §8.3) — на них оборудования не бывает.
-func (r *CardRepo) AllWarehouses(ctx context.Context) ([]CardWarehouse, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id, name, is_active FROM warehouses WHERE deleted_at IS NULL ORDER BY position, id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []CardWarehouse{}
-	for rows.Next() {
-		var w CardWarehouse
-		if err := rows.Scan(&w.ID, &w.Name, &w.IsActive); err != nil {
-			return nil, err
-		}
-		out = append(out, w)
 	}
 	return out, rows.Err()
 }
