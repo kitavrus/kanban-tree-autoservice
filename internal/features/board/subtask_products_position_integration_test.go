@@ -45,7 +45,7 @@ func (s *SubtaskProductsPositionSuite) SetupSuite() {
 		ON CONFLICT (id) DO NOTHING`, sppClientID)
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `INSERT INTO columns (id, name, color, is_final, consumes_stock, position) VALUES
-		($1, 'Новые', '#94A3B8', false, false, 1) ON CONFLICT (id) DO NOTHING`, sppColumnID)
+		($1, 'Приёмка', '#94A3B8', false, false, 1) ON CONFLICT (id) DO NOTHING`, sppColumnID)
 	s.Require().NoError(err)
 }
 

@@ -182,9 +182,9 @@ func (s *BoardSoftDeleteMigrationSuite) TestTS012_Migration0020_UpRollbackUp() {
 		return s.scalar(`SELECT string_agg(name || '=' || position, ', ' ORDER BY position, id) FROM columns`)
 	}
 	seed := order()
-	s.Equal("Новые=1, Согласование=2, В работе=3, Ждёт запчасти=4, Готово=5", seed)
+	s.Equal("Приёмка=1, Диагностика=2, Согласование=3, Ждёт запчасти=4, В ремонте=5, Готов к выдаче=6, Выдан=7", seed)
 	defer func() {
-		s.exec(`DELETE FROM columns WHERE name LIKE '% 0012'  OR name = 'В работе' AND position > 5`)
+		s.exec(`DELETE FROM columns WHERE name LIKE '% 0012'  OR name = 'В ремонте' AND position > 7`)
 		s.Equal(seed, order(), "доска после теста — как до него")
 	}()
 
@@ -196,7 +196,7 @@ func (s *BoardSoftDeleteMigrationSuite) TestTS012_Migration0020_UpRollbackUp() {
 			name, position, final).Scan(&id))
 		return id
 	}
-	active := col("Действующая 0012", 6, false)
+	active := col("Действующая 0012", 8, false)
 
 	// ---- up → 0012 ----
 	s.Require().NoError(mig.Migrate(12))
@@ -207,7 +207,7 @@ func (s *BoardSoftDeleteMigrationSuite) TestTS012_Migration0020_UpRollbackUp() {
 	del := func(id, ago string) {
 		s.exec(`UPDATE columns SET deleted_at = now() - $2::interval, deleted_by = $3, delete_reason = 'Не нужна' WHERE id = $1`, id, ago, bsdAdminID)
 	}
-	namesake, final, far := col("В работе", 6, false), col("Финальная 0012", 3, true), col("Дальняя 0012", 40, false)
+	namesake, final, far := col("В ремонте", 6, false), col("Финальная 0012", 3, true), col("Дальняя 0012", 40, false)
 	twin := col("Близнец 0012", 3, false)
 	del(namesake, "3 day")
 	del(final, "2 day")
@@ -221,12 +221,12 @@ func (s *BoardSoftDeleteMigrationSuite) TestTS012_Migration0020_UpRollbackUp() {
 	if twin < final {
 		first, second = second, first
 	}
-	s.Equal(seed+", Действующая 0012=6, "+first+"=7, "+second+"=8, В работе=9, Дальняя 0012=10", order(),
+	s.Equal(seed+", Действующая 0012=8, "+first+"=9, "+second+"=10, В ремонте=11, Дальняя 0012=12", order(),
 		"действующие 1..N в прежнем порядке, ожившие — в конце по (прежняя позиция, id)")
 	s.Equal("true", s.scalar(`SELECT is_final::text FROM columns WHERE id = $1`, final), "признаки колонки не меняются")
 
 	// ---- повторный up: все колонки действующие, позиции отката сохраняются ----
 	s.Require().NoError(mig.Migrate(12))
 	s.assertUp("columns")
-	s.Equal("10", s.scalar(`SELECT count(DISTINCT position)::text FROM columns`))
+	s.Equal("12", s.scalar(`SELECT count(DISTINCT position)::text FROM columns`))
 }

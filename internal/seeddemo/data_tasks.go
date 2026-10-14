@@ -2,8 +2,10 @@ package seeddemo
 
 import "github.com/kitavrus/kanban-tree/internal/features/board"
 
-// Заказы автосервиса по колонкам доски (колонки сеет миграция 0005: «Новые» = приёмка,
-// «Согласование» — смета у клиента, «В работе», «Ждёт запчасти», «Готово» = к выдаче/выдан).
+// Заказы автосервиса по колонкам доски (колонки сеет миграция 0005): «Приёмка» — авто только
+// приняли; «Диагностика» — ищем причину; «Согласование» — смета у клиента; «Ждёт запчасти» —
+// запчасти под заказ (остаток уходит в минус); «В ремонте»; «Готов к выдаче» — ждёт клиента
+// и оплату; «Выдан» (финальная) — авто у клиента. Последние четыре списывают товар со склада.
 
 // demoSubtaskItem — услуга заказа: service — code из demoServices; assignee -1 — без
 // исполнителя; dueOffset — дни от сегодня; goodsOverride/priceOverride — вместо комплекта
@@ -88,26 +90,9 @@ func intakePhoto(hoursAgo int) demoMedia {
 }
 
 var demoTasks = []demoTaskItem{
-	// --- Новые (приёмка) ---
+	// --- Приёмка ---
 	{
-		column: "Новые", clientIdx: 1, title: "Hyundai Solaris О718МР 199: троит на холодную, Check Engine P0300", assignee: exDiag, dueOffset: offset(1),
-		descHTML: "<p>Со слов клиента: первые 3–5 минут после холодного пуска двигатель троит, на прогретом — ровно. Горит Check Engine.</p>" +
-			"<ul><li>Пробег 187 000 км, свечи меняли ~40 000 км назад</li><li>Ошибки (сканер на заправке): P0300, P0302</li><li>Проверить свечи, катушки, компрессию 2-го цилиндра</li></ul>",
-		equipment: []demoTaskEquipment{{key: "solaris", completeness: "Ключ, СТС", condition: "Скол на лобовом стекле, царапина на заднем бампере. Топливо ~1/4 бака"}},
-		subtasks: []demoSubtaskItem{
-			{service: "diag", status: stNew, assignee: exDiag, dueOffset: offset(1), logs: []demoLog{
-				{exIntake, 20, "Пробег 187 000, на приёмке горит CE, клиент жалуется на троение на холодную. Фото приборки и видео работы на ХХ приложены."},
-			}},
-			{service: "compr", status: stNew, assignee: exMotor},
-		},
-		media: []demoMedia{
-			intakePhoto(20),
-			{scene: mediaDash, name: "Приборная панель на приёмке", caption: "ГОРИТ CHECK ENGINE НА ПРИЁМКЕ", codes: "P0300  P0302", user: exIntake, hoursAgo: 20},
-			{video: true, scene: mediaEngine, name: "Видео - троение на ХХ", caption: "ТРОИТ НА ХОЛОДНУЮ", markX: 0.42, markY: 0.45, shake: true, user: exIntake, hoursAgo: 20},
-		},
-	},
-	{
-		column: "Новые", clientIdx: 9, title: "Mazda CX-5 Е019ТТ 178: ТО-120 000 (масло, фильтр, свечи, дроссель)", assignee: exMotor, dueOffset: offset(3),
+		column: "Приёмка", clientIdx: 9, title: "Mazda CX-5 Е019ТТ 178: ТО-120 000 (масло, фильтр, свечи, дроссель)", assignee: exMotor, dueOffset: offset(3),
 		equipment: []demoTaskEquipment{{key: "cx5", completeness: "Ключ, сервисная книжка"}},
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W30-208", "4.2"), g("PE01-14-302A", "1")}, logs: []demoLog{
@@ -119,7 +104,7 @@ var demoTasks = []demoTaskItem{
 		media: []demoMedia{intakePhoto(6)},
 	},
 	{
-		column: "Новые", clientIdx: 6, title: "ГАЗель Next В734СА 750: тяжело заводится на холодную, белый дым", assignee: exNone, dueOffset: offset(2),
+		column: "Приёмка", clientIdx: 6, title: "ГАЗель Next В734СА 750: тяжело заводится на холодную, белый дым", assignee: exNone, dueOffset: offset(2),
 		descHTML:  "<p>Пригнали на буксире. Заводится с 5–6 попытки, первые минуты белый дым и вибрация, тяга слабая.</p><p>Подозрение: свечи накала / форсунки / компрессия.</p>",
 		equipment: []demoTaskEquipment{{key: "gazelle", completeness: "Ключ, путевой лист", condition: "Вмятина на правой сдвижной двери"}},
 		subtasks: []demoSubtaskItem{
@@ -131,6 +116,25 @@ var demoTasks = []demoTaskItem{
 		media: []demoMedia{
 			intakePhoto(3),
 			{scene: mediaEngine, name: "Подкапотное - копоть на впуске", caption: "КОПОТЬ НА ВПУСКЕ, ПОДТЁК ДИЗТОПЛИВА", markX: 0.30, markY: 0.55, user: exIntake, hoursAgo: 3},
+		},
+	},
+	// --- Диагностика ---
+	{
+		column: "Диагностика", clientIdx: 1, title: "Hyundai Solaris О718МР 199: троит на холодную, Check Engine P0300", assignee: exDiag, dueOffset: offset(1),
+		descHTML: "<p>Со слов клиента: первые 3–5 минут после холодного пуска двигатель троит, на прогретом — ровно. Горит Check Engine.</p>" +
+			"<ul><li>Пробег 187 000 км, свечи меняли ~40 000 км назад</li><li>Ошибки (сканер на заправке): P0300, P0302</li><li>Проверить свечи, катушки, компрессию 2-го цилиндра</li></ul>",
+		equipment: []demoTaskEquipment{{key: "solaris", completeness: "Ключ, СТС", condition: "Скол на лобовом стекле, царапина на заднем бампере. Топливо ~1/4 бака"}},
+		subtasks: []demoSubtaskItem{
+			{service: "diag", status: stWork, assignee: exDiag, dueOffset: offset(1), logs: []demoLog{
+				{exIntake, 20, "Пробег 187 000, на приёмке горит CE, клиент жалуется на троение на холодную. Фото приборки и видео работы на ХХ приложены."},
+				{exDiag, 4, "Пропуски во 2-м цилиндре на холодную. Свеча 2-го в нагаре, катушки переставили местами — ждём повтора после остывания."},
+			}},
+			{service: "compr", status: stNew, assignee: exMotor},
+		},
+		media: []demoMedia{
+			intakePhoto(20),
+			{scene: mediaDash, name: "Приборная панель на приёмке", caption: "ГОРИТ CHECK ENGINE НА ПРИЁМКЕ", codes: "P0300  P0302", user: exIntake, hoursAgo: 20},
+			{video: true, scene: mediaEngine, name: "Видео - троение на ХХ", caption: "ТРОИТ НА ХОЛОДНУЮ", markX: 0.42, markY: 0.45, shake: true, user: exIntake, hoursAgo: 20},
 		},
 	},
 	// --- Согласование ---
@@ -178,9 +182,9 @@ var demoTasks = []demoTaskItem{
 			{scene: mediaEngine, name: "Течь по сальнику коленвала", caption: "ТЕЧЬ ПО ПЕРЕДНЕМУ САЛЬНИКУ КОЛЕНВАЛА", markX: 0.25, markY: 0.75, user: exMotor, hoursAgo: 26},
 		},
 	},
-	// --- В работе ---
+	// --- В ремонте ---
 	{
-		column: "В работе", clientIdx: 5, title: "Skoda Octavia Т389ХК 799 (такси): плавают обороты ХХ + ремень ГРМ по пробегу", assignee: exMotor, dueOffset: offset(0),
+		column: "В ремонте", clientIdx: 5, title: "Skoda Octavia Т389ХК 799 (такси): плавают обороты ХХ + ремень ГРМ по пробегу", assignee: exMotor, dueOffset: offset(0),
 		equipment: []demoTaskEquipment{{key: "taxi-octavia", completeness: "Ключ, путевой лист", condition: "Потёртости салона, кузов без повреждений"}},
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stDone, assignee: exDiag, payout: "700", payoutPaid: true, logs: []demoLog{
@@ -199,7 +203,7 @@ var demoTasks = []demoTaskItem{
 		},
 	},
 	{
-		column: "В работе", clientIdx: 0, title: "Lada Vesta Е245КХ 797: перегрев, уходит антифриз — пробита прокладка ГБЦ", assignee: exMotor, dueOffset: offset(-1),
+		column: "В ремонте", clientIdx: 0, title: "Lada Vesta Е245КХ 797: перегрев, уходит антифриз — пробита прокладка ГБЦ", assignee: exMotor, dueOffset: offset(-1),
 		descHTML: "<p>Перегрев в пробке, стрелка в красной зоне, пар из-под капота. Антифриз уходит ~0,5 л в день, внешних течей нет.</p>" +
 			"<ul><li>Тест CO₂ — положительный, пузыри в расширительном бачке</li><li>ГБЦ — в мехцех на опрессовку и проверку плоскости</li></ul>",
 		equipment: []demoTaskEquipment{{key: "vesta", completeness: "Ключ, СТС", condition: "Привезли на эвакуаторе, антифриз ниже MIN"}},
@@ -222,7 +226,7 @@ var demoTasks = []demoTaskItem{
 		},
 	},
 	{
-		column: "В работе", clientIdx: 8, title: "Toyota LC Prado С808ВО 77: ТО-165 000, топливный фильтр, рывки на разгоне", assignee: exMotor, dueOffset: offset(1),
+		column: "В ремонте", clientIdx: 8, title: "Toyota LC Prado С808ВО 77: ТО-165 000, топливный фильтр, рывки на разгоне", assignee: exMotor, dueOffset: offset(1),
 		equipment: []demoTaskEquipment{{key: "prado", completeness: "Ключ, сервисная книжка"}},
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stDone, assignee: exMotor, payout: "900", goodsOverride: []protoGood{g("OIL-5W30-208", "7.5"), g("04152-YZZA6", "1")}, logs: []demoLog{
@@ -236,24 +240,7 @@ var demoTasks = []demoTaskItem{
 		media: []demoMedia{intakePhoto(26)},
 	},
 	{
-		column: "В работе", clientIdx: 4, title: "Nissan Qashqai Н481ОР 50: плавают обороты, ошибка P0101 (ДМРВ)", assignee: exElectric, dueOffset: offset(1),
-		equipment: []demoTaskEquipment{{key: "qashqai", completeness: "Ключ"}},
-		subtasks: []demoSubtaskItem{
-			{service: "diag", status: stDone, assignee: exElectric, payout: "800", payoutPaid: true, logs: []demoLog{
-				{exElectric, 30, "P0101 — ДМРВ вне диапазона. На ХХ 2,1 г/с при норме 2,6–3,0; на прогазовке не растёт. Разъём чистый."},
-			}},
-			{service: "maf", status: stWork, assignee: exElectric, goodsOverride: []protoGood{g("22680-7S000", "1")}, logs: []demoLog{
-				{exElectric, 3, "ДМРВ заменён, адаптация ХХ выполнена. Тест-драйв 20 минут — проверить ошибки."},
-			}},
-			{service: "throttle", status: stDone, assignee: exElectric},
-		},
-		media: []demoMedia{
-			intakePhoto(32),
-			{scene: mediaDash, name: "Ошибка на приборке", caption: "CHECK ENGINE, ПЛАВАЮТ ОБОРОТЫ", codes: "P0101", user: exIntake, hoursAgo: 32},
-		},
-	},
-	{
-		column: "В работе", clientIdx: 2, title: "Двигатель ВАЗ-21126 (снятый): капремонт с заменой колец и вкладышей", assignee: exMotor, dueOffset: offset(7),
+		column: "В ремонте", clientIdx: 2, title: "Двигатель ВАЗ-21126 (снятый): капремонт с заменой колец и вкладышей", assignee: exMotor, dueOffset: offset(7),
 		descHTML: "<p>Привезён снятым с Lada Priora. Со слов клиента: «масложор», стук, после обрыва ремня год назад меняли клапаны.</p>" +
 			"<p>Дефектовка: кольца закоксованы, на 1-м цилиндре лёгкие задиры — хон, кольца STD, вкладыши, колпачки, полный комплект прокладок.</p>",
 		equipment: []demoTaskEquipment{{key: "vaz21126", completeness: "Блок с ГБЦ, без навесного и КПП", condition: "Наружные следы масла, клапанная крышка треснута"}},
@@ -307,9 +294,42 @@ var demoTasks = []demoTaskItem{
 			{video: true, scene: mediaEngine, name: "Видео - звук цепи при пуске", caption: "ГРЕМИТ ЦЕПЬ ПРИ ПУСКЕ", markX: 0.22, markY: 0.40, shake: true, user: exDiag, hoursAgo: 42},
 		},
 	},
-	// --- Готово ---
+	// --- Готов к выдаче ---
 	{
-		column: "Готово", clientIdx: 5, title: "Kia Rio Т245ХК 799 (такси): ТО-285 000, пропуски зажигания 3-го цилиндра", assignee: exElectric, dueOffset: offset(-2), paid: true,
+		column: "Готов к выдаче", clientIdx: 4, title: "Nissan Qashqai Н481ОР 50: плавают обороты, ошибка P0101 (ДМРВ)", assignee: exElectric, dueOffset: offset(0),
+		equipment: []demoTaskEquipment{{key: "qashqai", completeness: "Ключ"}},
+		subtasks: []demoSubtaskItem{
+			{service: "diag", status: stDone, assignee: exElectric, payout: "800", payoutPaid: true, logs: []demoLog{
+				{exElectric, 30, "P0101 — ДМРВ вне диапазона. На ХХ 2,1 г/с при норме 2,6–3,0; на прогазовке не растёт. Разъём чистый."},
+			}},
+			{service: "maf", status: stDone, assignee: exElectric, payout: "600", goodsOverride: []protoGood{g("22680-7S000", "1")}, logs: []demoLog{
+				{exElectric, 5, "ДМРВ заменён, адаптация ХХ выполнена."},
+				{exElectric, 3, "Тест-драйв 20 минут: обороты ровные, ошибок нет. Клиенту позвонили — заберёт вечером."},
+			}},
+			{service: "throttle", status: stDone, assignee: exElectric},
+		},
+		media: []demoMedia{
+			intakePhoto(32),
+			{scene: mediaDash, name: "Ошибка на приборке", caption: "CHECK ENGINE, ПЛАВАЮТ ОБОРОТЫ", codes: "P0101", user: exIntake, hoursAgo: 32},
+		},
+	},
+	{
+		column: "Готов к выдаче", clientIdx: 8, title: "Mitsubishi Outlander Х350ЕМ 97: неровный ХХ — промывка форсунок, свечи", assignee: exElectric, dueOffset: offset(-1),
+		equipment: []demoTaskEquipment{{key: "outlander", completeness: "Ключ"}},
+		subtasks: []demoSubtaskItem{
+			{service: "diag", status: stDone, assignee: exElectric, logs: []demoLog{
+				{exIntake, 6, "Клиент оповещён по SMS, оплата при выдаче. Машина на стоянке, место №3."},
+			}},
+			{service: "injectors", status: stDone, assignee: exElectric, payout: "1200", logs: []demoLog{
+				{exElectric, 28, "Форсунки на стенде: производительность 2-й и 4-й на 12% ниже. После УЗ-промывки разброс 2%."},
+			}},
+			{service: "plugs", status: stDone, assignee: exElectric},
+		},
+		media: []demoMedia{intakePhoto(50)},
+	},
+	// --- Выдан ---
+	{
+		column: "Выдан", clientIdx: 5, title: "Kia Rio Т245ХК 799 (такси): ТО-285 000, пропуски зажигания 3-го цилиндра", assignee: exElectric, dueOffset: offset(-2), paid: true,
 		equipment: []demoTaskEquipment{{key: "taxi-rio", completeness: "Ключ, путевой лист"}},
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stDone, assignee: exMotor, payout: "700", payoutPaid: true, goodsOverride: []protoGood{g("OIL-5W30-208", "3.6"), g("26300-35505", "1")}},
@@ -322,7 +342,7 @@ var demoTasks = []demoTaskItem{
 		media: []demoMedia{intakePhoto(60)},
 	},
 	{
-		column: "Готово", clientIdx: 6, title: "Lada Largus В946СА 750: замена ремня ГРМ с помпой, антифриз", assignee: exMotor, dueOffset: offset(-4), paid: true,
+		column: "Выдан", clientIdx: 6, title: "Lada Largus В946СА 750: замена ремня ГРМ с помпой, антифриз", assignee: exMotor, dueOffset: offset(-4), paid: true,
 		equipment: []demoTaskEquipment{{key: "largus", completeness: "Ключ"}},
 		subtasks: []demoSubtaskItem{
 			{service: "timingpump", status: stDone, assignee: exMotor, payout: "3500", payoutPaid: true, logs: []demoLog{
@@ -331,19 +351,5 @@ var demoTasks = []demoTaskItem{
 			{service: "coolant", status: stDone, assignee: exMotor, payout: "800", goodsOverride: []protoGood{g("AF-G11-GRN", "6")}},
 		},
 		media: []demoMedia{intakePhoto(110)},
-	},
-	{
-		column: "Готово", clientIdx: 8, title: "Mitsubishi Outlander Х350ЕМ 97: неровный ХХ — промывка форсунок, свечи", assignee: exElectric, dueOffset: offset(-1),
-		equipment: []demoTaskEquipment{{key: "outlander", completeness: "Ключ"}},
-		subtasks: []demoSubtaskItem{
-			{service: "diag", status: stDone, assignee: exElectric, logs: []demoLog{
-				{exIntake, 6, "Клиент оповещён по SMS, оплата при выдаче. Машина на стоянке, место №3."},
-			}},
-			{service: "injectors", status: stDone, assignee: exElectric, payout: "1200", logs: []demoLog{
-				{exElectric, 28, "Форсунки на стенде: производительность 2-й и 4-й на 12% ниже. После УЗ-промывки разброс 2%."},
-			}},
-			{service: "plugs", status: stDone, assignee: exElectric},
-		},
-		media: []demoMedia{intakePhoto(50)},
 	},
 }

@@ -478,7 +478,7 @@ type columnRow struct {
 
 // demoColumnNames — колонки по умолчанию засеяны миграцией 0005 (Сид D32); seeddemo их не
 // переименовывает, только читает FOR UPDATE (Lock Order columns→tasks→products, ADR-104).
-var demoColumnNames = []string{"Новые", "Согласование", "В работе", "Ждёт запчасти", "Готово"}
+var demoColumnNames = []string{"Приёмка", "Диагностика", "Согласование", "Ждёт запчасти", "В ремонте", "Готов к выдаче", "Выдан"}
 
 func (s *seeder) loadColumns() (map[string]columnRow, error) {
 	rows, err := s.tx.Query(s.ctx,
@@ -738,7 +738,7 @@ func (s *seeder) seedDeletedColumn() error {
 		INSERT INTO columns (name, color, is_final, consumes_stock, position, deleted_at, deleted_by, delete_reason)
 		SELECT $1, '#6c757d', false, false,
 		       (SELECT coalesce(max(position), 0) + 1 FROM columns WHERE deleted_at IS NULL),
-		       now() - interval '1 day', $2::uuid, 'Этап объединён с «Готово» — проверку делает приёмщик при выдаче'
+		       now() - interval '1 day', $2::uuid, 'Этап объединён с «Готов к выдаче» — проверку делает приёмщик при выдаче'
 		WHERE NOT EXISTS (SELECT 1 FROM columns WHERE name = $1 AND deleted_at IS NOT NULL)`,
 		demoDeletedColumnName, s.adminID)
 	return err

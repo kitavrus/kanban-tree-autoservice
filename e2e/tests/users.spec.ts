@@ -245,7 +245,7 @@ test.describe('US: нагрузка сотрудника', () => {
     const idle = await makeUser({ login: uniq('load-idle'), name: `Нагрузка ${tag} Свободен` });
     const client = await adminApi.createClient({ company_name: uniq('US-014 клиент'), phones: [{ phone: '9990000014', note: '' }] });
     const columns = (await adminApi.listColumns()).items;
-    const open = columnByName(columns, 'Новые');
+    const open = columnByName(columns, 'Приёмка');
     const final = columns.find((c) => c.is_final);
     expect(final, 'нужна финальная колонка сида D32').toBeTruthy();
     await adminApi.createTask({ title: uniq('US-014 первый'), client_id: client.id, column_id: open.id, assignee_id: busy.id });

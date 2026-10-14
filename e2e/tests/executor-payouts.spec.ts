@@ -19,7 +19,7 @@ async function setup({ adminApi, uniq }: Ctx, label: string) {
   const columns = (await adminApi.listColumns()).items;
   const cat = await adminApi.createCategory({ kind: 'service', name: uniq(`EP услуги ${label}`) });
   const service = await adminApi.createService({ category_id: cat.id, name: uniq(`EP услуга ${label}`), price: 1000 });
-  const task = await adminApi.createTask({ title: uniq(`EP заказ ${label}`), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+  const task = await adminApi.createTask({ title: uniq(`EP заказ ${label}`), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
   return { client, columns, service, task };
 }
 
@@ -214,7 +214,7 @@ test.describe('EP: доска — фильтр и метка выплаты ис
   }) => {
     const exec = await makeUser({ login: uniq('ep003'), name: uniq('Исполнитель EP-003') });
     const { client, columns, service, task: unpaidTask } = await setup({ adminApi, uniq }, 'EP-003');
-    const colId = columnByName(columns, 'Новые').id;
+    const colId = columnByName(columns, 'Приёмка').id;
     const paidTask = await adminApi.createTask({ title: uniq('EP-003 выплаченный'), client_id: client.id, column_id: colId });
     const plainTask = await adminApi.createTask({ title: uniq('EP-003 без исполнителя'), client_id: client.id, column_id: colId });
 

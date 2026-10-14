@@ -16,11 +16,13 @@ CREATE INDEX columns_position_idx ON columns (position, id);
 
 -- Сид D32 (AC-008) — колонки по умолчанию.
 INSERT INTO columns (name, color, is_final, consumes_stock, position) VALUES
-    ('Новые',          '#94A3B8', false, false, 1),
-    ('Согласование',   '#7C3AED', false, false, 2),
-    ('В работе',       '#2563EB', false, true,  3),
-    ('Ждёт запчасти',  '#D97706', false, true,  4),
-    ('Готово',         '#059669', true,  true,  5);
+    ('Приёмка',         '#94A3B8', false, false, 1),
+    ('Диагностика',     '#0891B2', false, false, 2),
+    ('Согласование',    '#7C3AED', false, false, 3),
+    ('Ждёт запчасти',   '#D97706', false, true,  4),
+    ('В ремонте',       '#2563EB', false, true,  5),
+    ('Готов к выдаче',  '#16A34A', false, true,  6),
+    ('Выдан',           '#475569', true,  true,  7);
 
 CREATE TABLE tasks (
     id               bigserial PRIMARY KEY,                       -- D37: сквозной #N, без переиспользования

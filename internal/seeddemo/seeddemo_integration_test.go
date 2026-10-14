@@ -45,11 +45,13 @@ func (s *SeedDemoSuite) SetupTest() {
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `
 		INSERT INTO columns (name, color, is_final, consumes_stock, position) VALUES
-		    ('Новые',          '#94A3B8', false, false, 1),
-		    ('Согласование',   '#7C3AED', false, false, 2),
-		    ('В работе',       '#2563EB', false, true,  3),
-		    ('Ждёт запчасти',  '#D97706', false, true,  4),
-		    ('Готово',         '#059669', true,  true,  5)`)
+		    ('Приёмка',         '#94A3B8', false, false, 1),
+		    ('Диагностика',     '#0891B2', false, false, 2),
+		    ('Согласование',    '#7C3AED', false, false, 3),
+		    ('Ждёт запчасти',   '#D97706', false, true,  4),
+		    ('В ремонте',       '#2563EB', false, true,  5),
+		    ('Готов к выдаче',  '#16A34A', false, true,  6),
+		    ('Выдан',           '#475569', true,  true,  7)`)
 	s.Require().NoError(err)
 	s.files, err = filestore.NewLocal(s.T().TempDir())
 	s.Require().NoError(err)
@@ -65,7 +67,7 @@ func (s *SeedDemoSuite) createAdmin() string {
 }
 
 // TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet — AC-019: пустая БД + активный admin →
-// клиенты/оборудование/каталог/заказы во всех 5 колонках с услугами и товарами, инвариант
+// клиенты/оборудование/каталог/заказы во всех 7 колонках с услугами и товарами, инвариант
 // склада выполняется.
 func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 	ctx := context.Background()
@@ -152,7 +154,7 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 	var distinctColumns int
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`SELECT count(DISTINCT column_id) FROM tasks`).Scan(&distinctColumns))
-	s.Equal(5, distinctColumns, "заказы должны быть во всех 5 колонках (D32)")
+	s.Equal(7, distinctColumns, "заказы должны быть во всех 7 колонках (D32)")
 
 	var subtasksTotal int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM subtasks`).Scan(&subtasksTotal))

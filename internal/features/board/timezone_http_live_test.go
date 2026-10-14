@@ -40,7 +40,7 @@ func (s *PrintLiveSuite) printPage(b *testutil.Browser, taskID int64, kind strin
 // TS-041: печать «Выдача» — дата оплаты одного и того же заказа в поясе смотрящего.
 func (s *PrintLiveSuite) TestTS041_Handover_PaidDate_InViewerTimezone() {
 	c := s.newClient("Клиент-Пояс-Оплата", "", "")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col, "")
 	s.markPaid(fmt.Sprintf("%d", taskID), c, col, version)
 	_, err := s.Pool.Exec(context.Background(),
@@ -61,7 +61,7 @@ func (s *PrintLiveSuite) TestTS041_Handover_PaidDate_InViewerTimezone() {
 // поэтому тест не зависит от времени запуска и от пояса сервера.
 func (s *PrintLiveSuite) TestTS041_PrintDate_InViewerTimezone() {
 	c := s.newClient("Клиент-Пояс-Дата-Печати", "", "")
-	taskID, _ := s.newTask(c, s.columnID("Новые"), "")
+	taskID, _ := s.newTask(c, s.columnID("Приёмка"), "")
 
 	for i, zone := range []string{"Pacific/Kiritimati", "Etc/GMT+12"} {
 		loc, err := time.LoadLocation(zone)
@@ -89,7 +89,7 @@ func (s *PrintLiveSuite) TestTS041_PrintDate_InViewerTimezone() {
 func (s *PrintLiveSuite) TestTS041_DueFilter_TodayInViewerTimezone() {
 	ctx := context.Background()
 	c := s.newClient("Клиент-Пояс-Срок", "", "")
-	taskID, _ := s.newTask(c, s.columnID("Новые"), "")
+	taskID, _ := s.newTask(c, s.columnID("Приёмка"), "")
 
 	eastToday := time.Now().In(time.FixedZone("", 14*3600))
 	due := eastToday.AddDate(0, 0, -1).Format(time.DateOnly)
@@ -141,7 +141,7 @@ func (s *PrintLiveSuite) TestTS041_DueFilter_TodayInViewerTimezone() {
 // и ответы PUT заказа / PUT услуги дают одному зрителю одно и то же число.
 func (s *PrintLiveSuite) TestTS041_CardAndMutations_SubtasksLate_TodayInViewerTimezone() {
 	c := s.newClient("Клиент-Пояс-Карточка", "", "")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col, "")
 	sub := s.addSubtask(taskID, s.newService("Услуга-Пояс-Карточка", "100"))
 	due := time.Now().In(time.FixedZone("", 14*3600)).AddDate(0, 0, -1).Format(time.DateOnly)

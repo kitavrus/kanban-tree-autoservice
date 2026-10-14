@@ -216,7 +216,7 @@ func (s *OrderCardLiveSuite) purge(b *testutil.Browser, kind, id string) (int, [
 // символов с пробелами по краям принимаются, причина хранится обрезанной.
 func (s *OrderCardLiveSuite) TestTS001_DeleteReasonValidation() {
 	c := s.newClient("Клиент-Причина-Удаления")
-	taskID, _ := s.newTask(c, s.columnID("Новые"))
+	taskID, _ := s.newTask(c, s.columnID("Приёмка"))
 
 	for _, tc := range []struct {
 		name string
@@ -262,8 +262,8 @@ func (s *OrderCardLiveSuite) TestTS001_DeleteReasonValidation() {
 // месте. Негатив: исполнитель → 403 «Нет доступа», остатки не изменились.
 func (s *OrderCardLiveSuite) TestTS002_SoftDeleteReturnsStock() {
 	c := s.newClient("Клиент-Мягкое-Удаление")
-	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
-	s.sdMove(taskID, s.columnID("В работе"))
+	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
+	s.sdMove(taskID, s.columnID("В ремонте"))
 	s.Equal("6.000", s.defaultStock(productID))
 	s.Equal("1", s.taskStockRows(taskID))
 	versionBefore := s.sdScalar(`SELECT version::text FROM tasks WHERE id = $1`, taskID)
@@ -303,9 +303,9 @@ func (s *OrderCardLiveSuite) TestTS002_SoftDeleteReturnsStock() {
 // один 200 и один 404, возврат товара выполнен один раз, причина проигравшего не записана.
 func (s *OrderCardLiveSuite) TestTS003_RepeatAndParallelDelete() {
 	c := s.newClient("Клиент-Гонка-Удаления")
-	wip := s.columnID("В работе")
+	wip := s.columnID("В ремонте")
 
-	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
+	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
 	s.sdMove(taskID, wip)
 	s.mustSoftDelete(taskID)
 	st, _, raw := s.softDelete(s.admin, taskID, "Повтор")
@@ -317,7 +317,7 @@ func (s *OrderCardLiveSuite) TestTS003_RepeatAndParallelDelete() {
 	second := s.NewBrowser()
 	second.Login("card-admin", "password1")
 	for i := 0; i < 5; i++ {
-		raceID, _, raceProduct := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
+		raceID, _, raceProduct := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
 		s.sdMove(raceID, wip)
 
 		browsers := []*testutil.Browser{s.admin, second}
@@ -364,8 +364,8 @@ func (s *OrderCardLiveSuite) TestTS003_RepeatAndParallelDelete() {
 // восстановление несуществующего заказа → 404.
 func (s *OrderCardLiveSuite) TestTS004_RestoreConsumesAgain() {
 	c := s.newClient("Клиент-Восстановление")
-	wip := s.columnID("В работе")
-	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
+	wip := s.columnID("В ремонте")
+	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
 	s.sdMove(taskID, wip)
 	place := s.sdScalar(`SELECT column_id::text || '|' || position::text FROM tasks WHERE id = $1`, taskID)
 	s.mustSoftDelete(taskID)
@@ -409,8 +409,8 @@ func (s *OrderCardLiveSuite) TestTS004_RestoreConsumesAgain() {
 // с kind = negative, остаток ушёл в минус, заказ восстановлен.
 func (s *OrderCardLiveSuite) TestTS005_RestoreWithShortage() {
 	c := s.newClient("Клиент-Нехватка")
-	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
-	s.sdMove(taskID, s.columnID("В работе"))
+	taskID, _, productID := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
+	s.sdMove(taskID, s.columnID("В ремонте"))
 	s.mustSoftDelete(taskID)
 
 	// товар ушёл со склада, пока заказ был удалён (фикстура остатка).
@@ -548,7 +548,7 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 	// единица в заказе и в другом (действующем) заказе — блок истории в его карточке.
 	eq := s.newEquipment(c)
 	s.attachEq(taskID, eq)
-	otherID, _ := s.newTask(c, s.columnID("Новые"))
+	otherID, _ := s.newTask(c, s.columnID("Приёмка"))
 	s.attachEq(otherID, eq)
 
 	read := func() sdReaders {
@@ -629,7 +629,7 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 	s.Equal(http.StatusOK, st, "печатная форма восстановленного заказа открывается")
 
 	// уборка своей колонки: заказ → в общую колонку, колонка убирается служебным адресом.
-	s.sdMove(taskID, s.columnID("Новые"))
+	s.sdMove(taskID, s.columnID("Приёмка"))
 	st, raw = s.purge(s.admin, "columns", col)
 	s.Equal(http.StatusOK, st, string(raw))
 }
@@ -641,7 +641,7 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
 	ctx := context.Background()
 	c := s.newClient("Клиент-Мутации-Удалённого")
-	newCol, wip := s.columnID("Новые"), s.columnID("В работе")
+	newCol, wip := s.columnID("Приёмка"), s.columnID("В ремонте")
 	taskID, subtaskID, productID := s.sdTaskWithProduct(c, newCol, "10", 2)
 	_, execID := s.sdExecutor()
 	_, err := s.Pool.Exec(ctx, `UPDATE subtasks SET assignee_id = $2, status = 'done' WHERE id = $1`, subtaskID, execID)
@@ -716,7 +716,7 @@ func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
 func (s *OrderCardLiveSuite) TestTS012_MigrationCheck() {
 	ctx := context.Background()
 	c := s.newClient("Клиент-Миграция-Удаления")
-	taskID, _ := s.newTask(c, s.columnID("Новые"))
+	taskID, _ := s.newTask(c, s.columnID("Приёмка"))
 	adminID := s.sdScalar(`SELECT id::text FROM users WHERE login = 'card-admin'`)
 
 	s.Equal("true", s.sdScalar(`
@@ -756,8 +756,8 @@ func (s *OrderCardLiveSuite) TestTS012_MigrationCheck() {
 // Файлы вложений — AttachmentsLiveSuite; «без переменной адреса нет» — BoardLiveSuite.
 func (s *OrderCardLiveSuite) TestTS013_Purge() {
 	c := s.newClient("Клиент-Уборка")
-	taskID, subtaskID, productID := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
-	s.sdMove(taskID, s.columnID("В работе"))
+	taskID, subtaskID, productID := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
+	s.sdMove(taskID, s.columnID("В ремонте"))
 	s.addLog(subtaskID, "Запись")
 	eq := s.newEquipment(c)
 	s.attachEq(taskID, eq)
@@ -800,8 +800,8 @@ func (s *OrderCardLiveSuite) TestTS013_Purge() {
 	s.Equal("NOT_FOUND", s.sdErr(raw).Code)
 
 	// мягко удалённый заказ убирается так же.
-	softID, _, softProduct := s.sdTaskWithProduct(c, s.columnID("Новые"), "10", 4)
-	s.sdMove(softID, s.columnID("В работе"))
+	softID, _, softProduct := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
+	s.sdMove(softID, s.columnID("В ремонте"))
 	eq2 := s.newEquipment(c)
 	s.attachEq(softID, eq2)
 	s.mustSoftDelete(softID)
@@ -818,8 +818,8 @@ func (s *OrderCardLiveSuite) TestTS013_Purge() {
 // меняется. Негатив: без сессии → 401.
 func (s *OrderCardLiveSuite) TestTS033_ExecutorForbidden() {
 	c := s.newClient("Клиент-Права-Удаления")
-	live, _ := s.newTask(c, s.columnID("Новые"))
-	deleted, _ := s.newTask(c, s.columnID("Новые"))
+	live, _ := s.newTask(c, s.columnID("Приёмка"))
+	deleted, _ := s.newTask(c, s.columnID("Приёмка"))
 	s.mustSoftDelete(deleted)
 	exec, _ := s.sdExecutor()
 	anon := s.NewBrowser()

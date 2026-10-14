@@ -192,7 +192,7 @@ func (s *PrintLiveSuite) addProduct(subtaskID, productID string, qty float64) {
 
 func (s *PrintLiveSuite) TestPrintLiveSuite_Intake_FullContent() {
 	c := s.newClient("Клиент-Печать-Приём", "Иванов Иван", "8 900 000-00-01")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col, "<b>Не включается</b>\n\nВторой абзац")
 	eqID := s.newEquipment(c, "BrandX", "ModelY", "SN-INTAKE-1")
 	s.addEquipment(taskID, eqID)
@@ -231,7 +231,7 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Intake_FullContent() {
 
 func (s *PrintLiveSuite) TestPrintLiveSuite_Handover_FullContent() {
 	c := s.newClient("Клиент-Печать-Выдача", "Петров Пётр", "8 900 000-00-02")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col, "")
 
 	svcDone := s.newService("Диагностика", "500")
@@ -270,7 +270,7 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Handover_FullContent() {
 
 func (s *PrintLiveSuite) TestPrintLiveSuite_EmptyFirmAndEdgeCases() {
 	c := s.newClient("Клиент-Печать-Грани", "", "")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col, "<script>alert(1)</script>")
 
 	resp := s.admin.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/intake", taskID), nil, nil)

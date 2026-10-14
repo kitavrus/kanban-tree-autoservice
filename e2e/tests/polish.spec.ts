@@ -99,7 +99,7 @@ async function richTask(adminApi: AdminApi, uniq: (s: string) => string, label: 
   const task = await adminApi.createTask({
     title: uniq(`PL заказ ${label} с длинным названием для проверки переноса в шапке карточки`),
     client_id: client.id,
-    column_id: columnByName(columns, 'Новые').id,
+    column_id: columnByName(columns, 'Приёмка').id,
     description: 'Описание заказа',
   });
   await adminApi.addTaskEquipment(task.id, eq.id);

@@ -44,7 +44,7 @@ func (s *PositionSuite) SetupTest() {
 	_, err := s.Pool.Exec(ctx, `TRUNCATE TABLE columns RESTART IDENTITY CASCADE`)
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `INSERT INTO columns (id, name, color, is_final, consumes_stock, position)
-		VALUES ($1, 'Новые', '#94A3B8', false, false, 1)`, posColumnID)
+		VALUES ($1, 'Приёмка', '#94A3B8', false, false, 1)`, posColumnID)
 	s.Require().NoError(err)
 }
 

@@ -31,7 +31,7 @@ func TestColumnInputValidate_NameTooLong(t *testing.T) {
 func TestColumnInputValidate_InvalidColor(t *testing.T) {
 	cases := []string{"", "94A3B8", "#94A3B", "#GGGGGG", "#94a3b8g"}
 	for _, c := range cases {
-		in := ColumnInput{Name: "Новые", Color: c}.normalize()
+		in := ColumnInput{Name: "Приёмка", Color: c}.normalize()
 		fields := in.validate()
 		assert.Len(t, fields, 1, "color=%q", c)
 		assert.Equal(t, "color", fields[0].Name)
@@ -41,13 +41,13 @@ func TestColumnInputValidate_InvalidColor(t *testing.T) {
 
 func TestColumnInputValidate_ValidInput(t *testing.T) {
 	in := ColumnInput{
-		Name: "Новые", Color: "#94A3B8", IsFinal: false, ConsumesStock: true, Position: ptrInt(1),
+		Name: "Приёмка", Color: "#94A3B8", IsFinal: false, ConsumesStock: true, Position: ptrInt(1),
 	}.normalize()
 	assert.Empty(t, in.validate())
 }
 
 func TestColumnInputValidate_InvalidPosition(t *testing.T) {
-	in := ColumnInput{Name: "Новые", Color: "#94A3B8", Position: ptrInt(0)}.normalize()
+	in := ColumnInput{Name: "Приёмка", Color: "#94A3B8", Position: ptrInt(0)}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
 	assert.Equal(t, "position", fields[0].Name)

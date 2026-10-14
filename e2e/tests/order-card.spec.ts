@@ -31,7 +31,7 @@ test.describe('OC: новый заказ — карточка вместо пр�
     await expect(card.subtasksLocked).toBeVisible();
 
     const title = uniq('OC-001 заказ');
-    await card.fillHeader({ title, client: client.company_name, column: columnByName(columns, 'Новые').name });
+    await card.fillHeader({ title, client: client.company_name, column: columnByName(columns, 'Приёмка').name });
     await card.save();
 
     await expect(card.modal).toBeVisible();
@@ -53,7 +53,7 @@ test.describe('OC: deep-link /?task=N', () => {
     allowHttpErrors,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-002');
-    const task = await adminApi.createTask({ title: uniq('OC-002 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-002 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
 
@@ -83,7 +83,7 @@ test.describe('OC: deep-link /?task=N', () => {
 test.describe('OC: шапка заказа', () => {
   test('OC-003: title/описание/срок сохраняются кнопкой и переживают reload', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-003');
-    const task = await adminApi.createTask({ title: uniq('OC-003 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-003 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
     await board.goto(`?client_id=${client.id}`);
@@ -112,7 +112,7 @@ test.describe('OC: шапка заказа', () => {
     allowHttpErrors,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-004');
-    const task = await adminApi.createTask({ title: uniq('OC-004 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-004 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 409);
 
     const boardA = new BoardPage(page);
@@ -156,7 +156,7 @@ test.describe('OC: оплата — только администратор', ()
     const task = await adminApi.createTask({
       title: uniq('OC-005 заказ'),
       client_id: client.id,
-      column_id: columnByName(columns, 'Новые').id,
+      column_id: columnByName(columns, 'Приёмка').id,
       is_paid: true,
     });
     const login = uniq('exec-oc005');
@@ -189,7 +189,7 @@ test.describe('OC: оборудование заказа', () => {
     const client2 = await adminApi.createClient({ company_name: uniq('OC-006 клиент2'), phones: [{ phone: '9990000101', note: '' }] });
     const type = await adminApi.createEquipmentType({ name: uniq('OC-006 тип') });
     const eq = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq('модель'), brand: 'BrandOC006', serial: 'SN-OC006' });
-    const task = await adminApi.createTask({ title: uniq('OC-006 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-006 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -232,7 +232,7 @@ test.describe('OC: оборудование заказа', () => {
   test('OC-007: новое оборудование прямо из карточки', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-007');
     const type = await adminApi.createEquipmentType({ name: uniq('OC-007 тип') });
-    const task = await adminApi.createTask({ title: uniq('OC-007 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-007 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -262,10 +262,10 @@ test.describe('OC: история оборудования', () => {
     const eq = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq('модель'), brand: 'BrandOC008', serial: 'SN-OC008' });
 
     const oldTitle = uniq('OC-008 старый заказ');
-    const oldTask = await adminApi.createTask({ title: oldTitle, client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const oldTask = await adminApi.createTask({ title: oldTitle, client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     await adminApi.addTaskEquipment(oldTask.id, eq.id);
 
-    const task = await adminApi.createTask({ title: uniq('OC-008 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-008 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     await adminApi.addTaskEquipment(task.id, eq.id);
 
     const board = new BoardPage(page);
@@ -296,7 +296,7 @@ test.describe('OC: услуги заказа', () => {
       products: [{ product_id: product.id, qty: 2 }],
     });
     const assignee = await makeUser({ login: uniq('exec-oc009'), name: 'Исполнитель OC-009' });
-    const task = await adminApi.createTask({ title: uniq('OC-009 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-009 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -332,7 +332,7 @@ test.describe('OC: товары услуги и остаток', () => {
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-010');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-010 товар'), stock: 10, min_stock: 3 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-010 услуга'), price: null, products: [] });
-    const task = await adminApi.createTask({ title: uniq('OC-010 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-010 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id });
 
     const board = new BoardPage(page);
@@ -361,7 +361,7 @@ test.describe('OC: товары услуги и остаток', () => {
     await expect(card.productPrice(productRowId)).toHaveAttribute('aria-busy', 'false');
   });
 
-  test('OC-011: заказ «В работе» — предупреждение склада, «Остатки» уменьшились, удаление услуги возвращает', async ({
+  test('OC-011: заказ «В ремонте» — предупреждение склада, «Остатки» уменьшились, удаление услуги возвращает', async ({
     adminPage: page,
     adminApi,
     uniq,
@@ -371,7 +371,7 @@ test.describe('OC: товары услуги и остаток', () => {
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-011');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-011 товар'), stock: 5, min_stock: 1 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-011 услуга'), price: null, products: [] });
-    const inWork = columnByName(columns, 'В работе');
+    const inWork = columnByName(columns, 'В ремонте');
     const task = await adminApi.createTask({ title: uniq('OC-011 заказ'), client_id: client.id, column_id: inWork.id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id });
 
@@ -415,7 +415,7 @@ test.describe('OC: статус услуги и финальная колонк�
     const final = columns.find((c) => c.is_final)!;
     // услуга создаётся ДО переноса в финальную колонку (design-tests.md §Fixtures) —
     // POST /tasks/:id/subtasks в финальной колонке сам заблокирован (409 SUBTASK_FINAL_COLUMN).
-    const task = await adminApi.createTask({ title: uniq('OC-012 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-012 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, status: 'done' });
     await adminApi.moveTask(task.id, { column_id: final.id });
     allowHttpErrors((url, status) => url.endsWith(`/api/v1/subtasks/${subtaskId}`) && status === 409);
@@ -452,7 +452,7 @@ test.describe('OC: журнал работ', () => {
     const task = await adminApi.createTask({
       title: uniq('OC-013 заказ'),
       client_id: client.id,
-      column_id: columnByName(columns, 'Новые').id,
+      column_id: columnByName(columns, 'Приёмка').id,
       assignee_id: user.id,
     });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id });
@@ -498,9 +498,9 @@ test.describe('OC: одновременная правка товара', () => 
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-015');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-015 товар'), stock: 100, min_stock: 1 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-015 услуга'), price: null, products: [] });
-    // «В работе» — списывающая колонка (consumes_stock), иначе qty не резервирует склад и
+    // «В ремонте» — списывающая колонка (consumes_stock), иначе qty не резервирует склад и
     // финальная проверка «Остатки» ничего не показала бы.
-    const task = await adminApi.createTask({ title: uniq('OC-015 заказ'), client_id: client.id, column_id: columnByName(columns, 'В работе').id });
+    const task = await adminApi.createTask({ title: uniq('OC-015 заказ'), client_id: client.id, column_id: columnByName(columns, 'В ремонте').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 1 }] });
     const cardData = await adminApi.getCard(task.id);
     const productRowId = cardData.subtasks.find((s) => s.id === subtaskId)!.products[0].id;
@@ -547,7 +547,7 @@ test.describe('OC: одновременная правка товара', () => 
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-016');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-016 товар'), stock: 20, min_stock: 1 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-016 услуга'), price: null, products: [] });
-    const task = await adminApi.createTask({ title: uniq('OC-016 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-016 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 1 }] });
     const cardData = await adminApi.getCard(task.id);
     const productRowId = cardData.subtasks.find((s) => s.id === subtaskId)!.products[0].id;
@@ -589,7 +589,7 @@ test.describe('OC: права исполнителя', () => {
     const task = await adminApi.createTask({
       title: uniq('OC-019 заказ'),
       client_id: client.id,
-      column_id: columnByName(columns, 'Новые').id,
+      column_id: columnByName(columns, 'Приёмка').id,
       assignee_id: user.id,
     });
 
@@ -611,7 +611,7 @@ test.describe('OC: права исполнителя', () => {
 test.describe('OC: адаптивность 375px', () => {
   test('OC-020: модалка во всю ширину, без горизонтального скролла страницы', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-020');
-    const task = await adminApi.createTask({ title: uniq('OC-020 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-020 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
     await page.setViewportSize({ width: 375, height: 812 });
     const board = new BoardPage(page);
@@ -636,7 +636,7 @@ test.describe('OC: TD-4 валидация количества товара', (
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-021');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-021 товар'), stock: 10, min_stock: 1 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-021 услуга'), price: null, products: [] });
-    const task = await adminApi.createTask({ title: uniq('OC-021 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-021 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 2 }] });
     const cardData = await adminApi.getCard(task.id);
     const productRowId = cardData.subtasks.find((s) => s.id === subtaskId)!.products[0].id;
@@ -672,7 +672,7 @@ test.describe('OC: self-race ADR-105', () => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-022');
     const { svcCat } = await setupCatalog(adminApi, uniq, 'OC-022');
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-022 услуга'), price: null, products: [] });
-    const task = await adminApi.createTask({ title: uniq('OC-022 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-022 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id });
 
     const board = new BoardPage(page);
@@ -722,7 +722,7 @@ test.describe('OC: self-race ADR-105', () => {
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-023');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-023 товар'), stock: 50, min_stock: 1 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-023 услуга'), price: null, products: [] });
-    const inWork = columnByName(columns, 'В работе');
+    const inWork = columnByName(columns, 'В ремонте');
     const task = await adminApi.createTask({ title: uniq('OC-023 заказ'), client_id: client.id, column_id: inWork.id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 1 }] });
     const cardData = await adminApi.getCard(task.id);
@@ -775,7 +775,7 @@ test.describe('OC: гонки применения ответов между к�
     const { client, columns } = await setup(adminApi, uniq, 'OC-024');
     const { svcCat } = await setupCatalog(adminApi, uniq, 'OC-024');
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-024 услуга'), price: null, products: [] });
-    const newCol = columnByName(columns, 'Новые');
+    const newCol = columnByName(columns, 'Приёмка');
     const taskA = await adminApi.createTask({ title: uniq('OC-024 заказ A'), client_id: client.id, column_id: newCol.id });
     const taskB = await adminApi.createTask({ title: uniq('OC-024 заказ B'), client_id: client.id, column_id: newCol.id });
     const subtaskId = await insertSubtask({ taskId: taskA.id, serviceId: service.id });
@@ -826,7 +826,7 @@ test.describe('OC: гонки применения ответов между к�
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-025');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-025 товар'), stock: 10, min_stock: 1 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-025 услуга'), price: null, products: [] });
-    const task = await adminApi.createTask({ title: uniq('OC-025 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-025 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 1 }] });
     const cardData = await adminApi.getCard(task.id);
     const productRowId = cardData.subtasks.find((s) => s.id === subtaskId)!.products[0].id;
@@ -874,7 +874,7 @@ test.describe('OC: гонки применения ответов между к�
     const { svcCat, prodCat } = await setupCatalog(adminApi, uniq, 'OC-026');
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('OC-026 товар'), stock: 20, min_stock: 1 });
     const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-026 услуга'), price: null, products: [] });
-    const task = await adminApi.createTask({ title: uniq('OC-026 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-026 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 1 }] });
     const cardData = await adminApi.getCard(task.id);
     const productRowId = cardData.subtasks.find((s) => s.id === subtaskId)!.products[0].id;

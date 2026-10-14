@@ -318,7 +318,7 @@ func (s *OrderCardLiveSuite) setProductActive(id string, active bool) {
 // LV-101/AC-001: GET /tasks/:id/card — одним запросом полное дерево карточки.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GetCard_FullTree() {
 	c := s.newClient("Клиент-Карточка-Дерево")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 
 	svcID := s.newService("500")
@@ -341,7 +341,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GetCard_FullTree() {
 // LV-106/AC-001: заказ без услуг/оборудования — массивы пустые ([]), не null.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GetCard_EmptyArraysNotNull() {
 	c := s.newClient("Клиент-Карточка-Пусто")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 
 	st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", taskID), nil)
@@ -355,7 +355,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GetCard_EmptyArraysNotNull()
 // description=null — не трогает сохранённое значение.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate() {
 	c := s.newClient("Клиент-Описание")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
 		"title": "Заказ с описанием", "client_id": c, "column_id": col,
@@ -399,7 +399,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
 // фаза 05).
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_DeepLink_SSR() {
 	c := s.newClient("Клиент-DeepLink")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 
 	resp := s.admin.Request(http.MethodGet, fmt.Sprintf("/?task=%d", taskID), nil, nil)
@@ -410,7 +410,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_DeepLink_SSR() {
 // LV-108/AC-004: добавить/поправить/удалить оборудование заказа.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_AddUpdateRemove() {
 	c := s.newClient("Клиент-Оборудование-CRUD")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	eqID := s.newEquipment(c)
 
@@ -448,7 +448,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_AddUpdateRemove() 
 // (POST /clients/:id/equipment, затем POST /tasks/:id/equipment).
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_NewFromCard() {
 	c := s.newClient("Клиент-Оборудование-Новое")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	typeID := s.newEquipmentType()
 
@@ -470,7 +470,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_NewFromCard() {
 // LV-110/AC-006: история других заказов с той же единицей оборудования.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_History() {
 	c := s.newClient("Клиент-Оборудование-История")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskA, _ := s.newTask(c, col)
 	taskB, _ := s.newTask(c, col)
 	eqID := s.newEquipment(c)
@@ -503,7 +503,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_History() {
 // TASK_EQUIPMENT_IN_USE + details.subtasks.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_InUseConflict() {
 	c := s.newClient("Клиент-Оборудование-Занято")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	eqID := s.newEquipment(c)
 
@@ -533,7 +533,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_InUseConflict() {
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_ClientChange() {
 	c1 := s.newClient("Клиент-Смена-Раз")
 	c2 := s.newClient("Клиент-Смена-Два")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c1, col)
 	eqID := s.newEquipment(c1)
 
@@ -572,7 +572,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_ClientChange() {
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_ForeignClient400() {
 	c1 := s.newClient("Клиент-Чужое-Раз")
 	c2 := s.newClient("Клиент-Чужое-Два")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c1, col)
 	foreignEqID := s.newEquipment(c2)
 
@@ -607,7 +607,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidPathIDs404() {
 	}
 
 	c := s.newClient("Клиент-Невалидные-Пути")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 
 	st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks/999999999/card", nil)
@@ -681,7 +681,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidPathIDs404() {
 // не тронут.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_CreateWithKit() {
 	c := s.newClient("Клиент-Услуга-Комплект")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col)
 
 	svcID := s.newService("500")
@@ -711,7 +711,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_CreateWithKit() {
 // LV-104/AC-007/AC-011: PUT /subtasks/:id — status/assignee/due/price(null)/equipment_id.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
 	c := s.newClient("Клиент-Услуга-Правка")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	eqID := s.newEquipment(c)
 	st, _, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{"equipment_id": eqID})
@@ -745,7 +745,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
 // LV-105/AC-008: POST/PUT/DELETE /subtask-products — line_total корректен на каждом шаге.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_SubtaskProduct_CRUD() {
 	c := s.newClient("Клиент-Товар-CRUD")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -788,7 +788,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_SubtaskProduct_CRUD() {
 // GET /tasks total_amount — то же значение.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Totals() {
 	c := s.newClient("Клиент-Итоги")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 
 	svc1 := s.newService("1000")
@@ -858,7 +858,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Totals() {
 // LV-107/AC-012: журнал работ — CRUD + GET /tasks last_log (обрезка 120 + «…»).
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Logs_CRUD() {
 	c := s.newClient("Клиент-Журнал-CRUD")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -912,7 +912,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Logs_CRUD() {
 // LV-130/AC-002/AC-014: row-мутации НЕ трогают tasks.version.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_UnaffectedByRowMutations() {
 	c := s.newClient("Клиент-Версия-Устойчива")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col)
 
 	svcID := s.newService("100")
@@ -942,7 +942,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_UnaffectedByRowMutat
 // LV-131/AC-002: два PUT /tasks/:id с одним version — второй 409, данные первого сохранены.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_ConflictOnHeader() {
 	c := s.newClient("Клиент-Версия-Конфликт")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col)
 
 	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
@@ -966,7 +966,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_ConflictOnHeader() {
 // LV-140/AC-011: финальная колонка — POST /tasks/:id/subtasks → 409, услуг не прибавилось.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_FinalColumn_BlocksCreate() {
 	c := s.newClient("Клиент-Финал-Услуга")
-	done := s.columnID("Готово")
+	done := s.columnID("Выдан")
 	taskID, _ := s.newTask(c, done)
 
 	svcID := s.newService("100")
@@ -982,7 +982,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_FinalColumn_BlocksCreate() {
 // LV-141/AC-011: финальная — done→in_progress 409, done→done с правкой цены — 200.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_FinalColumn_BlocksUndone() {
 	c := s.newClient("Клиент-Финал-Статус")
-	newCol, done := s.columnID("Новые"), s.columnID("Готово")
+	newCol, done := s.columnID("Приёмка"), s.columnID("Выдан")
 	taskID, _ := s.newTask(c, newCol)
 
 	svcID := s.newService("100")
@@ -1010,7 +1010,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_FinalColumn_BlocksUndone() {
 // LV-145/AC-007: equipment_id не из оборудования ЭТОГО заказа — 400.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_EquipmentNotInOrder400() {
 	c := s.newClient("Клиент-Оборудование-НеЗаказа")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	eqID := s.newEquipment(c) // НЕ добавлена в task_equipment
 
@@ -1029,7 +1029,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_EquipmentNotInOrder4
 // LV-146/AC-007: assignee_id заблокированного — 400 только при СМЕНЕ значения (SD-007).
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400() {
 	c := s.newClient("Клиент-Исполнитель-Неактивен")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1063,7 +1063,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400(
 // LV-147/AC-007/AC-008: услуга/товар в архиве — 400.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_ArchivedServiceOrProduct400() {
 	c := s.newClient("Клиент-Архив")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 
 	svcID := s.newService("100")
@@ -1087,7 +1087,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_ArchivedServiceOrPro
 // LV-148/AC-007/AC-012: DELETE /subtasks/:id — CASCADE товары/журнал.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_DeleteSubtask_CascadesLogsProducts() {
 	c := s.newClient("Клиент-Каскад-Удаление")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("100")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1118,7 +1118,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Access_ExecutorRowEndpoints(
 	exec.Login("card-exec-row", "password1")
 
 	c := s.newClient("Клиент-Исполнитель-Строки")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col)
 
 	svcID := s.newService("100")
@@ -1155,7 +1155,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Logs_ForbiddenForOthers() {
 	execB.Login("card-exec-b", "password1")
 
 	c := s.newClient("Клиент-Журнал-Чужой")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(execA, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1191,7 +1191,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Logs_ForbiddenForOthers() {
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_NoSession401() {
 	noSession := s.NewBrowser()
 	c := s.newClient("Клиент-НетСессии")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1214,7 +1214,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_NoSession401() {
 // LV-171/AC-008/AC-012: границы qty/price/text/completeness/description/status/due_date.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidInput400() {
 	c := s.newClient("Клиент-Невалидный-Ввод")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1275,7 +1275,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidInput400() {
 // LV-172 (TD-4): мусорное тело — 400 BAD_REQUEST, не 500; лишнее поле в PUT /subtasks.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GarbageBody400() {
 	c := s.newClient("Клиент-Мусор-Карточка")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1294,7 +1294,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GarbageBody400() {
 // LV-173/AC-014: повторный DELETE /subtask-products/:id — 404, идемпотентность.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_IdempotentDelete404() {
 	c := s.newClient("Клиент-Идемпотентность")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1316,7 +1316,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_IdempotentDelete404() {
 // LV-174/AC-014: POST /subtasks/:id/logs удалённой услуги — 404 SUBTASK_NOT_FOUND.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_LogOnDeletedSubtask404() {
 	c := s.newClient("Клиент-Лог-Удалённая-Услуга")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	svcID := s.newService("0")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -1340,7 +1340,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Executor_EquipmentAllowed() 
 	exec.Login("card-exec", "password1")
 
 	c := s.newClient("Клиент-Исполнитель-Оборудование")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
 	eqID := s.newEquipment(c)
 

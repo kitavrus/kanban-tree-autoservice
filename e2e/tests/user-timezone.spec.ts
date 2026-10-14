@@ -41,7 +41,7 @@ async function seedPaidOrder({ adminApi, uniq, insertSubtask }: Seed, label: str
   const task = await adminApi.createTask({
     title: uniq(`TZ заказ ${label}`),
     client_id: client.id,
-    column_id: columnByName(columns, 'Новые').id,
+    column_id: columnByName(columns, 'Приёмка').id,
     assignee_id: executorId,
     is_paid: true,
   });
@@ -307,7 +307,7 @@ test.describe('TZ: пояс применяется во всей системе'
     const almatyUser = await makeUser({ login: uniq('tz011-almaty'), name: uniq('Админ Алматы TZ-011'), role: 'admin', timezone: TZ_ALMATY });
     const moscowUser = await makeUser({ login: uniq('tz011-moscow'), name: uniq('Админ Москва TZ-011'), role: 'admin', timezone: TZ_MOSCOW });
     const client = await adminApi.createClient({ company_name: uniq('TZ-011 клиент'), phones: [{ phone: '9990000301', note: '' }] });
-    const column = columnByName((await adminApi.listColumns()).items, 'Новые');
+    const column = columnByName((await adminApi.listColumns()).items, 'Приёмка');
     const mk = (label: string, due: string) => adminApi.createTask({ title: uniq(`TZ-011 ${label}`), client_id: client.id, column_id: column.id, due_date: due });
     // «Сейчас» = момент TS-F5: в Алматы уже 7 октября, в Москве и в браузере (Нью-Йорк) — 6-е.
     const due6 = await mk('срок 6 октября', TZ_FIXTURE.moscow.today);

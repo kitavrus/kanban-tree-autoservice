@@ -32,7 +32,7 @@ test.describe('BD: карточка и цвет колонки', () => {
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-001');
     const assignee = await makeUser({ login: uniq('exec-bd001'), name: 'Исполнитель BD-001' });
-    const newCol = columnByName(columns, 'Новые');
+    const newCol = columnByName(columns, 'Приёмка');
     const title = uniq('Заказ BD-001');
     const task = await adminApi.createTask({
       title,
@@ -60,7 +60,7 @@ test.describe('BD: карточка и цвет колонки', () => {
 test.describe('BD: DnD между колонками', () => {
   test('BD-002: перенос между колонками и перестановка внутри — reload сохраняет положение', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-002');
-    const from = columnByName(columns, 'Новые');
+    const from = columnByName(columns, 'Приёмка');
     const to = columnByName(columns, 'Согласование');
     const t1 = await adminApi.createTask({ title: uniq('BD-002 первый'), client_id: client.id, column_id: from.id });
     const t2 = await adminApi.createTask({ title: uniq('BD-002 второй'), client_id: client.id, column_id: from.id });
@@ -86,7 +86,7 @@ test.describe('BD: DnD между колонками', () => {
 });
 
 test.describe('BD: финальная колонка блокирует незавершённые услуги', () => {
-  test('BD-003: перенос в «Готово» с открытой услугой отклонён, после завершения — проходит', async ({
+  test('BD-003: перенос в «Выдан» с открытой услугой отклонён, после завершения — проходит', async ({
     adminPage: page,
     adminApi,
     uniq,
@@ -95,8 +95,8 @@ test.describe('BD: финальная колонка блокирует неза
     allowHttpErrors,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-003');
-    const from = columnByName(columns, 'Новые');
-    const done = columnByName(columns, 'Готово');
+    const from = columnByName(columns, 'Приёмка');
+    const done = columnByName(columns, 'Выдан');
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-003 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-003 услуга') });
     const task = await adminApi.createTask({ title: uniq('BD-003 заказ'), client_id: client.id, column_id: from.id });
@@ -124,8 +124,8 @@ test.describe('BD: финальная колонка блокирует неза
 test.describe('BD: списание товаров', () => {
   test('BD-004: перенос в списывающую колонку уменьшает остаток; возврат — восстанавливает', async ({ adminPage: page, adminApi, uniq, insertSubtask }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-004');
-    const from = columnByName(columns, 'Новые');
-    const work = columnByName(columns, 'В работе'); // consumes_stock=true (сид D32)
+    const from = columnByName(columns, 'Приёмка');
+    const work = columnByName(columns, 'В ремонте'); // consumes_stock=true (сид D32)
     const waitParts = columnByName(columns, 'Ждёт запчасти'); // тоже consumes_stock=true (сид D32)
 
     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-004 категория товаров') });
@@ -142,12 +142,12 @@ test.describe('BD: списание товаров', () => {
     await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(work.id);
     await expect.poll(() => stockOf(page, product.id)).toBe(3);
 
-    // «В работе» → «Ждёт запчасти»: обе списывающие — 0 новых движений, остаток не меняется.
+    // «В ремонте» → «Ждёт запчасти»: обе списывающие — 0 новых движений, остаток не меняется.
     await board.dragCardToColumn(task.id, waitParts.id);
     await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(waitParts.id);
     await expect.poll(() => stockOf(page, product.id)).toBe(3);
 
-    // назад в несписывающую «Новые» — товары возвращаются.
+    // назад в несписывающую «Приёмка» — товары возвращаются.
     await board.dragCardToColumn(task.id, from.id);
     await expect.poll(() => stockOf(page, product.id)).toBe(5);
   });
@@ -156,8 +156,8 @@ test.describe('BD: списание товаров', () => {
 test.describe('BD: минус на складе предупреждает, не блокирует', () => {
   test('BD-005: недостаточный остаток — перенос проходит, toast со ссылкой на «Остатки»', async ({ adminPage: page, adminApi, uniq, insertSubtask }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-005');
-    const from = columnByName(columns, 'Новые');
-    const work = columnByName(columns, 'В работе');
+    const from = columnByName(columns, 'Приёмка');
+    const work = columnByName(columns, 'В ремонте');
 
     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-005 категория товаров') });
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-005 товар'), stock: 1 });
@@ -293,11 +293,13 @@ test.describe('BD: дефолтные колонки D32', () => {
     const board = new BoardPage(page);
     await board.goto();
     const expected: Array<[string, boolean, boolean]> = [
-      ['Новые', false, false],
+      ['Приёмка', false, false],
+      ['Диагностика', false, false],
       ['Согласование', false, false],
-      ['В работе', false, true],
       ['Ждёт запчасти', false, true],
-      ['Готово', true, true],
+      ['В ремонте', false, true],
+      ['Готов к выдаче', false, true],
+      ['Выдан', true, true],
     ];
     for (const [name, isFinal, consumes] of expected) {
       const id = await board.columnIdByName(name);
@@ -324,7 +326,7 @@ test.describe('BD: форма заказа', () => {
 
     const title = uniq('BD-009 заказ');
     await board.openTaskAdd();
-    await board.fillTask({ title, client: client.company_name, column: columnByName(columns, 'Новые').name });
+    await board.fillTask({ title, client: client.company_name, column: columnByName(columns, 'Приёмка').name });
     // Два клика синхронно в одном browser-тике (а не Playwright dblclick — реальные мышиные
     // события дают гонку между вкладом браузера в обработку disabled и таймингом теста):
     // saving-флаг выставляется синхронно первым же кликом ДО await fetch, поэтому второй
@@ -363,7 +365,7 @@ test.describe('BD: форма заказа', () => {
 test.describe('BD: конфликт версии', () => {
   test('BD-010: конкурентная правка — форма показывает «Заказ уже изменён»', async ({ adminPage: page, adminApi, uniq, allowHttpErrors }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-010');
-    const task = await adminApi.createTask({ title: uniq('BD-010 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('BD-010 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 409);
 
     const board = new BoardPage(page);
@@ -398,7 +400,7 @@ test.describe('BD: оплата — только администратор', ()
     allowHttpErrors,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-011');
-    const task = await adminApi.createTask({ title: uniq('BD-011 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('BD-011 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
     const board = new BoardPage(page);
     await board.goto(`?client_id=${client.id}`);
@@ -445,15 +447,15 @@ test.describe('BD: удаление заказа', () => {
     loginAs,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-012');
-    const from = columnByName(columns, 'Новые');
-    const work = columnByName(columns, 'В работе');
+    const from = columnByName(columns, 'Приёмка');
+    const work = columnByName(columns, 'В ремонте');
     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-012 категория товаров') });
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-012 товар'), stock: 5 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-012 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-012 услуга') });
     // создаём заказ в несписывающей колонке — Reconcile пересчитывает списание только на
     // Create/Move; подзадача сидит в БД без него (raw insert, ADR-103), поэтому списание
-    // происходит именно при move в «В работе» ниже, а не при создании заказа.
+    // происходит именно при move в «В ремонте» ниже, а не при создании заказа.
     const task = await adminApi.createTask({ title: uniq('BD-012 заказ'), client_id: client.id, column_id: from.id });
     await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 2 }] });
     await adminApi.moveTask(task.id, { column_id: work.id });
@@ -471,7 +473,7 @@ test.describe('BD: удаление заказа', () => {
     const login = uniq('exec-bd012');
     const user = await makeUser({ login });
     await loginAs(page, login, user.password);
-    const task2 = await adminApi.createTask({ title: uniq('BD-012 заказ 2'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task2 = await adminApi.createTask({ title: uniq('BD-012 заказ 2'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     await board.goto(`?client_id=${client.id}`);
     // заказ без ответственного — под дефолтным «Мои» (AC-014) исполнитель его не видит.
     await board.chooseCombobox(board.filterAssignee, 'Все исполнители');
@@ -485,8 +487,8 @@ test.describe('BD: фильтры доски', () => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-013');
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-013 категория') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-013 услуга') });
-    const matching = await adminApi.createTask({ title: uniq('BD-013 подходит'), client_id: client.id, column_id: columnByName(columns, 'Новые').id, is_paid: true });
-    const other = await adminApi.createTask({ title: uniq('BD-013 не подходит'), client_id: client.id, column_id: columnByName(columns, 'Новые').id, is_paid: false });
+    const matching = await adminApi.createTask({ title: uniq('BD-013 подходит'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id, is_paid: true });
+    const other = await adminApi.createTask({ title: uniq('BD-013 не подходит'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id, is_paid: false });
 
     const board = new BoardPage(page);
     await board.goto(`?client_id=${client.id}`);
@@ -522,7 +524,7 @@ test.describe('BD: поиск по услуге, товару и оборудо�
     insertTaskEquipment,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-022');
-    const col = columnByName(columns, 'Новые');
+    const col = columnByName(columns, 'Приёмка');
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-022 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-022 Замена турбины') });
     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-022 категория товаров') });
@@ -559,7 +561,7 @@ test.describe('BD: «Мои» по умолчанию для исполните�
     loginAs,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-014');
-    const col = columnByName(columns, 'Новые');
+    const col = columnByName(columns, 'Приёмка');
     const login = uniq('exec-bd014');
     const executor = await makeUser({ login });
 
@@ -588,7 +590,7 @@ test.describe('BD: адаптив 360px и тёмная тема', () => {
     uniq,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-020');
-    const from = columnByName(columns, 'Новые');
+    const from = columnByName(columns, 'Приёмка');
     const to = columnByName(columns, 'Согласование');
     const task = await adminApi.createTask({ title: uniq('BD-020 заказ'), client_id: client.id, column_id: from.id });
 
@@ -635,7 +637,7 @@ test.describe('BD: итог заказа и колонки на доске (AC-0
     uniq,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-021');
-    const newCol = columnByName(columns, 'Новые');
+    const newCol = columnByName(columns, 'Приёмка');
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-021 категория услуг') });
     const svcA = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-021 услуга A'), price: 100 });
     const svcB = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-021 услуга B'), price: 250.5 });
@@ -650,7 +652,7 @@ test.describe('BD: итог заказа и колонки на доске (AC-0
 
     const board = new BoardPage(page);
     // отфильтровано по СВОЕМУ клиенту (§TD-6.2) — column-total считается по видимым
-    // (после фильтра) карточкам, на общей dev-БД в колонке «Новые» есть и чужие заказы.
+    // (после фильтра) карточкам, на общей dev-БД в колонке «Приёмка» есть и чужие заказы.
     await board.goto(`?client_id=${client.id}`);
 
     // журнал работ услуги (AC-012, для task-card-last-log) — в AdminApi нет метода для него
@@ -666,7 +668,7 @@ test.describe('BD: итог заказа и колонки на доске (AC-0
     await expect(board.card(taskA.id).getByTestId('task-card-last-log')).toBeVisible();
     await expect(board.card(taskB.id).getByTestId('task-card-total')).toHaveText('Итог: 250.50');
     await expect(board.card(taskZero.id).getByTestId('task-card-total')).toHaveCount(0);
-    await expect(board.columnByName('Новые').getByTestId('column-total')).toHaveText('350.50');
+    await expect(board.columnByName('Приёмка').getByTestId('column-total')).toHaveText('350.50');
 
     // UI-scope gate (US-1 adaptive:min · themes:both, design-tests.md DoD фазы 06): новые
     // элементы карточки/колонки видимы и БЕЗ горизонтального overflow страницы на 375px в
@@ -679,7 +681,7 @@ test.describe('BD: итог заказа и колонки на доске (AC-0
       await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
       await expect(board.card(taskA.id).getByTestId('task-card-total')).toBeVisible();
       await expect(board.card(taskA.id).getByTestId('task-card-last-log')).toBeVisible();
-      await expect(board.columnByName('Новые').getByTestId('column-total')).toBeVisible();
+      await expect(board.columnByName('Приёмка').getByTestId('column-total')).toBeVisible();
       expect(await noOverflow()).toBe(false);
     }
   });

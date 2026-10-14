@@ -55,9 +55,9 @@ func (s *StockEngineSuite) SetupTest() {
 	_, err := s.Pool.Exec(ctx, `TRUNCATE TABLE catalog_categories, products, services, columns RESTART IDENTITY CASCADE`)
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `INSERT INTO columns (id, name, color, is_final, consumes_stock, position) VALUES
-		($1, 'Новые', '#94A3B8', false, false, 1),
-		($2, 'В работе', '#2563EB', false, true, 2),
-		($3, 'Готово', '#059669', true, true, 3)`, seColTodo, seColWIP, seColDone)
+		($1, 'Приёмка', '#94A3B8', false, false, 1),
+		($2, 'В ремонте', '#2563EB', false, true, 2),
+		($3, 'Выдан', '#059669', true, true, 3)`, seColTodo, seColWIP, seColDone)
 	s.Require().NoError(err)
 }
 
@@ -277,7 +277,7 @@ func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService
 	// шаг 4: toggle колонки — выключить consumes_stock у seColWIP пересчитывает все её
 	// заказы (AC-007), включая наш — возврат товара без переноса заказа.
 	_, err = colSvc.Update(ctx, seColWIP, seAdminID, board.ColumnInput{
-		Name: "В работе", Color: "#2563EB", IsFinal: false, ConsumesStock: false,
+		Name: "В ремонте", Color: "#2563EB", IsFinal: false, ConsumesStock: false,
 	})
 	s.Require().NoError(err)
 	s.Equal("20.000", s.productStock(productID))
@@ -285,7 +285,7 @@ func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService
 
 	// вернуть consumes_stock=true — заказ снова списывается для следующего шага (delete).
 	_, err = colSvc.Update(ctx, seColWIP, seAdminID, board.ColumnInput{
-		Name: "В работе", Color: "#2563EB", IsFinal: false, ConsumesStock: true,
+		Name: "В ремонте", Color: "#2563EB", IsFinal: false, ConsumesStock: true,
 	})
 	s.Require().NoError(err)
 	s.Equal("16.000", s.productStock(productID))
@@ -305,7 +305,7 @@ func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService
 	// выключение и включение consumes_stock товар удалённого заказа не списывает.
 	for _, consumes := range []bool{false, true} {
 		_, err = colSvc.Update(ctx, seColWIP, seAdminID, board.ColumnInput{
-			Name: "В работе", Color: "#2563EB", IsFinal: false, ConsumesStock: consumes,
+			Name: "В ремонте", Color: "#2563EB", IsFinal: false, ConsumesStock: consumes,
 		})
 		s.Require().NoError(err)
 		s.Equal("20.000", s.productStock(productID), "удалённый заказ не списывает товар при правке колонки")

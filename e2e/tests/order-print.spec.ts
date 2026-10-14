@@ -18,7 +18,7 @@ async function setup(adminApi: import('../fixtures/auth').AdminApi, uniq: (s: st
 test.describe('OC: печать актов из карточки', () => {
   test('OC-017: «Акт приёма» открывает /tasks/N/print/intake в новой вкладке, светлая тема', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-017');
-    const task = await adminApi.createTask({ title: uniq('OC-017 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-017 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -44,7 +44,7 @@ test.describe('OC: печать актов из карточки', () => {
 
   test('OC-018: «Акт выдачи» открывает /tasks/N/print/handover в новой вкладке', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-018');
-    const task = await adminApi.createTask({ title: uniq('OC-018 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    const task = await adminApi.createTask({ title: uniq('OC-018 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);

@@ -22,7 +22,7 @@ const PNG_1X1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUl
 type Uniq = (s: string) => string;
 
 /** Клиент + заказ в колонке columnName. */
-async function order(adminApi: AdminApi, uniq: Uniq, tag: string, columnName = 'Новые') {
+async function order(adminApi: AdminApi, uniq: Uniq, tag: string, columnName = 'Приёмка') {
   const client = await adminApi.createClient({ company_name: uniq(`${tag} клиент`), phones: [{ phone: '9990000701', note: '' }] });
   const columns = (await adminApi.listColumns()).items;
   const column = columnByName(columns, columnName);
@@ -173,7 +173,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     insertSubtask,
   }) => {
     const { client, columns, task } = await order(adminApi, uniq, 'SD-003');
-    const work = columnByName(columns, 'В работе');
+    const work = columnByName(columns, 'В ремонте');
     const { product, service } = await goods(adminApi, uniq, 'SD-003', 5);
     await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 2 }] });
     await adminApi.moveTask(task.id, { column_id: work.id });
@@ -229,7 +229,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     const { columns, task } = await order(adminApi, uniq, 'SD-004');
     const { product, service } = await goods(adminApi, uniq, 'SD-004', 5);
     await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 2 }] });
-    await adminApi.moveTask(task.id, { column_id: columnByName(columns, 'В работе').id });
+    await adminApi.moveTask(task.id, { column_id: columnByName(columns, 'В ремонте').id });
     await adminApi.deleteTask(task.id, uniq('SD-004 причина'));
     await adminApi.adjustStock(product.id, 0); // товар ушёл со склада, пока заказ был удалён
 
@@ -270,7 +270,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     allowHttpErrors,
   }) => {
     const { client, columns } = await order(adminApi, uniq, 'SD-005');
-    const col = columnByName(columns, 'Новые').id;
+    const col = columnByName(columns, 'Приёмка').id;
     const mark = uniq('sd005');
     const mine = await adminApi.createTask({ title: uniq('SD-005 мой'), client_id: client.id, column_id: col });
     const dup = await adminApi.createTask({ title: uniq('SD-005 дубль'), client_id: client.id, column_id: col });
@@ -450,7 +450,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     allowHttpErrors,
   }) => {
     const { client, columns, task } = await order(adminApi, uniq, 'SD-008');
-    const work = columnByName(columns, 'В работе').id;
+    const work = columnByName(columns, 'В ремонте').id;
     const { product, service } = await goods(adminApi, uniq, 'SD-008', 5);
     allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 400);
 
@@ -459,7 +459,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     const card = new OrderCardPage(page);
     for (const theme of THEMES) {
       // свой удалённый заказ с нехваткой товара на каждую тему — жёлтый блок после восстановления.
-      const short = await adminApi.createTask({ title: uniq(`SD-008 ${theme}`), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+      const short = await adminApi.createTask({ title: uniq(`SD-008 ${theme}`), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
       await insertSubtask({ taskId: short.id, serviceId: service.id, products: [{ productId: product.id, qty: 2 }] });
       await adminApi.adjustStock(product.id, 5);
       await adminApi.moveTask(short.id, { column_id: work });

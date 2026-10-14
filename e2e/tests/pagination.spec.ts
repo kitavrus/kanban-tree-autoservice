@@ -20,7 +20,7 @@ test.describe('PG: доска — догрузка по колонке и счё
   }) => {
     test.setTimeout(120_000); // 52 заказа через API (фикстура) — дольше дефолта
     const client = await adminApi.createClient({ company_name: uniq('PG-007 клиент'), phones: [{ phone: '9990000701', note: '' }] });
-    const col = columnByName((await adminApi.listColumns()).items, 'Новые');
+    const col = columnByName((await adminApi.listColumns()).items, 'Приёмка');
     const total = PER_COLUMN + 2;
     const ids: number[] = [];
     for (let i = 0; i < total; i++) {
@@ -55,8 +55,8 @@ test.describe('PG: доска — догрузка по колонке и счё
   test('TS-008: board-total показывает число заказов под фильтром', async ({ adminPage: page, adminApi, uniq }) => {
     const client = await adminApi.createClient({ company_name: uniq('PG-008 клиент'), phones: [{ phone: '9990000801', note: '' }] });
     const columns = (await adminApi.listColumns()).items;
-    await adminApi.createTask({ title: uniq('PG-008 a'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
-    await adminApi.createTask({ title: uniq('PG-008 b'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+    await adminApi.createTask({ title: uniq('PG-008 a'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
+    await adminApi.createTask({ title: uniq('PG-008 b'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     await adminApi.createTask({ title: uniq('PG-008 c'), client_id: client.id, column_id: columnByName(columns, 'Согласование').id });
 
     const board = new BoardPage(page);
@@ -74,12 +74,12 @@ test.describe('PG: доска — догрузка по колонке и счё
   }) => {
     const client = await adminApi.createClient({ company_name: uniq('PG-011 клиент'), phones: [{ phone: '9990001101', note: '' }] });
     const columns = (await adminApi.listColumns()).items;
-    const fresh = columnByName(columns, 'Новые');
+    const fresh = columnByName(columns, 'Приёмка');
     const agree = columnByName(columns, 'Согласование');
-    const done = columnByName(columns, 'Готово'); // финальная: открытая услуга → 409 и откат
+    const done = columnByName(columns, 'Выдан'); // финальная: открытая услуга → 409 и откат
     const moved = await adminApi.createTask({ title: uniq('PG-011 переносимый'), client_id: client.id, column_id: fresh.id });
     const blocked = await adminApi.createTask({ title: uniq('PG-011 с открытой услугой'), client_id: client.id, column_id: fresh.id });
-    // заказ уже в «Готово»: у колонки есть M, и оптимистичный +1 при отклонённом переносе
+    // заказ уже в «Выдан»: у колонки есть M, и оптимистичный +1 при отклонённом переносе
     // виден в счётчике (иначе счётчик = число карточек и откат M не проверялся бы).
     await adminApi.createTask({ title: uniq('PG-011 готовый'), client_id: client.id, column_id: done.id });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('PG-011 категория') });
@@ -122,7 +122,7 @@ test.describe('PG: доска — догрузка по колонке и счё
   }) => {
     const client = await adminApi.createClient({ company_name: uniq('PG-012 клиент'), phones: [{ phone: '9990001201', note: '' }] });
     const columns = (await adminApi.listColumns()).items;
-    const fresh = columnByName(columns, 'Новые');
+    const fresh = columnByName(columns, 'Приёмка');
     const agree = columnByName(columns, 'Согласование');
     const kept = await adminApi.createTask({ title: uniq('PG-012 видимый'), client_id: client.id, column_id: fresh.id });
     const hidden1 = await adminApi.createTask({ title: uniq('PG-012 хвост 1'), client_id: client.id, column_id: agree.id });

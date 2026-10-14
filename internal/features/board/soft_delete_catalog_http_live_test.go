@@ -133,7 +133,7 @@ func (s *OrderCardLiveSuite) catSetStock(productID, stock string) {
 // удалённой из каталога, идёт как обычно (§8.3 п.4): статус услуги, количество и удаление строки
 // удалённого товара.
 func (s *OrderCardLiveSuite) TestTS026_CardMarks_ServiceAndProduct() {
-	taskID, _ := s.newTask(s.newClient("SD-026 Клиент "+uuid.NewString()[:8]), s.columnID("Новые"))
+	taskID, _ := s.newTask(s.newClient("SD-026 Клиент "+uuid.NewString()[:8]), s.columnID("Приёмка"))
 	svcGone, svcLive := s.newService("100"), s.newService("200")
 	pGone, pLive := s.newProduct("10", "0", "0"), s.newProduct("20", "0", "0")
 
@@ -215,8 +215,8 @@ func (s *OrderCardLiveSuite) TestTS026_CardMarks_ServiceAndProduct() {
 // действующий. Архивные по-прежнему дают archived (не «не найдена»).
 func (s *OrderCardLiveSuite) TestTS030_DeletedServiceAndProductNotSelectable() {
 	m := uuid.NewString()[:8]
-	taskID, _ := s.newTask(s.newClient("SD-030 Клиент "+m), s.columnID("Новые"))
-	other, _ := s.newTask(s.newClient("SD-030 Второй клиент "+m), s.columnID("Новые"))
+	taskID, _ := s.newTask(s.newClient("SD-030 Клиент "+m), s.columnID("Приёмка"))
+	other, _ := s.newTask(s.newClient("SD-030 Второй клиент "+m), s.columnID("Приёмка"))
 	svc := s.newService("100")
 	st, raw := s.catAddSubtask(taskID, svc)
 	s.Require().Equal(http.StatusCreated, st, string(raw))
@@ -276,7 +276,7 @@ func (s *OrderCardLiveSuite) TestTS030_DeletedServiceAndProductNotSelectable() {
 // is_deleted = false.
 func (s *OrderCardLiveSuite) TestTS054_StockOnDeletedProduct() {
 	m := uuid.NewString()[:8]
-	taskID, _, product := s.sdTaskWithProduct(s.newClient("SD-054 Клиент "+m), s.columnID("В работе"), "5", 5)
+	taskID, _, product := s.sdTaskWithProduct(s.newClient("SD-054 Клиент "+m), s.columnID("В ремонте"), "5", 5)
 	s.Require().Equal("0.000", s.defaultStock(product), "товар списан заказом до нуля")
 	// минимум выше возвращаемого остатка: вернувшийся остаток 5 < 10 — товар был бы «low».
 	s.sdScalar(`UPDATE products SET min_stock = 10 WHERE id = $1 RETURNING '1'`, product)
@@ -300,7 +300,7 @@ func (s *OrderCardLiveSuite) TestTS054_StockOnDeletedProduct() {
 	s.False(s.catStock("&scope=all", liveProduct)[liveProduct].IsDeleted, "у действующего товара is_deleted = false")
 
 	// заказ уходит из списывающей колонки — остаток вернулся удалённому товару.
-	s.sdMove(taskID, s.columnID("Новые"))
+	s.sdMove(taskID, s.columnID("Приёмка"))
 	s.Require().Equal("5.000", s.defaultStock(product))
 	for _, q := range []string{"", "&scope=all"} {
 		row, ok := s.catStock(q, product)[product]
@@ -311,7 +311,7 @@ func (s *OrderCardLiveSuite) TestTS054_StockOnDeletedProduct() {
 	s.Equal(afterDelete, s.catSummary(), "удалённый товар в счётчики не входит — и с остатком ниже минимума")
 
 	// добавить удалённый товар в новый заказ нельзя.
-	otherTask, _ := s.newTask(s.newClient("SD-054 Новый заказ "+m), s.columnID("Новые"))
+	otherTask, _ := s.newTask(s.newClient("SD-054 Новый заказ "+m), s.columnID("Приёмка"))
 	st, raw = s.catAddProduct(s.addSubtask(otherTask, s.newService("10"), "10"), product, 1)
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["product_id"])
@@ -459,7 +459,7 @@ func (s *OrderCardLiveSuite) catHoldProductDelete(productID string) func(ctx con
 // FOR SHARE) и получить 400 service_id: not_found; услуга заказа не создана. Реализация,
 // проверяющая услугу без блокировки, создала бы новую ссылку на удалённую услугу.
 func (s *OrderCardLiveSuite) TestRace_SubtaskCreateWaitsForServiceDelete() {
-	taskID, _ := s.newTask(s.newClient("SD-race Клиент-услуга "+uuid.NewString()[:8]), s.columnID("Новые"))
+	taskID, _ := s.newTask(s.newClient("SD-race Клиент-услуга "+uuid.NewString()[:8]), s.columnID("Приёмка"))
 	svc := s.newService("100")
 
 	res := s.catRace(func(ctx context.Context) func() {
@@ -480,7 +480,7 @@ func (s *OrderCardLiveSuite) TestRace_SubtaskCreateWaitsForServiceDelete() {
 // получить 400 product_id: not_found: строки нет, остаток не списан. Реализация
 // без блокировки добавила бы строку и увела остаток удалённого товара в минус.
 func (s *OrderCardLiveSuite) TestRace_SubtaskProductAddWaitsForProductDelete() {
-	taskID, _ := s.newTask(s.newClient("SD-race Клиент-товар "+uuid.NewString()[:8]), s.columnID("В работе"))
+	taskID, _ := s.newTask(s.newClient("SD-race Клиент-товар "+uuid.NewString()[:8]), s.columnID("В ремонте"))
 	subtaskID := s.addSubtask(taskID, s.newService("100"), "100")
 	product := s.newProduct("10", "0", "0")
 

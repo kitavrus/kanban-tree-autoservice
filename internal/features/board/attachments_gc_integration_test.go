@@ -43,7 +43,7 @@ func (s *OrphanSweepSuite) SetupSuite() {
 	s.userID = s.SeedUser("gc-suite-user", "password1", "Сборщик", "admin", true)
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`INSERT INTO clients (company_name) VALUES ('Клиент сборщика') RETURNING id`).Scan(&s.clientID))
-	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id FROM columns WHERE name = 'Новые'`).Scan(&s.colID))
+	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id FROM columns WHERE name = 'Приёмка'`).Scan(&s.colID))
 }
 
 func (s *OrphanSweepSuite) newTask() int64 {

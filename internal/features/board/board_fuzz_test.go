@@ -20,7 +20,7 @@ import (
 // FuzzColumnInputValidate — TD-7/design-tests.md §Fuzz Targets: normalize()+validate() не
 // должны паниковать на произвольном вводе (мусорный цвет, экстремальная позиция).
 func FuzzColumnInputValidate(f *testing.F) {
-	f.Add("Новые", "#94A3B8", false, false, 1)
+	f.Add("Приёмка", "#94A3B8", false, false, 1)
 	f.Add("", "#GGGGGG", false, false, 0)
 	f.Add("x", "#fff", true, true, math.MinInt)
 	f.Add("y", "", false, true, math.MaxInt)

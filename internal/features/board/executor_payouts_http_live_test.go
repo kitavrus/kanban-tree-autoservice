@@ -26,9 +26,9 @@ func (s *OrderCardLiveSuite) payoutExecutor(login string) (string, *testutil.Bro
 	return id, b
 }
 
-// payoutSubtask — заказ в «Новые» с одной услугой (цена 1000); возвращает id заказа и услуги.
+// payoutSubtask — заказ в «Приёмка» с одной услугой (цена 1000); возвращает id заказа и услуги.
 func (s *OrderCardLiveSuite) payoutSubtask(company string) (int64, string) {
-	taskID, _ := s.newTask(s.newClient(company), s.columnID("Новые"))
+	taskID, _ := s.newTask(s.newClient(company), s.columnID("Приёмка"))
 	return taskID, s.addSubtask(taskID, s.newService("1000"), "1000")
 }
 
@@ -300,7 +300,7 @@ func (s *OrderCardLiveSuite) TestExecutorPayouts_TS007_FlagOmittedKeepsValue() {
 func (s *OrderCardLiveSuite) TestExecutorPayouts_TS008_BoardFilter() {
 	execID, _ := s.payoutExecutor("payout-ts008")
 	clientID := s.newClient("Клиент-Выплата-TS008")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	svc := s.newService("100")
 	mk := func() int64 { id, _ := s.newTask(clientID, col); return id }
 
@@ -348,7 +348,7 @@ func (s *OrderCardLiveSuite) TestExecutorPayouts_TS009_BoardFilterInvalid400() {
 func (s *OrderCardLiveSuite) TestExecutorPayouts_TS010_BoardBadgeCount() {
 	execID, _ := s.payoutExecutor("payout-ts010")
 	clientID := s.newClient("Клиент-Выплата-TS010")
-	taskID, _ := s.newTask(clientID, s.columnID("Новые"))
+	taskID, _ := s.newTask(clientID, s.columnID("Приёмка"))
 	svc := s.newService("100")
 
 	counted := s.addSubtask(taskID, svc, "100")
@@ -356,7 +356,7 @@ func (s *OrderCardLiveSuite) TestExecutorPayouts_TS010_BoardBadgeCount() {
 	s.setPayoutState(s.addSubtask(taskID, svc, "100"), "done", &execID, true)         // выплачена
 	s.setPayoutState(s.addSubtask(taskID, svc, "100"), "done", nil, false)            // без исполнителя
 	s.setPayoutState(s.addSubtask(taskID, svc, "100"), "in_progress", &execID, false) // не выполнена
-	quiet, _ := s.newTask(clientID, s.columnID("Новые"))
+	quiet, _ := s.newTask(clientID, s.columnID("Приёмка"))
 
 	board := s.payoutBoard("client_id=" + clientID)
 	s.Equal(1, board[taskID])

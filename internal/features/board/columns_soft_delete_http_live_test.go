@@ -140,7 +140,7 @@ func (s *OrderCardLiveSuite) TestTS012_ColumnsMigrationCheck() {
 	s.Equal("0", s.sdScalar(`
 		SELECT count(*)::text FROM columns
 		WHERE name = ANY($1) AND (deleted_at IS NOT NULL OR deleted_by IS NOT NULL OR delete_reason IS NOT NULL)`,
-		[]string{"Новые", "Согласование", "В работе", "Ждёт запчасти", "Готово"}), "колонки, существовавшие до миграции, — действующие")
+		[]string{"Приёмка", "Диагностика", "Согласование", "Ждёт запчасти", "В ремонте", "Готов к выдаче", "Выдан"}), "колонки, существовавшие до миграции, — действующие")
 	s.Equal("false||", s.colState(col))
 	s.Equal("1", s.sdScalar(`SELECT count(*)::text FROM pg_indexes WHERE tablename = 'columns' AND indexname = 'columns_deleted_at_idx'`))
 
@@ -185,7 +185,7 @@ func (s *OrderCardLiveSuite) TestTS019_DeleteColumn() {
 	after := s.sdColumn("SD-После-" + mark) // стоит за удаляемыми: её позиция должна уплотниться
 	adminID := s.sdScalar(`SELECT id::text FROM users WHERE login = 'card-admin'`)
 	taskID, _ := s.newTask(c, busy)
-	other, _ := s.newTask(c, s.columnID("Новые"))
+	other, _ := s.newTask(c, s.columnID("Приёмка"))
 	defer func() {
 		s.purgeTasks(taskID, other)
 		s.purgeColumns(empty, busy, after)
@@ -245,7 +245,7 @@ func (s *OrderCardLiveSuite) TestTS019_DeleteColumn() {
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("COLUMN_NOT_FOUND", s.sdErr(raw).Code)
 	s.Equal("Колонка не найдена", s.sdErr(raw).Message)
-	s.Equal(s.columnID("Новые"), s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, other), "заказ остался в своей колонке")
+	s.Equal(s.columnID("Приёмка"), s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, other), "заказ остался в своей колонке")
 	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE column_id = $1`, empty))
 	// фильтр доски по удалённой колонке — пустой список.
 	var list struct {
@@ -556,7 +556,7 @@ func (s *OrderCardLiveSuite) TestRace_TaskWritesWaitForColumnDelete() {
 	ctx := context.Background()
 	c := s.newClient("Клиент-Гонка-Удаление")
 	col := s.sdColumn("SD-Гонка-Удаление-" + uuid.NewString()[:8])
-	other, _ := s.newTask(c, s.columnID("Новые"))
+	other, _ := s.newTask(c, s.columnID("Приёмка"))
 	defer func() {
 		s.purgeTasks(other)
 		s.purgeColumns(col)
@@ -602,7 +602,7 @@ func (s *OrderCardLiveSuite) TestRace_TaskWritesWaitForColumnDelete() {
 		s.Equal("COLUMN_NOT_FOUND", s.sdErr(res.raw).Code)
 	}
 	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE column_id = $1`, col), "заказов в удалённой колонке нет")
-	s.Equal(s.columnID("Новые"), s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, other))
+	s.Equal(s.columnID("Приёмка"), s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, other))
 }
 
 // ---- инвариант «≥1 действующая нефинальная колонка» (DS-019, abuse case 3) ----

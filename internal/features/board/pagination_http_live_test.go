@@ -53,7 +53,7 @@ func (s *BoardLiveSuite) pgTasks(clientID, columnID, prefix string, n int) []int
 // у каждой; total — все подходящие под фильтр (без окна per_column).
 func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_PerColumnWindow_TS002() {
 	c := s.newClient("Клиент-TS-002")
-	colA := s.columnID("Новые")
+	colA := s.columnID("Приёмка")
 	colB := s.columnID("Согласование")
 	idsA := s.pgTasks(c, colA, "TS-002 A", 5)
 	idsB := s.pgTasks(c, colB, "TS-002 B", 1)
@@ -91,7 +91,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_PerColumnWindow_TS002() {
 // total=5 (с учётом column_id).
 func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_ColumnIDLimitOffset_TS003() {
 	c := s.newClient("Клиент-TS-003")
-	colA := s.columnID("Новые")
+	colA := s.columnID("Приёмка")
 	ids := s.pgTasks(c, colA, "TS-003", 5)
 	s.pgTasks(c, s.columnID("Согласование"), "TS-003 other", 2)
 
@@ -126,7 +126,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_ColumnIDLimitOffset_TS003
 // TS-004: фильтр q + per_column → column_total считается с учётом фильтра.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_ColumnTotalRespectsFilter_TS004() {
 	c := s.newClient("Клиент-TS-004")
-	colA := s.columnID("Новые")
+	colA := s.columnID("Приёмка")
 	s.pgTasks(c, colA, "TS004match", 3)
 	s.pgTasks(c, colA, "TS004other", 4)
 

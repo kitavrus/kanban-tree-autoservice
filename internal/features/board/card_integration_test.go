@@ -51,7 +51,7 @@ func (s *CardSuite) SetupTest() {
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`INSERT INTO clients (company_name) VALUES ('Клиент карточки') RETURNING id`).Scan(&s.clientID))
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`SELECT id FROM columns WHERE name = 'Новые'`).Scan(&s.colID))
+		`SELECT id FROM columns WHERE name = 'Приёмка'`).Scan(&s.colID))
 }
 
 func (s *CardSuite) TearDownTest() {
@@ -286,7 +286,7 @@ func assertStockInvariantBoard(t *testing.T, pool *pgxpool.Pool) {
 func (s *CardSuite) TestCardSuite_Reconcile_ConsumesStock() {
 	ctx := context.Background()
 	actor := Actor{ID: s.userID, IsAdmin: true}
-	wip := s.columnID("В работе")
+	wip := s.columnID("В ремонте")
 	taskID := s.newTaskIn("Заказ склад", wip)
 
 	svcID := s.newService("0")
@@ -323,7 +323,7 @@ func (s *CardSuite) TestCardSuite_Reconcile_ConsumesStock() {
 func (s *CardSuite) TestCardSuite_Reconcile_NotConsumes_NoMovements() {
 	ctx := context.Background()
 	actor := Actor{ID: s.userID, IsAdmin: true}
-	taskID := s.newTaskIn("Заказ не-склад", s.colID) // "Новые" — consumes_stock=false
+	taskID := s.newTaskIn("Заказ не-склад", s.colID) // "Приёмка" — consumes_stock=false
 
 	svcID := s.newService("0")
 	productID := s.newProduct("10", "1")
@@ -346,7 +346,7 @@ func (s *CardSuite) TestCardSuite_StockInvariant() {
 	ctx := context.Background()
 	actor := Actor{ID: s.userID, IsAdmin: true}
 	newCol := s.colID
-	wip := s.columnID("В работе")
+	wip := s.columnID("В ремонте")
 	taskID := s.newTaskIn("Заказ инвариант", newCol)
 
 	svcID := s.newService("0")
@@ -372,7 +372,7 @@ func (s *CardSuite) TestCardSuite_StockInvariant() {
 func (s *CardSuite) TestCardSuite_Concurrency_UpdateSubtaskProduct() {
 	ctx := context.Background()
 	actor := Actor{ID: s.userID, IsAdmin: true}
-	wip := s.columnID("В работе")
+	wip := s.columnID("В ремонте")
 	taskID := s.newTaskIn("Заказ IT-010", wip)
 
 	svcID := s.newService("0")
@@ -413,7 +413,7 @@ func (s *CardSuite) TestCardSuite_Concurrency_MoveVsUpdate() {
 	ctx := context.Background()
 	actor := Actor{ID: s.userID, IsAdmin: true}
 	newCol := s.colID
-	wip := s.columnID("В работе")
+	wip := s.columnID("В ремонте")
 
 	svcID := s.newService("0")
 	productID := s.newProduct("500", "1")
@@ -446,7 +446,7 @@ func (s *CardSuite) TestCardSuite_Concurrency_MoveVsUpdate() {
 	}()
 	go func() {
 		defer wg.Done()
-		_, errToggle = s.colSvc.Update(ctx, wip, s.userID, ColumnInput{Name: "В работе", Color: "#2563EB", IsFinal: false, ConsumesStock: true})
+		_, errToggle = s.colSvc.Update(ctx, wip, s.userID, ColumnInput{Name: "В ремонте", Color: "#2563EB", IsFinal: false, ConsumesStock: true})
 	}()
 	wg.Wait()
 
@@ -472,7 +472,7 @@ func (s *CardSuite) TestCardSuite_Concurrency_MoveVsUpdate() {
 func (s *CardSuite) TestCardSuite_Concurrency_DeleteVsUpdate() {
 	ctx := context.Background()
 	actor := Actor{ID: s.userID, IsAdmin: true}
-	wip := s.columnID("В работе")
+	wip := s.columnID("В ремонте")
 	taskID := s.newTaskIn("Заказ IT-012", wip)
 
 	svcID := s.newService("0")

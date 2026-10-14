@@ -22,7 +22,7 @@ const pdf = (name: string) => ({ name, mimeType: 'application/pdf', buffer: PDF_
 async function setupTask(adminApi: AdminApi, uniq: (s: string) => string, label: string) {
   const client = await adminApi.createClient({ company_name: uniq(`AT клиент ${label}`), phones: [{ phone: '9990000700', note: '' }] });
   const columns = (await adminApi.listColumns()).items;
-  const task = await adminApi.createTask({ title: uniq(`${label} заказ`), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+  const task = await adminApi.createTask({ title: uniq(`${label} заказ`), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
   return { client, task };
 }
 
@@ -197,7 +197,7 @@ test.describe('AT: удаление и права', () => {
     await expect(card.attachmentsLocked).toBeVisible();
     await expect(card.attachmentUpload).toHaveCount(0);
 
-    await card.fillHeader({ title: uniq('AT-006 заказ'), client: client.company_name, column: columnByName(columns, 'Новые').name });
+    await card.fillHeader({ title: uniq('AT-006 заказ'), client: client.company_name, column: columnByName(columns, 'Приёмка').name });
     await card.save();
     await expect(card.title).toContainText('#');
     const id = Number((await card.title.textContent())!.replace(/\D+/g, ''));

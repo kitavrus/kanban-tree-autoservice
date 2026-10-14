@@ -32,7 +32,7 @@ test.describe('BD: экран «Остатки»', () => {
     const willLowBefore = (await adminApi.getStockSummary()).will_low_count;
 
     const { client, columns } = await setup(adminApi, uniq, 'BD-015');
-    const from = columnByName(columns, 'Новые'); // не списывающая — товар считается "в новых заказах" (pending)
+    const from = columnByName(columns, 'Приёмка'); // не списывающая — товар считается "в новых заказах" (pending)
 
     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-015 категория товаров') });
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-015 товар'), stock: 10, min_stock: 5, box: 'A1', place: 'Стеллаж 1' });
@@ -109,8 +109,8 @@ test.describe('BD: бейдж «Остатков» живой', () => {
     insertSubtask,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-016');
-    const from = columnByName(columns, 'Новые');
-    const work = columnByName(columns, 'В работе'); // consumes_stock=true (сид D32)
+    const from = columnByName(columns, 'Приёмка');
+    const work = columnByName(columns, 'В ремонте'); // consumes_stock=true (сид D32)
 
     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-016 категория товаров') });
     const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-016 товар'), stock: 6, min_stock: 5 });

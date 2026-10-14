@@ -253,21 +253,24 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Columns_SeedPresent() {
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var list columnListDTO
 	s.Require().NoError(json.Unmarshal(raw, &list))
-	s.Require().GreaterOrEqual(len(list.Items), 5)
+	s.Require().GreaterOrEqual(len(list.Items), 7)
 
 	byName := map[string]columnDTO{}
 	for _, c := range list.Items {
 		byName[c.Name] = c
 	}
-	for _, name := range []string{"Новые", "Согласование", "В работе", "Ждёт запчасти", "Готово"} {
+	for _, name := range []string{"Приёмка", "Диагностика", "Согласование", "Ждёт запчасти", "В ремонте", "Готов к выдаче", "Выдан"} {
 		_, ok := byName[name]
 		s.True(ok, "колонка %q должна присутствовать (D32)", name)
 	}
-	s.True(byName["Готово"].IsFinal)
-	s.True(byName["Готово"].ConsumesStock)
-	s.False(byName["Новые"].IsFinal)
-	s.False(byName["Новые"].ConsumesStock)
-	s.True(byName["В работе"].ConsumesStock)
+	s.True(byName["Выдан"].IsFinal)
+	s.True(byName["Выдан"].ConsumesStock)
+	s.False(byName["Приёмка"].IsFinal)
+	s.False(byName["Приёмка"].ConsumesStock)
+	s.True(byName["В ремонте"].ConsumesStock)
+	s.False(byName["Диагностика"].ConsumesStock)
+	s.True(byName["Готов к выдаче"].ConsumesStock)
+	s.False(byName["Готов к выдаче"].IsFinal)
 
 	// порядок по position.
 	prev := -1
@@ -280,7 +283,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Columns_SeedPresent() {
 // LV-002.
 func (s *BoardLiveSuite) TestBoardLiveSuite_CreateTask() {
 	c := s.newClient("Клиент-Создание-Заказа")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 
 	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
 		"title": "Первый заказ", "client_id": c, "column_id": col,
@@ -309,7 +312,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_CreateTask() {
 // LV-003.
 func (s *BoardLiveSuite) TestBoardLiveSuite_UpdateTask_VersionIncrements() {
 	c := s.newClient("Клиент-Правка-Заказа")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t := s.newTask(c, col)
 
 	st, m, raw := s.mutate(s.admin, http.MethodPut, "/api/v1/tasks/"+itoa(t.ID), taskCard(t, map[string]any{"title": "Правка"}))
@@ -321,7 +324,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_UpdateTask_VersionIncrements() {
 // LV-004.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_BetweenColumns() {
 	c := s.newClient("Клиент-Move-Между-Колонками")
-	newCol, soglCol := s.columnID("Новые"), s.columnID("Согласование")
+	newCol, soglCol := s.columnID("Приёмка"), s.columnID("Согласование")
 	t := s.newTask(c, newCol)
 
 	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks/"+itoa(t.ID)+"/move", map[string]any{"column_id": soglCol})
@@ -337,7 +340,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_BetweenColumns() {
 // LV-005.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_WithinColumn_PrevNext() {
 	c := s.newClient("Клиент-Move-Внутри-Колонки")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t1 := s.newTask(c, col)
 	t2 := s.newTask(c, col)
 	t3 := s.newTask(c, col)
@@ -361,7 +364,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_WithinColumn_PrevNext() {
 // LV-036.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ForeignNeighborIgnored() {
 	c := s.newClient("Клиент-Move-Чужой-Сосед")
-	colA, colB := s.columnID("Новые"), s.columnID("Согласование")
+	colA, colB := s.columnID("Приёмка"), s.columnID("Согласование")
 	t := s.newTask(c, colA)
 	foreign := s.newTask(c, colB) // сосед из другой колонки
 
@@ -385,7 +388,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ForeignNeighborIgnored() {
 // LV-006/AC-004.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ConsumesStock() {
 	c := s.newClient("Клиент-Списание")
-	newCol, wipCol, waitCol := s.columnID("Новые"), s.columnID("В работе"), s.columnID("Ждёт запчасти")
+	newCol, wipCol, waitCol := s.columnID("Приёмка"), s.columnID("В ремонте"), s.columnID("Ждёт запчасти")
 	productID := s.createProduct("10", "1")
 	t := s.newTask(c, newCol)
 	_, svcID := s.newServiceWithCategory()
@@ -408,7 +411,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ConsumesStock() {
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.Equal("10.000", s.productStock(productID))
 
-	// «В работе»→«Ждёт запчасти» (обе consumes) — 0 новых движений.
+	// «В ремонте»→«Ждёт запчасти» (обе consumes) — 0 новых движений.
 	st, _, raw = s.mutate(s.admin, http.MethodPost, "/api/v1/tasks/"+itoa(t.ID)+"/move", map[string]any{"column_id": wipCol})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	before := 0
@@ -426,7 +429,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ConsumesStock() {
 // LV-007/AC-005.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_NegativeStockWarning() {
 	c := s.newClient("Клиент-Недостача")
-	newCol, wipCol := s.columnID("Новые"), s.columnID("В работе")
+	newCol, wipCol := s.columnID("Приёмка"), s.columnID("В ремонте")
 	productID := s.createProduct("1", "5")
 	t := s.newTask(c, newCol)
 	_, svcID := s.newServiceWithCategory()
@@ -441,7 +444,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_NegativeStockWarning() {
 	assertStockInvariant(s.T(), s.Pool)
 }
 
-// LV-008/AC-007. Собственная колонка (не сидовая «В работе») — тест мутирует
+// LV-008/AC-007. Собственная колонка (не сидовая «В ремонте») — тест мутирует
 // consumes_stock туда-обратно и не должен влиять на общий стенд остальных тестов сьюты.
 func (s *BoardLiveSuite) TestBoardLiveSuite_ColumnToggleConsumes_RecalcAll() {
 	st, col, raw := s.createColumn(s.admin, map[string]any{
@@ -534,7 +537,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_ColumnsCRUD() {
 // LV-010/AC-012.
 func (s *BoardLiveSuite) TestBoardLiveSuite_DeleteTask_ReturnsStock() {
 	c := s.newClient("Клиент-Удаление-Заказа")
-	newCol, wipCol := s.columnID("Новые"), s.columnID("В работе")
+	newCol, wipCol := s.columnID("Приёмка"), s.columnID("В ремонте")
 	productID := s.createProduct("10", "1")
 	t := s.newTask(c, newCol)
 	_, svcID := s.newServiceWithCategory()
@@ -573,7 +576,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_DeleteTask_ReturnsStock() {
 // LV-011/AC-011.
 func (s *BoardLiveSuite) TestBoardLiveSuite_AdminTogglesPaid() {
 	c := s.newClient("Клиент-Оплата")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t := s.newTask(c, col)
 	s.False(t.IsPaid)
 	s.Nil(t.PaidAt)
@@ -595,7 +598,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_AdminTogglesPaid() {
 func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_Combination() {
 	c1 := s.newClient("Фильтр-Клиент-Раз")
 	c2 := s.newClient("Фильтр-Клиент-Два")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t1 := s.newTask(c1, col)
 	s.newTask(c2, col)
 
@@ -632,8 +635,8 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_Combination() {
 func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 	ctx := context.Background()
 	client := s.newClient("Поиск-Клиент")
-	target := s.newTask(client, s.columnID("Новые"))
-	other := s.newTask(client, s.columnID("Новые"))
+	target := s.newTask(client, s.columnID("Приёмка"))
+	other := s.newTask(client, s.columnID("Приёмка"))
 
 	// Описание хранится экранированным (ADR-006) — ищем по исходному тексту с & и кавычкой.
 	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET description_html = $2 WHERE id = $1`,
@@ -685,8 +688,8 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchByPlateNumber() {
 	ctx := context.Background()
 	client := s.newClient("Госномер-Поиск-Клиент")
-	target := s.newTask(client, s.columnID("Новые"))
-	other := s.newTask(client, s.columnID("Новые"))
+	target := s.newTask(client, s.columnID("Приёмка"))
+	other := s.newTask(client, s.columnID("Приёмка"))
 
 	var typeID, equipmentID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
@@ -738,7 +741,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_AssigneeDefaultByRole() {
 		`SELECT id FROM users WHERE login = 'board-exec-assignee'`).Scan(&execID))
 
 	c := s.newClient("Клиент-Ответственный")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
 		"title": "Мой заказ", "client_id": c, "column_id": col, "assignee_id": execID,
 	})
@@ -773,7 +776,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_AssigneeDefaultByRole() {
 // LV-022/AC-013.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_LimitOffsetTotal() {
 	c := s.newClient("Клиент-Лимит-Оффсет")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	for i := 0; i < 3; i++ {
 		s.newTask(c, col)
 	}
@@ -828,7 +831,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Auth_NoSession401() {
 // LV-031.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Auth_NoCSRF403() {
 	c := s.newClient("Клиент-Без-CSRF")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	resp := s.admin.Request(http.MethodPost, "/api/v1/tasks",
 		map[string]any{"title": "x", "client_id": c, "column_id": col}, map[string]string{"X-Csrf-Token": ""})
 	defer resp.Body.Close()
@@ -842,7 +845,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_GarbageBody400() {
 		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
 	}
 	c := s.newClient("Клиент-Мусор-Move")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t := s.newTask(c, col)
 	for _, body := range []string{`{"prev_id":"x"}`, `{"stock":"5"}`, `[]`} {
 		st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks/"+itoa(t.ID)+"/move", body)
@@ -853,7 +856,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_GarbageBody400() {
 // LV-033/AC-009.
 func (s *BoardLiveSuite) TestBoardLiveSuite_TaskValidation400() {
 	c := s.newClient("Клиент-Валидация-Заказа")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 
 	st, _, raw := s.createTask(s.admin, map[string]any{"client_id": c, "column_id": col})
 	s.Equal(http.StatusBadRequest, st, string(raw))
@@ -953,8 +956,8 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_ColumnsForbidden() {
 	exec := s.newExecutor("board-exec-columns")
 	for _, cs := range []struct{ method, path string }{
 		{http.MethodPost, "/api/v1/columns"},
-		{http.MethodPut, "/api/v1/columns/" + s.columnID("Новые")},
-		{http.MethodDelete, "/api/v1/columns/" + s.columnID("Новые")},
+		{http.MethodPut, "/api/v1/columns/" + s.columnID("Приёмка")},
+		{http.MethodDelete, "/api/v1/columns/" + s.columnID("Приёмка")},
 	} {
 		st, raw := exec.Do(cs.method, cs.path, map[string]any{"name": "x", "color": "#112233"})
 		s.Equal(http.StatusForbidden, st, "%s %s → %s", cs.method, cs.path, raw)
@@ -968,7 +971,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_ColumnsForbidden() {
 func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_DeleteTaskForbidden() {
 	exec := s.newExecutor("board-exec-delete")
 	c := s.newClient("Клиент-Исполнитель-Удаление")
-	t := s.newTask(c, s.columnID("Новые"))
+	t := s.newTask(c, s.columnID("Приёмка"))
 
 	st, raw := exec.Do(http.MethodDelete, "/api/v1/tasks/"+itoa(t.ID), map[string]any{"reason": "Создан по ошибке"})
 	s.Equal(http.StatusForbidden, st, string(raw))
@@ -982,7 +985,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_DeleteTaskForbidden() {
 // служебной уборки нет: адрес не зарегистрирован, 404 и для существующего заказа; заказ цел.
 func (s *BoardLiveSuite) TestBoardLiveSuite_PurgeDisabledByDefault() {
 	c := s.newClient("Клиент-Уборка-Выключена")
-	t := s.newTask(c, s.columnID("Новые"))
+	t := s.newTask(c, s.columnID("Приёмка"))
 
 	for _, b := range []*testutil.Browser{s.admin, s.newExecutor("board-exec-purge")} {
 		for _, path := range []string{"/api/v1/test/purge/tasks/" + itoa(t.ID)} {
@@ -998,7 +1001,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_PurgeDisabledByDefault() {
 func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_PaidAdminOnly() {
 	exec := s.newExecutor("board-exec-paid")
 	c := s.newClient("Клиент-Исполнитель-Оплата")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 
 	st, _, raw := s.createTask(exec, map[string]any{"title": "x", "client_id": c, "column_id": col, "is_paid": true})
 	s.Equal(http.StatusForbidden, st, string(raw))
@@ -1018,7 +1021,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_PaidAdminOnly() {
 func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_TaskWriteAllowed() {
 	exec := s.newExecutor("board-exec-write")
 	c := s.newClient("Клиент-Исполнитель-Пишет")
-	col1, col2 := s.columnID("Новые"), s.columnID("Согласование")
+	col1, col2 := s.columnID("Приёмка"), s.columnID("Согласование")
 
 	st, m, raw := s.mutate(exec, http.MethodPost, "/api/v1/tasks", map[string]any{"title": "x", "client_id": c, "column_id": col1})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
@@ -1035,7 +1038,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_TaskWriteAllowed() {
 // LV-050/AC-003.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ToFinal_SubtasksNotDone() {
 	c := s.newClient("Клиент-Финал-Незавершено")
-	col, done := s.columnID("Новые"), s.columnID("Готово")
+	col, done := s.columnID("Приёмка"), s.columnID("Выдан")
 	t := s.newTask(c, col)
 	_, svcID := s.newServiceWithCategory()
 	s.addSubtask(t.ID, svcID, "in_progress")
@@ -1056,7 +1059,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ToFinal_SubtasksNotDone() {
 // LV-051/AC-003.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Update_ToFinal_SubtasksNotDone() {
 	c := s.newClient("Клиент-Финал-PUT-Незавершено")
-	col, done := s.columnID("Новые"), s.columnID("Готово")
+	col, done := s.columnID("Приёмка"), s.columnID("Выдан")
 	t := s.newTask(c, col)
 	_, svcID := s.newServiceWithCategory()
 	s.addSubtask(t.ID, svcID, "new")
@@ -1069,7 +1072,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Update_ToFinal_SubtasksNotDone() {
 // LV-052/AC-003.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ToFinal_AllDone() {
 	c := s.newClient("Клиент-Финал-Готово")
-	col, done := s.columnID("Новые"), s.columnID("Готово")
+	col, done := s.columnID("Приёмка"), s.columnID("Выдан")
 	t := s.newTask(c, col)
 	_, svcID := s.newServiceWithCategory()
 	s.addSubtask(t.ID, svcID, "done")
@@ -1082,7 +1085,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ToFinal_AllDone() {
 // LV-053/AC-006.
 func (s *BoardLiveSuite) TestBoardLiveSuite_DeleteColumn_NotEmpty() {
 	c := s.newClient("Клиент-Колонка-Не-Пуста")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	s.newTask(c, col)
 
 	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col, map[string]any{"reason": "Создана по ошибке"})
@@ -1231,7 +1234,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Update_ToFinal_ColumnHasOpenSubtasks
 // LV-055/AC-010.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Update_StaleVersion() {
 	c := s.newClient("Клиент-Устаревшая-Версия")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t := s.newTask(c, col)
 
 	st, m, raw := s.mutate(s.admin, http.MethodPut, "/api/v1/tasks/"+itoa(t.ID), taskCard(t, map[string]any{"title": "Первая правка"}))
@@ -1255,7 +1258,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Update_StaleVersion() {
 func (s *BoardLiveSuite) TestBoardLiveSuite_Update_StaleVersion_PaidChanged_VersionConflictWins() {
 	exec := s.newExecutor("board-exec-stale-paid")
 	c := s.newClient("Клиент-Устаревшая-Версия-Оплата")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t := s.newTask(c, col) // t.Version == 1, is_paid == false
 
 	// admin помечает оплату — version растёт до 2, is_paid → true.
@@ -1279,7 +1282,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Update_StaleVersion_PaidChanged_Vers
 // (LWW), итог = одна из целей, инвариант склада.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Race_ConcurrentMoveDifferentColumns() {
 	c := s.newClient("Клиент-Race-Move-Разные-Колонки")
-	colA, colB := s.columnID("Новые"), s.columnID("Согласование")
+	colA, colB := s.columnID("Приёмка"), s.columnID("Согласование")
 	t := s.newTask(c, colA)
 
 	const n = 20
@@ -1320,7 +1323,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Race_ConcurrentMoveDifferentColumns(
 // бы получить 200; это не баг, а описанное поведение LWW для Move).
 func (s *BoardLiveSuite) TestBoardLiveSuite_Race_FormVsMove() {
 	c := s.newClient("Клиент-Race-Form-Vs-Move")
-	col1, col2 := s.columnID("Новые"), s.columnID("Согласование")
+	col1, col2 := s.columnID("Приёмка"), s.columnID("Согласование")
 	t := s.newTask(c, col1)
 
 	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks/"+itoa(t.ID)+"/move", map[string]any{"column_id": col2})
@@ -1337,7 +1340,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Race_FormVsMove() {
 // склада, task_stock согласован с итоговой колонкой.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Race_ToggleVsMove() {
 	c := s.newClient("Клиент-Race-Toggle-Vs-Move")
-	newCol, wipCol := s.columnID("Новые"), s.columnID("В работе")
+	newCol, wipCol := s.columnID("Приёмка"), s.columnID("В ремонте")
 	productID := s.createProduct("50", "1")
 	t := s.newTask(c, newCol)
 	_, svcID := s.newServiceWithCategory()
@@ -1355,7 +1358,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Race_ToggleVsMove() {
 	go func() {
 		defer wg.Done()
 		st, _ := s.admin.Do(http.MethodPut, "/api/v1/columns/"+wipCol, map[string]any{
-			"name": "В работе", "color": "#2563EB", "is_final": false, "consumes_stock": true,
+			"name": "В ремонте", "color": "#2563EB", "is_final": false, "consumes_stock": true,
 		})
 		toggleStatus = st
 	}()
@@ -1371,7 +1374,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Race_ToggleVsMove() {
 // LV-063: параллельные move двух заказов с общим товаром — stock согласован, без потерь.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Race_ConcurrentMoveSharedProduct() {
 	c := s.newClient("Клиент-Race-Общий-Товар")
-	newCol, wipCol := s.columnID("Новые"), s.columnID("В работе")
+	newCol, wipCol := s.columnID("Приёмка"), s.columnID("В ремонте")
 	productID := s.createProduct("100", "1")
 	_, svcID := s.newServiceWithCategory()
 
@@ -1409,7 +1412,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Race_ConcurrentMoveSharedProduct() {
 // чтобы дойти до scale=16; 70 — с запасом.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Race_PositionRebalance50Inserts() {
 	c := s.newClient("Клиент-Race-Ребалансировка")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 	t1 := s.newTask(c, col)
 	t2 := s.newTask(c, col)
 
@@ -1451,7 +1454,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Race_PositionRebalance50Inserts() {
 // clients.TestRace_TaskCreateWaitsForClientDelete.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Race_DeleteClientVsCreateTask() {
 	c := s.newClient("Клиент-Race-Удаление-Vs-Создание")
-	col := s.columnID("Новые")
+	col := s.columnID("Приёмка")
 
 	var wg sync.WaitGroup
 	var deleteStatus, createStatus int
@@ -1503,7 +1506,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Enums_SubtaskStatusMatchesCheckConst
 // требует done-статуса всех услуг.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ToFinal_WithAPISubtask() {
 	c := s.newClient("Клиент-Финал-API-Услуга")
-	col, done := s.columnID("Новые"), s.columnID("Готово")
+	col, done := s.columnID("Приёмка"), s.columnID("Выдан")
 	t := s.newTask(c, col)
 	_, svcID := s.newServiceWithCategory()
 
