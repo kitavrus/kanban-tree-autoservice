@@ -91,11 +91,9 @@ func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 		`INSERT INTO subtasks (task_id, service_id, status, position, price) VALUES ($1, $2, 'new', 1, 500) RETURNING id`,
 		taskID, svcID).Scan(&subtaskID))
 
-	prodCatID := s.newProductCategory(ctx)
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, 'Термопаста', 'шт', 100, 10, 1) RETURNING id`,
-		prodCatID).Scan(&productID))
+		`INSERT INTO products (name, unit, price, stock, min_stock) VALUES ('Термопаста', 'шт', 100, 10, 1) RETURNING id`).Scan(&productID))
 	_, err := s.Pool.Exec(ctx,
 		`INSERT INTO subtask_products (subtask_id, product_id, qty, price) VALUES ($1, $2, 2, 100)`, subtaskID, productID)
 	s.Require().NoError(err)
@@ -104,11 +102,10 @@ func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 		`INSERT INTO subtask_logs (subtask_id, user_id, text) VALUES ($1, $2, 'Осмотрели')`, subtaskID, s.userID)
 	s.Require().NoError(err)
 
-	typeID := s.newEquipmentType(ctx)
 	var equipmentID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, type_id, brand, model, serial) VALUES ($1, $2, 'Brand', 'Model-1', 'SN-1') RETURNING id`,
-		s.clientID, typeID).Scan(&equipmentID))
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'А001АА 77') RETURNING id`,
+		s.clientID).Scan(&equipmentID))
 	_, err = s.Pool.Exec(ctx,
 		`INSERT INTO task_equipment (task_id, equipment_id, completeness, condition) VALUES ($1, $2, 'Полный', 'Хорошее')`,
 		taskID, equipmentID)
@@ -130,7 +127,7 @@ func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 	s.True(sub.Logs[0].CanEdit, "автор == актор")
 
 	s.Require().Len(card.Equipment, 1)
-	s.Equal("Model-1", card.Equipment[0].Model)
+	s.Equal("А001АА 77", card.Equipment[0].PlateNumber)
 	s.Empty(card.Equipment[0].History, "нет других заказов с этой единицей")
 
 	s.Require().Len(card.Stock, 1)
@@ -242,11 +239,10 @@ func (s *CardSuite) newService(price string) string {
 
 func (s *CardSuite) newProduct(stock, minStock string) string {
 	ctx := context.Background()
-	catID := s.newProductCategory(ctx)
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, 'Товар', 'шт', 10, $2::numeric, $3::numeric) RETURNING id`,
-		catID, stock, minStock).Scan(&id))
+		`INSERT INTO products (name, unit, price, stock, min_stock) VALUES ('Товар', 'шт', 10, $1::numeric, $2::numeric) RETURNING id`,
+		stock, minStock).Scan(&id))
 	return id
 }
 
@@ -587,19 +583,5 @@ func (s *CardSuite) newServiceCategory(ctx context.Context) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`INSERT INTO catalog_categories (kind, name) VALUES ('service', 'CardSuite Svc ' || gen_random_uuid()) RETURNING id`).Scan(&id))
-	return id
-}
-
-func (s *CardSuite) newProductCategory(ctx context.Context) string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'CardSuite Prod ' || gen_random_uuid()) RETURNING id`).Scan(&id))
-	return id
-}
-
-func (s *CardSuite) newEquipmentType(ctx context.Context) string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment_types (name) VALUES ('CardSuite Type ' || gen_random_uuid()) RETURNING id`).Scan(&id))
 	return id
 }

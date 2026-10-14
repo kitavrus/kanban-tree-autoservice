@@ -2,14 +2,14 @@ package softdelete
 
 import "testing"
 
-// Подзаголовок строки удалённой категории (soft-delete-catalog §6.9): вид product — «товары»,
-// service — «услуги».
-func TestCategoryKindSubtitle(t *testing.T) {
-	if got := CategoryKindSubtitle("product"); got != "товары" {
-		t.Fatalf("product: ожидалось «товары», получено %q", got)
+// Подзаголовок строки удалённой категории (soft-delete-catalog §6.9): категории только услуг —
+// всегда «услуги»; подзаголовок удалённого товара — артикул.
+func TestCatalogSubtitles(t *testing.T) {
+	if got := NewCatalogCategoriesSource(nil).subtitleSQL; got != "'услуги'" {
+		t.Fatalf("категория: ожидалось «услуги», получено %q", got)
 	}
-	if got := CategoryKindSubtitle("service"); got != "услуги" {
-		t.Fatalf("service: ожидалось «услуги», получено %q", got)
+	if got := NewProductsSource(nil).subtitleSQL; got != "r.sku" {
+		t.Fatalf("товар: подзаголовок — артикул, получено %q", got)
 	}
 }
 
@@ -24,7 +24,6 @@ func TestCatalogSourcesKindAndTable(t *testing.T) {
 		{NewProductsSource(nil), KindProducts, "products"},
 		{NewServicesSource(nil), KindServices, "services"},
 		{NewCatalogCategoriesSource(nil), KindCatalogCategories, "catalog_categories"},
-		{NewEquipmentTypesSource(nil), KindEquipmentTypes, "equipment_types"},
 		// часть 6 (soft-delete-suppliers): поставщики — та же форма строки.
 		{NewSuppliersSource(nil), KindSuppliers, "suppliers"},
 	}

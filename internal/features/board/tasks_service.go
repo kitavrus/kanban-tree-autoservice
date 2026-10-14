@@ -189,7 +189,7 @@ func (s *TaskService) resolveCar(ctx context.Context, tx pgx.Tx, in TaskCreateRe
 			return "", "", "", field("equipment_id", msgForeignClient)
 		}
 		if title == "" {
-			title = carTitle(found.Brand, found.Model, found.PlateNumber)
+			title = carTitle(found.PlateNumber)
 		}
 		return found.ClientID, title, car.equipmentID, nil
 	}
@@ -204,15 +204,11 @@ func (s *TaskService) resolveCar(ctx context.Context, tx pgx.Tx, in TaskCreateRe
 	switch {
 	case errors.Is(err, clients.ErrOrderClientGone):
 		return "", "", "", field("client_id", msgNotFound)
-	case errors.Is(err, clients.ErrOrderTypeNotFound):
-		return "", "", "", field("new_equipment.type_id", msgNotFound)
-	case errors.Is(err, clients.ErrOrderTypeArchived):
-		return "", "", "", field("new_equipment.type_id", msgArchived)
 	case err != nil:
 		return "", "", "", err
 	}
 	if title == "" {
-		title = carTitle(car.newEquipment.Brand, car.newEquipment.Model, car.newEquipment.PlateNumber)
+		title = carTitle(car.newEquipment.PlateNumber)
 	}
 	return clientID, title, equipmentID, nil
 }

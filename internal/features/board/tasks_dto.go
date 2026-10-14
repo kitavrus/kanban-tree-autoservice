@@ -95,11 +95,11 @@ type TaskHeader struct {
 //   - «по автомобилю» (диалог «Новый заказ»): plate_number обязателен и ровно одно из
 //     equipment_id (найденный автомобиль — клиент берётся его владелец, client_id можно не
 //     передавать) либо new_equipment (новый автомобиль клиента client_id либо нового клиента
-//     new_client — только admin). title пуст → «{Марка} {Модель} {ГОСНОМЕР}». Автомобиль
+//     new_client — только admin). title пуст → госномер. Автомобиль
 //     сразу добавляется в заказ (task_equipment).
 //   - без автомобиля (служебные сценарии, фикстуры): title и client_id обязательны, как раньше.
 //
-// Ошибки полей — details.fields[] с путями new_equipment.model, new_client.phones[0].phone и т.п.
+// Ошибки полей — details.fields[] с путями new_client.phones[0].phone и т.п.
 type TaskCreateRequest struct {
 	TaskHeader
 	PlateNumber  string            `json:"plate_number"`
@@ -108,14 +108,9 @@ type TaskCreateRequest struct {
 	NewClient    *TaskNewClient    `json:"new_client"`
 }
 
-// TaskNewEquipment — новый автомобиль (госномер — plate_number запроса). Правила полей —
-// как у POST /api/v1/clients/:id/equipment: type_id (активный тип) и model обязательны.
-type TaskNewEquipment struct {
-	TypeID string `json:"type_id"`
-	Brand  string `json:"brand"`
-	Model  string `json:"model"`
-	Serial string `json:"serial"` // VIN
-}
+// TaskNewEquipment — признак «новый автомобиль» (`new_equipment: {}`): автомобиль — только
+// госномер, он берётся из plate_number запроса.
+type TaskNewEquipment struct{}
 
 // TaskNewClient — новый клиент-владелец нового автомобиля. Правила — как у POST
 // /api/v1/clients: company_name (ФИО) и хотя бы один телефон обязательны.

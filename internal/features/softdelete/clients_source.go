@@ -89,21 +89,8 @@ func NewEquipmentSource(pool *pgxpool.Pool) *EquipmentSource { return &Equipment
 // DeletedWithClient — значение deleted_with у единицы, ушедшей вместе с клиентом (DS-015).
 const DeletedWithClient = "client"
 
-// EquipmentTitle — заголовок строки удалённой единицы: «тип марка модель» (§6.5); пустая марка
-// пропускается. Непустой госномер дописывается через « · » («Легковой Lada Vesta · А123ВС 777»).
-func EquipmentTitle(typeName, brand, model, plateNumber string) string {
-	parts := make([]string, 0, 3)
-	for _, p := range []string{typeName, brand, model} {
-		if p = strings.TrimSpace(p); p != "" {
-			parts = append(parts, p)
-		}
-	}
-	title := strings.Join(parts, " ")
-	if plate := strings.TrimSpace(plateNumber); plate != "" {
-		title += " · " + plate
-	}
-	return title
-}
+// EquipmentTitle — заголовок строки удалённого автомобиля: госномер (§6.5).
+func EquipmentTitle(plateNumber string) string { return strings.TrimSpace(plateNumber) }
 
 // EquipmentDeletedWith — deleted_with строки единицы: "client" у ушедшей вместе с клиентом,
 // иначе nil (JSON null).
@@ -115,21 +102,15 @@ func EquipmentDeletedWith(withClient bool) *string {
 	return &v
 }
 
-// equipmentWhereSQL — фильтр вкладки «Оборудование»: $1 — строка поиска (тип, марка, модель,
-// серийный номер, госномер — без пробелов/дефисов с обеих сторон, название клиента, причина; уже экранирована), $2/$3 — период, $4 — кто
-// удалил. Клиент и тип соединяются без условия «не удалён»: клиент единицы сам может быть в
+// equipmentWhereSQL — фильтр вкладки «Оборудование»: $1 — строка поиска (госномер — без пробелов/дефисов с обеих сторон, название клиента, причина; уже экранирована), $2/$3 — период, $4 — кто
+// удалил. Клиент соединяется без условия «не удалён»: клиент единицы сам может быть в
 // удалённых. Частичный индекс equipment_deleted_at_idx покрывает условие и сортировку.
 const equipmentWhereSQL = `
 FROM equipment e
-JOIN equipment_types t ON t.id = e.type_id
 JOIN clients c         ON c.id = e.client_id
 JOIN users u           ON u.id = e.deleted_by
 WHERE e.deleted_at IS NOT NULL
-  AND ($1::text IS NULL OR t.name ILIKE '%' || $1 || '%' ESCAPE '\'
-       OR e.brand ILIKE '%' || $1 || '%' ESCAPE '\'
-       OR e.model ILIKE '%' || $1 || '%' ESCAPE '\'
-       OR e.serial ILIKE '%' || $1 || '%' ESCAPE '\'
-       OR replace(replace(e.plate_number, ' ', ''), '-', '')
+  AND ($1::text IS NULL OR replace(replace(e.plate_number, ' ', ''), '-', '')
           ILIKE '%' || replace(replace($1, ' ', ''), '-', '') || '%' ESCAPE '\'
        OR c.company_name ILIKE '%' || $1 || '%' ESCAPE '\'
        OR e.delete_reason ILIKE '%' || $1 || '%' ESCAPE '\')
@@ -137,7 +118,7 @@ WHERE e.deleted_at IS NOT NULL
   AND ($3::timestamptz IS NULL OR e.deleted_at < $3)
   AND ($4::uuid IS NULL OR e.deleted_by = $4)`
 
-// List — строка единицы: title — «тип марка модель», subtitle — название клиента,
+// List — строка единицы: title — госномер, subtitle — название клиента,
 // deleted_with — "client" у ушедших вместе с клиентом (§6.5, DS-015).
 func (s *EquipmentSource) List(ctx context.Context, f Filter) ([]Item, int, error) {
 	args := filterArgs(f)
@@ -148,7 +129,7 @@ func (s *EquipmentSource) List(ctx context.Context, f Filter) ([]Item, int, erro
 	}
 
 	rows, err := s.pool.Query(ctx, `
-SELECT e.id::text, t.name, e.brand, e.model, e.plate_number, c.company_name, e.deleted_with_client,
+SELECT e.id::text, e.plate_number, c.company_name, e.deleted_with_client,
        e.deleted_at, u.id::text, coalesce(nullif(u.name, ''), u.login), e.delete_reason`+
 		equipmentWhereSQL+`
 ORDER BY e.deleted_at DESC, e.id
@@ -160,14 +141,14 @@ LIMIT $5 OFFSET $6`, append(args, f.Limit, f.Offset)...)
 
 	out := []Item{}
 	for rows.Next() {
-		var typeName, brand, model, plate string
+		var plate string
 		var withClient bool
 		it := Item{Kind: string(KindEquipment)}
-		if err := rows.Scan(&it.ID, &typeName, &brand, &model, &plate, &it.Subtitle, &withClient,
+		if err := rows.Scan(&it.ID, &plate, &it.Subtitle, &withClient,
 			&it.DeletedAt, &it.DeletedBy.ID, &it.DeletedBy.Name, &it.DeleteReason); err != nil {
 			return nil, 0, err
 		}
-		it.Title = EquipmentTitle(typeName, brand, model, plate)
+		it.Title = EquipmentTitle(plate)
 		it.DeletedWith = EquipmentDeletedWith(withClient)
 		it.DeletedAt = it.DeletedAt.UTC()
 		out = append(out, it)

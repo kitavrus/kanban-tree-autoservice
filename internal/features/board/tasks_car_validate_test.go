@@ -17,7 +17,7 @@ func carReq(mut func(*TaskCreateRequest)) TaskCreateRequest {
 	in := TaskCreateRequest{
 		TaskHeader:   TaskHeader{ColumnID: validUUID, ClientID: validUUID},
 		PlateNumber:  " о718мр  199 ",
-		NewEquipment: &TaskNewEquipment{TypeID: validUUID, Brand: "Hyundai", Model: "Solaris"},
+		NewEquipment: &TaskNewEquipment{},
 	}
 	if mut != nil {
 		mut(&in)
@@ -68,14 +68,6 @@ func TestTaskCreateCar_PlateBadFormat(t *testing.T) {
 	assert.NotContains(t, got, "new_equipment.plate_number", "госномер — только поле верхнего уровня")
 }
 
-func TestTaskCreateCar_NewEquipmentFieldPaths(t *testing.T) {
-	_, got := fieldMap(t, carReq(func(in *TaskCreateRequest) {
-		in.NewEquipment = &TaskNewEquipment{TypeID: "bad", Model: "  "}
-	}))
-	assert.Equal(t, msgRequired, got["new_equipment.model"])
-	assert.Equal(t, msgInvalid, got["new_equipment.type_id"])
-}
-
 func TestTaskCreateCar_NewClientFieldPaths(t *testing.T) {
 	_, got := fieldMap(t, carReq(func(in *TaskCreateRequest) {
 		in.ClientID = ""
@@ -120,8 +112,5 @@ func TestTaskCreate_WithoutCar_TitleRequired(t *testing.T) {
 }
 
 func TestCarTitle(t *testing.T) {
-	assert.Equal(t, "Hyundai Solaris О718МР 199", carTitle(" Hyundai ", "Solaris", "О718МР 199"))
-	assert.Equal(t, "Solaris О718МР 199", carTitle("", "Solaris", "О718МР 199"))
-	long := carTitle(strings.Repeat("я", 150), strings.Repeat("ю", 150), "А1")
-	assert.Equal(t, taskTitleMax, len([]rune(long)))
+	assert.Equal(t, "О718МР 199", carTitle("О718МР 199"), "название заказа — госномер")
 }

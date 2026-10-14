@@ -39,7 +39,7 @@ func (s *PrintLiveSuite) printPage(b *testutil.Browser, taskID int64, kind strin
 
 // TS-041: печать «Выдача» — дата оплаты одного и того же заказа в поясе смотрящего.
 func (s *PrintLiveSuite) TestTS041_Handover_PaidDate_InViewerTimezone() {
-	c := s.newClient("Клиент-Пояс-Оплата", "", "")
+	c := s.newClient("Клиент-Пояс-Оплата", "")
 	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col, "")
 	s.markPaid(fmt.Sprintf("%d", taskID), c, col, version)
@@ -60,7 +60,7 @@ func (s *PrintLiveSuite) TestTS041_Handover_PaidDate_InViewerTimezone() {
 // Пояса UTC+14 и UTC-12 разнесены на 26 часов: их календарные даты различаются ВСЕГДА,
 // поэтому тест не зависит от времени запуска и от пояса сервера.
 func (s *PrintLiveSuite) TestTS041_PrintDate_InViewerTimezone() {
-	c := s.newClient("Клиент-Пояс-Дата-Печати", "", "")
+	c := s.newClient("Клиент-Пояс-Дата-Печати", "")
 	taskID, _ := s.newTask(c, s.columnID("Приёмка"), "")
 
 	for i, zone := range []string{"Pacific/Kiritimati", "Etc/GMT+12"} {
@@ -88,7 +88,7 @@ func (s *PrintLiveSuite) TestTS041_PrintDate_InViewerTimezone() {
 // раньше) — нет.
 func (s *PrintLiveSuite) TestTS041_DueFilter_TodayInViewerTimezone() {
 	ctx := context.Background()
-	c := s.newClient("Клиент-Пояс-Срок", "", "")
+	c := s.newClient("Клиент-Пояс-Срок", "")
 	taskID, _ := s.newTask(c, s.columnID("Приёмка"), "")
 
 	eastToday := time.Now().In(time.FixedZone("", 14*3600))
@@ -140,7 +140,7 @@ func (s *PrintLiveSuite) TestTS041_DueFilter_TodayInViewerTimezone() {
 // UTC-12 — нет, какой бы ни была дата сервера БД. Список, GET /tasks/:id, GET /tasks/:id/card
 // и ответы PUT заказа / PUT услуги дают одному зрителю одно и то же число.
 func (s *PrintLiveSuite) TestTS041_CardAndMutations_SubtasksLate_TodayInViewerTimezone() {
-	c := s.newClient("Клиент-Пояс-Карточка", "", "")
+	c := s.newClient("Клиент-Пояс-Карточка", "")
 	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col, "")
 	sub := s.addSubtask(taskID, s.newService("Услуга-Пояс-Карточка", "100"))

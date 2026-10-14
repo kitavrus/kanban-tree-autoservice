@@ -50,11 +50,7 @@ type CardEquipment struct {
 	// IsDeleted — единица мягко удалена (soft-delete-clients DS-014): в заказе остаётся с
 	// бейджем «удалён».
 	IsDeleted    bool               `json:"is_deleted"`
-	TypeName     string             `json:"type_name"`
 	PlateNumber  string             `json:"plate_number"` // госномер автомобиля
-	Brand        string             `json:"brand"`
-	Model        string             `json:"model"`
-	Serial       string             `json:"serial"`
 	Completeness string             `json:"completeness"`
 	Condition    string             `json:"condition"`
 	History      []EquipmentHistory `json:"history"`

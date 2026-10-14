@@ -4,8 +4,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
-
 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
 )
@@ -33,16 +31,15 @@ const (
 
 // ProductInput — нормализованные поля товара (общие для API и SSR-формы).
 type ProductInput struct {
-	CategoryID string
-	Name       string
-	SKU        string
-	Unit       string
-	Price      string
-	Stock      string
-	MinStock   string
-	Box        string
-	Place      string
-	IsActive   bool
+	Name     string
+	SKU      string
+	Unit     string
+	Price    string
+	Stock    string
+	MinStock string
+	Box      string
+	Place    string
+	IsActive bool
 }
 
 func normStr(s string) string { return strings.TrimSpace(s) }
@@ -56,7 +53,6 @@ func normAmount(s string) string {
 }
 
 func (in ProductInput) normalize() ProductInput {
-	in.CategoryID = normStr(in.CategoryID)
 	in.Name = normStr(in.Name)
 	in.SKU = normStr(in.SKU)
 	in.Unit = normStr(in.Unit)
@@ -73,12 +69,6 @@ func (in ProductInput) normalize() ProductInput {
 func (in ProductInput) validate() []errorspkg.Field {
 	var f []errorspkg.Field
 	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
-
-	if in.CategoryID == "" {
-		add("category_id", msgRequired)
-	} else if uuid.Validate(in.CategoryID) != nil {
-		add("category_id", msgInvalid)
-	}
 
 	switch n := utf8.RuneCountInString(in.Name); {
 	case n == 0:

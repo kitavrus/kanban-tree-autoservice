@@ -3,59 +3,16 @@
 {{ template "catalogTabs" .Tabs }}
 {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
 {{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
-{{ if .CatError }}<div class="alert alert-danger py-2" role="alert" data-testid="cat-error">{{ .CatError }}</div>{{ end }}
 <form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/products" data-testid="products-filters">
-  {{ if .ActiveCategory }}<input type="hidden" name="category" value="{{ .ActiveCategory }}">{{ end }}
   <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск по названию или артикулу" aria-label="Поиск" data-testid="filter-q">
   <button class="btn btn-outline-secondary" type="submit">Найти</button>
   <div class="form-check ms-2">
     <input class="form-check-input" type="checkbox" id="archived" name="archived" value="1"{{ if .Archived }} checked{{ end }} onchange="this.form.submit()" data-testid="filter-archived">
     <label class="form-check-label" for="archived">Показать архивные</label>
   </div>
-  {{ if .Q }}<a class="btn btn-link" href="/catalog/products{{ if .ActiveCategory }}?category={{ .ActiveCategory }}{{ end }}" data-testid="filter-reset">Сбросить</a>{{ end }}
+  {{ if .Q }}<a class="btn btn-link" href="/catalog/products" data-testid="filter-reset">Сбросить</a>{{ end }}
 </form>
-<div class="two-pane">
-  <div class="cat-panel" data-testid="category-panel">
-    <a href="/catalog/products{{ if .Q }}?q={{ .Q }}{{ end }}" class="cat-item{{ if not .ActiveCategory }} active{{ end }}" data-testid="cat-all">Все категории <span class="count">{{ .Total }}</span></a>
-    {{ range .Categories }}
-    <div class="pb-1 mb-1 border-bottom" data-testid="cat-row" data-cat-id="{{ .ID }}">
-      <div class="d-flex align-items-center gap-1">
-        <a href="/catalog/products?category={{ .ID }}" class="cat-item flex-grow-1{{ if eq $.ActiveCategory .ID }} active{{ end }}{{ if not .IsActive }} text-body-secondary{{ end }}" data-testid="cat-link">
-          {{ .Name }}{{ if not .IsActive }} <span class="badge-off">архив</span>{{ end }} <span class="count">{{ .ItemCount }}</span>
-        </a>
-      </div>
-      <form method="post" action="/catalog/categories/{{ .ID }}/rename" class="d-flex gap-1 mb-1 ps-2">
-        <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
-        <input type="hidden" name="kind" value="product">
-        <input class="form-control form-control-sm" name="name" value="{{ .Name }}" data-testid="cat-rename-input" aria-label="Переименовать категорию {{ .Name }}">
-        <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-rename-submit">✎</button>
-      </form>
-      <div class="d-flex gap-1 ps-2">
-        <form method="post" action="/catalog/categories/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}">
-          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
-          <input type="hidden" name="kind" value="product">
-          <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
-        </form>
-        <form method="post" action="/catalog/categories/{{ .ID }}/delete" data-testid="cat-delete-form" data-delete-dialog
-              data-delete-title="Удалить «{{ .Name }}»?"
-              data-delete-text="Товары и услуги категории останутся в каталоге с пометкой «категория удалена»"
-              {{ if eq $.CatDelete.ID .ID }}data-delete-error="{{ $.CatDelete.Error }}"{{ end }}>
-          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
-          <input type="hidden" name="kind" value="product">
-          <input type="hidden" name="reason" value="{{ if eq $.CatDelete.ID .ID }}{{ $.CatDelete.Reason }}{{ end }}">
-          <button type="submit" class="btn btn-sm btn-outline-danger" data-testid="cat-delete">Удалить</button>
-        </form>
-      </div>
-    </div>
-    {{ end }}
-    {{ template "categoriesTruncated" .CatTrunc }}
-    <form method="post" action="/catalog/categories" class="d-flex gap-1 mt-2">
-      <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
-      <input type="hidden" name="kind" value="product">
-      <input class="form-control form-control-sm" name="name" placeholder="Новая категория" required data-testid="cat-new-name">
-      <button type="submit" class="btn btn-sm btn-primary" data-testid="cat-new-submit">+</button>
-    </form>
-  </div>
+<div>
   <div class="cat-panel-content">
   {{ if .Items }}
   <div class="table-responsive">
@@ -67,7 +24,6 @@
         <td>
           <a href="/catalog/products/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
           {{ if not .IsActive }}<span class="badge-off" data-testid="product-archived-badge">в архиве</span>{{ end }}
-          {{ if .CategoryIsDeleted }}<span class="badge text-bg-secondary" data-testid="category-deleted-badge">категория удалена</span>{{ end }}
         </td>
         <td class="text-body-secondary">{{ .SKU }}</td>
         <td class="d-none d-md-table-cell">{{ .Unit }}</td>
@@ -91,7 +47,7 @@
   </div>
   <p class="text-body-secondary small" data-testid="products-total">Товаров: {{ .Total }}</p>
   {{ else }}
-  <div class="empty-state" data-testid="products-empty">{{ if or .Q .Archived .ActiveCategory }}Ничего не нашли по фильтру.{{ else }}Товаров пока нет.{{ end }}</div>
+  <div class="empty-state" data-testid="products-empty">{{ if or .Q .Archived }}Ничего не нашли по фильтру.{{ else }}Товаров пока нет.{{ end }}</div>
   {{ end }}
   {{ template "catalogPager" .Pager }}
   </div>

@@ -22,64 +22,29 @@ export type Me = { id: string; login: string; name: string; role: Role; timezone
 /** PUT /api/v1/users/me/timezone — тело и ответ (internal/features/users/dto.go). */
 export type TimezoneBody = { timezone: string };
 
-// Wire-типы equipment-types (internal/features/equipmenttypes/dto.go, §TD-6.2).
-export type NewEquipmentType = { name: string; spec_keys?: string[] };
-export type EquipmentType = {
-  id: string;
-  name: string;
-  spec_keys: string[];
-  is_active: boolean;
-  equipment_count: number;
-};
-
 // Wire-типы clients (internal/features/clients/dto.go, §TD-6.2).
 export type Phone = { phone: string; note: string };
 export type NewClient = {
   company_name: string;
-  address?: string;
-  contact_name?: string;
-  contact_position?: string;
   phones: Phone[];
 };
 export type Client = {
   id: string;
   company_name: string;
-  address: string;
-  contact_name: string;
-  contact_position: string;
   phones: Phone[];
   equipment_count: number;
   version: number;
 };
 
 // Wire-типы equipment (internal/features/clients/dto.go `## DTO Equipment`, §TD-6.2).
-export type Spec = { k: string; v: string };
-export type NewEquipment = {
-  type_id: string;
-  /** Госномер автомобиля (clients.NormalizePlateNumber на сервере). */
-  plate_number?: string;
-  brand?: string;
-  model: string;
-  sku?: string;
-  serial?: string;
-  specs?: Spec[];
-  note?: string;
-};
+// Автомобиль — только госномер (обязателен; clients.NormalizePlateNumber на сервере).
+export type NewEquipment = { plate_number: string };
 export type Equipment = {
   id: string;
   client_id: string;
-  type_id: string;
-  type_name: string;
-  type_is_active: boolean;
-  /** Тип единицы мягко удалён — бейдж «удалён» у типа (soft-delete-catalog DS-014). */
-  type_is_deleted: boolean;
   plate_number: string;
-  brand: string;
-  model: string;
-  sku: string;
-  serial: string;
-  specs: Spec[];
-  note: string;
+  created_at: string;
+  updated_at: string;
 };
 
 // Wire-типы catalog (internal/features/catalog/*_dto.go, §TD-6.2). Amount-поля
@@ -90,7 +55,6 @@ export type Category = { id: string; kind: CategoryKind; name: string; is_active
 
 // Остаток живёт в товаре (один склад): stock/min_stock/box/place — поля товара.
 export type NewProduct = {
-  category_id: string;
   name: string;
   sku?: string;
   unit?: string;
@@ -102,9 +66,6 @@ export type NewProduct = {
 };
 export type Product = {
   id: string;
-  category_id: string;
-  /** Категория товара мягко удалена — бейдж «категория удалена» (soft-delete-catalog DS-014). */
-  category_is_deleted: boolean;
   name: string;
   sku: string;
   unit: string;
@@ -213,18 +174,6 @@ export class AdminApi {
     return res.json();
   }
 
-  async createEquipmentType(t: NewEquipmentType): Promise<EquipmentType> {
-    const res = await this.ctx.post('/api/v1/equipment-types', { data: { spec_keys: [], ...t }, headers: await this.headers() });
-    expect(res.status(), `создание типа ${t.name}: ${await res.text()}`).toBe(201);
-    return res.json();
-  }
-
-  async updateEquipmentType(id: string, t: NewEquipmentType & { is_active: boolean }): Promise<EquipmentType> {
-    const res = await this.ctx.put(`/api/v1/equipment-types/${id}`, { data: { spec_keys: [], ...t }, headers: await this.headers() });
-    expect(res.status(), `правка типа ${id}: ${await res.text()}`).toBe(200);
-    return res.json();
-  }
-
   async createClient(c: NewClient): Promise<Client> {
     const res = await this.ctx.post('/api/v1/clients', { data: c, headers: await this.headers() });
     expect(res.status(), `создание клиента ${c.company_name}: ${await res.text()}`).toBe(201);
@@ -244,8 +193,8 @@ export class AdminApi {
   }
 
   async createEquipment(clientId: string, e: NewEquipment): Promise<Equipment> {
-    const res = await this.ctx.post(`/api/v1/clients/${clientId}/equipment`, { data: { specs: [], ...e }, headers: await this.headers() });
-    expect(res.status(), `создание оборудования ${e.model}: ${await res.text()}`).toBe(201);
+    const res = await this.ctx.post(`/api/v1/clients/${clientId}/equipment`, { data: e, headers: await this.headers() });
+    expect(res.status(), `создание оборудования ${e.plate_number}: ${await res.text()}`).toBe(201);
     return res.json();
   }
 
@@ -322,7 +271,7 @@ export class AdminApi {
     if (kind === 'clients') return `/api/v1/clients/${id}`;
     if (kind === 'equipment') return `/api/v1/equipment/${id}`;
     // часть 5 (soft-delete-catalog): товары, услуги, категории каталога и типы оборудования.
-    if (kind === 'products' || kind === 'services' || kind === 'catalog-categories' || kind === 'equipment-types') return `/api/v1/${kind}/${id}`;
+    if (kind === 'products' || kind === 'services' || kind === 'catalog-categories') return `/api/v1/${kind}/${id}`;
     // часть 6 (soft-delete-suppliers): поставщики.
     if (kind === 'suppliers') return `/api/v1/${kind}/${id}`;
     throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);

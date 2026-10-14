@@ -537,7 +537,7 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 	productName := "SD-Товар-" + uuid.NewString()[:8]
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
-		INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, $2, 'шт', 50, 10, 0) RETURNING id`, s.newProductCategory(), productName).Scan(&productID))
+		INSERT INTO products (name, unit, price, stock, min_stock) VALUES ($1, 'шт', 50, 10, 0) RETURNING id`, productName).Scan(&productID))
 	st, _, raw = s.doCard(s.admin, http.MethodPost, "/api/v1/subtasks/"+subtaskID+"/products", map[string]any{"product_id": productID, "qty": 3})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	_, err := s.Pool.Exec(ctx, `

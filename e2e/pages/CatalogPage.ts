@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 
-// POM экрана «Каталог» — вкладки /catalog/services, /catalog/products,
-// /catalog/equipment-types (фаза 4, подфаза A: товары+категории; услуги — заглушка).
+// POM экрана «Каталог» — вкладки /catalog/services и /catalog/products. Панель категорий
+// (category-panel, cat-*) есть только у услуг: у товаров категорий нет.
 export class CatalogPage {
   readonly tabServices: Locator;
   // pagination DS-005/DS-006: пейджер SSR-списков и пометка усечённых категорий.
@@ -11,7 +11,6 @@ export class CatalogPage {
   readonly pagerNext: Locator;
   readonly categoriesTruncated: Locator;
   readonly tabProducts: Locator;
-  readonly tabTypes: Locator;
   readonly servicesEmpty: Locator;
   readonly flash: Locator;
   readonly catError: Locator;
@@ -28,7 +27,6 @@ export class CatalogPage {
   readonly form: Locator;
   readonly name: Locator;
   readonly sku: Locator;
-  readonly category: Locator;
   readonly unit: Locator;
   readonly price: Locator;
   readonly stock: Locator;
@@ -53,7 +51,6 @@ export class CatalogPage {
   constructor(readonly page: Page) {
     this.tabServices = page.getByTestId('catalog-tab-services');
     this.tabProducts = page.getByTestId('catalog-tab-products');
-    this.tabTypes = page.getByTestId('catalog-tab-equipment-types');
     this.servicesEmpty = page.getByTestId('services-empty');
     this.flash = page.getByTestId('flash');
     this.catError = page.getByTestId('cat-error');
@@ -69,7 +66,6 @@ export class CatalogPage {
     this.form = page.getByTestId('product-form');
     this.name = page.getByTestId('product-name');
     this.sku = page.getByTestId('product-sku');
-    this.category = page.getByTestId('product-category');
     this.unit = page.getByTestId('product-unit');
     this.price = page.getByTestId('product-price');
     // Остаток живёт в товаре: поля остатка, минимума, коробки и места — прямо в форме.
@@ -185,17 +181,11 @@ export class CatalogPage {
     await this.page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: label }).click();
   }
 
-  /** Выбор категории по видимому названию (опция может нести суффикс « (архив)» — hasText матчит подстрокой). */
-  async chooseCategory(name: string) {
-    await this.chooseInCombobox(this.category, name);
-  }
-
   async chooseUnit(unit: string) {
     await this.chooseInCombobox(this.unit, unit);
   }
 
   async fill(p: {
-    categoryName?: string;
     name?: string;
     sku?: string;
     unit?: string;
@@ -205,7 +195,6 @@ export class CatalogPage {
     box?: string;
     place?: string;
   }) {
-    if (p.categoryName !== undefined) await this.chooseCategory(p.categoryName);
     if (p.name !== undefined) await this.name.fill(p.name);
     if (p.sku !== undefined) await this.sku.fill(p.sku);
     if (p.unit !== undefined) await this.chooseUnit(p.unit);

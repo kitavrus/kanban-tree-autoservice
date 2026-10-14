@@ -9,20 +9,10 @@
       <input id="name" name="name" class="form-control{{ if index .Errors "name" }} is-invalid{{ end }}" value="{{ .Name }}" maxlength="200" autocomplete="off" data-testid="product-name">
       {{ with index .Errors "name" }}<div class="invalid-feedback" data-testid="error-name">{{ . }}</div>{{ end }}
     </div>
-    <div class="row g-3 mb-3">
-      <div class="col-md-6">
-        <label for="sku" class="form-label">Артикул</label>
-        <input id="sku" name="sku" class="form-control{{ if index .Errors "sku" }} is-invalid{{ end }}" value="{{ .SKU }}" maxlength="100" autocomplete="off" data-testid="product-sku">
-        {{ with index .Errors "sku" }}<div class="invalid-feedback" data-testid="error-sku">{{ . }}</div>{{ end }}
-      </div>
-      <div class="col-md-6">
-        <label for="category_id" class="form-label">Категория *{{ if .CategoryIsDeleted }} <span class="badge text-bg-secondary" data-testid="category-deleted-badge">удалена</span>{{ end }}</label>
-        <select id="category_id" name="category_id" class="form-select{{ if index .Errors "category_id" }} is-invalid{{ end }}" data-testid="product-category">
-          {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if .IsDeleted }} (удалена){{ else if not .IsActive }} (архив){{ end }}</option>{{ end }}
-        </select>
-        {{ template "categoriesTruncated" .CatTrunc }}
-        {{ with index .Errors "category_id" }}<div class="invalid-feedback" data-testid="error-category_id">{{ . }}</div>{{ end }}
-      </div>
+    <div class="mb-3">
+      <label for="sku" class="form-label">Артикул</label>
+      <input id="sku" name="sku" class="form-control{{ if index .Errors "sku" }} is-invalid{{ end }}" value="{{ .SKU }}" maxlength="100" autocomplete="off" data-testid="product-sku">
+      {{ with index .Errors "sku" }}<div class="invalid-feedback" data-testid="error-sku">{{ . }}</div>{{ end }}
     </div>
     <div class="row g-3 mb-3">
       <div class="col-md-6">

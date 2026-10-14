@@ -2,24 +2,19 @@ package softdelete
 
 import "testing"
 
-// Заголовок строки удалённой единицы — «тип марка модель» (soft-delete-clients §6.5): пустая
-// марка пропускается без двойного пробела, крайние пробелы частей обрезаются.
+// Заголовок строки удалённого автомобиля — госномер (soft-delete-clients §6.5), крайние
+// пробелы обрезаются.
 func TestEquipmentTitle(t *testing.T) {
-	cases := []struct {
-		name, typeName, brand, model, plate, want string
-	}{
-		{"все части", "Принтер", "HP", "LaserJet 1020", "", "Принтер HP LaserJet 1020"},
-		{"с госномером", "Легковой", "Lada", "Vesta", " А123ВС 777 ", "Легковой Lada Vesta · А123ВС 777"},
-		{"без марки", "Принтер", "", "LaserJet 1020", "", "Принтер LaserJet 1020"},
-		{"марка из пробелов", "Принтер", "   ", "LaserJet", "", "Принтер LaserJet"},
-		{"пробелы по краям", " Ноутбук ", " Dell ", " XPS ", "", "Ноутбук Dell XPS"},
+	cases := map[string]string{
+		"А123ВС 777":     "А123ВС 777",
+		" А123ВС 777 ":   "А123ВС 777",
+		"":               "",
+		"\tР126ОР 750\n": "Р126ОР 750",
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := EquipmentTitle(c.typeName, c.brand, c.model, c.plate); got != c.want {
-				t.Fatalf("EquipmentTitle(%q, %q, %q, %q) = %q, ожидалось %q", c.typeName, c.brand, c.model, c.plate, got, c.want)
-			}
-		})
+	for in, want := range cases {
+		if got := EquipmentTitle(in); got != want {
+			t.Fatalf("EquipmentTitle(%q) = %q, ожидалось %q", in, got, want)
+		}
 	}
 }
 

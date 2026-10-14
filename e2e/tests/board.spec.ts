@@ -1,6 +1,6 @@
 import { test, expect, columnByName } from '../fixtures/board';
 import { BoardPage } from '../pages/BoardPage';
-import { carTitle, uniqPlate } from '../pages/NewOrderDialog';
+import { uniqPlate } from '../pages/NewOrderDialog';
 import { ShellPage } from '../pages/ShellPage';
 import { StockPage } from '../pages/StockPage';
 import { loginContext, type AdminApi } from '../fixtures/auth';
@@ -129,8 +129,7 @@ test.describe('BD: списание товаров', () => {
     const work = columnByName(columns, 'В ремонте'); // consumes_stock=true (сид D32)
     const waitParts = columnByName(columns, 'Ждёт запчасти'); // тоже consumes_stock=true (сид D32)
 
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-004 категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-004 товар'), stock: 5 });
+    const product = await adminApi.createProduct({ name: uniq('BD-004 товар'), stock: 5 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-004 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-004 услуга') });
     const task = await adminApi.createTask({ title: uniq('BD-004 заказ'), client_id: client.id, column_id: from.id });
@@ -160,8 +159,7 @@ test.describe('BD: минус на складе предупреждает, не
     const from = columnByName(columns, 'Приёмка');
     const work = columnByName(columns, 'В ремонте');
 
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-005 категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-005 товар'), stock: 1 });
+    const product = await adminApi.createProduct({ name: uniq('BD-005 товар'), stock: 1 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-005 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-005 услуга') });
     const task = await adminApi.createTask({ title: uniq('BD-005 заказ'), client_id: client.id, column_id: from.id });
@@ -263,8 +261,7 @@ test.describe('BD: списывать товары у колонки', () => {
     insertSubtask,
   }) => {
     const { client } = await setup(adminApi, uniq, 'BD-007');
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-007 категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-007 товар'), stock: 10 });
+    const product = await adminApi.createProduct({ name: uniq('BD-007 товар'), stock: 10 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-007 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-007 услуга') });
 
@@ -326,12 +323,10 @@ test.describe('BD: форма заказа', () => {
     });
 
     // Новый заказ — по госномеру автомобиля клиента: клиент подставляется, название
-    // генерирует сервер («{Марка} {Модель} {ГОСНОМЕР}»).
+    // генерирует сервер — госномер.
     const plate = uniqPlate();
-    const carType = await adminApi.createEquipmentType({ name: uniq('BD-009 тип') });
-    const model = uniq('BD-009 Vesta');
-    await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Lada', model });
-    const title = carTitle('Lada', model, plate);
+    await adminApi.createEquipment(client.id, { plate_number: plate });
+    const title = plate;
     await board.openTaskAdd();
     await board.newOrder.useFoundCar(plate);
     await expect(board.taskClient).toContainText(client.company_name);
@@ -458,8 +453,7 @@ test.describe('BD: удаление заказа', () => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-012');
     const from = columnByName(columns, 'Приёмка');
     const work = columnByName(columns, 'В ремонте');
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-012 категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-012 товар'), stock: 5 });
+    const product = await adminApi.createProduct({ name: uniq('BD-012 товар'), stock: 5 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-012 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-012 услуга') });
     // создаём заказ в несписывающей колонке — Reconcile пересчитывает списание только на
@@ -525,7 +519,7 @@ test.describe('BD: фильтры доски', () => {
 });
 
 test.describe('BD: поиск по услуге, товару и оборудованию', () => {
-  test('BD-022: поиск находит заказ по услуге, товару, модели и SN оборудования', async ({
+  test('BD-022: поиск находит заказ по услуге, товару и госномеру автомобиля (без пробелов/дефисов)', async ({
     adminPage: page,
     adminApi,
     uniq,
@@ -536,12 +530,9 @@ test.describe('BD: поиск по услуге, товару и оборудо�
     const col = columnByName(columns, 'Приёмка');
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-022 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-022 Замена турбины') });
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-022 категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-022 Фильтр'), stock: 5 });
-    const eqType = await adminApi.createEquipmentType({ name: uniq('BD-022 тип') });
-    const model = uniq('RX-900');
-    const serial = uniq('SN77AB');
-    const equipment = await adminApi.createEquipment(client.id, { type_id: eqType.id, model, serial });
+    const product = await adminApi.createProduct({ name: uniq('BD-022 Фильтр'), stock: 5 });
+    const plate = uniqPlate();
+    const equipment = await adminApi.createEquipment(client.id, { plate_number: plate });
 
     const target = await adminApi.createTask({ title: uniq('BD-022 искомый'), client_id: client.id, column_id: col.id });
     const other = await adminApi.createTask({ title: uniq('BD-022 другой'), client_id: client.id, column_id: col.id });
@@ -552,7 +543,9 @@ test.describe('BD: поиск по услуге, товару и оборудо�
     await board.goto(`?client_id=${client.id}`);
     await expect(board.card(other.id)).toBeVisible();
 
-    for (const q of [svc.name, product.name, model, serial]) {
+    // госномер ищется и фрагментом с пробелами/дефисами и в нижнем регистре.
+    const platePart = `${plate.slice(0, 3)} - ${plate.slice(3, 8)}`.toLowerCase();
+    for (const q of [svc.name, product.name, plate, platePart]) {
       await board.filterQ.fill(q);
       await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe(q);
       await expect(board.card(target.id)).toBeVisible();

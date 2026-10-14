@@ -1,10 +1,10 @@
--- Каталог: категории, товары, услуги, комплект услуги, ручные движения остатка
+-- Каталог: категории услуг, товары, услуги, комплект услуги, ручные движения остатка
 -- (фаза 4, docs/features/phase-4-catalog/0-setup/task.md; полная схема — сразу, подфаза B
 -- добавит только Go-код для services/service_products).
 
 CREATE TABLE catalog_categories (
     id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    kind       text NOT NULL CHECK (kind IN ('service', 'product')),
+    kind       text NOT NULL CHECK (kind IN ('service')),
     name       text NOT NULL CHECK (btrim(name) <> ''),
     position   integer NOT NULL DEFAULT 0,
     is_active  boolean NOT NULL DEFAULT true,
@@ -16,7 +16,6 @@ CREATE UNIQUE INDEX catalog_categories_kind_name_lower_uq ON catalog_categories 
 
 CREATE TABLE products (
     id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    category_id uuid NOT NULL REFERENCES catalog_categories(id) ON DELETE RESTRICT,
     name       text NOT NULL CHECK (btrim(name) <> ''),
     sku        text NOT NULL DEFAULT '',
     unit       text NOT NULL DEFAULT '',
@@ -29,7 +28,6 @@ CREATE TABLE products (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX products_category_id_idx ON products (category_id);
 
 CREATE TABLE services (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),

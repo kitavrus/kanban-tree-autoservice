@@ -5,10 +5,7 @@
       <div class="d-flex align-items-start gap-2">
         <div>
           <div class="text-body-secondary small"><a href="/clients/{{ .Equipment.ClientID }}" data-testid="history-client-link">{{ .ClientName }}</a></div>
-          <h2 class="fs-5 mb-1" data-testid="history-equipment-model">{{ if .Equipment.Brand }}{{ .Equipment.Brand }} {{ end }}{{ .Equipment.Model }}{{ if .Equipment.PlateNumber }} <span class="badge text-bg-light border text-nowrap" data-testid="history-equipment-plate">{{ .Equipment.PlateNumber }}</span>{{ end }}</h2>
-          <div class="text-body-secondary small">
-            {{ .Equipment.TypeName }}{{ if .Equipment.Serial }} · S/N {{ .Equipment.Serial }}{{ end }}{{ if .Equipment.SKU }} · арт. {{ .Equipment.SKU }}{{ end }}
-          </div>
+          <h2 class="fs-5 mb-1" data-testid="history-equipment-plate">{{ .Equipment.PlateNumber }}</h2>
         </div>
         <a href="/equipment/{{ .Equipment.ID }}" class="btn btn-outline-secondary btn-sm ms-auto" data-testid="history-edit">Редактировать</a>
       </div>

@@ -6,21 +6,18 @@ import "time"
 // строка внутри, без потери точности).
 
 type ProductResponse struct {
-	ID         string `json:"id"`
-	CategoryID string `json:"category_id"`
-	// CategoryIsDeleted — категория товара мягко удалена: бейдж «категория удалена» (DS-014).
-	CategoryIsDeleted bool      `json:"category_is_deleted"`
-	Name              string    `json:"name"`
-	SKU               string    `json:"sku"`
-	Unit              string    `json:"unit"`
-	Price             Amount    `json:"price"`
-	IsActive          bool      `json:"is_active"`
-	Stock             Amount    `json:"stock"`
-	MinStock          Amount    `json:"min_stock"`
-	Box               string    `json:"box"`
-	Place             string    `json:"place"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	SKU       string    `json:"sku"`
+	Unit      string    `json:"unit"`
+	Price     Amount    `json:"price"`
+	IsActive  bool      `json:"is_active"`
+	Stock     Amount    `json:"stock"`
+	MinStock  Amount    `json:"min_stock"`
+	Box       string    `json:"box"`
+	Place     string    `json:"place"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type ProductListResponse struct {
@@ -32,29 +29,27 @@ type ProductListResponse struct {
 
 // ProductCreateRequest — POST /api/v1/products. is_active по умолчанию — true.
 type ProductCreateRequest struct {
-	CategoryID string `json:"category_id"`
-	Name       string `json:"name"`
-	SKU        string `json:"sku"`
-	Unit       string `json:"unit"`
-	Price      Amount `json:"price"`
-	Stock      Amount `json:"stock"`
-	MinStock   Amount `json:"min_stock"`
-	Box        string `json:"box"`
-	Place      string `json:"place"`
+	Name     string `json:"name"`
+	SKU      string `json:"sku"`
+	Unit     string `json:"unit"`
+	Price    Amount `json:"price"`
+	Stock    Amount `json:"stock"`
+	MinStock Amount `json:"min_stock"`
+	Box      string `json:"box"`
+	Place    string `json:"place"`
 }
 
 // ProductUpdateRequest — PUT /api/v1/products/:id: полная замена карточки товара.
-// is_active обязателен (как equipmenttypes.TypeUpdateRequest) — архив/восстановление
+// is_active обязателен — архив/восстановление
 // доступны и напрямую через PUT, и отдельными SSR-маршрутами.
 type ProductUpdateRequest struct {
-	CategoryID string `json:"category_id"`
-	Name       string `json:"name"`
-	SKU        string `json:"sku"`
-	Unit       string `json:"unit"`
-	Price      Amount `json:"price"`
-	Stock      Amount `json:"stock"`
-	MinStock   Amount `json:"min_stock"`
-	Box        string `json:"box"`
-	Place      string `json:"place"`
-	IsActive   *bool  `json:"is_active"`
+	Name     string `json:"name"`
+	SKU      string `json:"sku"`
+	Unit     string `json:"unit"`
+	Price    Amount `json:"price"`
+	Stock    Amount `json:"stock"`
+	MinStock Amount `json:"min_stock"`
+	Box      string `json:"box"`
+	Place    string `json:"place"`
+	IsActive *bool  `json:"is_active"`
 }

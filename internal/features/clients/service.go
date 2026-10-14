@@ -171,8 +171,7 @@ func toResponse(c Client) ClientResponse {
 		phones = []PhoneDTO{}
 	}
 	return ClientResponse{
-		ID: c.ID, CompanyName: c.CompanyName, Address: c.Address,
-		ContactName: c.ContactName, ContactPosition: c.ContactPosition,
+		ID: c.ID, CompanyName: c.CompanyName,
 		Phones: phones, EquipmentCount: c.EquipmentCount, Version: c.Version,
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 	}
@@ -224,9 +223,8 @@ func (s *Service) GetEquipment(ctx context.Context, id string) (*EquipmentRespon
 	return &resp, nil
 }
 
-// CreateEquipment — validate → TypeActive(type_id): not_found/archived → 400 Validation
-// (ADR-004, создание разрешено только с активным типом) → repo.CreateEquipment (клиент
-// удалён параллельно → 404 CLIENT_NOT_FOUND, не 500).
+// CreateEquipment — validate → repo.CreateEquipment (клиент удалён параллельно → 404
+// CLIENT_NOT_FOUND, не 500).
 func (s *Service) CreateEquipment(ctx context.Context, clientID string, in EquipmentInput) (*EquipmentResponse, error) {
 	if uuid.Validate(clientID) != nil {
 		return nil, ErrClientNotFound
@@ -236,26 +234,10 @@ func (s *Service) CreateEquipment(ctx context.Context, clientID string, in Equip
 		return nil, errorspkg.Validation(f...)
 	}
 
-	// ADR-004: создание разрешено только с активным типом; type_id уже провалидирован
-	// как корректный uuid — validate() выше.
-	active, err := s.repo.TypeActive(ctx, in.TypeID)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
-	case err != nil:
-		return nil, err
-	case !active:
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "archived"})
-	}
-
 	e, err := s.repo.CreateEquipment(ctx, clientID, in)
 	switch {
 	case errors.Is(err, errClientGone):
 		return nil, ErrClientNotFound
-	case errors.Is(err, errTypeGone):
-		// тип удалён параллельно между TypeActive-проверкой выше и вставкой — тот же код
-		// поля, что и «тип не существует» до вставки (LOW#1).
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
 	case err != nil:
 		return nil, err
 	}
@@ -263,14 +245,7 @@ func (s *Service) CreateEquipment(ctx context.Context, clientID string, in Equip
 	return &resp, nil
 }
 
-// UpdateEquipment — LWW (без version, D28 — версия только у clients). Архивный тип
-// допустим, только если type_id не менялся (ADR-004) — check() читает curTypeID и
-// TypeActive ВНУТРИ tx репозитория (repo.go UpdateEquipment), поэтому смена типа между
-// проверкой и этим вызовом невозможна для одной единицы; type_id-цель проверки (в т.ч.
-// смена на архивный тип) читается вне tx (pool, не tx.QueryRow) и не блокируется —
-// параллельный архив/удаление ЦЕЛЕВОГО типа между check() и UPDATE теоретически возможны
-// (LOW-риск, admin-only): архивный тип на этот момент допускается на UPDATE
-// (SQLSTATE 23503 на type_id — errTypeGone, если тип успели удалить), не FOR UPDATE.
+// UpdateEquipment — LWW (без version, D28 — версия только у clients).
 func (s *Service) UpdateEquipment(ctx context.Context, id string, in EquipmentInput) (*EquipmentResponse, error) {
 	if uuid.Validate(id) != nil {
 		return nil, ErrEquipmentNotFound
@@ -280,29 +255,10 @@ func (s *Service) UpdateEquipment(ctx context.Context, id string, in EquipmentIn
 		return nil, errorspkg.Validation(f...)
 	}
 
-	check := func(curTypeID string) error {
-		if curTypeID == in.TypeID {
-			return nil // тип не меняется — архивный допустим.
-		}
-		active, err := s.repo.TypeActive(ctx, in.TypeID)
-		if errors.Is(err, ErrNotFound) {
-			return errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
-		}
-		if err != nil {
-			return err
-		}
-		if !active {
-			return errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "archived"})
-		}
-		return nil
-	}
-
-	e, err := s.repo.UpdateEquipment(ctx, id, in, check)
+	e, err := s.repo.UpdateEquipment(ctx, id, in)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, ErrEquipmentNotFound
-	case errors.Is(err, errTypeGone):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
 	case err != nil:
 		return nil, err
 	}
@@ -310,21 +266,8 @@ func (s *Service) UpdateEquipment(ctx context.Context, id string, in EquipmentIn
 	return &resp, nil
 }
 
-// TypeOptions — опции формы единицы (ADR-102). currentTypeID == "" — новая единица.
-func (s *Service) TypeOptions(ctx context.Context, currentTypeID string) ([]TypeOption, error) {
-	return s.repo.TypeOptions(ctx, currentTypeID)
-}
-
 func toEquipmentResponse(e Equipment) EquipmentResponse {
-	specs := e.Specs
-	if specs == nil {
-		specs = []SpecDTO{}
-	}
-	return EquipmentResponse{
-		ID: e.ID, ClientID: e.ClientID, TypeID: e.TypeID, TypeName: e.TypeName, TypeIsActive: e.TypeIsActive, TypeIsDeleted: e.TypeIsDeleted,
-		PlateNumber: e.PlateNumber, Brand: e.Brand, Model: e.Model, SKU: e.SKU, Serial: e.Serial, Specs: specs, Note: e.Note,
-		CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,
-	}
+	return EquipmentResponse{ID: e.ID, ClientID: e.ClientID, PlateNumber: e.PlateNumber, CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt}
 }
 
 // lookupDefaultLimit/lookupMaxLimit — поиск автомобиля по госномеру: совпадений единицы

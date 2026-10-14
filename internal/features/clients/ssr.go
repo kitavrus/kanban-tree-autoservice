@@ -1,13 +1,11 @@
 package clients
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/google/uuid"
 
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
 	"github.com/kitavrus/kanban-tree/internal/ssr"
@@ -52,21 +50,18 @@ type PhoneRow struct {
 // FormVM — форма клиента (создание/правка) + карточка (телефоны 1..N, версия, блок
 // «Оборудование клиента»).
 type FormVM struct {
-	Shell           ssr.Shell
-	IsNew           bool
-	ID              string
-	CompanyName     string
-	Address         string
-	ContactName     string
-	ContactPosition string
-	Phones          []PhoneRow
-	Version         int64
-	EquipmentCount  int
-	Equipment       []EquipmentRow
-	Flash           string            // flash после PRG-редиректа на карточку (created/saved/eq_*)
-	Errors          map[string]string // поле → текст ошибки
-	Error           string            // общая ошибка формы
-	Conflict        bool              // ADR-005: 409 → ссылка «Открыть актуальную версию»
+	Shell          ssr.Shell
+	IsNew          bool
+	ID             string
+	CompanyName    string
+	Phones         []PhoneRow
+	Version        int64
+	EquipmentCount int
+	Equipment      []EquipmentRow
+	Flash          string            // flash после PRG-редиректа на карточку (created/saved/eq_*)
+	Errors         map[string]string // поле → текст ошибки
+	Error          string            // общая ошибка формы
+	Conflict       bool              // ADR-005: 409 → ссылка «Открыть актуальную версию»
 	// Toast — тост после PRG-перехода (единица удалена, soft-delete-clients §8.1).
 	Toast string
 	// DeleteReason / DeleteError — отказ удаления по причине: окно «Удаление» открывается
@@ -75,16 +70,10 @@ type FormVM struct {
 	DeleteError  string
 }
 
-// EquipmentRow — строка блока «Оборудование клиента» в карточке.
+// EquipmentRow — строка блока «Оборудование клиента» в карточке: только госномер.
 type EquipmentRow struct {
-	ID           string
-	Model        string
-	TypeName     string
-	TypeIsActive bool
-	// TypeIsDeleted — тип единицы мягко удалён: бейдж «удалён» (soft-delete-catalog §8.3).
-	TypeIsDeleted bool
-	PlateNumber   string
-	Serial        string
+	ID          string
+	PlateNumber string
 }
 
 var flashes = map[string]string{
@@ -192,7 +181,7 @@ func (h *SSR) formEdit(c fiber.Ctx) error {
 func equipmentRowsOf(items []EquipmentResponse) []EquipmentRow {
 	out := make([]EquipmentRow, len(items))
 	for i, e := range items {
-		out[i] = EquipmentRow{ID: e.ID, Model: e.Model, TypeName: e.TypeName, TypeIsActive: e.TypeIsActive, TypeIsDeleted: e.TypeIsDeleted, PlateNumber: e.PlateNumber, Serial: e.Serial}
+		out[i] = EquipmentRow{ID: e.ID, PlateNumber: e.PlateNumber}
 	}
 	return out
 }
@@ -258,24 +247,7 @@ func (h *SSR) remove(c fiber.Ctx) error {
 }
 
 // --- Оборудование клиента (Phase 8): форма создания/правки единицы, привязанной к
-// клиенту (ADR-102 — TypeOptions читает equipment_types напрямую SQL, без Go-импорта
-// пакета equipmenttypes). ---
-
-// SpecRow — строка характеристики в form-view (совпадает с SpecDTO, вьюмодель формы).
-type SpecRow struct {
-	K string
-	V string
-}
-
-// TypeOptionVM — опция <select> формы единицы; SpecKeysJSON — JSON-массив ключей типа
-// для data-spec-keys (JS подставляет шаблон характеристик при смене типа, ADR-002).
-type TypeOptionVM struct {
-	ID           string
-	Name         string
-	IsActive     bool
-	IsDeleted    bool
-	SpecKeysJSON string
-}
+// клиенту. ---
 
 // EquipmentFormVM — форма единицы оборудования (создание/правка).
 type EquipmentFormVM struct {
@@ -284,20 +256,9 @@ type EquipmentFormVM struct {
 	ID          string
 	ClientID    string
 	ClientName  string
-	TypeID      string
 	PlateNumber string
-	Brand       string
-	Model       string
-	SKU         string
-	Serial      string
-	Note        string
-	Specs       []SpecRow
-	Types       []TypeOptionVM
-	// TypeIsDeleted — выбранный тип единицы мягко удалён: бейдж «удалён» у поля
-	// (soft-delete-catalog §8.3).
-	TypeIsDeleted bool
-	Errors        map[string]string
-	Error         string
+	Errors      map[string]string
+	Error       string
 	// DeleteReason / DeleteError — отказ удаления по причине (окно «Удаление», §8.1).
 	DeleteReason string
 	DeleteError  string
@@ -313,7 +274,7 @@ func (h *SSR) eqNew(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	vm := EquipmentFormVM{IsNew: true, ClientID: clientID, ClientName: cl.CompanyName, Specs: []SpecRow{{}}}
+	vm := EquipmentFormVM{IsNew: true, ClientID: clientID, ClientName: cl.CompanyName}
 	return h.renderEquipmentForm(c, fiber.StatusOK, vm)
 }
 
@@ -411,92 +372,18 @@ func (h *SSR) eqRemove(c fiber.Ctx) error {
 	return c.Redirect().Status(fiber.StatusSeeOther).To("/clients/" + clientID + "?flash=" + flashEqDeleted)
 }
 
-// equipmentFormFrom — поля формы из тела POST, перерисовываются НОРМАЛИЗОВАННЫМ списком
-// характеристик (EquipmentInput.normalize() — та же нормализация, что validate()): индексы
-// `specs[i].k` считаются по нормализованному списку (design-errors.md) — vm.Specs должен
-// быть тем же списком, иначе ошибка индекса рисуется не под той строкой (code review MEDIUM-2).
+// equipmentFormFrom — госномер из тела POST, перерисовывается нормализованным.
 func equipmentFormFrom(c fiber.Ctx) EquipmentFormVM {
-	in := EquipmentInput{
-		TypeID:      c.FormValue("type_id"),
-		PlateNumber: c.FormValue("plate_number"),
-		Brand:       c.FormValue("brand"),
-		Model:       c.FormValue("model"),
-		SKU:         c.FormValue("sku"),
-		Serial:      c.FormValue("serial"),
-		Note:        c.FormValue("note"),
-		Specs:       specsFrom(c),
-	}.normalize()
-	rows := make([]SpecRow, len(in.Specs))
-	for i, sp := range in.Specs {
-		rows[i] = SpecRow{K: sp.K, V: sp.V}
-	}
-	if len(rows) == 0 {
-		rows = []SpecRow{{}}
-	}
-	return EquipmentFormVM{
-		TypeID:      in.TypeID,
-		PlateNumber: in.PlateNumber,
-		Brand:       in.Brand,
-		Model:       in.Model,
-		SKU:         in.SKU,
-		Serial:      in.Serial,
-		Note:        in.Note,
-		Specs:       rows,
-	}
-}
-
-func specsFrom(c fiber.Ctx) []SpecDTO {
-	ks := c.Request().PostArgs().PeekMulti("spec_k")
-	vs := c.Request().PostArgs().PeekMulti("spec_v")
-	out := make([]SpecDTO, 0, len(ks))
-	for i := range ks {
-		v := ""
-		if i < len(vs) {
-			v = string(vs[i])
-		}
-		out = append(out, SpecDTO{K: string(ks[i]), V: v})
-	}
-	return out
+	in := EquipmentInput{PlateNumber: c.FormValue("plate_number")}.normalize()
+	return EquipmentFormVM{PlateNumber: in.PlateNumber}
 }
 
 func equipmentInputFrom(vm EquipmentFormVM) EquipmentInput {
-	specs := make([]SpecDTO, len(vm.Specs))
-	for i, sp := range vm.Specs {
-		specs[i] = SpecDTO{K: sp.K, V: sp.V}
-	}
-	return EquipmentInput{
-		TypeID: vm.TypeID, PlateNumber: vm.PlateNumber, Brand: vm.Brand, Model: vm.Model, SKU: vm.SKU, Serial: vm.Serial,
-		Note: vm.Note, Specs: specs,
-	}
+	return EquipmentInput{PlateNumber: vm.PlateNumber}
 }
 
 func vmFromEquipment(e EquipmentResponse, clientName string) EquipmentFormVM {
-	rows := make([]SpecRow, len(e.Specs))
-	for i, sp := range e.Specs {
-		rows[i] = SpecRow{K: sp.K, V: sp.V}
-	}
-	if len(rows) == 0 {
-		rows = []SpecRow{{}}
-	}
-	return EquipmentFormVM{
-		ID: e.ID, ClientID: e.ClientID, ClientName: clientName,
-		TypeID: e.TypeID, PlateNumber: e.PlateNumber, Brand: e.Brand, Model: e.Model, SKU: e.SKU, Serial: e.Serial,
-		Note: e.Note, Specs: rows,
-	}
-}
-
-// typeOptionsVM — TypeOption (repo) → опции <select> с JSON-шаблоном характеристик.
-func typeOptionsVM(opts []TypeOption) []TypeOptionVM {
-	out := make([]TypeOptionVM, len(opts))
-	for i, o := range opts {
-		keys := o.SpecKeys
-		if keys == nil {
-			keys = []string{}
-		}
-		b, _ := json.Marshal(keys)
-		out[i] = TypeOptionVM{ID: o.ID, Name: o.Name, IsActive: o.IsActive, IsDeleted: o.IsDeleted, SpecKeysJSON: string(b)}
-	}
-	return out
+	return EquipmentFormVM{ID: e.ID, ClientID: e.ClientID, ClientName: clientName, PlateNumber: e.PlateNumber}
 }
 
 // equipmentFormError — ошибки сервиса → форма единицы с текстами (422 валидация; 404 —
@@ -508,7 +395,7 @@ func (h *SSR) equipmentFormError(c fiber.Ctx, vm EquipmentFormVM, err error) err
 	}
 	vm.Errors = map[string]string{}
 	for _, f := range app.Fields {
-		vm.Errors[f.Name] = equipmentFieldText(f.Name, f.Message)
+		vm.Errors[f.Name] = equipmentFieldText(f.Message)
 	}
 	if len(app.Fields) == 0 {
 		vm.Error = app.Message
@@ -520,28 +407,7 @@ func (h *SSR) equipmentFormError(c fiber.Ctx, vm EquipmentFormVM, err error) err
 	return h.renderEquipmentForm(c, status, vm)
 }
 
-// renderEquipmentForm — опции типа читаются заново на каждый рендер (ADR-102): включают
-// vm.TypeID, даже если он архивный (правка существующей единицы без смены типа). Мягко
-// удалённый тип остаётся текущим значением только у существующей единицы — в форме новой его
-// нет (soft-delete-catalog §8.3: в выборе типа удалённых нет).
 func (h *SSR) renderEquipmentForm(c fiber.Ctx, status int, vm EquipmentFormVM) error {
-	curTypeID := vm.TypeID
-	if uuid.Validate(curTypeID) != nil {
-		curTypeID = ""
-	}
-	opts, err := h.svc.TypeOptions(c.Context(), curTypeID)
-	if err != nil {
-		return err
-	}
-	vm.Types = vm.Types[:0]
-	for _, o := range typeOptionsVM(opts) {
-		if o.IsDeleted && vm.IsNew {
-			continue
-		}
-		vm.Types = append(vm.Types, o)
-		vm.TypeIsDeleted = vm.TypeIsDeleted || (o.IsDeleted && o.ID == vm.TypeID)
-	}
-
 	title := "Оборудование"
 	if vm.IsNew {
 		title = "Новое оборудование"
@@ -553,27 +419,14 @@ func (h *SSR) renderEquipmentForm(c fiber.Ctx, status int, vm EquipmentFormVM) e
 
 // equipmentFieldText — код ошибки поля → текст под полем (design-errors.md §fieldText,
 // часть equipment).
-func equipmentFieldText(field, code string) string {
+func equipmentFieldText(code string) string {
 	switch code {
 	case msgRequired:
-		if field == "type_id" {
-			return "Выберите тип"
-		}
-		return "Обязательное поле"
+		return "Укажите госномер"
 	case msgTooLong:
-		return "Слишком длинное значение"
-	case msgTooMany:
-		return "Не больше 50 характеристик"
-	case msgInvalid, "not_found":
-		return "Тип не найден"
-	case "archived":
-		return "Тип в архиве — выберите другой"
-	case msgKeyRequired:
-		return "Укажите характеристику"
+		return "Не длиннее 20 символов"
 	case msgInvalidFormat:
-		if field == "plate_number" {
-			return "Только буквы, цифры, пробел и дефис"
-		}
+		return "Только буквы, цифры, пробел и дефис"
 	}
 	return "Недопустимое значение"
 }
@@ -585,11 +438,8 @@ func equipmentFieldText(field, code string) string {
 // ["", "abc"]) ошибка индекса 0 рисуется под неправильной строкой формы (code review MEDIUM-2).
 func formFrom(c fiber.Ctx) FormVM {
 	in := ClientInput{
-		CompanyName:     c.FormValue("company_name"),
-		Address:         c.FormValue("address"),
-		ContactName:     c.FormValue("contact_name"),
-		ContactPosition: c.FormValue("contact_position"),
-		Phones:          phonesFrom(c),
+		CompanyName: c.FormValue("company_name"),
+		Phones:      phonesFrom(c),
 	}.normalize()
 	rows := make([]PhoneRow, len(in.Phones))
 	for i, p := range in.Phones {
@@ -599,11 +449,8 @@ func formFrom(c fiber.Ctx) FormVM {
 		rows = []PhoneRow{{}}
 	}
 	return FormVM{
-		CompanyName:     in.CompanyName,
-		Address:         in.Address,
-		ContactName:     in.ContactName,
-		ContactPosition: in.ContactPosition,
-		Phones:          rows,
+		CompanyName: in.CompanyName,
+		Phones:      rows,
 	}
 }
 
@@ -627,11 +474,8 @@ func inputFrom(vm FormVM) ClientInput {
 		phones[i] = PhoneDTO{Phone: p.Phone, Note: p.Note}
 	}
 	return ClientInput{
-		CompanyName:     vm.CompanyName,
-		Address:         vm.Address,
-		ContactName:     vm.ContactName,
-		ContactPosition: vm.ContactPosition,
-		Phones:          phones,
+		CompanyName: vm.CompanyName,
+		Phones:      phones,
 	}
 }
 
@@ -644,8 +488,7 @@ func vmFromResponse(cl ClientResponse) FormVM {
 		rows = []PhoneRow{{}}
 	}
 	return FormVM{
-		ID: cl.ID, CompanyName: cl.CompanyName, Address: cl.Address,
-		ContactName: cl.ContactName, ContactPosition: cl.ContactPosition,
+		ID: cl.ID, CompanyName: cl.CompanyName,
 		Phones: rows, Version: cl.Version, EquipmentCount: cl.EquipmentCount,
 	}
 }

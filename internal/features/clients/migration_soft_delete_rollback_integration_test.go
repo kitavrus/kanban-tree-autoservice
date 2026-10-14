@@ -36,16 +36,14 @@ func (s *ClientsSoftDeleteMigrationSuite) TestTS012_Migration0021_RollbackWithDe
 		s.Require().NoError(s.Pool.QueryRow(ctx, q, args...).Scan(&id), q)
 		return id
 	}
-	typeID := one(`INSERT INTO equipment_types (name) VALUES ('Тип отката 0013') RETURNING id`)
 	gone := one(`INSERT INTO clients (company_name) VALUES ('Тёзка 0013') RETURNING id`)
 	namesake := one(`INSERT INTO clients (company_name) VALUES ('Тёзка 0013') RETURNING id`)
 	defer func() {
 		// единицы уходят каскадом вместе с клиентами.
 		s.exec(`DELETE FROM clients WHERE id = ANY($1::uuid[])`, []string{gone, namesake})
-		s.exec(`DELETE FROM equipment_types WHERE id = $1`, typeID)
 	}()
 	unit := func(clientID string) string {
-		return one(`INSERT INTO equipment (client_id, type_id, model, serial) VALUES ($1, $2, 'M-0013', 'SN-0013') RETURNING id`, clientID, typeID)
+		return one(`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'О013ОО 77') RETURNING id`, clientID)
 	}
 	withClient, apart, twin := unit(gone), unit(namesake), unit(namesake)
 	s.exec(`INSERT INTO client_phones (client_id, position, phone) VALUES ($1, 0, '111')`, gone)
@@ -70,7 +68,7 @@ func (s *ClientsSoftDeleteMigrationSuite) TestTS012_Migration0021_RollbackWithDe
 	}
 	s.Equal("2", s.scalar(`SELECT count(*)::text FROM clients WHERE id = ANY($1::uuid[]) AND company_name = 'Тёзка 0013'`, []string{gone, namesake}),
 		"клиенты-тёзки остались, названия не тронуты")
-	s.Equal("3", s.scalar(`SELECT count(*)::text FROM equipment WHERE id = ANY($1::uuid[]) AND serial = 'SN-0013'`,
+	s.Equal("3", s.scalar(`SELECT count(*)::text FROM equipment WHERE id = ANY($1::uuid[]) AND plate_number = 'О013ОО 77'`,
 		[]string{withClient, apart, twin}), "единицы остались у своих клиентов")
 	s.Equal(gone, s.scalar(`SELECT client_id::text FROM equipment WHERE id = $1`, withClient))
 	s.Equal("1", s.scalar(`SELECT count(*)::text FROM client_phones WHERE client_id = $1`, gone))

@@ -6,9 +6,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Источники вкладок «Товары», «Услуги», «Категории», «Типы оборудования» раздела «Удалённые»
+// Источники вкладок «Товары», «Услуги», «Категории» раздела «Удалённые»
 // (часть 5 soft-delete-catalog §6.9, §8.2). Таблицы читаются напрямую: softdelete — reader,
-// отметку удаления пишут пакеты catalog и equipmenttypes. Строка у всех четырёх видов одной
+// отметку удаления пишет пакет catalog. Строка у всех видов одной
 // формы: title — название, subtitle — по виду, is_archived = true у записи, удалённой из архива
 // (DS-009: признак архива удалением не меняется).
 
@@ -21,18 +21,9 @@ type CatalogSource struct {
 	table, subtitleSQL, joinSQL string
 }
 
-// CategoryKindSubtitle — подзаголовок строки удалённой категории: «товары» либо «услуги».
-func CategoryKindSubtitle(kind string) string {
-	if kind == "product" {
-		return "товары"
-	}
-	return "услуги"
-}
-
-// NewProductsSource — вкладка «Товары»: subtitle — название категории товара.
+// NewProductsSource — вкладка «Товары»: subtitle — артикул товара.
 func NewProductsSource(pool *pgxpool.Pool) *CatalogSource {
-	return &CatalogSource{pool: pool, kind: KindProducts, table: "products",
-		subtitleSQL: "cc.name", joinSQL: "JOIN catalog_categories cc ON cc.id = r.category_id"}
+	return &CatalogSource{pool: pool, kind: KindProducts, table: "products", subtitleSQL: "r.sku"}
 }
 
 // NewServicesSource — вкладка «Услуги»: subtitle — название категории услуги.
@@ -41,15 +32,9 @@ func NewServicesSource(pool *pgxpool.Pool) *CatalogSource {
 		subtitleSQL: "cc.name", joinSQL: "JOIN catalog_categories cc ON cc.id = r.category_id"}
 }
 
-// NewCatalogCategoriesSource — вкладка «Категории»: subtitle — «товары» либо «услуги».
+// NewCatalogCategoriesSource — вкладка «Категории» (категории услуг): subtitle — «услуги».
 func NewCatalogCategoriesSource(pool *pgxpool.Pool) *CatalogSource {
-	return &CatalogSource{pool: pool, kind: KindCatalogCategories, table: "catalog_categories",
-		subtitleSQL: "CASE r.kind WHEN 'product' THEN '" + CategoryKindSubtitle("product") + "' ELSE '" + CategoryKindSubtitle("service") + "' END"}
-}
-
-// NewEquipmentTypesSource — вкладка «Типы оборудования»: subtitle — пустая строка.
-func NewEquipmentTypesSource(pool *pgxpool.Pool) *CatalogSource {
-	return &CatalogSource{pool: pool, kind: KindEquipmentTypes, table: "equipment_types", subtitleSQL: "''"}
+	return &CatalogSource{pool: pool, kind: KindCatalogCategories, table: "catalog_categories", subtitleSQL: "'услуги'"}
 }
 
 // NewSuppliersSource — вкладка «Поставщики» (часть 6): subtitle — контактное лицо.

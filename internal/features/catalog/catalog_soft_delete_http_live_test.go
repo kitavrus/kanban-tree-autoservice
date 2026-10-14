@@ -38,10 +38,8 @@ type sdRestoreDTO struct {
 }
 
 type sdProductDTO struct {
-	ID                string `json:"id"`
-	CategoryID        string `json:"category_id"`
-	CategoryIsDeleted bool   `json:"category_is_deleted"`
-	IsActive          bool   `json:"is_active"`
+	ID       string `json:"id"`
+	IsActive bool   `json:"is_active"`
 }
 
 type sdServiceDTO struct {
@@ -119,10 +117,10 @@ func (s *CatalogLiveSuite) sdRestore(b *testutil.Browser, path string) (int, []b
 	return b.Do(http.MethodPost, path+"/restore", nil)
 }
 
-// sdProduct — товар категории categoryID с остатком stock (0 — нулевой остаток).
-func (s *CatalogLiveSuite) sdProduct(categoryID, name string, stock float64) string {
+// sdProduct — товар с остатком stock (0 — нулевой остаток); категорий у товаров нет.
+func (s *CatalogLiveSuite) sdProduct(name string, stock float64) string {
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{
-		"category_id": categoryID, "name": name, "sku": "SD-" + sdMark(), "unit": "шт", "price": 100, "stock": stock,
+		"name": name, "sku": "SD-" + sdMark(), "unit": "шт", "price": 100, "stock": stock,
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var p sdProductDTO
@@ -139,9 +137,9 @@ func (s *CatalogLiveSuite) sdGetProduct(id string) (int, sdProductDTO, []byte) {
 	return st, p, raw
 }
 
-func (s *CatalogLiveSuite) sdArchiveProduct(id, categoryID, name string) {
+func (s *CatalogLiveSuite) sdArchiveProduct(id, name string) {
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+id, map[string]any{
-		"category_id": categoryID, "name": name, "price": 100, "is_active": false,
+		"name": name, "price": 100, "is_active": false,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 }
@@ -208,12 +206,11 @@ func (s *CatalogLiveSuite) sdSubtask(serviceID, productID string) string {
 // целого прошли бы). Ссылки из услуг каталога, заказов и журнала склада удалению не мешают. Удалённый товар для обычных адресов не существует (DS-026).
 func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 	m := sdMark()
-	cat := s.newCategory(s.admin, "product", "SD-027 Категория "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-027 Работы "+m)
 
-	positive := s.sdProduct(cat.ID, "SD-027 Остаток "+m, 3)
-	negative := s.sdProduct(cat.ID, "SD-027 Долг "+m, -2)
-	fraction := s.sdProduct(cat.ID, "SD-027 Дробный "+m, 0.001)
+	positive := s.sdProduct("SD-027 Остаток "+m, 3)
+	negative := s.sdProduct("SD-027 Долг "+m, -2)
+	fraction := s.sdProduct("SD-027 Дробный "+m, 0.001)
 	for name, id := range map[string]string{"положительный": positive, "отрицательный": negative, "дробный": fraction} {
 		st, _, raw := s.sdDelete(s.admin, "/api/v1/products/"+id, "Создан по ошибке")
 		s.Require().Equal(http.StatusConflict, st, "%s: %s", name, raw)
@@ -224,7 +221,7 @@ func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 	}
 
 	// товар в комплекте услуги, в заказе и в журнале склада, остаток нулевой — удаляется.
-	used := s.sdProduct(cat.ID, "SD-027 В заказах "+m, 0)
+	used := s.sdProduct("SD-027 В заказах "+m, 0)
 	svc := s.sdService(svcCat.ID, "SD-027 Услуга "+m, used)
 	subtaskID := s.sdSubtask(svc, used)
 	s.sdExec(`INSERT INTO stock_movements (product_id, qty_delta, reason, user_id) VALUES ($1::uuid, 1, 'manual', $2::uuid)`,
@@ -244,13 +241,13 @@ func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 	st, _, raw = s.sdGetProduct(used)
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("PRODUCT_NOT_FOUND", s.sdErr(raw).Code)
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+used, map[string]any{"category_id": cat.ID, "name": "Правка", "price": 1, "is_active": true})
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+used, map[string]any{"name": "Правка", "price": 1, "is_active": true})
 	s.Equal(http.StatusNotFound, st, string(raw))
 	st, _, raw = s.sdDelete(s.admin, "/api/v1/products/"+used, "Повтор")
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("PRODUCT_NOT_FOUND", s.sdErr(raw).Code)
 	for _, q := range []string{"", "&include_archived=true"} {
-		st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?category_id="+cat.ID+"&limit=500"+q, nil)
+		st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?q="+m+"&limit=500"+q, nil)
 		s.Require().Equal(http.StatusOK, st)
 		s.NotContains(string(raw), used, "удалённого товара в списке нет (%q)", q)
 		s.Contains(string(raw), positive)
@@ -258,7 +255,7 @@ func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 
 	// остаток списан до нуля — товар удаляется.
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+positive, map[string]any{
-		"category_id": cat.ID, "name": "SD-027 Остаток " + m, "price": 100, "is_active": true, "stock": 0,
+		"name": "SD-027 Остаток " + m, "price": 100, "is_active": true, "stock": 0,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	st, _, raw = s.sdDelete(s.admin, "/api/v1/products/"+positive, "Списан")
@@ -270,10 +267,9 @@ func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 // TS-028 (DS-009): архив и удаление независимы — архивная запись удаляется и восстанавливается
 // архивной, активная — активной; список справочника с фильтром «архив» удалённых не содержит.
 // Восстановление: 200 {id}; повтор — 409 NOT_DELETED; записи нет — 404 своего вида. Проверяются
-// товар, услуга и категория (тип оборудования — сьюта equipmenttypes).
+// товар, услуга и категория.
 func (s *CatalogLiveSuite) TestTS028_ArchiveAndDeleteIndependent() {
 	m := sdMark()
-	prodCat := s.newCategory(s.admin, "product", "SD-028 Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-028 Работы "+m)
 
 	type rec struct{ table, path, list, notFound string }
@@ -282,11 +278,11 @@ func (s *CatalogLiveSuite) TestTS028_ArchiveAndDeleteIndependent() {
 		if archived {
 			suffix = " архивная " + m
 		}
-		p := s.sdProduct(prodCat.ID, "SD-028 Товар"+suffix, 0)
+		p := s.sdProduct("SD-028 Товар"+suffix, 0)
 		sv := s.sdService(svcCat.ID, "SD-028 Услуга"+suffix)
 		c := s.newCategory(s.admin, "service", "SD-028 Категория"+suffix)
 		if archived {
-			s.sdArchiveProduct(p, prodCat.ID, "SD-028 Товар"+suffix)
+			s.sdArchiveProduct(p, "SD-028 Товар"+suffix)
 			st, _, raw := s.sdServiceReq(http.MethodPut, "/api/v1/services/"+sv, svcCat.ID, "SD-028 Услуга"+suffix, map[string]any{"is_active": false})
 			s.Require().Equal(http.StatusOK, st, string(raw))
 			st, raw = s.admin.Do(http.MethodPost, "/catalog/categories/"+c.ID+"/archive", url.Values{"kind": {"service"}})
@@ -342,22 +338,20 @@ func (s *CatalogLiveSuite) TestTS028_ArchiveAndDeleteIndependent() {
 
 // TS-029 (DS-017): после удаления категории создаётся новая с тем же названием и видом;
 // восстановление старой → 409 NAME_TAKEN, она остаётся удалённой; после переименования новой —
-// восстановление 200. Название сверяется в пределах вида: одноимённая категория ДРУГОГО вида
-// восстановлению не мешает (реализация без учёта вида отказала бы). Негатив: две действующие
+// восстановление 200 (категории только услуг — вид один). Негатив: две действующие
 // категории одного вида с одним названием по-прежнему невозможны — и созданием, и
 // переименованием (409 CATEGORY_NAME_TAKEN).
 func (s *CatalogLiveSuite) TestTS029_CategoryNameFreeAfterDelete() {
 	m := sdMark()
 	name := "SD-029 Расходники " + m
-	old := s.newCategory(s.admin, "product", name)
-	otherKind := s.newCategory(s.admin, "service", name) // тот же текст, другой вид
+	old := s.newCategory(s.admin, "service", name)
 	s.sdMustDelete("/api/v1/catalog-categories/"+old.ID, "Дубль")
 
-	fresh := s.newCategory(s.admin, "product", "  "+strings.ToUpper(name)+" ") // регистр и пробелы не различают
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "product", "name": name})
+	fresh := s.newCategory(s.admin, "service", "  "+strings.ToUpper(name)+" ") // регистр и пробелы не различают
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "service", "name": name})
 	s.Equal(http.StatusConflict, st, string(raw))
 	s.Equal("CATEGORY_NAME_TAKEN", s.sdErr(raw).Code, "две действующие с одним названием невозможны")
-	spare := s.newCategory(s.admin, "product", "SD-029 Запасная "+m)
+	spare := s.newCategory(s.admin, "service", "SD-029 Запасная "+m)
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/catalog-categories/"+spare.ID, map[string]any{"name": name})
 	s.Equal(http.StatusConflict, st, string(raw))
 	s.Equal("CATEGORY_NAME_TAKEN", s.sdErr(raw).Code, "переименование в занятое название")
@@ -374,7 +368,6 @@ func (s *CatalogLiveSuite) TestTS029_CategoryNameFreeAfterDelete() {
 	st, raw = s.sdRestore(s.admin, "/api/v1/catalog-categories/"+old.ID)
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.Equal(sdLiveActive, s.sdState("catalog_categories", old.ID))
-	s.Equal(sdLiveActive, s.sdState("catalog_categories", otherKind.ID), "категория другого вида не затронута")
 
 	// удалённую категорию нельзя переименовать, отправить в архив, прочитать (DS-026).
 	s.sdMustDelete("/api/v1/catalog-categories/"+spare.ID, "Лишняя")
@@ -393,17 +386,16 @@ func (s *CatalogLiveSuite) TestTS029_CategoryNameFreeAfterDelete() {
 // Негатив: без сессии → 401.
 func (s *CatalogLiveSuite) TestTS033_CatalogSoftDeleteAdminOnly() {
 	m := sdMark()
-	prodCat := s.newCategory(s.admin, "product", "SD-033 Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-033 Работы "+m)
 	live := map[string]string{
-		"products":           s.sdProduct(prodCat.ID, "SD-033 Товар "+m, 0),
+		"products":           s.sdProduct("SD-033 Товар "+m, 0),
 		"services":           s.sdService(svcCat.ID, "SD-033 Услуга "+m),
-		"catalog_categories": s.newCategory(s.admin, "product", "SD-033 Категория "+m).ID,
+		"catalog_categories": s.newCategory(s.admin, "service", "SD-033 Категория "+m).ID,
 	}
 	gone := map[string]string{
-		"products":           s.sdProduct(prodCat.ID, "SD-033 Удалённый товар "+m, 0),
+		"products":           s.sdProduct("SD-033 Удалённый товар "+m, 0),
 		"services":           s.sdService(svcCat.ID, "SD-033 Удалённая услуга "+m),
-		"catalog_categories": s.newCategory(s.admin, "product", "SD-033 Удалённая категория "+m).ID,
+		"catalog_categories": s.newCategory(s.admin, "service", "SD-033 Удалённая категория "+m).ID,
 	}
 	paths := map[string]string{"products": "/api/v1/products/", "services": "/api/v1/services/", "catalog_categories": "/api/v1/catalog-categories/"}
 	for table, id := range gone {
@@ -442,12 +434,11 @@ func (s *CatalogLiveSuite) TestTS033_CatalogSoftDeleteAdminOnly() {
 // символов (символов, не байт) — допустимо.
 func (s *CatalogLiveSuite) TestDeleteReasonValidation() {
 	m := sdMark()
-	prodCat := s.newCategory(s.admin, "product", "SD-reason Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-reason Работы "+m)
 	recs := map[string]string{
-		"products":           "/api/v1/products/" + s.sdProduct(prodCat.ID, "SD-reason Товар "+m, 0),
+		"products":           "/api/v1/products/" + s.sdProduct("SD-reason Товар "+m, 0),
 		"services":           "/api/v1/services/" + s.sdService(svcCat.ID, "SD-reason Услуга "+m),
-		"catalog_categories": "/api/v1/catalog-categories/" + s.newCategory(s.admin, "product", "SD-reason Категория "+m).ID,
+		"catalog_categories": "/api/v1/catalog-categories/" + s.newCategory(s.admin, "service", "SD-reason Категория "+m).ID,
 	}
 	for table, path := range recs {
 		id := path[strings.LastIndex(path, "/")+1:]
@@ -479,95 +470,87 @@ func (s *CatalogLiveSuite) TestDeleteReasonValidation() {
 
 // ---- пометки и выбор без удалённых (DS-014, §6.9, abuse case 2) ----
 
-// Категория удалена — её товары и услуги остаются действующими с category_is_deleted = true;
-// у остальных признак false. Счётчик item_count категории — только действующие записи: в
-// категории активный, архивный и удалённый товар → 2 (счёт «только активные» дал бы 1, «все» —
-// 3). Удалённая категория в новом товаре/услуге и при СМЕНЕ категории → 400 category_id:
-// not_found; сохранение записи без смены уже удалённой категории проходит.
+// Категория удалена — её услуги остаются действующими с category_is_deleted = true; у
+// остальных признак false. Счётчик item_count категории — только действующие записи: в
+// категории активная, архивная и удалённая услуга → 2 (счёт «только активные» дал бы 1, «все» —
+// 3). Удалённая категория в новой услуге и при СМЕНЕ категории → 400 category_id: not_found;
+// сохранение записи без смены уже удалённой категории проходит. (Категории есть только у услуг.)
 func (s *CatalogLiveSuite) TestDeletedCategory_FlagCountAndSelection() {
 	m := sdMark()
-	gone := s.newCategory(s.admin, "product", "SD-cat Удаляемая "+m)
-	goneSvc := s.newCategory(s.admin, "service", "SD-cat Удаляемые работы "+m)
-	live := s.newCategory(s.admin, "product", "SD-cat Действующая "+m)
-	active := s.sdProduct(gone.ID, "SD-cat Активный "+m, 0)
-	archived := s.sdProduct(gone.ID, "SD-cat Архивный "+m, 0)
-	s.sdArchiveProduct(archived, gone.ID, "SD-cat Архивный "+m)
-	deleted := s.sdProduct(gone.ID, "SD-cat Удалённый "+m, 0)
-	s.sdMustDelete("/api/v1/products/"+deleted, "Фикстура")
-	elsewhere := s.sdProduct(live.ID, "SD-cat В другой категории "+m, 0)
-	svc := s.sdService(goneSvc.ID, "SD-cat Услуга "+m)
+	gone := s.newCategory(s.admin, "service", "SD-cat Удаляемая "+m)
+	live := s.newCategory(s.admin, "service", "SD-cat Действующая "+m)
+	active := s.sdService(gone.ID, "SD-cat Активная "+m)
+	archived := s.sdService(gone.ID, "SD-cat Архивная "+m)
+	st, _, raw := s.sdServiceReq(http.MethodPut, "/api/v1/services/"+archived, gone.ID, "SD-cat Архивная "+m, map[string]any{"is_active": false})
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	deleted := s.sdService(gone.ID, "SD-cat Удалённая "+m)
+	s.sdMustDelete("/api/v1/services/"+deleted, "Фикстура")
+	elsewhere := s.sdService(live.ID, "SD-cat В другой категории "+m)
 
-	st, raw := s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+gone.ID, nil)
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+gone.ID, nil)
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var c categoryDTO
 	s.Require().NoError(json.Unmarshal(raw, &c))
-	s.Equal(2, c.ItemCount, "item_count — действующие товары: активный и архивный")
-	st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories?kind=product&include_archived=true&limit=2000", nil)
+	s.Equal(2, c.ItemCount, "item_count — действующие услуги: активная и архивная")
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories?kind=service&include_archived=true&limit=2000", nil)
 	s.Require().Equal(http.StatusOK, st)
 	var list struct {
 		Items []categoryDTO `json:"items"`
 	}
 	s.Require().NoError(json.Unmarshal(raw, &list))
+	found := false
 	for _, it := range list.Items {
 		if it.ID == gone.ID {
+			found = true
 			s.Equal(2, it.ItemCount, "item_count в списке")
 		}
 	}
+	s.True(found, "категория есть в списке")
 
-	_, p, _ := s.sdGetProduct(active)
-	s.False(p.CategoryIsDeleted, "до удаления категории признак false")
-	s.sdMustDelete("/api/v1/catalog-categories/"+gone.ID, "Категория не нужна")
-	s.sdMustDelete("/api/v1/catalog-categories/"+goneSvc.ID, "Категория не нужна")
-
-	// товары и услуга остались действующими, с пометкой.
-	st, p, raw = s.sdGetProduct(active)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.True(p.CategoryIsDeleted)
-	s.Equal(gone.ID, p.CategoryID)
-	_, p, _ = s.sdGetProduct(elsewhere)
-	s.False(p.CategoryIsDeleted, "товар действующей категории — без пометки")
-	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?include_archived=true&limit=2000&q="+url.QueryEscape("SD-cat"), nil)
-	s.Require().Equal(http.StatusOK, st)
-	var plist struct {
-		Items []sdProductDTO `json:"items"`
+	get := func(id string) sdServiceDTO {
+		st, sv, raw := s.sdServiceReq(http.MethodGet, "/api/v1/services/"+id, "", "", nil)
+		s.Require().Equal(http.StatusOK, st, string(raw))
+		return sv
 	}
-	s.Require().NoError(json.Unmarshal(raw, &plist))
+	s.False(get(active).CategoryIsDeleted, "до удаления категории признак false")
+	s.sdMustDelete("/api/v1/catalog-categories/"+gone.ID, "Категория не нужна")
+
+	// услуги остались действующими, с пометкой.
+	sv := get(active)
+	s.True(sv.CategoryIsDeleted)
+	s.Equal(gone.ID, sv.CategoryID)
+	s.False(get(elsewhere).CategoryIsDeleted, "услуга действующей категории — без пометки")
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/services?include_archived=true&limit=2000&q="+url.QueryEscape("SD-cat"), nil)
+	s.Require().Equal(http.StatusOK, st)
+	var slist struct {
+		Items []sdServiceDTO `json:"items"`
+	}
+	s.Require().NoError(json.Unmarshal(raw, &slist))
 	flags := map[string]bool{}
-	for _, it := range plist.Items {
+	for _, it := range slist.Items {
 		flags[it.ID] = it.CategoryIsDeleted
 	}
 	s.Equal(true, flags[active])
 	s.Equal(true, flags[archived])
 	s.Contains(flags, elsewhere)
 	s.False(flags[elsewhere])
-	st, sv, raw := s.sdServiceReq(http.MethodGet, "/api/v1/services/"+svc, "", "", nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.True(sv.CategoryIsDeleted)
 
 	// выбор удалённой категории: новая запись и смена категории → 400 not_found.
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{"category_id": gone.ID, "name": "SD-cat Новый " + m, "price": 1})
+	st, _, raw = s.sdServiceReq(http.MethodPost, "/api/v1/services", gone.ID, "SD-cat Новая услуга "+m, nil)
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["category_id"])
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+elsewhere, map[string]any{
-		"category_id": gone.ID, "name": "SD-cat В другой категории " + m, "price": 100, "is_active": true})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("not_found", s.fields(raw)["category_id"])
-	st, _, raw = s.sdServiceReq(http.MethodPost, "/api/v1/services", goneSvc.ID, "SD-cat Новая услуга "+m, nil)
+	st, _, raw = s.sdServiceReq(http.MethodPut, "/api/v1/services/"+elsewhere, gone.ID, "SD-cat В другой категории "+m, map[string]any{"is_active": true})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["category_id"])
 	// несуществующая категория — как раньше invalid (не «удалена»).
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{
-		"category_id": "00000000-0000-0000-0000-000000000000", "name": "SD-cat Мимо " + m, "price": 1})
+	st, _, raw = s.sdServiceReq(http.MethodPost, "/api/v1/services", "00000000-0000-0000-0000-000000000000", "SD-cat Мимо "+m, nil)
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("invalid", s.fields(raw)["category_id"])
 
 	// сохранение без смены уже удалённой категории — разрешено.
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+active, map[string]any{
-		"category_id": gone.ID, "name": "SD-cat Активный правка " + m, "price": 150, "is_active": true})
+	st, _, raw = s.sdServiceReq(http.MethodPut, "/api/v1/services/"+active, gone.ID, "SD-cat Активная правка "+m, map[string]any{"is_active": true})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.Contains(string(raw), `"category_is_deleted":true`)
-	st, _, raw = s.sdServiceReq(http.MethodPut, "/api/v1/services/"+svc, goneSvc.ID, "SD-cat Услуга правка "+m, map[string]any{"is_active": true})
-	s.Require().Equal(http.StatusOK, st, string(raw))
 }
 
 // Товар удалён из каталога — строка состава услуги остаётся с product_is_deleted = true (у
@@ -576,13 +559,12 @@ func (s *CatalogLiveSuite) TestDeletedCategory_FlagCountAndSelection() {
 // архивный — по-прежнему invalid.
 func (s *CatalogLiveSuite) TestDeletedProduct_ServiceKit() {
 	m := sdMark()
-	prodCat := s.newCategory(s.admin, "product", "SD-kit Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-kit Работы "+m)
-	keep := s.sdProduct(prodCat.ID, "SD-kit Остаётся "+m, 0)
-	inKit := s.sdProduct(prodCat.ID, "SD-kit Удалят из каталога "+m, 0)
-	other := s.sdProduct(prodCat.ID, "SD-kit Удалён заранее "+m, 0)
-	archived := s.sdProduct(prodCat.ID, "SD-kit Архивный "+m, 0)
-	s.sdArchiveProduct(archived, prodCat.ID, "SD-kit Архивный "+m)
+	keep := s.sdProduct("SD-kit Остаётся "+m, 0)
+	inKit := s.sdProduct("SD-kit Удалят из каталога "+m, 0)
+	other := s.sdProduct("SD-kit Удалён заранее "+m, 0)
+	archived := s.sdProduct("SD-kit Архивный "+m, 0)
+	s.sdArchiveProduct(archived, "SD-kit Архивный "+m)
 	svc := s.sdService(svcCat.ID, "SD-kit Услуга "+m, keep, inKit)
 	s.sdMustDelete("/api/v1/products/"+inKit, "Снят с продажи")
 	s.sdMustDelete("/api/v1/products/"+other, "Снят с продажи")
@@ -651,9 +633,8 @@ func (s *CatalogLiveSuite) TestPurge_CatalogKinds() {
 		s.sdExec(`INSERT INTO stock_movements (product_id, qty_delta, reason, user_id) VALUES ($1::uuid, 1, 'manual', $2::uuid)`,
 			productID, s.sdAdminID())
 	}
-	prodCat := s.newCategory(s.admin, "product", "SD-purge Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-purge Работы "+m)
-	heldProduct := s.sdProduct(prodCat.ID, "SD-purge В комплекте "+m, 0)
+	heldProduct := s.sdProduct("SD-purge В комплекте "+m, 0)
 	heldService := s.sdService(svcCat.ID, "SD-purge В заказе "+m, heldProduct)
 	s.sdSubtask(heldService, "")
 	addJournal(heldProduct)
@@ -666,7 +647,7 @@ func (s *CatalogLiveSuite) TestPurge_CatalogKinds() {
 	for _, tc := range []struct{ kind, table, id, code string }{
 		{"products", "products", heldProduct, "PRODUCT_IN_USE"},
 		{"services", "services", heldService, "SERVICE_IN_USE"},
-		{"catalog-categories", "catalog_categories", prodCat.ID, "CATEGORY_IN_USE"},
+		{"catalog-categories", "catalog_categories", svcCat.ID, "CATEGORY_IN_USE"},
 	} {
 		st, raw = purge(s.admin, tc.kind, tc.id)
 		s.Equal(http.StatusConflict, st, "%s: %s", tc.kind, raw)
@@ -675,11 +656,11 @@ func (s *CatalogLiveSuite) TestPurge_CatalogKinds() {
 	}
 	s.Equal("1", journal(heldProduct), "отказ уборки журнал товара не трогает")
 
-	freeCat := s.newCategory(s.admin, "product", "SD-purge Свободная "+m)
+	freeCat := s.newCategory(s.admin, "service", "SD-purge Свободная "+m)
 	goneCat := s.newCategory(s.admin, "service", "SD-purge Удалённая "+m)
 	s.sdMustDelete("/api/v1/catalog-categories/"+goneCat.ID, "Фикстура")
-	freeProduct := s.sdProduct(prodCat.ID, "SD-purge Свободный "+m, 4) // остаток уборке не мешает
-	goneProduct := s.sdProduct(prodCat.ID, "SD-purge Удалённый "+m, 0)
+	freeProduct := s.sdProduct("SD-purge Свободный "+m, 4) // остаток уборке не мешает
+	goneProduct := s.sdProduct("SD-purge Удалённый "+m, 0)
 	addJournal(freeProduct) // журнал склада уборке не мешает — уходит вместе с товаром
 	addJournal(goneProduct)
 	s.sdMustDelete("/api/v1/products/"+goneProduct, "Фикстура")
@@ -729,10 +710,9 @@ func (s *CatalogLiveSuite) page(path string) (int, string) {
 // архива и повторном удалении (DS-026: «Вернуть из архива» не восстанавливает удалённое).
 func (s *CatalogLiveSuite) TestSSR_ProductAndServiceDeleteForms() {
 	m := sdMark()
-	prodCat := s.newCategory(s.admin, "product", "SD-ssr Товары "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-ssr Работы "+m)
-	withStock := s.sdProduct(prodCat.ID, "SD-ssr С остатком "+m, 2)
-	product := s.sdProduct(prodCat.ID, "SD-ssr Товар "+m, 0)
+	withStock := s.sdProduct("SD-ssr С остатком "+m, 2)
+	product := s.sdProduct("SD-ssr Товар "+m, 0)
 	service := s.sdService(svcCat.ID, "SD-ssr Услуга "+m, product)
 
 	st, page := s.page("/catalog/products/" + product)
@@ -786,44 +766,44 @@ func (s *CatalogLiveSuite) TestSSR_ProductAndServiceDeleteForms() {
 		st, _ = s.page(tc.base + tc.id)
 		s.Equal(http.StatusNotFound, st, "форма удалённой записи: %s", tc.table)
 		for _, action := range []string{"", "/archive", "/restore", "/delete"} {
-			status, _, _ = s.postForm(tc.base+tc.id+action, url.Values{"reason": {"Повтор"}, "name": {"Правка"}, "category_id": {prodCat.ID}})
+			status, _, _ = s.postForm(tc.base+tc.id+action, url.Values{"reason": {"Повтор"}, "name": {"Правка"}, "category_id": {svcCat.ID}})
 			s.Equal(http.StatusNotFound, status, "POST %s%s", tc.base, action)
 		}
 		s.Equal("true|catalog4-admin|Создан по ошибке|true", s.sdState(tc.table, tc.id), "«Вернуть из архива» удалённое не восстанавливает")
 	}
 }
 
-// SSR POST /catalog/categories/:id/delete: без причины — тот же экран списка (422) с окном
+// SSR POST /catalog/categories/:id/delete: без причины — тот же экран списка услуг (422) с окном
 // «Удаление» у строки этой категории (и только у неё); успех — список без категории и тост; её
-// товар остаётся в списке с бейджем «категория удалена». Форма товара удалённой категории
-// показывает её текущим значением с бейджем «удалена»; в форме нового товара удалённой категории
+// услуга остаётся в списке с бейджем «категория удалена». Форма услуги удалённой категории
+// показывает её текущим значением с бейджем «удалена»; в форме новой услуги удалённой категории
 // нет. Удалённая категория: переименование, архив, возврат из архива, удаление — страница 404.
+// (Категории есть только у услуг.)
 func (s *CatalogLiveSuite) TestSSR_CategoryDeleteForm() {
 	m := sdMark()
-	gone := s.newCategory(s.admin, "product", "SD-ssr Удаляемая "+m)
-	stay := s.newCategory(s.admin, "product", "SD-ssr Остаётся "+m)
-	product := s.sdProduct(gone.ID, "SD-ssr Товар категории "+m, 0)
-	s.sdProduct(stay.ID, "SD-ssr Товар соседней категории "+m, 0)
-	// список товаров этого теста (сьюта общая — фильтр по метке).
-	mine := "/catalog/products?q=" + url.QueryEscape(m)
+	gone := s.newCategory(s.admin, "service", "SD-ssr Удаляемая "+m)
+	stay := s.newCategory(s.admin, "service", "SD-ssr Остаётся "+m)
+	service := s.sdService(gone.ID, "SD-ssr Услуга категории "+m)
+	s.sdService(stay.ID, "SD-ssr Услуга соседней категории "+m)
+	// список услуг этого теста (сьюта общая — фильтр по метке).
+	mine := "/catalog/services?q=" + url.QueryEscape(m)
 
 	st, page := s.page(mine)
 	s.Require().Equal(http.StatusOK, st)
 	s.Contains(page, `data-testid="cat-delete-form" data-delete-dialog`)
-	s.Contains(page, "Товары и услуги категории останутся в каталоге с пометкой «категория удалена»")
 	s.NotContains(page, "data-delete-error")
-	s.Equal(2, strings.Count(page, `data-testid="product-row"`))
+	s.Equal(2, strings.Count(page, `data-testid="service-row"`))
 	s.NotContains(page, `data-testid="category-deleted-badge"`)
 
-	status, _, body := s.postForm("/catalog/categories/"+gone.ID+"/delete", url.Values{"kind": {"product"}, "reason": {"  "}})
+	status, _, body := s.postForm("/catalog/categories/"+gone.ID+"/delete", url.Values{"kind": {"service"}, "reason": {"  "}})
 	s.Equal(http.StatusUnprocessableEntity, status)
-	s.Contains(body, `data-testid="category-panel"`, "экран списка товаров")
+	s.Contains(body, `data-testid="category-panel"`, "экран списка услуг")
 	s.Equal(1, strings.Count(body, `data-delete-error="Укажите причину удаления"`), "окно — только у строки этой категории")
 	s.Equal(sdLiveActive, s.sdState("catalog_categories", gone.ID))
 
-	status, loc, _ := s.postForm("/catalog/categories/"+gone.ID+"/delete", url.Values{"kind": {"product"}, "reason": {"Не нужна"}})
+	status, loc, _ := s.postForm("/catalog/categories/"+gone.ID+"/delete", url.Values{"kind": {"service"}, "reason": {"Не нужна"}})
 	s.Equal(http.StatusSeeOther, status)
-	s.Equal("/catalog/products?flash=category_deleted", loc)
+	s.Equal("/catalog/services?flash=category_deleted", loc)
 	st, page = s.page(loc)
 	s.Require().Equal(http.StatusOK, st)
 	s.Contains(page, `data-kt-toast="Удалено. Восстановить можно в разделе «Удалённые»"`)
@@ -831,24 +811,24 @@ func (s *CatalogLiveSuite) TestSSR_CategoryDeleteForm() {
 	s.Contains(page, `data-cat-id="`+stay.ID+`"`)
 	st, page = s.page(mine)
 	s.Require().Equal(http.StatusOK, st)
-	s.Contains(page, "SD-ssr Товар категории "+m, "товар удалённой категории остался в списке")
-	s.Equal(2, strings.Count(page, `data-testid="product-row"`))
-	s.Equal(1, strings.Count(page, `data-testid="category-deleted-badge"`), "бейдж — только у товара удалённой категории")
+	s.Contains(page, "SD-ssr Услуга категории "+m, "услуга удалённой категории осталась в списке")
+	s.Equal(2, strings.Count(page, `data-testid="service-row"`))
+	s.Equal(1, strings.Count(page, `data-testid="category-deleted-badge"`), "бейдж — только у услуги удалённой категории")
 
-	// форма товара: удалённая категория — текущим значением с бейджем.
-	st, page = s.page("/catalog/products/" + product)
+	// форма услуги: удалённая категория — текущим значением с бейджем.
+	st, page = s.page("/catalog/services/" + service)
 	s.Require().Equal(http.StatusOK, st)
 	s.Contains(page, `data-testid="category-deleted-badge">удалена</span>`)
 	s.Contains(page, `<option value="`+gone.ID+`" selected>SD-ssr Удаляемая `+m+` (удалена)</option>`)
-	// форма нового товара: удалённой категории нет даже по прямой ссылке с её идентификатором.
-	st, page = s.page("/catalog/products/new?category=" + gone.ID)
+	// форма новой услуги: удалённой категории нет даже по прямой ссылке с её идентификатором.
+	st, page = s.page("/catalog/services/new?category=" + gone.ID)
 	s.Require().Equal(http.StatusOK, st)
 	s.NotContains(page, gone.ID)
 	s.NotContains(page, `data-testid="category-deleted-badge"`)
 	s.Contains(page, `<option value="`+stay.ID+`"`)
 
 	for _, action := range []string{"/rename", "/archive", "/restore", "/delete"} {
-		status, _, _ = s.postForm("/catalog/categories/"+gone.ID+action, url.Values{"kind": {"product"}, "name": {"Новое имя " + m}, "reason": {"Повтор"}})
+		status, _, _ = s.postForm("/catalog/categories/"+gone.ID+action, url.Values{"kind": {"service"}, "name": {"Новое имя " + m}, "reason": {"Повтор"}})
 		s.Equal(http.StatusNotFound, status, "POST %s", action)
 	}
 	s.Equal("true|catalog4-admin|Не нужна|true", s.sdState("catalog_categories", gone.ID))
@@ -913,8 +893,7 @@ func (s *CatalogLiveSuite) holdProductDelete(productID string) func(ctx context.
 // ноль и удалила товар с остатком.
 func (s *CatalogLiveSuite) TestRace_ProductDeleteWaitsForStockChange() {
 	m := sdMark()
-	cat := s.newCategory(s.admin, "product", "SD-race Приход "+m)
-	p := s.sdProduct(cat.ID, "SD-race Товар-приход "+m, 0)
+	p := s.sdProduct("SD-race Товар-приход "+m, 0)
 
 	res := s.race(func(ctx context.Context) func() {
 		tx, err := s.Pool.Begin(ctx)
@@ -940,12 +919,11 @@ func (s *CatalogLiveSuite) TestRace_ProductDeleteWaitsForStockChange() {
 // удалённому товару.
 func (s *CatalogLiveSuite) TestRace_ProductStockEditWaitsForDelete() {
 	m := sdMark()
-	cat := s.newCategory(s.admin, "product", "SD-race Правка "+m)
-	p := s.sdProduct(cat.ID, "SD-race Товар-правка "+m, 0)
+	p := s.sdProduct("SD-race Товар-правка "+m, 0)
 
 	res := s.race(s.holdProductDelete(p), func() (int, []byte) {
 		return s.admin.Do(http.MethodPut, "/api/v1/products/"+p, map[string]any{
-			"category_id": cat.ID, "name": "SD-race Товар-правка " + m, "price": 100, "is_active": true, "stock": 7,
+			"name": "SD-race Товар-правка " + m, "price": 100, "is_active": true, "stock": 7,
 		})
 	})
 	s.Require().Equal(http.StatusNotFound, res.status, string(res.raw))
@@ -962,9 +940,8 @@ func (s *CatalogLiveSuite) TestRace_ProductStockEditWaitsForDelete() {
 // блокировки, создала бы услугу с новой ссылкой на удалённый товар.
 func (s *CatalogLiveSuite) TestRace_ServiceKitWaitsForProductDelete() {
 	m := sdMark()
-	prodCat := s.newCategory(s.admin, "product", "SD-race Комплект "+m)
 	svcCat := s.newCategory(s.admin, "service", "SD-race Работы "+m)
-	p := s.sdProduct(prodCat.ID, "SD-race Товар-комплект "+m, 0)
+	p := s.sdProduct("SD-race Товар-комплект "+m, 0)
 	name := "SD-race Услуга-комплект " + m
 
 	res := s.race(s.holdProductDelete(p), func() (int, []byte) {
@@ -978,12 +955,12 @@ func (s *CatalogLiveSuite) TestRace_ServiceKitWaitsForProductDelete() {
 }
 
 // §3 п. 5 (DS-014): удаление категории идёт (UPDATE строки не зафиксирован) — в это окно
-// приходит создание товара в этой категории. Товар обязан дождаться удаления (категория FOR
-// SHARE) и получить 400 category_id: not_found; товар не создан.
-func (s *CatalogLiveSuite) TestRace_ProductCreateWaitsForCategoryDelete() {
+// приходит создание услуги в этой категории. Услуга обязана дождаться удаления (категория FOR
+// SHARE) и получить 400 category_id: not_found; услуга не создана. (Категории есть только у услуг.)
+func (s *CatalogLiveSuite) TestRace_ServiceCreateWaitsForCategoryDelete() {
 	m := sdMark()
-	cat := s.newCategory(s.admin, "product", "SD-race Категория-уходит "+m)
-	name := "SD-race Товар-опоздал " + m
+	cat := s.newCategory(s.admin, "service", "SD-race Категория-уходит "+m)
+	name := "SD-race Услуга-опоздала " + m
 
 	res := s.race(func(ctx context.Context) func() {
 		tx, err := s.Pool.Begin(ctx)
@@ -993,11 +970,11 @@ func (s *CatalogLiveSuite) TestRace_ProductCreateWaitsForCategoryDelete() {
 		s.Require().NoError(err)
 		return func() { s.Require().NoError(tx.Commit(ctx)) }
 	}, func() (int, []byte) {
-		return s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{"category_id": cat.ID, "name": name, "price": 1})
+		return s.admin.Do(http.MethodPost, "/api/v1/services", map[string]any{"category_id": cat.ID, "name": name, "price": 1})
 	})
 	s.Require().Equal(http.StatusBadRequest, res.status, string(res.raw))
 	s.Equal("not_found", s.fields(res.raw)["category_id"])
-	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM products WHERE name = $1`, name), "товар не создан")
+	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM services WHERE name = $1`, name), "услуга не создана")
 }
 
 // §3 п. 4 (DS-017): категория с названием удалённой создаётся в незавершённой транзакции — в это
@@ -1028,8 +1005,7 @@ func (s *CatalogLiveSuite) TestRace_CategoryRestoreWaitsForCreateSameName() {
 // NO KEY UPDATE) и получает 404 PRODUCT_NOT_FOUND; отметка первого не перезаписана.
 func (s *CatalogLiveSuite) TestRace_SecondProductDeleteGets404() {
 	m := sdMark()
-	cat := s.newCategory(s.admin, "product", "SD-race Двойное "+m)
-	p := s.sdProduct(cat.ID, "SD-race Товар-двойное "+m, 0)
+	p := s.sdProduct("SD-race Товар-двойное "+m, 0)
 
 	res := s.race(s.holdProductDelete(p), func() (int, []byte) {
 		st, _, raw := s.sdDelete(s.admin, "/api/v1/products/"+p, "Второй запрос")

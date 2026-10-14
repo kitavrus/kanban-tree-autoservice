@@ -11,20 +11,14 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 )
 
-// ssrCategories — управление категориями встроено в экраны «Товары»/«Услуги» (левая
-// панель, task.md): создать/переименовать/архив/восстановить/удалить. Общий код для
-// обеих вкладок — редирект зависит от FormValue("kind").
+// ssrCategories — управление категориями встроено в экран «Услуги» (левая панель, task.md):
+// создать/переименовать/архив/восстановить/удалить.
 type ssrCategories struct {
 	svc    *CategoryService
 	status *ssr.StatusPages
 }
 
-func redirectTab(kind string) string {
-	if kind == KindService {
-		return "/catalog/services"
-	}
-	return "/catalog/products"
-}
+func redirectTab(string) string { return "/catalog/services" }
 
 // listCategoryPanel — категории вида kind (активные и архивные — панель управления
 // показывает все, «Показать архивные» списка товаров/услуг на панель не влияет).
@@ -100,10 +94,7 @@ func (h *SSR) categoryRemove(c fiber.Ctx) error {
 		}
 		c.Locals(catDeleteLocal, CatDeleteVM{ID: id, Reason: reason, Error: text})
 		c.Status(fiber.StatusUnprocessableEntity)
-		if kind == KindService {
-			return h.servicesList(c)
-		}
-		return h.productsList(c)
+		return h.servicesList(c)
 	}
 	return c.Redirect().Status(fiber.StatusSeeOther).To(redirectTab(kind) + "?flash=category_deleted")
 }

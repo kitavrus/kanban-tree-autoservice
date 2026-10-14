@@ -5,75 +5,9 @@
     <p class="text-body-secondary small" data-testid="equipment-client-name">{{ .ClientName }}</p>
     {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
     <div class="mb-3">
-      <label for="type_id" class="form-label">Тип *{{ if .TypeIsDeleted }} <span class="badge text-bg-secondary" data-testid="type-deleted-badge">удалён</span>{{ end }}</label>
-      <select id="type_id" name="type_id" class="form-select{{ if index .Errors "type_id" }} is-invalid{{ end }}" data-testid="equipment-type">
-        <option value=""></option>
-        {{ range .Types }}
-        <option value="{{ .ID }}" data-spec-keys='{{ .SpecKeysJSON }}'{{ if eq .ID $.TypeID }} selected{{ end }}>{{ .Name }}{{ if .IsDeleted }} (удалён){{ else if not .IsActive }} (в архиве){{ end }}</option>
-        {{ end }}
-      </select>
-      {{ with index .Errors "type_id" }}<div class="invalid-feedback d-block" data-testid="error-type_id">{{ . }}</div>{{ end }}
-    </div>
-    <div class="mb-3">
-      <label for="plate_number" class="form-label">Госномер</label>
+      <label for="plate_number" class="form-label">Госномер *</label>
       <input id="plate_number" name="plate_number" class="form-control text-uppercase mw-260{{ if index .Errors "plate_number" }} is-invalid{{ end }}" value="{{ .PlateNumber }}" maxlength="20" autocomplete="off" placeholder="А123ВС 777" data-testid="equipment-plate-number">
       {{ with index .Errors "plate_number" }}<div class="invalid-feedback" data-testid="error-plate_number">{{ . }}</div>{{ end }}
-    </div>
-    <div class="row g-3 mb-3">
-      <div class="col-sm-6">
-        <label for="brand" class="form-label">Производитель</label>
-        <input id="brand" name="brand" class="form-control{{ if index .Errors "brand" }} is-invalid{{ end }}" value="{{ .Brand }}" maxlength="200" autocomplete="off">
-        {{ with index .Errors "brand" }}<div class="invalid-feedback" data-testid="error-brand">{{ . }}</div>{{ end }}
-      </div>
-      <div class="col-sm-6">
-        <label for="model" class="form-label">Модель *</label>
-        <input id="model" name="model" class="form-control{{ if index .Errors "model" }} is-invalid{{ end }}" value="{{ .Model }}" maxlength="200" autocomplete="off">
-        {{ with index .Errors "model" }}<div class="invalid-feedback" data-testid="error-model">{{ . }}</div>{{ end }}
-      </div>
-    </div>
-    <div class="row g-3 mb-3">
-      <div class="col-sm-6">
-        <label for="sku" class="form-label">Артикул / партномер</label>
-        <input id="sku" name="sku" class="form-control{{ if index .Errors "sku" }} is-invalid{{ end }}" value="{{ .SKU }}" maxlength="200" autocomplete="off">
-        {{ with index .Errors "sku" }}<div class="invalid-feedback" data-testid="error-sku">{{ . }}</div>{{ end }}
-      </div>
-      <div class="col-sm-6">
-        <label for="serial" class="form-label">Серийный номер / VIN</label>
-        <input id="serial" name="serial" class="form-control{{ if index .Errors "serial" }} is-invalid{{ end }}" value="{{ .Serial }}" maxlength="200" autocomplete="off">
-        {{ with index .Errors "serial" }}<div class="invalid-feedback" data-testid="error-serial">{{ . }}</div>{{ end }}
-      </div>
-    </div>
-    <div class="mb-4">
-      <label class="form-label">Характеристики</label>
-      <datalist id="spec-keys-datalist"></datalist>
-      <div id="specs-rows" class="row-list" data-row-list data-row-min="0" data-testid="specs-rows">
-        {{ range $i, $s := .Specs }}
-        <div class="row-list-item" data-testid="spec-row">
-          <div class="flex-grow-1">
-            <input type="text" name="spec_k" class="form-control{{ if index $.Errors (printf "specs[%d].k" $i) }} is-invalid{{ end }}" value="{{ $s.K }}" placeholder="Характеристика" list="spec-keys-datalist" maxlength="100" autocomplete="off" data-testid="spec-key">
-            {{ with index $.Errors (printf "specs[%d].k" $i) }}<div class="invalid-feedback d-block" data-testid="error-specs-{{ $i }}">{{ . }}</div>{{ end }}
-          </div>
-          <input type="text" name="spec_v" class="form-control" value="{{ $s.V }}" placeholder="Значение" maxlength="500" autocomplete="off" data-testid="spec-value">
-          <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить характеристику" data-testid="spec-del">×</button>
-        </div>
-        {{ end }}
-        <template data-row-template>
-          <div class="row-list-item" data-testid="spec-row">
-            <div class="flex-grow-1">
-              <input type="text" name="spec_k" class="form-control" placeholder="Характеристика" list="spec-keys-datalist" maxlength="100" autocomplete="off" data-testid="spec-key">
-            </div>
-            <input type="text" name="spec_v" class="form-control" placeholder="Значение" maxlength="500" autocomplete="off" data-testid="spec-value">
-            <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить характеристику" data-testid="spec-del">×</button>
-          </div>
-        </template>
-      </div>
-      <button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-row-add="specs-rows" data-testid="spec-add">+ Характеристика</button>
-      {{ with index .Errors "specs" }}<div class="text-danger small mt-1" data-testid="error-specs">{{ . }}</div>{{ end }}
-    </div>
-    <div class="mb-4">
-      <label for="note" class="form-label">Примечание</label>
-      <input id="note" name="note" class="form-control{{ if index .Errors "note" }} is-invalid{{ end }}" value="{{ .Note }}" maxlength="1000" autocomplete="off">
-      {{ with index .Errors "note" }}<div class="invalid-feedback" data-testid="error-note">{{ . }}</div>{{ end }}
     </div>
     <div class="d-flex gap-2">
       <button type="submit" class="btn btn-primary" data-testid="equipment-save">Сохранить</button>
@@ -84,7 +18,7 @@
 </form>
 {{ if not .IsNew }}
 <form method="post" action="/equipment/{{ .ID }}/delete" class="mt-3" data-testid="equipment-delete-form" data-delete-dialog
-      data-delete-title="Удалить «{{ .Model }}»?"
+      data-delete-title="Удалить «{{ .PlateNumber }}»?"
       data-delete-text="Единицу можно восстановить в разделе «Удалённые»"
       {{ if .DeleteError }}data-delete-error="{{ .DeleteError }}"{{ end }}>
   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
@@ -92,54 +26,4 @@
   <button type="submit" class="btn btn-link text-danger p-0" data-testid="equipment-delete">Удалить</button>
 </form>
 {{ end }}
-{{ end }}
-{{ define "scripts" }}
-<script src="/assets/ssr-shared/js/row-list.js"></script>
-<script>
-(function () {
-  var typeSel = document.getElementById('type_id');
-  var specsList = document.getElementById('specs-rows');
-  var datalist = document.getElementById('spec-keys-datalist');
-  if (!typeSel || !specsList) return;
-
-  function escAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
-
-  function specKeysOf(select) {
-    var opt = select.selectedOptions[0];
-    if (!opt || !opt.dataset.specKeys) return [];
-    try { return JSON.parse(opt.dataset.specKeys) || []; } catch (e) { return []; }
-  }
-
-  function currentRows() {
-    return Array.prototype.map.call(specsList.querySelectorAll('[data-testid="spec-row"]'), function (row) {
-      var k = row.querySelector('[name="spec_k"]'), v = row.querySelector('[name="spec_v"]');
-      return { k: k ? k.value : '', v: v ? v.value : '' };
-    });
-  }
-
-  function updateDatalist(keys) {
-    if (!datalist) return;
-    datalist.innerHTML = keys.map(function (k) { return '<option value="' + escAttr(k) + '">'; }).join('');
-  }
-
-  // ADR-002/AC-009: при выборе/смене типа строки характеристик подставляются шаблоном —
-  // заполненные ЗНАЧЕНИЯ сохраняются, пустые заменяются шаблоном нового типа (эталон —
-  // prototype/index.html openEquipment: `filled = e.specs.filter(p => p.v.trim())` —
-  // отбор по значению, а не по наличию ключа: непустой ключ без значения — тоже пустая
-  // строка и заменяется шаблоном, иначе после смены типа накапливались бы старые ключи
-  // без значений вперемешку с новым шаблоном).
-  typeSel.addEventListener('change', function () {
-    var keys = specKeysOf(typeSel);
-    updateDatalist(keys);
-    var filled = currentRows().filter(function (r) { return r.v.trim(); });
-    var rows = filled.map(function (r) { return { spec_k: r.k, spec_v: r.v }; });
-    keys.forEach(function (k) {
-      if (!filled.some(function (r) { return r.k === k; })) rows.push({ spec_k: k, spec_v: '' });
-    });
-    KT.rowList.fill(specsList, rows);
-  });
-
-  updateDatalist(specKeysOf(typeSel));
-})();
-</script>
 {{ end }}

@@ -18,11 +18,8 @@ const (
 	msgInvalidText = "invalid_text"
 )
 
-// KindService/KindProduct — виды категорий каталога (D16).
-const (
-	KindService = "service"
-	KindProduct = "product"
-)
+// KindService — вид категорий каталога (D16): категории есть только у услуг.
+const KindService = "service"
 
 const categoryNameMax = 100
 
@@ -43,7 +40,7 @@ func (in CategoryInput) validateCreate() []errorspkg.Field {
 	var f []errorspkg.Field
 	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
 
-	if in.Kind != KindService && in.Kind != KindProduct {
+	if in.Kind != KindService {
 		add("kind", msgInvalid)
 	}
 	f = append(f, validateCategoryName(in.Name)...)

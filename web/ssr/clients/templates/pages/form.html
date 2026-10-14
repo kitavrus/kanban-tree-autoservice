@@ -12,26 +12,9 @@
     </div>
     {{ end }}
     <div class="mb-3">
-      <label for="company_name" class="form-label">Компания *</label>
+      <label for="company_name" class="form-label">Клиент *</label>
       <input id="company_name" name="company_name" class="form-control{{ if index .Errors "company_name" }} is-invalid{{ end }}" value="{{ .CompanyName }}" maxlength="200" autocomplete="off">
       {{ with index .Errors "company_name" }}<div class="invalid-feedback" data-testid="error-company_name">{{ . }}</div>{{ end }}
-    </div>
-    <div class="mb-3">
-      <label for="address" class="form-label">Адрес</label>
-      <input id="address" name="address" class="form-control{{ if index .Errors "address" }} is-invalid{{ end }}" value="{{ .Address }}" maxlength="500" autocomplete="off">
-      {{ with index .Errors "address" }}<div class="invalid-feedback" data-testid="error-address">{{ . }}</div>{{ end }}
-    </div>
-    <div class="row g-3 mb-3">
-      <div class="col-sm-6">
-        <label for="contact_name" class="form-label">Представитель</label>
-        <input id="contact_name" name="contact_name" class="form-control{{ if index .Errors "contact_name" }} is-invalid{{ end }}" value="{{ .ContactName }}" maxlength="200" autocomplete="off">
-        {{ with index .Errors "contact_name" }}<div class="invalid-feedback" data-testid="error-contact_name">{{ . }}</div>{{ end }}
-      </div>
-      <div class="col-sm-6">
-        <label for="contact_position" class="form-label">Должность</label>
-        <input id="contact_position" name="contact_position" class="form-control{{ if index .Errors "contact_position" }} is-invalid{{ end }}" value="{{ .ContactPosition }}" maxlength="200" autocomplete="off">
-        {{ with index .Errors "contact_position" }}<div class="invalid-feedback" data-testid="error-contact_position">{{ . }}</div>{{ end }}
-      </div>
     </div>
     <div class="mb-4">
       <label class="form-label">Телефоны *</label>
@@ -78,19 +61,13 @@
       <thead>
         <tr>
           <th>Госномер</th>
-          <th>Модель</th>
-          <th>Тип</th>
-          <th>Серийный номер</th>
           <th class="text-end">Действия</th>
         </tr>
       </thead>
       <tbody>
       {{ range .Equipment }}
-        <tr data-testid="equipment-row" data-model="{{ .Model }}">
-          <td class="text-nowrap fw-semibold" data-testid="equipment-plate-number">{{ .PlateNumber }}</td>
-          <td><a href="/equipment/{{ .ID }}" class="fw-semibold">{{ .Model }}</a></td>
-          <td>{{ .TypeName }}{{ if .TypeIsDeleted }} <span class="badge text-bg-secondary" data-testid="type-deleted-badge">удалён</span>{{ else if not .TypeIsActive }} <span class="text-body-secondary small">(в архиве)</span>{{ end }}</td>
-          <td>{{ .Serial }}</td>
+        <tr data-testid="equipment-row" data-plate-number="{{ .PlateNumber }}">
+          <td class="text-nowrap fw-semibold" data-testid="equipment-plate-number"><a href="/equipment/{{ .ID }}">{{ if .PlateNumber }}{{ .PlateNumber }}{{ else }}без номера{{ end }}</a></td>
           <td class="text-end text-nowrap">
             <a href="/equipment/{{ .ID }}" class="btn btn-outline-secondary btn-sm" data-testid="equipment-edit">Редактировать</a>
             <a href="/equipment/{{ .ID }}/history" class="btn btn-outline-primary btn-sm" data-testid="equipment-history">История</a>

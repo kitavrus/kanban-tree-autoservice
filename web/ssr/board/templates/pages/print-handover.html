@@ -13,7 +13,7 @@
 
 <section class="print-section">
   <h2>Клиент</h2>
-  <p data-testid="print-client">{{ .ClientName }}{{ if .ContactName }}, {{ .ContactName }}{{ end }}</p>
+  <p data-testid="print-client">{{ .ClientName }}</p>
   {{ if .Phones }}<p data-testid="print-phones">Телефон: {{ .Phones }}</p>{{ end }}
 </section>
 
@@ -21,11 +21,11 @@
   <h2>Оборудование</h2>
   {{ if .Card.Equipment }}
   <table class="table table-bordered table-sm" data-testid="print-equipment">
-    <thead><tr><th>Госномер</th><th>Тип</th><th>Бренд</th><th>Модель</th><th>Серийный №</th><th>Комплектность</th><th>Состояние</th></tr></thead>
+    <thead><tr><th>Госномер</th><th>Комплектность</th><th>Состояние</th></tr></thead>
     <tbody>
     {{ range .Card.Equipment }}
     <tr>
-      <td class="text-nowrap" data-testid="print-plate-number">{{ .PlateNumber }}</td><td>{{ .TypeName }}</td><td>{{ .Brand }}</td><td>{{ .Model }}</td><td>{{ .Serial }}</td>
+      <td class="text-nowrap" data-testid="print-plate-number">{{ .PlateNumber }}</td>
       <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
     </tr>
     {{ end }}

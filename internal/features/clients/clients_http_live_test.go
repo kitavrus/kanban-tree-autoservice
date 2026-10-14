@@ -43,14 +43,11 @@ type phoneDTO struct {
 }
 
 type clientDTO struct {
-	ID              string     `json:"id"`
-	CompanyName     string     `json:"company_name"`
-	Address         string     `json:"address"`
-	ContactName     string     `json:"contact_name"`
-	ContactPosition string     `json:"contact_position"`
-	Phones          []phoneDTO `json:"phones"`
-	EquipmentCount  int        `json:"equipment_count"`
-	Version         int64      `json:"version"`
+	ID             string     `json:"id"`
+	CompanyName    string     `json:"company_name"`
+	Phones         []phoneDTO `json:"phones"`
+	EquipmentCount int        `json:"equipment_count"`
+	Version        int64      `json:"version"`
 }
 
 type apiErr struct {
@@ -91,9 +88,8 @@ func (s *ClientsLiveSuite) put(b *testutil.Browser, id string, body map[string]a
 
 func card(c clientDTO, patch map[string]any) map[string]any {
 	m := map[string]any{
-		"company_name": c.CompanyName, "address": c.Address,
-		"contact_name": c.ContactName, "contact_position": c.ContactPosition,
-		"phones": c.Phones, "version": c.Version,
+		"company_name": c.CompanyName,
+		"phones":       c.Phones, "version": c.Version,
 	}
 	for k, v := range patch {
 		m[k] = v
@@ -114,10 +110,7 @@ func (s *ClientsLiveSuite) newClient(company string, phones ...map[string]any) c
 
 func (s *ClientsLiveSuite) TestCreateAndGet_HappyPath() {
 	st, c, raw := s.create(s.admin, map[string]any{
-		"company_name":     "  ООО Ромашка  ",
-		"address":          "г. Москва, ул. Ленина, 1",
-		"contact_name":     "Иванов Иван",
-		"contact_position": "Директор",
+		"company_name": "  ООО Ромашка  ",
 		"phones": []map[string]any{
 			{"phone": "+7 (999) 123-45-67", "note": "основной"},
 			{"phone": "8001234567", "note": ""},
@@ -137,16 +130,19 @@ func (s *ClientsLiveSuite) TestCreateAndGet_HappyPath() {
 	s.Require().NoError(json.Unmarshal(raw, &got))
 	s.Equal(c.ID, got.ID)
 	s.Len(got.Phones, 2)
+	for _, k := range []string{`"address"`, `"contact_name"`, `"contact_position"`} {
+		s.NotContains(string(raw), k, "поля адреса/контакта убраны")
+	}
 }
 
-// ---- LV-004: список и поиск (компания/представитель/телефон, в т.ч. по цифрам) ----
+// ---- LV-004: список и поиск (компания/телефон, в т.ч. по цифрам) ----
 
 func (s *ClientsLiveSuite) TestList_Search() {
 	c1 := s.newClient("Холодмаш", map[string]any{"phone": "+7 (999) 111-22-33", "note": ""})
 	s.newClient("Электросервис", map[string]any{"phone": "+7 (888) 000-00-00", "note": ""})
 	st, _, raw := s.create(s.admin, map[string]any{
-		"company_name": "Прочее ООО", "contact_name": "Холодов Пётр",
-		"phones": []map[string]any{{"phone": "111", "note": ""}},
+		"company_name": "Холодов Пётр",
+		"phones":       []map[string]any{{"phone": "111", "note": ""}},
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 
@@ -159,7 +155,7 @@ func (s *ClientsLiveSuite) TestList_Search() {
 		Offset int         `json:"offset"`
 	}
 	s.Require().NoError(json.Unmarshal(raw, &list))
-	s.Equal(2, list.Total, "по компании 'Холодмаш' и по контакту 'Холодов Пётр'")
+	s.Equal(2, list.Total, "по компаниям 'Холодмаш' и 'Холодов Пётр'")
 	s.Equal(50, list.Limit)
 
 	// поиск по цифрам телефона (ADR-003): "999 111" встречается только у c1.
@@ -479,13 +475,10 @@ func reasonBody(reason string) map[string]any { return map[string]any{"reason": 
 func (s *ClientsLiveSuite) TestDelete_Soft_And_RepeatDelete404() {
 	c := s.newClient("Удаляемый-Клиент", map[string]any{"phone": "111", "note": ""}, map[string]any{"phone": "222", "note": ""})
 
-	var typeID string
-	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
-		`INSERT INTO equipment_types (name) VALUES ('Тип для удаления') RETURNING id`).Scan(&typeID))
 	var equipmentID string
 	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
-		`INSERT INTO equipment (client_id, type_id, model) VALUES ($1::uuid, $2::uuid, 'M1') RETURNING id`,
-		c.ID, typeID).Scan(&equipmentID))
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1::uuid, 'У001УУ 77') RETURNING id`,
+		c.ID).Scan(&equipmentID))
 
 	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/clients/"+c.ID, reasonBody("Создан по ошибке"))
 	s.Require().Equal(http.StatusOK, st, string(raw))
@@ -576,7 +569,7 @@ func (s *ClientsLiveSuite) TestSSR_Guards() {
 // ---- LV-021: SSR PRG create + 409 conflict сохраняет ввод (в т.ч. телефоны, ADR-005) ----
 
 func (s *ClientsLiveSuite) TestSSR_CreatePRG_And_ConflictKeepsInput() {
-	form := url.Values{"company_name": {"SSR Конфликт Клиент"}, "address": {"г. Тест"}}
+	form := url.Values{"company_name": {"SSR Конфликт Клиент"}}
 	form.Add("phone", "9990000000")
 	form.Add("phone_note", "")
 	resp := s.admin.Request(http.MethodPost, "/clients", form, nil)
@@ -668,42 +661,15 @@ func (s *ClientsLiveSuite) TestSSR_Create_PhoneErrorIndexMatchesNormalizedRow() 
 
 // ---- Equipment API (Phase 7) ----
 
-type specDTO struct {
-	K string `json:"k"`
-	V string `json:"v"`
-}
-
+// equipmentDTO — автомобиль клиента: только госномер (EquipmentResponse).
 type equipmentDTO struct {
-	ID           string    `json:"id"`
-	ClientID     string    `json:"client_id"`
-	TypeID       string    `json:"type_id"`
-	TypeName     string    `json:"type_name"`
-	TypeIsActive bool      `json:"type_is_active"`
-	PlateNumber  string    `json:"plate_number"`
-	Brand        string    `json:"brand"`
-	Model        string    `json:"model"`
-	SKU          string    `json:"sku"`
-	Serial       string    `json:"serial"`
-	Specs        []specDTO `json:"specs"`
-	Note         string    `json:"note"`
+	ID          string `json:"id"`
+	ClientID    string `json:"client_id"`
+	PlateNumber string `json:"plate_number"`
 }
 
-// newType — активный тип оборудования напрямую в БД (equipmenttypes — отдельный пакет,
-// ADR-102: связь только через SQL).
-func (s *ClientsLiveSuite) newType(name string) string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
-		`INSERT INTO equipment_types (name) VALUES ($1) RETURNING id`, name).Scan(&id))
-	return id
-}
-
-// archiveType — тип в архиве (is_active=false) напрямую в БД.
-func (s *ClientsLiveSuite) archiveType(name string) string {
-	id := s.newType(name)
-	_, err := s.Pool.Exec(s.T().Context(), `UPDATE equipment_types SET is_active = false WHERE id = $1::uuid`, id)
-	s.Require().NoError(err)
-	return id
-}
+// carBody — тело создания/правки автомобиля.
+func carBody(plate string) map[string]any { return map[string]any{"plate_number": plate} }
 
 func (s *ClientsLiveSuite) createEquipment(b *testutil.Browser, clientID string, body map[string]any) (int, equipmentDTO, []byte) {
 	st, raw := b.Do(http.MethodPost, "/api/v1/clients/"+clientID+"/equipment", body)
@@ -714,33 +680,28 @@ func (s *ClientsLiveSuite) createEquipment(b *testutil.Browser, clientID string,
 	return st, e, raw
 }
 
-// ---- LV-010/LV-011: happy path — создание единицы оборудования с характеристиками,
-// список (envelope), счётчик оборудования клиента ----
+// ---- LV-010/LV-011: happy path — создание автомобиля (госномер нормализуется), список
+// (envelope), счётчик автомобилей клиента ----
 
 func (s *ClientsLiveSuite) TestEquipment_CreateAndGet_HappyPath() {
 	c := s.newClient("Оборудование-Клиент")
-	typeID := s.newType("Компрессор")
 
-	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{
-		"type_id": typeID, "brand": "  Danfoss  ", "model": "M100", "sku": "SKU1", "serial": "SN1",
-		"specs": []map[string]any{{"k": "мощность", "v": "5 кВт"}}, "note": "примечание",
-	})
+	st, e, raw := s.createEquipment(s.admin, c.ID, carBody("  к100кк   77 "))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	s.Equal(c.ID, e.ClientID)
-	s.Equal(typeID, e.TypeID)
-	s.Equal("Компрессор", e.TypeName)
-	s.True(e.TypeIsActive)
-	s.Equal("Danfoss", e.Brand, "trim")
-	s.Require().Len(e.Specs, 1)
-	s.Equal("мощность", e.Specs[0].K)
+	s.Equal("К100КК 77", e.PlateNumber, "госномер нормализован")
+	for _, k := range []string{`"brand"`, `"model"`, `"serial"`, `"specs"`, `"type_id"`} {
+		s.NotContains(string(raw), k, "у автомобиля только госномер")
+	}
 
 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
 	s.Require().Equal(http.StatusOK, st)
 	var got equipmentDTO
 	s.Require().NoError(json.Unmarshal(raw, &got))
 	s.Equal(e.ID, got.ID)
+	s.Equal("К100КК 77", got.PlateNumber)
 
-	// список оборудования клиента отражает созданную единицу.
+	// список автомобилей клиента отражает созданный.
 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment", nil)
 	s.Require().Equal(http.StatusOK, st)
 	var list struct {
@@ -750,7 +711,7 @@ func (s *ClientsLiveSuite) TestEquipment_CreateAndGet_HappyPath() {
 	s.Require().NoError(json.Unmarshal(raw, &list))
 	s.Equal(1, list.Total)
 
-	// счётчик оборудования клиента отражает реальные данные.
+	// счётчик автомобилей клиента отражает реальные данные.
 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
 	s.Require().Equal(http.StatusOK, st)
 	var cGot clientDTO
@@ -763,8 +724,7 @@ func (s *ClientsLiveSuite) TestEquipment_CreateAndGet_HappyPath() {
 
 func (s *ClientsLiveSuite) TestEquipment_Authz_ExecutorCreateAllowed_MutationsForbidden() {
 	c := s.newClient("Права-Оборудование-Клиент")
-	typeID := s.newType("Тип для прав")
-	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
+	st, e, raw := s.createEquipment(s.admin, c.ID, carBody("А201АА 77"))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 
 	s.SeedUser("clients-exec-eq", "password1", "Клиенты Исп Обор", "executor", true)
@@ -776,7 +736,7 @@ func (s *ClientsLiveSuite) TestEquipment_Authz_ExecutorCreateAllowed_MutationsFo
 	st, _ = exec.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
 	s.Equal(http.StatusOK, st, "исполнитель читает единицу оборудования")
 
-	st, execEq, raw := s.createEquipment(exec, c.ID, map[string]any{"type_id": typeID, "model": "M2"})
+	st, execEq, raw := s.createEquipment(exec, c.ID, carBody("А202АА 77"))
 	s.Equal(http.StatusCreated, st, "D19: исполнитель создаёт оборудование — %s", string(raw))
 	s.NotEmpty(execEq.ID)
 
@@ -784,7 +744,7 @@ func (s *ClientsLiveSuite) TestEquipment_Authz_ExecutorCreateAllowed_MutationsFo
 		{http.MethodPut, "/api/v1/equipment/" + e.ID},
 		{http.MethodDelete, "/api/v1/equipment/" + e.ID},
 	} {
-		st, raw := exec.Do(cs.method, cs.path, map[string]any{"type_id": typeID, "model": "x"})
+		st, raw := exec.Do(cs.method, cs.path, carBody("А203АА 77"))
 		s.Equal(http.StatusForbidden, st, "%s %s → %s", cs.method, cs.path, string(raw))
 		s.Equal("FORBIDDEN", s.errOf(raw).Code)
 	}
@@ -792,7 +752,7 @@ func (s *ClientsLiveSuite) TestEquipment_Authz_ExecutorCreateAllowed_MutationsFo
 	anon := s.NewBrowser()
 	st, _ = anon.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment", nil)
 	s.Equal(http.StatusUnauthorized, st)
-	st, _ = anon.Do(http.MethodPost, "/api/v1/clients/"+c.ID+"/equipment", map[string]any{"type_id": typeID, "model": "x"})
+	st, _ = anon.Do(http.MethodPost, "/api/v1/clients/"+c.ID+"/equipment", carBody("А204АА 77"))
 	s.Equal(http.StatusUnauthorized, st)
 }
 
@@ -801,14 +761,13 @@ func (s *ClientsLiveSuite) TestEquipment_Authz_ExecutorCreateAllowed_MutationsFo
 
 func (s *ClientsLiveSuite) TestEquipment_IDOR_UnknownOrForeignClient404() {
 	other := s.newClient("Чужой-Клиент-Обор")
-	typeID := s.newType("Тип IDOR")
-	_, e, raw := s.createEquipment(s.admin, other.ID, map[string]any{"type_id": typeID, "model": "M1"})
+	_, e, raw := s.createEquipment(s.admin, other.ID, carBody("Б301ББ 77"))
 	s.Require().NotEmpty(e.ID, string(raw))
 
 	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
 		st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients/"+id+"/equipment", nil)
 		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
-		st, _, raw = s.createEquipment(s.admin, id, map[string]any{"type_id": typeID, "model": "M1"})
+		st, _, raw = s.createEquipment(s.admin, id, carBody("Б302ББ 77"))
 		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
 	}
 
@@ -830,44 +789,25 @@ func (s *ClientsLiveSuite) TestEquipment_IDOR_UnknownOrForeignClient404() {
 	}
 }
 
-// ---- LV-012/LV-013/LV-014/LV-036 (equipment часть, валидация/adversarial, TD-4):
-// обязательные поля, битый uuid type_id, архивный тип на create → 400 archived, не 500;
-// specs key_required; мусор в теле → 400 ----
+// ---- LV-012/LV-014/LV-036 (equipment часть, валидация/adversarial, TD-4): госномер
+// обязателен; мусор в теле → 400, не 500 ----
 
-func (s *ClientsLiveSuite) TestEquipment_Validation_And_ArchivedType400() {
+func (s *ClientsLiveSuite) TestEquipment_Validation400() {
 	c := s.newClient("Валидация-Оборудование-Клиент")
-	archivedType := s.archiveType("Архивный тип на создание")
 
-	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": archivedType, "model": "M1"})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("archived", s.fields(raw)["type_id"])
-
-	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{"model": "M1"})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("required", s.fields(raw)["type_id"])
-
-	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{"type_id": "not-a-uuid", "model": "M1"})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("invalid", s.fields(raw)["type_id"])
-
-	typeID := s.newType("Тип валидации")
-	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("required", s.fields(raw)["model"])
-
-	// specs: значение без ключа → key_required.
-	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{
-		"type_id": typeID, "model": "M1", "specs": []map[string]any{{"k": "", "v": "5"}},
-	})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("key_required", s.fields(raw)["specs[0].k"])
-
-	// несуществующий type_id (валидный uuid, нет строки) → not_found.
-	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{
-		"type_id": "00000000-0000-0000-0000-000000000000", "model": "M1",
-	})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("not_found", s.fields(raw)["type_id"])
+	for _, tc := range []struct {
+		body map[string]any
+		msg  string
+	}{
+		{map[string]any{}, "required"},
+		{carBody(""), "required"},
+		{carBody("   "), "required"},
+		{carBody("А1#"), "invalid_format"},
+	} {
+		st, _, raw := s.createEquipment(s.admin, c.ID, tc.body)
+		s.Equal(http.StatusBadRequest, st, string(raw))
+		s.Equal(tc.msg, s.fields(raw)["plate_number"], string(raw))
+	}
 
 	for _, body := range []string{`{`, `null`, `"str"`} {
 		st, raw := s.admin.Do(http.MethodPost, "/api/v1/clients/"+c.ID+"/equipment", body)
@@ -875,33 +815,22 @@ func (s *ClientsLiveSuite) TestEquipment_Validation_And_ArchivedType400() {
 	}
 }
 
-// ---- code review MEDIUM-1 (equipment часть): NUL-байт в полях единицы → 400, не 500 ----
+// ---- code review MEDIUM-1 (equipment часть): NUL-байт в госномере → 400, не 500 ----
 
 func (s *ClientsLiveSuite) TestEquipment_NulByte_400() {
 	c := s.newClient("NUL-Оборудование-Клиент")
-	typeID := s.newType("NUL Тип")
 
-	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{
-		"type_id": typeID, "model": "M1\u0000",
-	})
+	st, _, raw := s.createEquipment(s.admin, c.ID, carBody("А1\u0000"))
 	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("invalid_text", s.fields(raw)["model"])
-
-	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{
-		"type_id": typeID, "model": "M1", "specs": []map[string]any{{"k": "к\u0000люч", "v": "5"}},
-	})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("invalid_text", s.fields(raw)["specs[0].k"])
+	s.Equal("invalid_text", s.fields(raw)["plate_number"])
 }
 
 // ---- LV-008 (equipment часть, TD-4, гонка клиента): несуществующий/удалённый параллельно
 // клиент на POST → 404 CLIENT_NOT_FOUND ----
 
 func (s *ClientsLiveSuite) TestEquipment_Create_ClientGoneOrMissing_404() {
-	typeID := s.newType("Тип для гонки клиента")
-
 	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
-		st, _, raw := s.createEquipment(s.admin, id, map[string]any{"type_id": typeID, "model": "M1"})
+		st, _, raw := s.createEquipment(s.admin, id, carBody("В401ВВ 77"))
 		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
 		s.Equal("CLIENT_NOT_FOUND", s.errOf(raw).Code)
 	}
@@ -911,20 +840,17 @@ func (s *ClientsLiveSuite) TestEquipment_Create_ClientGoneOrMissing_404() {
 	c := s.newClient("Удаляемый-Параллельно-Клиент")
 	_, err := s.Pool.Exec(s.T().Context(), `DELETE FROM clients WHERE id = $1::uuid`, c.ID)
 	s.Require().NoError(err)
-	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
+	st, _, raw := s.createEquipment(s.admin, c.ID, carBody("В402ВВ 77"))
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("CLIENT_NOT_FOUND", s.errOf(raw).Code)
 }
 
-// ---- LV-013 (equipment часть): правка — LWW, смена типа на активный ok, version клиента
-// не меняется ----
+// ---- LV-013 (equipment часть): правка — LWW, version клиента не меняется ----
 
 func (s *ClientsLiveSuite) TestEquipment_Update_LWW_ClientVersionUnchanged() {
 	c := s.newClient("Правка-Оборудование-Клиент")
-	typeID := s.newType("Тип правки")
-	typeID2 := s.newType("Тип правки 2")
 
-	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
+	st, e, raw := s.createEquipment(s.admin, c.ID, carBody("Г501ГГ 77"))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 
 	st, rawGet := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
@@ -932,21 +858,20 @@ func (s *ClientsLiveSuite) TestEquipment_Update_LWW_ClientVersionUnchanged() {
 	var before clientDTO
 	s.Require().NoError(json.Unmarshal(rawGet, &before))
 
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
-		"type_id": typeID2, "brand": "NewBrand", "model": "M2", "sku": "", "serial": "", "note": "",
-		"specs": []map[string]any{{"k": "k1", "v": "v1"}},
-	})
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, carBody("г502гг 77"))
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var updated equipmentDTO
 	s.Require().NoError(json.Unmarshal(raw, &updated))
-	s.Equal(typeID2, updated.TypeID)
-	s.Equal("M2", updated.Model)
+	s.Equal("Г502ГГ 77", updated.PlateNumber)
 
 	// LWW: второй PUT без учёта версии всё равно применяется (нет version у equipment).
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
-		"type_id": typeID2, "model": "M3",
-	})
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, carBody("Г503ГГ 77"))
 	s.Require().Equal(http.StatusOK, st, string(raw))
+
+	// правка в пустой госномер → 400 required.
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, carBody(" "))
+	s.Equal(http.StatusBadRequest, st, string(raw))
+	s.Equal("required", s.fields(raw)["plate_number"])
 
 	// version клиента не изменился после правок оборудования.
 	st, rawAfter := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
@@ -956,47 +881,12 @@ func (s *ClientsLiveSuite) TestEquipment_Update_LWW_ClientVersionUnchanged() {
 	s.Equal(before.Version, after.Version, "сохранение оборудования не меняет version клиента")
 }
 
-// ---- LV-013 (equipment часть, TD-4): смена на архивный тип → 400 archived; правка БЕЗ
-// смены уже архивного типа разрешена ----
+// ---- LV-015/LV-032: удаление автомобиля; повторный DELETE → 404 ----
 
-func (s *ClientsLiveSuite) TestEquipment_Update_ArchivedTypeRules() {
-	c := s.newClient("Архивный-Тип-Правка-Клиент")
-	typeID := s.newType("Активный тип правки")
-	archivedType := s.archiveType("Архивный тип для смены")
-
-	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-
-	// смена на архивный тип → 400 archived.
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
-		"type_id": archivedType, "model": "M1",
-	})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("archived", s.fields(raw)["type_id"])
-
-	// заводим единицу сразу с типом, который потом архивируем — правка БЕЗ смены типа
-	// (тип уже архивный) разрешена.
-	typeToArchive := s.newType("Тип, который заархивируют")
-	st, e2, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeToArchive, "model": "M2"})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	_, err := s.Pool.Exec(s.T().Context(), `UPDATE equipment_types SET is_active = false WHERE id = $1::uuid`, typeToArchive)
-	s.Require().NoError(err)
-
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e2.ID, map[string]any{
-		"type_id": typeToArchive, "model": "M2-правка", "brand": "brand",
-	})
-	s.Equal(http.StatusOK, st, string(raw), "правка без смены уже архивного типа разрешена")
-}
-
-// ---- LV-015/LV-032: удаление единицы оборудования; повторный DELETE → 404; тип, чья
-// единственная единица мягко удалена, удаляется (soft-delete-catalog TS-061: отказ
-// EQUIPMENT_TYPE_IN_USE снят) ----
-
-func (s *ClientsLiveSuite) TestEquipment_Delete_ThenTypeDeletes() {
+func (s *ClientsLiveSuite) TestEquipment_Delete_RepeatDelete404() {
 	c := s.newClient("Удаление-Оборудование-Клиент")
-	typeID := s.newType("Тип для in-use")
 
-	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
+	st, e, raw := s.createEquipment(s.admin, c.ID, carBody("Д601ДД 77"))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 
 	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+e.ID, reasonBody("Списано"))
@@ -1015,12 +905,6 @@ func (s *ClientsLiveSuite) TestEquipment_Delete_ThenTypeDeletes() {
 	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+e.ID, reasonBody("Повтор"))
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("EQUIPMENT_NOT_FOUND", s.errOf(raw).Code)
-
-	// единица удалена МЯГКО — её строка по-прежнему ссылается на тип, но удалению типа это не
-	// мешает: удаление типа — UPDATE, внешний ключ equipment.type_id не срабатывает
-	// (soft-delete-catalog §4.4, TS-061).
-	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment-types/"+typeID, reasonBody("Тип больше не нужен"))
-	s.Equal(http.StatusOK, st, string(raw))
 }
 
 // ---- LV-035 (equipment часть): мусор в limit/offset списка оборудования — дефолты,
@@ -1040,19 +924,16 @@ func (s *ClientsLiveSuite) TestEquipment_List_GarbageParams() {
 
 // ---- SSR equipment (Phase 8) ----
 
-// ---- admin PRG: создание/правка/удаление единицы через форму ----
+// ---- admin PRG: создание/правка/удаление автомобиля через форму ----
 
 func (s *ClientsLiveSuite) TestSSR_Equipment_CreateEditDelete_PRG() {
 	c := s.newClient("SSR Оборудование Клиент")
-	typeID := s.newType("SSR Тип оборудования")
 
 	st, page := s.admin.Do(http.MethodGet, "/clients/"+c.ID+"/equipment/new", nil)
 	s.Equal(http.StatusOK, st)
 	s.Contains(string(page), `data-testid="equipment-form"`)
 
-	form := url.Values{"type_id": {typeID}, "model": {"M100"}, "brand": {"Danfoss"}}
-	form.Add("spec_k", "мощность")
-	form.Add("spec_v", "5 кВт")
+	form := url.Values{"plate_number": {"е701ее 77"}}
 	resp := s.admin.Request(http.MethodPost, "/clients/"+c.ID+"/equipment", form, nil)
 	resp.Body.Close()
 	s.Equal(http.StatusSeeOther, resp.StatusCode)
@@ -1066,14 +947,14 @@ func (s *ClientsLiveSuite) TestSSR_Equipment_CreateEditDelete_PRG() {
 	s.Require().NoError(json.Unmarshal(raw, &list))
 	s.Require().Len(list.Items, 1, string(raw))
 	e := list.Items[0]
-	s.Equal("M100", e.Model)
+	s.Equal("Е701ЕЕ 77", e.PlateNumber)
 
-	// правка — обновляем модель.
+	// правка — меняем госномер.
 	st, page = s.admin.Do(http.MethodGet, "/equipment/"+e.ID, nil)
 	s.Require().Equal(http.StatusOK, st)
-	s.Contains(string(page), "M100")
+	s.Contains(string(page), "Е701ЕЕ 77")
 
-	editForm := url.Values{"type_id": {typeID}, "model": {"M200"}}
+	editForm := url.Values{"plate_number": {"Е702ЕЕ 77"}}
 	resp = s.admin.Request(http.MethodPost, "/equipment/"+e.ID, editForm, nil)
 	resp.Body.Close()
 	s.Equal(http.StatusSeeOther, resp.StatusCode)
@@ -1083,7 +964,7 @@ func (s *ClientsLiveSuite) TestSSR_Equipment_CreateEditDelete_PRG() {
 	s.Require().Equal(http.StatusOK, st)
 	var got equipmentDTO
 	s.Require().NoError(json.Unmarshal(raw, &got))
-	s.Equal("M200", got.Model)
+	s.Equal("Е702ЕЕ 77", got.PlateNumber)
 
 	// удаление — PRG на карточку клиента, оборудование пропадает.
 	resp = s.admin.Request(http.MethodPost, "/equipment/"+e.ID+"/delete",
@@ -1095,74 +976,31 @@ func (s *ClientsLiveSuite) TestSSR_Equipment_CreateEditDelete_PRG() {
 	s.Equal(http.StatusNotFound, st)
 }
 
-// ---- валидация формы → 422 с текстом ошибки; архивный тип на создание → 422 с текстом ----
+// ---- валидация формы → 422 с текстом ошибки под госномером, ввод сохранён ----
 
 func (s *ClientsLiveSuite) TestSSR_Equipment_ValidationRerendersForm() {
 	c := s.newClient("SSR Валидация Оборудование")
-	archivedType := s.archiveType("SSR Архивный тип формы")
 
 	st, page := s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", url.Values{})
 	s.Equal(http.StatusUnprocessableEntity, st)
-	s.Contains(string(page), "Выберите тип")
-	s.Contains(string(page), "Обязательное поле")
+	s.Contains(string(page), "Укажите госномер")
+	s.Contains(string(page), `data-testid="error-plate_number"`)
 
-	// архивный тип на создание → 422 "Тип в архиве — выберите другой", ввод сохранён
-	// (ADR-004: TypeActive-проверка выполняется отдельно от валидации полей).
-	archivedForm := url.Values{"type_id": {archivedType}, "model": {"Мой ввод"}}
-	st, page = s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", archivedForm)
+	st, page = s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", url.Values{"plate_number": {"А1#Б2"}})
 	s.Equal(http.StatusUnprocessableEntity, st)
 	body := string(page)
-	s.Contains(body, "Тип в архиве — выберите другой")
-	s.Contains(body, "Мой ввод", "введённая модель сохранена в форме")
-
-	// значение характеристики без ключа → key_required, ввод сохранён.
-	activeType := s.newType("SSR Активный тип формы")
-	specForm := url.Values{"type_id": {activeType}, "model": {"Мой ввод 2"}}
-	specForm.Add("spec_k", "")
-	specForm.Add("spec_v", "5")
-	st, page = s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", specForm)
-	s.Equal(http.StatusUnprocessableEntity, st)
-	body = string(page)
-	s.Contains(body, "Укажите характеристику")
-	s.Contains(body, "Мой ввод 2", "введённая модель сохранена в форме")
-}
-
-// ---- code review MEDIUM-2 (equipment часть): SSR-форма единицы перерисовывается
-// НОРМАЛИЗОВАННЫМ списком характеристик — тот же баг, что и с телефонами ----
-
-func (s *ClientsLiveSuite) TestSSR_Equipment_SpecErrorIndexMatchesNormalizedRow() {
-	c := s.newClient("Индекс-Спека-Клиент")
-	typeID := s.newType("Индекс Спека Тип")
-
-	form := url.Values{"type_id": {typeID}, "model": {"M1"}}
-	form.Add("spec_k", "")
-	form.Add("spec_v", "")
-	form.Add("spec_k", "")
-	form.Add("spec_v", "значение без ключа")
-	st, page := s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", form)
-	s.Equal(http.StatusUnprocessableEntity, st)
-	body := string(page)
-
-	firstRow := strings.Index(body, `data-testid="spec-row"`)
-	templateStart := strings.Index(body, "<template data-row-template>")
-	s.Require().True(firstRow >= 0 && templateStart > firstRow, body)
-	rowSegment := body[firstRow:templateStart]
-
-	s.Equal(1, strings.Count(rowSegment, `data-testid="spec-row"`),
-		"полностью пустая пара отброшена normalize() — остаётся только 'значение без ключа'")
-	s.Contains(rowSegment, `value="значение без ключа"`, "нормализованная (не сырая) строка формы")
-	s.Contains(rowSegment, "Укажите характеристику", "ошибка под строкой со значением, не под отброшенной пустой парой")
+	s.Contains(body, "Только буквы, цифры, пробел и дефис")
+	s.Contains(body, "А1#Б2", "введённый госномер сохранён в форме")
 }
 
 // ---- CSRF: POST без токена → 403; аноним → редирект /login; исполнитель → 403-страница ----
 
 func (s *ClientsLiveSuite) TestSSR_Equipment_Guards() {
 	c := s.newClient("SSR Права Оборудование")
-	typeID := s.newType("SSR Тип прав")
-	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
+	st, e, raw := s.createEquipment(s.admin, c.ID, carBody("Ж801ЖЖ 77"))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 
-	resp := s.admin.Request(http.MethodPost, "/clients/"+c.ID+"/equipment", url.Values{"type_id": {typeID}, "model": {"M2"}}, map[string]string{"X-Csrf-Token": ""})
+	resp := s.admin.Request(http.MethodPost, "/clients/"+c.ID+"/equipment", url.Values{"plate_number": {"Ж802ЖЖ 77"}}, map[string]string{"X-Csrf-Token": ""})
 	defer resp.Body.Close()
 	s.Equal(http.StatusForbidden, resp.StatusCode, "без CSRF-токена — 403")
 
@@ -1182,20 +1020,18 @@ func (s *ClientsLiveSuite) TestSSR_Equipment_Guards() {
 	s.Contains(resp2.Header.Get("Location"), "/login")
 }
 
-// ---- карточка клиента отражает реальный блок «Оборудование клиента» ----
+// ---- карточка клиента отражает реальный блок «Автомобили клиента» ----
 
 func (s *ClientsLiveSuite) TestSSR_ClientCard_ShowsEquipmentBlock() {
 	c := s.newClient("SSR Карточка Оборудование")
-	typeID := s.newType("SSR Тип карточки")
-	_, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "КартаМодель", "serial": "SN-CARD"})
+	_, e, raw := s.createEquipment(s.admin, c.ID, carBody("З901ЗЗ 777"))
 	s.Require().NotEmpty(e.ID, string(raw))
 
 	st, page := s.admin.Do(http.MethodGet, "/clients/"+c.ID, nil)
 	s.Require().Equal(http.StatusOK, st)
 	body := string(page)
 	s.Contains(body, `data-testid="equipment-table"`)
-	s.Contains(body, "КартаМодель")
-	s.Contains(body, "SN-CARD")
+	s.Contains(body, "З901ЗЗ 777")
 	s.Contains(body, `href="/equipment/`+e.ID+`"`)
 }
 
@@ -1204,10 +1040,9 @@ func (s *ClientsLiveSuite) TestSSR_ClientCard_ShowsEquipmentBlock() {
 func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 	ctx := s.T().Context()
 	c := s.newClient("Клиент История Оборудования")
-	typeID := s.newType("Тип для истории")
-	_, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M-hist"})
+	_, e, raw := s.createEquipment(s.admin, c.ID, carBody("И111ИИ 77"))
 	s.Require().NotEmpty(e.ID, string(raw))
-	_, other, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M-hist-other"})
+	_, other, raw := s.createEquipment(s.admin, c.ID, carBody("И112ИИ 77"))
 	s.Require().NotEmpty(other.ID, string(raw))
 
 	st, page := s.admin.Do(http.MethodGet, "/clients/"+c.ID, nil)
@@ -1233,11 +1068,9 @@ func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 	_, err = s.Pool.Exec(ctx, `INSERT INTO subtasks (task_id, service_id, equipment_id) VALUES ($1, $2::uuid, $3::uuid)`,
 		taskID, otherSvcID, other.ID)
 	s.Require().NoError(err)
-	var catID, prodID string
+	var prodID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'История товары') RETURNING id`).Scan(&catID))
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name, unit) VALUES ($1::uuid, 'Конденсатор 100мкФ', 'шт') RETURNING id`, catID).Scan(&prodID))
+		`INSERT INTO products (name, unit) VALUES ('Конденсатор 100мкФ', 'шт') RETURNING id`).Scan(&prodID))
 	_, err = s.Pool.Exec(ctx, `INSERT INTO subtask_products (subtask_id, product_id, qty) VALUES ($1::uuid, $2::uuid, 2)`, subID, prodID)
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `INSERT INTO subtask_logs (subtask_id, user_id, text)
@@ -1289,8 +1122,7 @@ func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 	ctx := s.T().Context()
 	c := s.newClient("Клиент API История")
-	typeID := s.newType("Тип для API истории")
-	_, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M-api-hist"})
+	_, e, raw := s.createEquipment(s.admin, c.ID, carBody("К121КК 77"))
 	s.Require().NotEmpty(e.ID, string(raw))
 
 	st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID+"/history", nil)
@@ -1304,11 +1136,9 @@ func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 	var subID string
 	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO subtasks (task_id, service_id, equipment_id, status)
 		VALUES ($1, $2::uuid, $3::uuid, 'in_progress') RETURNING id`, taskID, s.newServiceDirect("API История Чистка"), e.ID).Scan(&subID))
-	var catID, prodID string
+	var prodID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'API История товары') RETURNING id`).Scan(&catID))
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name, unit) VALUES ($1::uuid, 'Линза', 'шт') RETURNING id`, catID).Scan(&prodID))
+		`INSERT INTO products (name, unit) VALUES ('Линза', 'шт') RETURNING id`).Scan(&prodID))
 	_, err = s.Pool.Exec(ctx, `INSERT INTO subtask_products (subtask_id, product_id, qty, price) VALUES ($1::uuid, $2::uuid, 1.5, 300)`, subID, prodID)
 	s.Require().NoError(err)
 
@@ -1373,11 +1203,7 @@ func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 
 func (s *ClientsLiveSuite) TestEquipment_PlateNumber_CreateUpdateValidate() {
 	c := s.newClient("Госномер-Клиент")
-	typeID := s.newType("Госномер Легковой")
-
-	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{
-		"type_id": typeID, "model": "Vesta", "plate_number": "  а123вс   777 ",
-	})
+	st, e, raw := s.createEquipment(s.admin, c.ID, carBody("  а123вс   777 "))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	s.Equal("А123ВС 777", e.PlateNumber)
 
@@ -1387,14 +1213,12 @@ func (s *ClientsLiveSuite) TestEquipment_PlateNumber_CreateUpdateValidate() {
 	s.Require().NoError(json.Unmarshal(raw, &got))
 	s.Equal("А123ВС 777", got.PlateNumber)
 
-	// без plate_number — поле необязательное, пустая строка.
-	st, e2, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "Granta"})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	s.Equal("", e2.PlateNumber)
+	// без plate_number — госномер обязателен (автомобиль = госномер).
+	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{})
+	s.Require().Equal(http.StatusBadRequest, st, string(raw))
+	s.Equal("required", s.fields(raw)["plate_number"])
 
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
-		"type_id": typeID, "model": "Vesta", "plate_number": "b-777-xx",
-	})
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, carBody("b-777-xx"))
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var upd equipmentDTO
 	s.Require().NoError(json.Unmarshal(raw, &upd))
@@ -1402,12 +1226,11 @@ func (s *ClientsLiveSuite) TestEquipment_PlateNumber_CreateUpdateValidate() {
 
 	for _, tc := range []struct{ plate, msg string }{
 		{strings.Repeat("А", 21), "too_long"},
+		{"  ", "required"},
 		{"А123#ВС", "invalid_format"},
 		{"А1_23", "invalid_format"},
 	} {
-		st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
-			"type_id": typeID, "model": "Vesta", "plate_number": tc.plate,
-		})
+		st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, carBody(tc.plate))
 		s.Require().Equal(http.StatusBadRequest, st, string(raw))
 		s.Equal(tc.msg, s.fields(raw)["plate_number"], "plate=%q", tc.plate)
 	}
@@ -1421,14 +1244,9 @@ func (s *ClientsLiveSuite) TestEquipment_PlateNumber_CreateUpdateValidate() {
 func (s *ClientsLiveSuite) TestList_Search_ByPlateNumber() {
 	c := s.newClient("Госномер-Поиск ООО", map[string]any{"phone": "+7 (501) 000-00-01", "note": ""})
 	other := s.newClient("Госномер-Другой ООО", map[string]any{"phone": "+7 (502) 000-00-02", "note": ""})
-	typeID := s.newType("Госномер Поиск Тип")
-	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{
-		"type_id": typeID, "model": "Octavia", "plate_number": "Т456ОР 750",
-	})
+	st, _, raw := s.createEquipment(s.admin, c.ID, carBody("Т456ОР 750"))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
-	st, eDel, raw := s.createEquipment(s.admin, other.ID, map[string]any{
-		"type_id": typeID, "model": "Rapid", "plate_number": "Т456ОР 751",
-	})
+	st, eDel, raw := s.createEquipment(s.admin, other.ID, carBody("Т456ОР 751"))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	// мягко удалённая единица в поиск клиентов не попадает.
 	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+eDel.ID, reasonBody("Машина продана"))

@@ -24,9 +24,8 @@ test.describe('NO: новый заказ по госномеру', () => {
     _boardCleanup,
   }) => {
     const client = await adminApi.createClient({ company_name: uniq('NO-001 Петрова Н. С.'), phones: [{ phone: '9990000801', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-001 легковой') });
     const plate = uniqPlate();
-    const car = await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Hyundai', model: 'Solaris' });
+    const car = await adminApi.createEquipment(client.id, { plate_number: plate });
     const columns = (await adminApi.listColumns()).items;
     const col = columnByName(columns, 'Диагностика');
 
@@ -46,7 +45,7 @@ test.describe('NO: новый заказ по госномеру', () => {
     const typed = `${plate.slice(0, 3).toLowerCase()} -${plate.slice(3).toLowerCase()}`;
     await dlg.useFoundCar(typed);
     await expect(dlg.plate).toHaveValue(typed.toUpperCase());
-    await expect(dlg.carFound).toContainText(`Hyundai Solaris · ${plate} · ${client.company_name}`);
+    await expect(dlg.carFound).toContainText(`${plate} · ${client.company_name}`);
     await expect(dlg.clientLocked).toBeVisible();
     await expect(dlg.client).toBeDisabled();
     await expect(dlg.client).toContainText(client.company_name);
@@ -58,14 +57,14 @@ test.describe('NO: новый заказ по госномеру', () => {
 
     // карточка созданного заказа: название — редактируемое поле, автомобиль уже в заказе.
     await expect(dlg.plate).toBeHidden();
-    await expect(dlg.titleField).toHaveValue(`Hyundai Solaris ${plate}`);
+    await expect(dlg.titleField).toHaveValue(plate);
     await expect(card.equipmentRows).toHaveCount(1);
     await expect(card.equipmentRow(car.id)).toBeVisible();
 
     const task = await adminApi.getTask(id);
     expect(task.client_id).toBe(client.id);
     expect(task.column_id).toBe(col.id);
-    expect(task.title).toBe(`Hyundai Solaris ${plate}`);
+    expect(task.title).toBe(plate);
   });
 
   test('NO-002: один госномер у нескольких клиентов — выбор автомобиля задаёт клиента', async ({
@@ -76,10 +75,9 @@ test.describe('NO: новый заказ по госномеру', () => {
   }) => {
     const first = await adminApi.createClient({ company_name: uniq('NO-002 Первый'), phones: [{ phone: '9990000802', note: '' }] });
     const second = await adminApi.createClient({ company_name: uniq('NO-002 Второй'), phones: [{ phone: '9990000803', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-002 легковой') });
     const plate = uniqPlate();
-    await adminApi.createEquipment(first.id, { type_id: carType.id, plate_number: plate, brand: 'Kia', model: 'Rio' });
-    const resold = await adminApi.createEquipment(second.id, { type_id: carType.id, plate_number: plate, brand: 'Kia', model: 'Rio' });
+    await adminApi.createEquipment(first.id, { plate_number: plate });
+    const resold = await adminApi.createEquipment(second.id, { plate_number: plate });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -109,7 +107,6 @@ test.describe('NO: новый заказ по госномеру', () => {
     _boardCleanup,
   }) => {
     const anchor = await adminApi.createClient({ company_name: uniq('NO-003 якорь доски'), phones: [{ phone: '9990000804', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-003 легковой') });
     const columns = (await adminApi.listColumns()).items;
     const plate = uniqPlate();
     const clientName = uniq('NO-003 Кузнецов Пётр');
@@ -120,7 +117,9 @@ test.describe('NO: новый заказ по госномеру', () => {
     await board.goto(`?client_id=${anchor.id}`);
     await board.openTaskAdd();
 
-    await dlg.fillNewCar(plate.toLowerCase(), { type: carType.name, brand: 'Skoda', model: 'Octavia', vin: 'xw8zzz1z0123456' });
+    await dlg.fillNewCar(plate.toLowerCase());
+    // «Новый автомобиль» — только госномер: полей марки, модели, VIN нет.
+    await expect(dlg.newCar.locator('input')).toHaveCount(0);
     await expect(dlg.plate).toHaveValue(plate);
     await expect(dlg.carFound).toBeHidden();
     // клиент не выбран — поля «Новый клиент» открыты сразу, без флажка.
@@ -132,7 +131,7 @@ test.describe('NO: новый заказ по госномеру', () => {
     await board.taskSave.click();
     const id = await createdTaskId(card);
     _boardCleanup(id);
-    await expect(dlg.titleField).toHaveValue(`Skoda Octavia ${plate}`);
+    await expect(dlg.titleField).toHaveValue(plate);
     await expect(card.equipmentRows).toHaveCount(1);
 
     const task = await adminApi.getTask(id);
@@ -141,7 +140,7 @@ test.describe('NO: новый заказ по госномеру', () => {
     expect(client.phones.map((p) => p.phone)).toEqual(['+7 912 000-11-22']);
     const eq = (await adminApi.getCard(id)).equipment;
     expect(eq).toHaveLength(1);
-    expect(eq[0]).toMatchObject({ plate_number: plate, brand: 'Skoda', model: 'Octavia', serial: 'XW8ZZZ1Z0123456', type_name: carType.name });
+    expect(eq[0]).toMatchObject({ plate_number: plate });
 
     // клиент заведён диалогом (мимо adminApi) — уборка вручную: заказ, затем клиент с автомобилем.
     await adminApi.purgeClient(task.client_id, [id]);

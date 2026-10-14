@@ -25,7 +25,6 @@ func NewCardRepo(pool *pgxpool.Pool) *CardRepo { return &CardRepo{pool: pool} }
 // printHeader — design-sql.md §Print Header Query, наполняет PrintVM (print_ssr.go, фаза 04).
 type printHeader struct {
 	CompanyName string
-	ContactName string
 	Phones      string
 }
 
@@ -56,13 +55,13 @@ func (r *CardRepo) Column(ctx context.Context, id string) (*CardColumn, error) {
 // удалённая единица остаётся в заказе и отдаётся с is_deleted = true.
 func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT te.equipment_id, e.deleted_at IS NOT NULL, et.name, e.plate_number, e.brand, e.model, e.serial, te.completeness, te.condition,
+		SELECT te.equipment_id, e.deleted_at IS NOT NULL, e.plate_number, te.completeness, te.condition,
 		       coalesce((SELECT json_agg(json_build_object('task_id', o.id, 'title', o.title, 'created_at', o.created_at) ORDER BY o.id DESC)
 		                 FROM task_equipment x JOIN tasks o ON o.id = x.task_id
 		                 WHERE x.equipment_id = te.equipment_id AND x.task_id <> te.task_id
 		                   AND o.deleted_at IS NULL), '[]'::json)
-		FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id JOIN equipment_types et ON et.id = e.type_id
-		WHERE te.task_id = $1 ORDER BY et.name, e.brand, e.model, e.id`, taskID)
+		FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
+		WHERE te.task_id = $1 ORDER BY e.plate_number, e.id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +71,7 @@ func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment
 	for rows.Next() {
 		var eq CardEquipment
 		var historyJSON []byte
-		if err := rows.Scan(&eq.EquipmentID, &eq.IsDeleted, &eq.TypeName, &eq.PlateNumber, &eq.Brand, &eq.Model, &eq.Serial,
+		if err := rows.Scan(&eq.EquipmentID, &eq.IsDeleted, &eq.PlateNumber,
 			&eq.Completeness, &eq.Condition, &historyJSON); err != nil {
 			return nil, err
 		}
@@ -241,10 +240,10 @@ func (r *CardRepo) Stock(ctx context.Context, taskID int64) ([]CardStock, error)
 func (r *CardRepo) PrintHeader(ctx context.Context, taskID int64) (*printHeader, error) {
 	var h printHeader
 	err := r.pool.QueryRow(ctx, `
-		SELECT cl.company_name, cl.contact_name,
+		SELECT cl.company_name,
 		       coalesce((SELECT string_agg(ph.phone, ', ' ORDER BY ph.position) FROM client_phones ph WHERE ph.client_id = cl.id), '')
 		FROM tasks t JOIN clients cl ON cl.id = t.client_id WHERE t.id = $1 AND t.deleted_at IS NULL`, taskID).
-		Scan(&h.CompanyName, &h.ContactName, &h.Phones)
+		Scan(&h.CompanyName, &h.Phones)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errNotFound
 	}

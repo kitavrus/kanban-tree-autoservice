@@ -169,17 +169,16 @@ test.describe('PG: каталог — пейджер товаров', () => {
     adminApi,
     uniq,
   }) => {
-    test.setTimeout(120_000); // 102 товара через API в СВОЕЙ категории (пейджер — по ?category=)
-    const cat = await adminApi.createCategory({ kind: 'product', name: uniq('PG-009 категория') });
+    test.setTimeout(120_000); // 102 товара через API с уникальным префиксом (пейджер — по ?q=)
     const prefix = uniq('PG-009 товар');
     const n = 102; // минимум для второй страницы — меньше засоряем общую БД
     for (let i = 1; i <= n; i++) {
-      await adminApi.createProduct({ category_id: cat.id, name: `${prefix} ${String(i).padStart(3, '0')}` });
+      await adminApi.createProduct({ name: `${prefix} ${String(i).padStart(3, '0')}` });
     }
     const nameAt = (i: number) => `${prefix} ${String(i).padStart(3, '0')}`;
 
     const catalog = new CatalogPage(page);
-    await catalog.gotoProducts(`?category=${cat.id}`);
+    await catalog.gotoProducts(`?q=${encodeURIComponent(prefix)}`);
     await expect(catalog.pagerShown).toHaveText(`Показаны 1–100 из ${n}`);
     await expect(page.getByTestId('product-row')).toHaveCount(100);
     await expect(catalog.row(nameAt(1))).toBeVisible();
@@ -204,7 +203,6 @@ test.describe('PG: каталог — пейджер товаров', () => {
     await catalog.search.fill(prefix);
     await catalog.search.press('Enter');
     await expect(page).not.toHaveURL(/offset=/);
-    await expect(page).toHaveURL(/category=/);
     await expect(catalog.pagerShown).toHaveText(`Показаны 1–100 из ${n}`);
     await expect(catalog.row(nameAt(1))).toBeVisible();
   });
@@ -217,9 +215,8 @@ test.describe('PG: форма услуги — серверный поиск т�
     uniq,
     catalogCleanup,
   }) => {
-    const pcat = await adminApi.createCategory({ kind: 'product', name: uniq('PG-010 кат товаров') });
     const productName = uniq('PG-010 товар');
-    const product = await adminApi.createProduct({ category_id: pcat.id, name: productName });
+    const product = await adminApi.createProduct({ name: productName });
     const scatName = uniq('PG-010 кат услуг');
     await adminApi.createCategory({ kind: 'service', name: scatName });
     const serviceName = uniq('PG-010 услуга');

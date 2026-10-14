@@ -30,10 +30,7 @@ export class OrderCardPage {
   readonly equipmentRows: Locator;
   readonly equipmentAdd: Locator;
   readonly equipmentNewBtn: Locator;
-  readonly equipmentNewType: Locator;
-  readonly equipmentNewBrand: Locator;
-  readonly equipmentNewModel: Locator;
-  readonly equipmentNewSerial: Locator;
+  readonly equipmentNewPlate: Locator;
   readonly equipmentNewSave: Locator;
   readonly equipmentNewCancel: Locator;
   readonly equipmentNewError: Locator;
@@ -84,10 +81,7 @@ export class OrderCardPage {
     this.equipmentRows = page.getByTestId('card-equipment-row');
     this.equipmentAdd = page.getByTestId('card-equipment-add');
     this.equipmentNewBtn = page.getByTestId('card-equipment-new');
-    this.equipmentNewType = page.getByTestId('card-equipment-new-type');
-    this.equipmentNewBrand = page.getByTestId('card-equipment-new-brand');
-    this.equipmentNewModel = page.getByTestId('card-equipment-new-model');
-    this.equipmentNewSerial = page.getByTestId('card-equipment-new-serial');
+    this.equipmentNewPlate = page.getByTestId('card-equipment-new-plate');
     this.equipmentNewSave = page.getByTestId('card-equipment-new-save');
     this.equipmentNewCancel = page.getByTestId('card-equipment-new-cancel');
     this.equipmentNewError = page.getByTestId('card-equipment-new-error');

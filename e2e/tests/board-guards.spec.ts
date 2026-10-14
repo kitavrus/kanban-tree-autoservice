@@ -17,8 +17,7 @@ test.describe('BD: товар и услуга каталога удаляютс�
     uniq,
     insertSubtask,
   }) => {
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-019a категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-019a товар') });
+    const product = await adminApi.createProduct({ name: uniq('BD-019a товар') });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-019a категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-019a услуга') });
     const client = await adminApi.createClient({ company_name: uniq('BD-019a клиент'), phones: [{ phone: '9990003333', note: '' }] });

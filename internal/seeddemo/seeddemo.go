@@ -9,8 +9,9 @@
 // (role='admin' AND is_active) — иначе ErrNoAdmin. Существующий admin не изменяется,
 // демо-мастера заводятся ON CONFLICT (login) DO NOTHING.
 //
-// Автомобиль = единица «оборудования» клиента: госномер — equipment.plate_number («А123ВС
-// 777»), VIN — equipment.serial, год/двигатель/КПП/пробег/цвет — specs.
+// Автомобиль = единица «оборудования» клиента: только госномер — equipment.plate_number
+// («А123ВС 777»). Марка/модель/VIN/характеристики демо-данных используются лишь для
+// генерации медиа и текстов заказов.
 //
 // Вложения (task_attachments) создаются, только если передан FileStore (WithFiles): файлы
 // пишутся в него так же, как при загрузке через UI (ключ — uuid, в БД — метаданные). Фото —
@@ -28,7 +29,6 @@ package seeddemo
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -185,7 +185,7 @@ func (s *seeder) run() (Result, error) {
 		return Result{}, fmt.Errorf("seeddemo: categories: %w", err)
 	}
 
-	products, err := s.seedProducts(categoryIDs)
+	products, err := s.seedProducts()
 	if err != nil {
 		return Result{}, fmt.Errorf("seeddemo: products: %w", err)
 	}
@@ -243,17 +243,11 @@ var (
 func validateDemoData() error {
 	keys := map[string]demoEquipmentItem{}
 	for _, e := range demoEquipment {
-		if e.typeIdx == typeEngine {
-			if e.plate != "" {
-				return fmt.Errorf("агрегат %s: госномер должен быть пуст", e.key)
-			}
-		} else {
-			if !PlateRe.MatchString(e.plate) {
-				return fmt.Errorf("авто %s: неверный госномер %q", e.key, e.plate)
-			}
-			if !vinRe.MatchString(e.serial) {
-				return fmt.Errorf("авто %s: неверный VIN %q", e.key, e.serial)
-			}
+		if !PlateRe.MatchString(e.plate) {
+			return fmt.Errorf("авто %s: неверный госномер %q", e.key, e.plate)
+		}
+		if e.typeIdx != typeEngine && !vinRe.MatchString(e.serial) {
+			return fmt.Errorf("авто %s: неверный VIN %q", e.key, e.serial)
 		}
 		keys[e.key] = e
 	}
@@ -328,9 +322,8 @@ func (s *seeder) seedClients() ([]clientRow, error) {
 	for _, c := range demoClients {
 		var id string
 		if err := s.tx.QueryRow(s.ctx,
-			`INSERT INTO clients (company_name, address, contact_name, contact_position)
-			 VALUES ($1, $2, $3, $4) RETURNING id`,
-			c.company, c.address, c.contact, c.position).Scan(&id); err != nil {
+			`INSERT INTO clients (company_name) VALUES ($1) RETURNING id`,
+			c.company).Scan(&id); err != nil {
 			return nil, err
 		}
 		for i, p := range c.phones {
@@ -345,29 +338,14 @@ func (s *seeder) seedClients() ([]clientRow, error) {
 	return out, nil
 }
 
-// seedEquipment — типы авто и автомобили; возвращает id по ключу demoEquipmentItem.key.
+// seedEquipment — автомобили; возвращает id по ключу demoEquipmentItem.key.
 func (s *seeder) seedEquipment(clients []clientRow) (map[string]string, error) {
-	typeIDs := make([]string, 0, len(demoEquipmentTypes))
-	for _, t := range demoEquipmentTypes {
-		var id string
-		if err := s.tx.QueryRow(s.ctx,
-			`INSERT INTO equipment_types (name, spec_keys) VALUES ($1, $2::text[]) RETURNING id`,
-			t.name, t.keys).Scan(&id); err != nil {
-			return nil, err
-		}
-		typeIDs = append(typeIDs, id)
-	}
 	out := make(map[string]string, len(demoEquipment))
 	for _, e := range demoEquipment {
-		specsJSON, err := json.Marshal(e.specs)
-		if err != nil {
-			return nil, fmt.Errorf("marshal specs: %w", err)
-		}
 		var id string
 		if err := s.tx.QueryRow(s.ctx,
-			`INSERT INTO equipment (client_id, type_id, brand, model, sku, serial, plate_number, specs, note)
-			 VALUES ($1, $2, $3, $4, '', $5, $6, $7::jsonb, $8) RETURNING id`,
-			clients[e.clientIdx].ID, typeIDs[e.typeIdx], e.brand, e.model, e.serial, e.plate, specsJSON, e.note).Scan(&id); err != nil {
+			`INSERT INTO equipment (client_id, plate_number) VALUES ($1, $2) RETURNING id`,
+			clients[e.clientIdx].ID, e.plate).Scan(&id); err != nil {
 			return nil, err
 		}
 		out[e.key] = id
@@ -403,14 +381,14 @@ func (s *seeder) seedCategories() ([]string, error) {
 // seedProducts — товар (price/sku/unit/min_stock/box/place сразу) и стартовый остаток
 // движением manual (Stock Adjust Query, D44) — как ручная правка на «Остатках» (нулевой
 // остаток — без движения: stock_movements.qty_delta CHECK <> 0). Ключ — артикул.
-func (s *seeder) seedProducts(categoryIDs []string) (map[string]productRow, error) {
+func (s *seeder) seedProducts() (map[string]productRow, error) {
 	out := make(map[string]productRow, len(demoProducts))
 	for _, p := range demoProducts {
 		var id string
 		if err := s.tx.QueryRow(s.ctx,
-			`INSERT INTO products (category_id, name, sku, unit, price, stock, min_stock, box, place)
-			 VALUES ($1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8, $9) RETURNING id`,
-			categoryIDs[p.categoryIdx], p.name, p.sku, p.unit, p.price, p.stock, p.minStock, p.box, p.place).Scan(&id); err != nil {
+			`INSERT INTO products (name, sku, unit, price, stock, min_stock, box, place)
+			 VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7, $8) RETURNING id`,
+			p.name, p.sku, p.unit, p.price, p.stock, p.minStock, p.box, p.place).Scan(&id); err != nil {
 			return nil, err
 		}
 		if p.stock != "0" {
@@ -754,9 +732,8 @@ func (s *seeder) seedDeletedClient(clients []clientRow) error {
 	var clientID string
 	var at time.Time
 	if err := s.tx.QueryRow(s.ctx, `
-		INSERT INTO clients (company_name, address, contact_name, contact_position, deleted_at, deleted_by, delete_reason)
-		VALUES ($1, 'г. Москва, ул. Кировоградская, 9', 'Тарасов Игорь', 'Владелец авто',
-		        now() - interval '3 days', $2::uuid, $3)
+		INSERT INTO clients (company_name, deleted_at, deleted_by, delete_reason)
+		VALUES ($1, now() - interval '3 days', $2::uuid, $3)
 		RETURNING id, deleted_at`, demoDeletedClientName, s.adminID, reason).Scan(&clientID, &at); err != nil {
 		return err
 	}
@@ -764,57 +741,47 @@ func (s *seeder) seedDeletedClient(clients []clientRow) error {
 		`INSERT INTO client_phones (client_id, position, phone, note) VALUES ($1, 0, '+7 916 200-10-20', 'мобильный')`, clientID); err != nil {
 		return err
 	}
-	carType := demoEquipmentTypes[typeCar].name
 	if _, err := s.tx.Exec(s.ctx, `
-		INSERT INTO equipment (client_id, type_id, brand, model, serial, plate_number, deleted_at, deleted_by, delete_reason, deleted_with_client)
-		SELECT $1::uuid, t.id, 'Lada', 'Priora 1.6', 'XTA217030C0123456', 'О404ВК 799', $2, $3::uuid, $4, true
-		FROM equipment_types t WHERE t.name = $5`, clientID, at, s.adminID, reason, carType); err != nil {
+		INSERT INTO equipment (client_id, plate_number, deleted_at, deleted_by, delete_reason, deleted_with_client)
+		VALUES ($1::uuid, 'О404ВК 799', $2, $3::uuid, $4, true)`,
+		clientID, at, s.adminID, reason); err != nil {
 		return err
 	}
 	_, err := s.tx.Exec(s.ctx, `
-		INSERT INTO equipment (client_id, type_id, brand, model, serial, plate_number, deleted_at, deleted_by, delete_reason)
-		SELECT $1::uuid, t.id, 'Daewoo', 'Nexia 1.5', 'XWB3K32EDCA123456', 'Х112АМ 97',
-		       now() - interval '5 days', $2::uuid, 'Автомобиль продан'
-		FROM equipment_types t WHERE t.name = $3`, clients[0].ID, s.adminID, carType)
+		INSERT INTO equipment (client_id, plate_number, deleted_at, deleted_by, delete_reason)
+		VALUES ($1::uuid, 'Х112АМ 97',
+		        now() - interval '5 days', $2::uuid, 'Автомобиль продан')`, clients[0].ID, s.adminID)
 	return err
 }
 
-// Названия мягко удалённых записей каталога и типа авто.
+// Названия мягко удалённых записей каталога.
 const (
-	demoDeletedCategoryName = "Снятые с продажи"
+	demoDeletedCategoryName = "Выездные услуги"
 	demoDeletedProductName  = "Масло моторное 10W-40 минеральное, 4 л (снято с продажи)"
 	demoDeletedServiceName  = "Выезд мастера на дом"
-	demoDeletedTypeName     = "Мотоцикл"
 )
 
 // seedDeletedCatalog — по одной мягко удалённой записи каждого вида каталога (soft-delete-
 // catalog, DS-011, DS-009). Товар удалён из архива (is_active = false) и без остатка
-// (DS-021); на удалённые категорию и тип никто не ссылается.
+// (DS-021); на удалённую категорию никто не ссылается.
 func (s *seeder) seedDeletedCatalog() error {
 	if _, err := s.tx.Exec(s.ctx, `
 		INSERT INTO catalog_categories (kind, name, deleted_at, deleted_by, delete_reason)
-		VALUES ('product', $1, now() - interval '6 days', $2::uuid, 'Товары категории больше не закупаем')`,
+		VALUES ('service', $1, now() - interval '6 days', $2::uuid, 'Выездные услуги больше не оказываем')`,
 		demoDeletedCategoryName, s.adminID); err != nil {
 		return err
 	}
 	if _, err := s.tx.Exec(s.ctx, `
-		INSERT INTO products (category_id, name, sku, unit, price, is_active, deleted_at, deleted_by, delete_reason)
-		SELECT c.id, $1, 'MIN-10W40-4', 'шт', 1100, false, now() - interval '2 days', $2::uuid, 'Минеральные масла больше не продаём'
-		FROM catalog_categories c WHERE c.kind = 'product' AND c.deleted_at IS NULL ORDER BY lower(c.name), c.id LIMIT 1`,
+		INSERT INTO products (name, sku, unit, price, is_active, deleted_at, deleted_by, delete_reason)
+		VALUES ($1, 'MIN-10W40-4', 'шт', 1100, false, now() - interval '2 days', $2::uuid, 'Минеральные масла больше не продаём')`,
 		demoDeletedProductName, s.adminID); err != nil {
 		return err
 	}
-	if _, err := s.tx.Exec(s.ctx, `
+	_, err := s.tx.Exec(s.ctx, `
 		INSERT INTO services (category_id, name, price, deleted_at, deleted_by, delete_reason)
 		SELECT c.id, $1, 2500, now() - interval '4 days', $2::uuid, 'Услугу больше не оказываем'
 		FROM catalog_categories c WHERE c.kind = 'service' AND c.deleted_at IS NULL ORDER BY lower(c.name), c.id LIMIT 1`,
-		demoDeletedServiceName, s.adminID); err != nil {
-		return err
-	}
-	_, err := s.tx.Exec(s.ctx, `
-		INSERT INTO equipment_types (name, spec_keys, deleted_at, deleted_by, delete_reason)
-		VALUES ($1, '{"Объём двигателя"}', now() - interval '1 day', $2::uuid, 'Мотоциклы не обслуживаем')`,
-		demoDeletedTypeName, s.adminID)
+		demoDeletedServiceName, s.adminID)
 	return err
 }
 

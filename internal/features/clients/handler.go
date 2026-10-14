@@ -47,10 +47,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if err := c.Bind().Body(&req); err != nil {
 		return errorspkg.BadRequest("Некорректное тело запроса")
 	}
-	resp, err := h.svc.Create(c.Context(), ClientInput{
-		CompanyName: req.CompanyName, Address: req.Address,
-		ContactName: req.ContactName, ContactPosition: req.ContactPosition, Phones: req.Phones,
-	})
+	resp, err := h.svc.Create(c.Context(), ClientInput{CompanyName: req.CompanyName, Phones: req.Phones})
 	if err != nil {
 		return err
 	}
@@ -63,10 +60,7 @@ func (h *Handler) Update(c fiber.Ctx) error {
 	if err := c.Bind().Body(&req); err != nil {
 		return errorspkg.BadRequest("Некорректное тело запроса")
 	}
-	resp, err := h.svc.Update(c.Context(), c.Params("id"), req.Version, ClientInput{
-		CompanyName: req.CompanyName, Address: req.Address,
-		ContactName: req.ContactName, ContactPosition: req.ContactPosition, Phones: req.Phones,
-	})
+	resp, err := h.svc.Update(c.Context(), c.Params("id"), req.Version, ClientInput{CompanyName: req.CompanyName, Phones: req.Phones})
 	if err != nil {
 		return err
 	}
@@ -194,8 +188,5 @@ func (h *Handler) RestoreEquipment(c fiber.Ctx) error {
 }
 
 func equipmentInputOf(req EquipmentRequest) EquipmentInput {
-	return EquipmentInput{
-		TypeID: req.TypeID, PlateNumber: req.PlateNumber, Brand: req.Brand, Model: req.Model, SKU: req.SKU,
-		Serial: req.Serial, Note: req.Note, Specs: req.Specs,
-	}
+	return EquipmentInput{PlateNumber: req.PlateNumber}
 }

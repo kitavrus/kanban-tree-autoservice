@@ -12,9 +12,7 @@
 <table class="table table-hover align-middle" data-testid="clients-table">
   <thead>
     <tr>
-      <th>Компания</th>
-      <th class="d-none d-md-table-cell">Адрес</th>
-      <th>Представитель</th>
+      <th>Клиент</th>
       <th>Телефоны</th>
       <th class="d-none d-md-table-cell">Оборудование</th>
     </tr>
@@ -23,11 +21,6 @@
   {{ range .Items }}
     <tr data-testid="client-row" data-company="{{ .CompanyName }}">
       <td><a href="/clients/{{ .ID }}" class="fw-semibold">{{ .CompanyName }}</a></td>
-      <td class="d-none d-md-table-cell">{{ .Address }}</td>
-      <td>
-        {{ .ContactName }}
-        {{ if .ContactPosition }}<div class="text-body-secondary small">{{ .ContactPosition }}</div>{{ end }}
-      </td>
       <td>
         {{ range .Phones }}
         <div>{{ .Phone }}{{ if .Note }} <span class="text-body-secondary small">({{ .Note }})</span>{{ end }}</div>

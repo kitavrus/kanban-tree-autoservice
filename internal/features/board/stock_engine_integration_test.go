@@ -61,18 +61,13 @@ func (s *StockEngineSuite) SetupTest() {
 	s.Require().NoError(err)
 }
 
-// createProduct — товар с заданным остатком/минимумом в свежей категории (уникальное имя —
-// unique index (kind, lower(btrim(name))) допускает архивные дубли, но не активные).
+// createProduct — товар с заданным остатком/минимумом.
 func (s *StockEngineSuite) createProduct(stock, minStock string) string {
 	ctx := context.Background()
-	var categoryID string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'Products ' || gen_random_uuid()) RETURNING id`,
-	).Scan(&categoryID))
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name, stock, min_stock) VALUES ($1, 'Product', $2::numeric, $3::numeric) RETURNING id`,
-		categoryID, stock, minStock,
+		`INSERT INTO products (name, stock, min_stock) VALUES ('Product', $1::numeric, $2::numeric) RETURNING id`,
+		stock, minStock,
 	).Scan(&productID))
 	return productID
 }

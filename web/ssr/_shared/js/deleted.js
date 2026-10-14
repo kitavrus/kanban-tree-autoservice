@@ -76,11 +76,6 @@
       kind: 'catalog-categories', label: 'Категории', countKey: 'catalog_categories',
       restoreUrl: function (id) { return '/api/v1/catalog-categories/' + encodeURIComponent(id) + '/restore'; },
       notFound: 'Категория не найдена', confirmText: archivedConfirm
-    },
-    {
-      kind: 'equipment-types', label: 'Типы оборудования', countKey: 'equipment_types',
-      restoreUrl: function (id) { return '/api/v1/equipment-types/' + encodeURIComponent(id) + '/restore'; },
-      notFound: 'Тип оборудования не найден', confirmText: archivedConfirm
     }
   ];
 

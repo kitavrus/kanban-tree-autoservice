@@ -199,8 +199,7 @@ test.describe('AT: удаление и права', () => {
     await expect(card.attachmentUpload).toHaveCount(0);
 
     const plate = uniqPlate();
-    const carType = await adminApi.createEquipmentType({ name: uniq('AT-006 тип') });
-    await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Kia', model: 'Rio' });
+    await adminApi.createEquipment(client.id, { plate_number: plate });
     await card.newOrder.useFoundCar(plate);
     await card.fillHeader({ column: columnByName(columns, 'Приёмка').name });
     await card.save();

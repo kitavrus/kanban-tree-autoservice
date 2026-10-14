@@ -105,10 +105,10 @@ export type ClientRestoreError = {
   code: 'NOT_DELETED' | 'CLIENT_DELETED' | 'CLIENT_NOT_FOUND' | 'EQUIPMENT_NOT_FOUND' | 'FORBIDDEN';
   message: string;
 };
-/** Виды записей каталога и типов оборудования (часть 5, soft-delete-catalog). */
-export type CatalogKind = 'products' | 'services' | 'catalog-categories' | 'equipment-types';
-/** 200 DELETE /api/v1/{products|services|catalog-categories|equipment-types}/:id
- *  (catalog.DeleteResponse / equipmenttypes.DeleteResponse, soft-delete-catalog §6.1, §6.3, §6.5, §6.7). */
+/** Виды записей каталога (часть 5, soft-delete-catalog). */
+export type CatalogKind = 'products' | 'services' | 'catalog-categories';
+/** 200 DELETE /api/v1/{products|services|catalog-categories}/:id
+ *  (catalog.DeleteResponse, soft-delete-catalog §6.1, §6.3, §6.5). */
 export type CatalogDeleteResponse = { id: string; deleted_at: string };
 /** 200 POST /api/v1/{…}/:id/restore (catalog.RestoreResponse, §6.2, §6.4, §6.6, §6.8). */
 export type CatalogRestoreResponse = { id: string };
@@ -116,7 +116,7 @@ export type CatalogRestoreResponse = { id: string };
 export type CatalogError = {
   code:
     | 'NOT_DELETED' | 'NAME_TAKEN' | 'PRODUCT_HAS_STOCK' | 'PRODUCT_NOT_FOUND' | 'SERVICE_NOT_FOUND'
-    | 'CATEGORY_NOT_FOUND' | 'EQUIPMENT_TYPE_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
+    | 'CATEGORY_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
   message: string;
 };
 /** Вид «поставщик» (часть 6, soft-delete-suppliers). */
@@ -138,7 +138,7 @@ export type PurgeResponse = { id: string };
 // ---- раздел «Удалённые» (internal/features/softdelete/dto.go, §6.3, §6.4) ----
 export type DeletedKind =
   | 'tasks' | 'columns' | 'clients' | 'equipment' | 'products' | 'services'
-  | 'catalog-categories' | 'equipment-types' | 'suppliers';
+  | 'catalog-categories' | 'suppliers';
 export type DeletedItem = {
   kind: DeletedKind;
   id: string;
@@ -155,7 +155,7 @@ export type DeletedListQuery = { q?: string; deleted_from?: string; deleted_to?:
 export type DeletedSummaryResponse = {
   counts: {
     tasks: number; columns: number; clients: number; equipment: number; products: number;
-    services: number; catalog_categories: number; equipment_types: number; suppliers: number;
+    services: number; catalog_categories: number; suppliers: number;
   };
 };
 export type ApiErrorSubtask = { id: string; service_name: string; status: 'new' | 'in_progress' | 'done' };
@@ -207,12 +207,8 @@ export type CardEquipment = {
   equipment_id: string;
   /** Единица мягко удалена — бейдж «удалён» в блоке «Оборудование» (soft-delete-clients §6.5). */
   is_deleted: boolean;
-  type_name: string;
   /** Госномер автомобиля. */
   plate_number: string;
-  brand: string;
-  model: string;
-  serial: string;
   completeness: string;
   condition: string;
   history: EquipmentHistory[];

@@ -79,8 +79,8 @@ func (s *ServicesLiveSuite) newCategory(kind, name string) categoryDTO {
 	return c
 }
 
-func (s *ServicesLiveSuite) newProductB(categoryID string, patch map[string]any) productDTO {
-	m := map[string]any{"category_id": categoryID, "name": "Товар комплекта", "sku": "CMP-1", "unit": "шт", "price": 100, "stock": 10, "min_stock": 0}
+func (s *ServicesLiveSuite) newProductB(patch map[string]any) productDTO {
+	m := map[string]any{"name": "Товар комплекта", "sku": "CMP-1", "unit": "шт", "price": 100, "stock": 10, "min_stock": 0}
 	for k, v := range patch {
 		m[k] = v
 	}
@@ -111,9 +111,8 @@ func (s *ServicesLiveSuite) newService(categoryID string, patch map[string]any) 
 
 func (s *ServicesLiveSuite) TestServiceCreateGetList_WithProducts() {
 	cat := s.newCategory("service", "Ремонт двигателей")
-	prodCat := s.newCategory("product", "Запчасти для услуг")
-	p1 := s.newProductB(prodCat.ID, map[string]any{"sku": "P-1", "name": "Прокладка"})
-	p2 := s.newProductB(prodCat.ID, map[string]any{"sku": "P-2", "name": "Масло"})
+	p1 := s.newProductB(map[string]any{"sku": "P-1", "name": "Прокладка"})
+	p2 := s.newProductB(map[string]any{"sku": "P-2", "name": "Масло"})
 
 	sv := s.newService(cat.ID, map[string]any{
 		"products": []map[string]any{{"product_id": p1.ID, "qty": 2}, {"product_id": p2.ID, "qty": 1.5}},
@@ -166,8 +165,7 @@ func (s *ServicesLiveSuite) TestService_PriceByFact_NullBothWays() {
 
 func (s *ServicesLiveSuite) TestService_DuplicateProducts_QtySummed() {
 	cat := s.newCategory("service", "Комплект с дублями")
-	prodCat := s.newCategory("product", "Товары для дублей")
-	p := s.newProductB(prodCat.ID, map[string]any{"sku": "DUP-1"})
+	p := s.newProductB(map[string]any{"sku": "DUP-1"})
 
 	sv := s.newService(cat.ID, map[string]any{
 		"products": []map[string]any{{"product_id": p.ID, "qty": 1}, {"product_id": p.ID, "qty": 2.5}},
@@ -180,8 +178,7 @@ func (s *ServicesLiveSuite) TestService_DuplicateProducts_QtySummed() {
 
 func (s *ServicesLiveSuite) TestService_Validation_QtyAndProductRow() {
 	cat := s.newCategory("service", "Валидация комплекта")
-	prodCat := s.newCategory("product", "Валидация товаров")
-	p := s.newProductB(prodCat.ID, map[string]any{"sku": "VAL-1"})
+	p := s.newProductB(map[string]any{"sku": "VAL-1"})
 
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{
 		"products": []map[string]any{{"product_id": p.ID, "qty": 0}},
@@ -203,7 +200,7 @@ func (s *ServicesLiveSuite) TestService_Validation_QtyAndProductRow() {
 
 	// архивируем товар — ссылка на него в новом комплекте тоже 400.
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, map[string]any{
-		"category_id": prodCat.ID, "name": "Валидация", "sku": "VAL-1", "unit": "", "price": 0, "is_active": false,
+		"name": "Валидация", "sku": "VAL-1", "unit": "", "price": 0, "is_active": false,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	st, raw = s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{
@@ -221,9 +218,8 @@ func (s *ServicesLiveSuite) TestService_Validation_QtyAndProductRow() {
 
 func (s *ServicesLiveSuite) TestService_Update_ArchivedProductInComplect_Grandfathered() {
 	svcCat := s.newCategory("service", "Грандфазер архивного товара")
-	prodCat := s.newCategory("product", "Товары грандфазера")
-	used := s.newProductB(prodCat.ID, map[string]any{"sku": "GF-USED"})
-	other := s.newProductB(prodCat.ID, map[string]any{"sku": "GF-OTHER"})
+	used := s.newProductB(map[string]any{"sku": "GF-USED"})
+	other := s.newProductB(map[string]any{"sku": "GF-OTHER"})
 
 	sv := s.newService(svcCat.ID, map[string]any{
 		"products": []map[string]any{{"product_id": used.ID, "qty": 1}},
@@ -232,7 +228,7 @@ func (s *ServicesLiveSuite) TestService_Update_ArchivedProductInComplect_Grandfa
 	// used уходит в архив (ровно тот же поток, что CT-005: удалить нельзя — PRODUCT_IN_USE
 	// — архивируем вместо удаления).
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+used.ID, map[string]any{
-		"category_id": prodCat.ID, "name": "Товар в комплекте", "sku": "GF-USED", "unit": "", "price": 100, "is_active": false,
+		"name": "Товар в комплекте", "sku": "GF-USED", "unit": "", "price": 100, "is_active": false,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
@@ -249,7 +245,7 @@ func (s *ServicesLiveSuite) TestService_Update_ArchivedProductInComplect_Grandfa
 
 	// НОВАЯ строка с ДРУГИМ архивным товаром — 400 (его раньше не было в комплекте).
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+other.ID, map[string]any{
-		"category_id": prodCat.ID, "name": "Другой товар", "sku": "GF-OTHER", "unit": "", "price": 50, "is_active": false,
+		"name": "Другой товар", "sku": "GF-OTHER", "unit": "", "price": 50, "is_active": false,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/services/"+sv.ID, map[string]any{
@@ -265,8 +261,7 @@ func (s *ServicesLiveSuite) TestService_Update_ArchivedProductInComplect_Grandfa
 
 func (s *ServicesLiveSuite) TestService_NumericBoundaries400() {
 	cat := s.newCategory("service", "Границы NUMERIC услуг")
-	prodCat := s.newCategory("product", "Товары для границ")
-	p := s.newProductB(prodCat.ID, map[string]any{"sku": "BOUND-1"})
+	p := s.newProductB(map[string]any{"sku": "BOUND-1"})
 
 	for _, tc := range []struct {
 		name    string
@@ -314,11 +309,10 @@ func (s *ServicesLiveSuite) TestService_NumericBoundaries400() {
 	}
 }
 
-// ---- невалидная категория (не существует / не тот kind) → 400 ----
+// ---- невалидная категория (не существует) → 400 ----
 
 func (s *ServicesLiveSuite) TestService_InvalidCategory400() {
-	prodCat := s.newCategory("product", "Товары, не услуги")
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(prodCat.ID, nil))
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody("00000000-0000-0000-0000-000000000000", nil))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("invalid", s.fields(raw)["category_id"])
 }
@@ -330,14 +324,13 @@ func (s *ServicesLiveSuite) TestService_InvalidCategory400() {
 
 func (s *ServicesLiveSuite) TestService_ProductInComplect_ArchiveWorks_DeleteKeepsRow() {
 	cat := s.newCategory("service", "Комплект и удаление")
-	prodCat := s.newCategory("product", "Товары для удаления")
-	used := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-USED", "stock": 0})
-	free := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-FREE", "stock": 0})
+	used := s.newProductB(map[string]any{"sku": "DEL-USED", "stock": 0})
+	free := s.newProductB(map[string]any{"sku": "DEL-FREE", "stock": 0})
 
 	sv := s.newService(cat.ID, map[string]any{"products": []map[string]any{{"product_id": used.ID, "qty": 1}}})
 
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+used.ID, map[string]any{
-		"category_id": prodCat.ID, "name": "Товар в комплекте", "sku": "DEL-USED", "unit": "", "price": 100, "is_active": false,
+		"name": "Товар в комплекте", "sku": "DEL-USED", "unit": "", "price": 100, "is_active": false,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw), "архивирование работает")
 
@@ -459,8 +452,7 @@ func (s *ServicesLiveSuite) TestSSR_ServicesListAndFormFlow() {
 	s.Contains(string(page), `data-testid="services-table"`)
 
 	cat := s.newCategory("service", "SSR категория услуг")
-	prodCat := s.newCategory("product", "SSR товары комплекта")
-	p := s.newProductB(prodCat.ID, map[string]any{"sku": "SSR-P1", "name": "SSR товар"})
+	p := s.newProductB(map[string]any{"sku": "SSR-P1", "name": "SSR товар"})
 
 	form := url.Values{
 		"category_id": {cat.ID}, "name": {"SSR Услуга"}, "price": {"500"},
@@ -486,14 +478,13 @@ func (s *ServicesLiveSuite) TestSSR_ServicesListAndFormFlow() {
 
 func (s *ServicesLiveSuite) TestService_DuplicateThenArchived_ErrorIndexPointsAtArchivedRow() {
 	cat := s.newCategory("service", "Индекс ошибки после дедупа")
-	prodCat := s.newCategory("product", "Товары для индекса")
-	a := s.newProductB(prodCat.ID, map[string]any{"sku": "IDX-A"})
-	b := s.newProductB(prodCat.ID, map[string]any{"sku": "IDX-B"})
+	a := s.newProductB(map[string]any{"sku": "IDX-A"})
+	b := s.newProductB(map[string]any{"sku": "IDX-B"})
 
 	// b архивируем ДО отправки — новая строка с архивным товаром всегда 400 (Create —
 	// грандфазера ещё нет).
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+b.ID, map[string]any{
-		"category_id": prodCat.ID, "name": "Товар B", "sku": "IDX-B", "unit": "", "price": 0, "is_active": false,
+		"name": "Товар B", "sku": "IDX-B", "unit": "", "price": 0, "is_active": false,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
@@ -553,8 +544,7 @@ func (s *ServicesLiveSuite) TestDelete_InUseBySubtask_Deletes200() {
 
 func (s *ServicesLiveSuite) TestSSR_MergeOverflow_ShowsVisibleError() {
 	cat := s.newCategory("service", "SSR переполнение суммы")
-	prodCat := s.newCategory("product", "SSR товары переполнения")
-	p := s.newProductB(prodCat.ID, map[string]any{"sku": "OVF-1"})
+	p := s.newProductB(map[string]any{"sku": "OVF-1"})
 
 	// два дубля по 9 цифр каждый — сумма 10 цифр, переполняет qtyScale.IntDigits=9.
 	form := url.Values{

@@ -12,6 +12,7 @@ import {
   type ZoneView,
 } from '../fixtures/timezone';
 import { BoardPage } from '../pages/BoardPage';
+import { uniqPlate } from '../pages/NewOrderDialog';
 import { OrderCardPage } from '../pages/OrderCardPage';
 import { ExecutorPayoutsPage } from '../pages/ExecutorPayoutsPage';
 import { ShellPage } from '../pages/ShellPage';
@@ -36,8 +37,7 @@ async function seedPaidOrder({ adminApi, uniq, insertSubtask }: Seed, label: str
   const columns = (await adminApi.listColumns()).items;
   const cat = await adminApi.createCategory({ kind: 'service', name: uniq(`TZ услуги ${label}`) });
   const service = await adminApi.createService({ category_id: cat.id, name: uniq(`TZ услуга ${label}`), price: 1000 });
-  const type = await adminApi.createEquipmentType({ name: uniq(`TZ тип ${label}`) });
-  const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq(`TZ модель ${label}`) });
+  const equipment = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
   const task = await adminApi.createTask({
     title: uniq(`TZ заказ ${label}`),
     client_id: client.id,

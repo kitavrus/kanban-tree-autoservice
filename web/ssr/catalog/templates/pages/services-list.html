@@ -38,7 +38,7 @@
         </form>
         <form method="post" action="/catalog/categories/{{ .ID }}/delete" data-testid="cat-delete-form" data-delete-dialog
               data-delete-title="Удалить «{{ .Name }}»?"
-              data-delete-text="Товары и услуги категории останутся в каталоге с пометкой «категория удалена»"
+              data-delete-text="Услуги категории останутся в каталоге с пометкой «категория удалена»"
               {{ if eq $.CatDelete.ID .ID }}data-delete-error="{{ $.CatDelete.Error }}"{{ end }}>
           <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
           <input type="hidden" name="kind" value="service">

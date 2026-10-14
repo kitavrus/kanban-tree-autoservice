@@ -14,47 +14,36 @@ import (
 
 // ProductsListVM — /catalog/products.
 type ProductsListVM struct {
-	Shell          ssr.Shell
-	Tabs           TabsVM
-	Q              string
-	Archived       bool
-	ActiveCategory string
-	Flash          string
+	Shell    ssr.Shell
+	Tabs     TabsVM
+	Q        string
+	Archived bool
+	Flash    string
 	// Toast — тост после PRG-перехода (запись удалена, soft-delete-catalog §8.1).
-	Toast    string
-	CatError string
-	// CatDelete — отказ удаления категории по причине (окно «Удаление» строки категории).
-	CatDelete  CatDeleteVM
-	Categories []CategoryResponse
-	CatTrunc   TruncVM // pagination DS-006: пометка «показаны N из M» в панели категорий
-	Items      []ProductResponse
-	Total      int
-	Pager      PagerVM // pagination DS-005: страница по ssrPageSize позиций
+	Toast string
+	Items []ProductResponse
+	Total int
+	Pager PagerVM // pagination DS-005: страница по ssrPageSize позиций
 }
 
 // ProductFormVM — /catalog/products/new и /catalog/products/:id.
 type ProductFormVM struct {
-	Shell      ssr.Shell
-	Tabs       TabsVM
-	IsNew      bool
-	ID         string
-	CategoryID string
-	Name       string
-	SKU        string
-	Unit       string
-	Price      string
-	Stock      string
-	MinStock   string
-	Box        string
-	Place      string
-	IsActive   bool
-	Units      []string
-	Categories []CategoryOptionVM
-	// CategoryIsDeleted — категория товара мягко удалена: бейдж «удалена» у поля (§8.1).
-	CategoryIsDeleted bool
-	CatTrunc          TruncVM // pagination DS-006: пометка «показаны N из M» под select категории
-	Errors            map[string]string
-	Error             string
+	Shell    ssr.Shell
+	Tabs     TabsVM
+	IsNew    bool
+	ID       string
+	Name     string
+	SKU      string
+	Unit     string
+	Price    string
+	Stock    string
+	MinStock string
+	Box      string
+	Place    string
+	IsActive bool
+	Units    []string
+	Errors   map[string]string
+	Error    string
 	// DeleteReason / DeleteError — отказ удаления по причине: окно «Удаление» открывается
 	// заново с введённым текстом и ошибкой под полем (§8.1).
 	DeleteReason string
@@ -76,62 +65,39 @@ func (p ProductResponse) IsDebt() bool {
 
 // list — GET /catalog/products.
 func (h *SSR) productsList(c fiber.Ctx) error {
-	vm := ProductsListVM{Q: c.Query("q"), ActiveCategory: c.Query("category"), Flash: flashes[c.Query("flash")], Toast: toastOf(c.Query("flash")),
-		CatError: catErrorText(c.Query("cat_error")), CatDelete: catDeleteFrom(c)}
+	vm := ProductsListVM{Q: c.Query("q"), Flash: flashes[c.Query("flash")], Toast: toastOf(c.Query("flash"))}
 	vm.Archived, _ = strconv.ParseBool(c.Query("archived"))
-
-	cats, trunc, err := h.cat.list(c, KindProduct)
-	if err != nil {
-		return err
-	}
-	vm.Categories, vm.CatTrunc = cats, trunc
 	offset := parseSSROffset(c.Query("offset")) // pagination DS-005
 
 	resp, err := h.prodSvc.List(c.Context(), ProductListQuery{
-		CategoryID: vm.ActiveCategory, Q: vm.Q, IncludeArchived: vm.Archived, Limit: ssrPageSize, Offset: offset,
+		Q: vm.Q, IncludeArchived: vm.Archived, Limit: ssrPageSize, Offset: offset,
 	}, true)
 	if err != nil {
 		return err
 	}
 	vm.Items, vm.Total = resp.Items, resp.Total
-	vm.Pager = buildPager("/catalog/products", vm.Q, vm.ActiveCategory, vm.Archived, offset, len(resp.Items), resp.Total)
+	vm.Pager = buildPager("/catalog/products", vm.Q, "", vm.Archived, offset, len(resp.Items), resp.Total)
 	vm.Shell = h.shell.Build(c, "Каталог: товары")
 	vm.Tabs = h.tabs(c, "products")
 	return h.r.Page(c, "products-list", vm)
 }
 
-// productCategoryOptions — активные категории вида product + текущая категория товара,
-// даже если она в архиве (иначе выбор при редактировании теряется, task.md: «архивный
-// товар/категория не предлагается ПРИ ДОБАВЛЕНИИ», но уже выбранная должна остаться видна);
-// удалённая текущая — только в форме существующего товара (categoryOptions).
-func (h *SSR) productCategoryOptions(c fiber.Ctx, currentID string, keepDeleted bool) ([]CategoryOptionVM, TruncVM, error) {
-	return h.categoryOptions(c, KindProduct, currentID, keepDeleted)
-}
-
 // productVM — форма существующего товара из ответа сервиса.
-func (h *SSR) productVM(c fiber.Ctx, p *ProductResponse) (ProductFormVM, error) {
-	opts, catTrunc, err := h.productCategoryOptions(c, p.CategoryID, true)
-	if err != nil {
-		return ProductFormVM{}, err
-	}
+func productVM(p *ProductResponse) ProductFormVM {
 	return ProductFormVM{
-		ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
+		ID: p.ID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
 		Price: p.Price.String(), Stock: p.Stock.String(), MinStock: p.MinStock.String(),
-		Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts, CatTrunc: catTrunc,
-	}, nil
+		Box: p.Box, Place: p.Place, IsActive: p.IsActive,
+	}
 }
 
 func (h *SSR) productFormNew(c fiber.Ctx) error {
-	opts, catTrunc, err := h.productCategoryOptions(c, c.Query("category"), false)
-	if err != nil {
-		return err
-	}
-	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{IsNew: true, IsActive: true, CategoryID: c.Query("category"), Categories: opts, CatTrunc: catTrunc})
+	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{IsNew: true, IsActive: true})
 }
 
 func productFormFrom(c fiber.Ctx) ProductFormVM {
 	return ProductFormVM{
-		CategoryID: c.FormValue("category_id"), Name: c.FormValue("name"), SKU: c.FormValue("sku"),
+		Name: c.FormValue("name"), SKU: c.FormValue("sku"),
 		Unit: c.FormValue("unit"), Price: c.FormValue("price"), Stock: c.FormValue("stock"),
 		MinStock: c.FormValue("min_stock"), Box: c.FormValue("box"), Place: c.FormValue("place"),
 	}
@@ -139,7 +105,7 @@ func productFormFrom(c fiber.Ctx) ProductFormVM {
 
 func inputFromForm(vm ProductFormVM) ProductInput {
 	return ProductInput{
-		CategoryID: vm.CategoryID, Name: vm.Name, SKU: vm.SKU, Unit: vm.Unit,
+		Name: vm.Name, SKU: vm.SKU, Unit: vm.Unit,
 		Price: vm.Price, Stock: vm.Stock, MinStock: vm.MinStock, Box: vm.Box, Place: vm.Place, IsActive: vm.IsActive,
 	}
 }
@@ -162,11 +128,7 @@ func (h *SSR) productFormEdit(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	vm, err := h.productVM(c, p)
-	if err != nil {
-		return err
-	}
-	return h.renderProductForm(c, fiber.StatusOK, vm)
+	return h.renderProductForm(c, fiber.StatusOK, productVM(p))
 }
 
 func (h *SSR) productUpdate(c fiber.Ctx) error {
@@ -221,10 +183,7 @@ func (h *SSR) productRemove(c fiber.Ctx) error {
 		if gerr != nil {
 			return err
 		}
-		vm, verr := h.productVM(c, p)
-		if verr != nil {
-			return err
-		}
+		vm := productVM(p)
 		if text := softdelete.ReasonError(err); text != "" {
 			vm.DeleteReason, vm.DeleteError = reason, text
 			return h.renderProductForm(c, fiber.StatusUnprocessableEntity, vm)
@@ -251,8 +210,6 @@ func (h *SSR) productFormError(c fiber.Ctx, vm ProductFormVM, err error) error {
 	if len(app.Fields) > 0 {
 		status = fiber.StatusUnprocessableEntity
 	}
-	opts, catTrunc, _ := h.productCategoryOptions(c, vm.CategoryID, !vm.IsNew)
-	vm.Categories, vm.CatTrunc = opts, catTrunc
 	return h.renderProductForm(c, status, vm)
 }
 
@@ -264,12 +221,11 @@ func (h *SSR) renderProductForm(c fiber.Ctx, status int, vm ProductFormVM) error
 	vm.Shell = h.shell.Build(c, title)
 	vm.Tabs = h.tabs(c, "products")
 	vm.Units = Units
-	vm.CategoryIsDeleted = currentCategoryDeleted(vm.Categories, vm.CategoryID)
 	c.Status(status)
 	return h.r.Page(c, "products-form", vm)
 }
 
-// fieldText — код ошибки поля → текст под полем (эталон equipmenttypes/ssr.go).
+// fieldText — код ошибки поля → текст под полем.
 func fieldText(code string) string {
 	switch code {
 	case msgRequired:

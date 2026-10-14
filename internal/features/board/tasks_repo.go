@@ -458,10 +458,8 @@ WITH base AS (
                     JOIN products pr ON pr.id = sp.product_id
                     WHERE s.task_id = t.id AND pr.name ILIKE '%' || $2 || '%' ESCAPE '\')
          OR EXISTS (SELECT 1 FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-                    WHERE te.task_id = t.id AND (e.model ILIKE '%' || $2 || '%' ESCAPE '\'
-                                              OR e.serial ILIKE '%' || $2 || '%' ESCAPE '\'
-                                              OR replace(replace(e.plate_number, ' ', ''), '-', '')
-                                                 ILIKE '%' || replace(replace($2, ' ', ''), '-', '') || '%' ESCAPE '\')))
+                    WHERE te.task_id = t.id AND replace(replace(e.plate_number, ' ', ''), '-', '')
+                                                 ILIKE '%' || replace(replace($2, ' ', ''), '-', '') || '%' ESCAPE '\'))
     AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM subtasks s JOIN services sv ON sv.id = s.service_id
                                      WHERE s.task_id = t.id AND sv.category_id = $4))
     AND ($5::boolean IS NULL OR t.is_paid = $5)

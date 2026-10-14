@@ -76,10 +76,6 @@ func (s *SubtaskProductsPositionSuite) TestSubtaskProductsPosition_BackfillOnMig
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`INSERT INTO services (category_id, name) VALUES ($1, 'SPP Service') RETURNING id`, categoryID,
 	).Scan(&serviceID))
-	var prodCategoryID string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'SPP Products ' || gen_random_uuid()) RETURNING id`,
-	).Scan(&prodCategoryID))
 
 	var taskID int64
 	s.Require().NoError(s.Pool.QueryRow(ctx,
@@ -96,8 +92,8 @@ func (s *SubtaskProductsPositionSuite) TestSubtaskProductsPosition_BackfillOnMig
 	for i := range productIDs {
 		var productID string
 		s.Require().NoError(s.Pool.QueryRow(ctx,
-			`INSERT INTO products (category_id, name) VALUES ($1, $2) RETURNING id`,
-			prodCategoryID, fmt.Sprintf("SPP Product %d", i),
+			`INSERT INTO products (name) VALUES ($1) RETURNING id`,
+			fmt.Sprintf("SPP Product %d", i),
 		).Scan(&productID))
 		productIDs[i] = productID
 		_, err := s.Pool.Exec(ctx,

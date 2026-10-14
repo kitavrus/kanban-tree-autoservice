@@ -396,8 +396,8 @@ func (s *SoftDeleteLiveSuite) postID(path string, body map[string]any) string {
 }
 
 // TS-009 (DS-011, DS-009, soft-delete-catalog §6.9): виды products, services,
-// catalog-categories, equipment-types отдают удалённые записи — title — название; subtitle — у
-// товара и услуги название категории, у категории «товары» либо «услуги», у типа пустая строка;
+// catalog-categories отдают удалённые записи — title — название; subtitle — у товара артикул,
+// у услуги название категории, у категории (только услуг) «услуги»;
 // is_archived = true только у записи, удалённой из архива (TS-028 негатив); deleted_with = null;
 // поиск по названию и причине, фильтр «кто удалил»; counts вкладки = total списка;
 // восстановленная запись из списка уходит. Негатив: действующая запись в список не входит; у
@@ -411,38 +411,35 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 		s.Require().Equal(http.StatusOK, st, "%s: %s", path, raw)
 	}
 
-	prodCat := s.postID("/api/v1/catalog-categories", map[string]any{"kind": "product", "name": "Запчасти " + mark})
 	svcCat := s.postID("/api/v1/catalog-categories", map[string]any{"kind": "service", "name": "Работы " + mark})
 	goneCat := s.postID("/api/v1/catalog-categories", map[string]any{"kind": "service", "name": "Лишняя " + mark})
 	// товары без остатка (stock не передан → 0): удаление разрешено.
-	archivedProduct := s.postID("/api/v1/products", map[string]any{"category_id": prodCat, "name": "Архивный товар " + mark, "price": 10})
-	activeProduct := s.postID("/api/v1/products", map[string]any{"category_id": prodCat, "name": "Активный товар " + mark, "price": 10})
-	liveProduct := s.postID("/api/v1/products", map[string]any{"category_id": prodCat, "name": "Действующий товар " + mark, "price": 10})
+	archivedProduct := s.postID("/api/v1/products", map[string]any{"sku": "ARC-" + mark, "name": "Архивный товар " + mark, "price": 10})
+	activeProduct := s.postID("/api/v1/products", map[string]any{"sku": "ACT-" + mark, "name": "Активный товар " + mark, "price": 10})
+	liveProduct := s.postID("/api/v1/products", map[string]any{"sku": "LIVE-" + mark, "name": "Действующий товар " + mark, "price": 10})
 	service := s.postID("/api/v1/services", map[string]any{"category_id": svcCat, "name": "Услуга " + mark, "price": 100})
-	eqType := s.postID("/api/v1/equipment-types", map[string]any{"name": "Тип " + mark})
 	// уборка фикстур (SQL: сьюта без служебного адреса purge); счётчики видов каталога остаются
 	// нулевыми для TS-011.
 	defer func() {
 		for _, q := range []string{
 			`DELETE FROM products WHERE id = ANY($1::uuid[])`, `DELETE FROM services WHERE id = ANY($1::uuid[])`,
-			`DELETE FROM equipment_types WHERE id = ANY($1::uuid[])`, `DELETE FROM catalog_categories WHERE id = ANY($1::uuid[])`,
+			`DELETE FROM catalog_categories WHERE id = ANY($1::uuid[])`,
 		} {
-			_, err := s.Pool.Exec(ctx, q, []string{prodCat, svcCat, goneCat, archivedProduct, activeProduct, liveProduct, service, eqType})
+			_, err := s.Pool.Exec(ctx, q, []string{svcCat, goneCat, archivedProduct, activeProduct, liveProduct, service})
 			s.NoError(err)
 		}
 	}()
 
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+archivedProduct, map[string]any{
-		"category_id": prodCat, "name": "Архивный товар " + mark, "price": 10, "is_active": false})
+		"sku": "ARC-" + mark, "name": "Архивный товар " + mark, "price": 10, "is_active": false})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
 	del(s.admin, "/api/v1/products/"+archivedProduct, "Снят "+mark)
 	del(other, "/api/v1/products/"+activeProduct, "Дубль "+mark)
 	del(s.admin, "/api/v1/services/"+service, "Не оказываем "+mark)
 	del(s.admin, "/api/v1/catalog-categories/"+goneCat, "Лишняя категория "+mark)
-	del(s.admin, "/api/v1/equipment-types/"+eqType, "Ошибочный тип "+mark)
 
-	// ---- товары: новые удаления сверху, категория в подзаголовке, признак архива ----
+	// ---- товары: новые удаления сверху, артикул в подзаголовке, признак архива ----
 	l := s.mustList("kind", "products", "q", mark)
 	s.Equal(2, l.Total)
 	s.Equal([]string{activeProduct, archivedProduct}, ids(l), "новые удаления сверху")
@@ -450,7 +447,7 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 	top, second := l.Items[0], l.Items[1]
 	s.Equal("products", top.Kind)
 	s.Equal("Активный товар "+mark, top.Title)
-	s.Equal("Запчасти "+mark, top.Subtitle)
+	s.Equal("ACT-"+mark, top.Subtitle, "подзаголовок товара — артикул")
 	s.Equal("Дубль "+mark, top.DeleteReason)
 	s.Equal(otherID, top.DeletedBy.ID)
 	s.Equal("Второй Удаляющий", top.DeletedBy.Name)
@@ -464,7 +461,7 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 	s.Equal([]string{activeProduct}, ids(s.mustList("kind", "products", "q", mark, "deleted_by", otherID)))
 	s.Empty(ids(s.mustList("kind", "products", "q", "Архивный товар "+mark, "deleted_by", otherID)))
 
-	// ---- услуги, категории, типы ----
+	// ---- услуги, категории ----
 	sv := s.mustList("kind", "services", "q", mark)
 	s.Require().Equal([]string{service}, ids(sv))
 	s.Equal("services", sv.Items[0].Kind)
@@ -478,12 +475,6 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 	s.Equal("Лишняя "+mark, cats.Items[0].Title)
 	s.Equal("услуги", cats.Items[0].Subtitle)
 
-	types := s.mustList("kind", "equipment-types", "q", mark)
-	s.Require().Equal([]string{eqType}, ids(types))
-	s.Equal("equipment-types", types.Items[0].Kind)
-	s.Equal("Тип "+mark, types.Items[0].Title)
-	s.Equal("", types.Items[0].Subtitle)
-
 	// ---- счётчики вкладок = total списка; восстановление уменьшает оба ----
 	counts := func() map[string]int {
 		st, raw := s.admin.Do(http.MethodGet, api+"/summary", nil)
@@ -494,13 +485,13 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 	}
 	before := counts()
 	for kind, key := range map[string]string{"products": "products", "services": "services",
-		"catalog-categories": "catalog_categories", "equipment-types": "equipment_types"} {
+		"catalog-categories": "catalog_categories"} {
 		s.Equal(s.mustList("kind", kind, "limit", "1").Total, before[key], "счётчик %s = total списка", key)
 		s.Positive(before[key], key)
 	}
 	for path, key := range map[string]string{
 		"/api/v1/products/" + activeProduct: "products", "/api/v1/services/" + service: "services",
-		"/api/v1/catalog-categories/" + goneCat: "catalog_categories", "/api/v1/equipment-types/" + eqType: "equipment_types",
+		"/api/v1/catalog-categories/" + goneCat: "catalog_categories",
 	} {
 		st, raw := s.admin.Do(http.MethodPost, path+"/restore", nil)
 		s.Require().Equal(http.StatusOK, st, "%s: %s", path, raw)
@@ -509,10 +500,9 @@ func (s *SoftDeleteLiveSuite) TestTS009_CatalogKinds() {
 	s.Equal([]string{archivedProduct}, ids(s.mustList("kind", "products", "q", mark)), "восстановленный товар из списка ушёл")
 	s.Empty(ids(s.mustList("kind", "services", "q", mark)))
 	s.Empty(ids(s.mustList("kind", "catalog-categories", "q", mark)))
-	s.Empty(ids(s.mustList("kind", "equipment-types", "q", mark)))
 
 	exec, _ := s.user("sd-cat-exec-"+mark, "Исполнитель", "executor")
-	for _, kind := range []string{"products", "services", "catalog-categories", "equipment-types"} {
+	for _, kind := range []string{"products", "services", "catalog-categories"} {
 		st, _, raw := s.list(exec, "kind", kind)
 		s.Equal(http.StatusForbidden, st, "%s: %s", kind, raw)
 		s.Equal("Нет доступа", s.errOf(raw).Message)
@@ -646,7 +636,7 @@ func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
 	s.deleted(s.admin, c, "Заказ 2 "+mark, "Причина "+mark, "")
 
 	sum := summary()
-	s.Len(sum.Counts, 9)
+	s.Len(sum.Counts, 8)
 	s.Equal(before+2, sum.Counts["tasks"])
 	for _, k := range softdelete.Kinds {
 		n, ok := sum.Counts[k.CountKey()]
@@ -654,7 +644,7 @@ func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
 		s.Equal(s.mustList("kind", string(k), "limit", "1").Total, n, "счётчик %s = total списка", k)
 	}
 	for _, key := range []string{"clients", "equipment", "products", "services",
-		"catalog_categories", "equipment_types", "suppliers"} {
+		"catalog_categories", "suppliers"} {
 		s.Equal(0, sum.Counts[key], key)
 	}
 

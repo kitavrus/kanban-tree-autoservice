@@ -33,8 +33,6 @@ func (r *TaskEquipmentRepo) EquipmentClient(ctx context.Context, tx pgx.Tx, equi
 type OrderCar struct {
 	ClientID    string
 	PlateNumber string
-	Brand       string
-	Model       string
 }
 
 // CarForOrder — действующий автомобиль действующего клиента под FOR SHARE (как
@@ -43,10 +41,10 @@ type OrderCar struct {
 func (r *TaskEquipmentRepo) CarForOrder(ctx context.Context, tx pgx.Tx, equipmentID string) (*OrderCar, error) {
 	var c OrderCar
 	err := tx.QueryRow(ctx, `
-		SELECT e.client_id, e.plate_number, e.brand, e.model
+		SELECT e.client_id, e.plate_number
 		FROM equipment e JOIN clients cl ON cl.id = e.client_id AND cl.deleted_at IS NULL
 		WHERE e.id = $1 AND e.deleted_at IS NULL
-		FOR SHARE OF e`, equipmentID).Scan(&c.ClientID, &c.PlateNumber, &c.Brand, &c.Model)
+		FOR SHARE OF e`, equipmentID).Scan(&c.ClientID, &c.PlateNumber)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errNotFound
 	}

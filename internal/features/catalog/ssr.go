@@ -10,9 +10,8 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/ssr"
 )
 
-// SSR — экраны «Каталог»: товары (список/форма), заглушка услуг, управление категориями
-// (общее для обеих вкладок). Типы оборудования — отдельный SSR (equipmenttypes), но
-// делит с этим набором полосу вкладок (catalog-tabs partial + TabCounts).
+// SSR — экраны «Каталог»: товары и услуги (список/форма), управление категориями услуг
+// (полоса вкладок — catalog-tabs partial + TabCounts).
 type SSR struct {
 	catSvc  *CategoryService
 	prodSvc *ProductService
@@ -30,10 +29,9 @@ func NewSSR(catSvc *CategoryService, prodSvc *ProductService, svcSvc *ServiceSer
 
 // TabsVM — полоса вкладок каталога (шаблон web/ssr/_layout/templates/partials/catalog-tabs.html).
 type TabsVM struct {
-	Active   string // "services" | "products" | "equipment-types"
+	Active   string // "services" | "products"
 	Services int
 	Products int
-	Types    int
 }
 
 // tabs — счётчики полосы вкладок; ошибка НЕ проглатывается молча (code review LOW#2) —
@@ -45,7 +43,7 @@ func (h *SSR) tabs(c fiber.Ctx, active string) TabsVM {
 		slog.ErrorContext(c.Context(), "catalog: не удалось посчитать вкладки", "error", err, "request_id", requestid.FromContext(c))
 		return TabsVM{Active: active}
 	}
-	return TabsVM{Active: active, Services: cnt.Services, Products: cnt.Products, Types: cnt.Types}
+	return TabsVM{Active: active, Services: cnt.Services, Products: cnt.Products}
 }
 
 var flashes = map[string]string{

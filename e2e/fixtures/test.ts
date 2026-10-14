@@ -121,7 +121,6 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
         createCategory: adminApi.createCategory.bind(adminApi),
         createProduct: adminApi.createProduct.bind(adminApi),
         createService: adminApi.createService.bind(adminApi),
-        createEquipmentType: adminApi.createEquipmentType.bind(adminApi),
         createSupplier: adminApi.createSupplier.bind(adminApi),
       };
       adminApi.createTask = (async (t) => {
@@ -159,11 +158,6 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
         reg.catalog.push({ kind: 'services', id: r.id });
         return r;
       }) as typeof adminApi.createService;
-      adminApi.createEquipmentType = (async (t) => {
-        const r = await orig.createEquipmentType(t);
-        reg.catalog.push({ kind: 'equipment-types', id: r.id });
-        return r;
-      }) as typeof adminApi.createEquipmentType;
       adminApi.createSupplier = (async (sup) => {
         const r = await orig.createSupplier(sup);
         reg.partners.push({ kind: 'suppliers', id: r.id });
@@ -203,8 +197,8 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
       // 3. Клиенты и единицы.
       for (const id of reg.clients) await sweep('clients', id);
       for (const id of reg.equipment) await sweep('equipment', id);
-      // 4. Каталог и типы оборудования.
-      const catalogOrder: Array<import('./board-types').CatalogKind> = ['services', 'products', 'catalog-categories', 'equipment-types'];
+      // 4. Каталог.
+      const catalogOrder: Array<import('./board-types').CatalogKind> = ['services', 'products', 'catalog-categories'];
       for (const kind of catalogOrder) {
         for (const rec of reg.catalog.filter((r) => r.kind === kind)) await sweep(kind, rec.id);
       }

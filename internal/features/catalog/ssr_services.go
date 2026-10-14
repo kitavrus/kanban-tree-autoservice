@@ -130,7 +130,7 @@ func (h *SSR) servicesList(c fiber.Ctx) error {
 }
 
 // serviceCategoryOptions — активные категории вида service + текущая категория услуги,
-// даже архивная (иначе выбор при редактировании теряется — эталон productCategoryOptions);
+// даже архивная (иначе выбор при редактировании теряется);
 // удалённая текущая — только в форме существующей услуги (categoryOptions).
 func (h *SSR) serviceCategoryOptions(c fiber.Ctx, currentID string, keepDeleted bool) ([]CategoryOptionVM, TruncVM, error) {
 	return h.categoryOptions(c, KindService, currentID, keepDeleted)
@@ -139,7 +139,7 @@ func (h *SSR) serviceCategoryOptions(c fiber.Ctx, currentID string, keepDeleted 
 // serviceProductOptions — активные товары (комбобокс строки комплекта не предлагает
 // архивные, task.md) + товары уже выбранных строк, даже архивные (иначе форма потеряет
 // отображение уже выбранного — «архивные товары не предлагаются, но у существующей
-// строки показываются», task.md — эталон productCategoryOptions). Мягко удалённый товар уже
+// строки показываются», task.md). Мягко удалённый товар уже
 // выбранной строки тоже остаётся виден — с признаком IsDeleted: шаблон показывает его только в
 // своей строке с бейджем «удалён» и не предлагает в новых (soft-delete-catalog §8.1).
 func (h *SSR) serviceProductOptions(c fiber.Ctx, existingIDs []string) ([]ProductOptionVM, error) {

@@ -24,7 +24,6 @@ type CarOrderLiveSuite struct {
 	executor *testutil.Browser
 	adminID  string
 	column   string
-	carType  string
 }
 
 func TestCarOrderLiveSuite(t *testing.T) {
@@ -40,7 +39,6 @@ func (s *CarOrderLiveSuite) SetupSuite() {
 	s.executor = s.NewBrowser()
 	s.executor.Login("car-exec", "password1")
 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT id FROM columns WHERE name = 'Приёмка'`).Scan(&s.column))
-	s.carType = s.newType(true)
 }
 
 // ---- wire-типы (1:1 с clients.EquipmentLookupResponse / board.TaskMutationResponse) ----
@@ -49,12 +47,7 @@ type lookupItemDTO struct {
 	ID          string `json:"id"`
 	ClientID    string `json:"client_id"`
 	ClientName  string `json:"client_name"`
-	TypeID      string `json:"type_id"`
-	TypeName    string `json:"type_name"`
 	PlateNumber string `json:"plate_number"`
-	Brand       string `json:"brand"`
-	Model       string `json:"model"`
-	Serial      string `json:"serial"`
 }
 
 type lookupListDTO struct {
@@ -75,13 +68,6 @@ type carTaskDTO struct {
 
 // ---- фикстуры ----
 
-func (s *CarOrderLiveSuite) newType(active bool) string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO equipment_types (name, is_active) VALUES ('Легковой ' || gen_random_uuid(), $1) RETURNING id`, active).Scan(&id))
-	return id
-}
-
 func (s *CarOrderLiveSuite) newClient(name string) string {
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/clients", map[string]any{
 		"company_name": name, "phones": []map[string]string{{"phone": "+7 999 100-20-30", "note": ""}},
@@ -94,10 +80,9 @@ func (s *CarOrderLiveSuite) newClient(name string) string {
 	return c.ID
 }
 
-func (s *CarOrderLiveSuite) newCar(clientID, plate, brand, model string) string {
+func (s *CarOrderLiveSuite) newCar(clientID, plate string) string {
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/clients/"+clientID+"/equipment", map[string]any{
-		"type_id": s.carType, "plate_number": plate, "brand": brand, "model": model,
-		"sku": "", "serial": "", "specs": []any{}, "note": "",
+		"plate_number": plate,
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var e struct {
@@ -178,11 +163,11 @@ func (s *CarOrderLiveSuite) rowCounts() [5]int {
 func (s *CarOrderLiveSuite) TestLookup_CaseSpaceInsensitive_DeletedExcluded_MultipleMatches() {
 	a := s.newClient("Петрова Н. С.")
 	b := s.newClient("Сидоров А. А.")
-	carA := s.newCar(a, "о718мр 199", "Hyundai", "Solaris")
-	carB := s.newCar(b, "О718-МР199", "Kia", "Rio") // перепродан: тот же номер у другого клиента
-	gone := s.newCar(b, "О718МР 199", "Lada", "Vesta")
+	carA := s.newCar(a, "о718мр 199")
+	carB := s.newCar(b, "О718-МР199") // перепродан: тот же номер у другого клиента
+	gone := s.newCar(b, "О718МР 199")
 	s.softDeleteCar(gone)
-	s.newCar(a, "О718МР 777", "Lada", "Granta") // другой номер — не совпадение
+	s.newCar(a, "О718МР 777") // другой номер — не совпадение
 
 	st, l, raw := s.lookup(s.admin, " о 718-мр199 ")
 	s.Require().Equal(http.StatusOK, st, string(raw))
@@ -200,10 +185,6 @@ func (s *CarOrderLiveSuite) TestLookup_CaseSpaceInsensitive_DeletedExcluded_Mult
 	s.Equal(a, got[carA].ClientID)
 	s.Equal("Петрова Н. С.", got[carA].ClientName)
 	s.Equal("О718МР 199", got[carA].PlateNumber)
-	s.Equal("Hyundai", got[carA].Brand)
-	s.Equal("Solaris", got[carA].Model)
-	s.Equal(s.carType, got[carA].TypeID)
-	s.NotEmpty(got[carA].TypeName)
 
 	// исполнитель тоже ищет (диалог «Новый заказ» доступен и ему, D19).
 	st, l, raw = s.lookup(s.executor, "О718МР199")
@@ -227,14 +208,14 @@ func (s *CarOrderLiveSuite) TestLookup_CaseSpaceInsensitive_DeletedExcluded_Mult
 func (s *CarOrderLiveSuite) TestCreate_ExistingCar_ClientAuto_TitleGenerated_EquipmentAttached() {
 	owner := s.newClient("Владелец Существующего")
 	other := s.newClient("Чужой Клиент")
-	car := s.newCar(owner, "Т111ТТ 77", "Hyundai", "Solaris")
+	car := s.newCar(owner, "Т111ТТ 77")
 
 	st, t, raw := s.createTask(s.admin, map[string]any{
 		"plate_number": "т111-тт77", "equipment_id": car, "column_id": s.column,
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	s.Equal(owner, t.Task.ClientID, "клиент — владелец автомобиля")
-	s.Equal("Hyundai Solaris Т111ТТ 77", t.Task.Title)
+	s.Equal("Т111ТТ 77", t.Task.Title, "название заказа — госномер")
 	s.Equal(s.column, t.Task.ColumnID)
 	s.Equal([]string{car}, s.taskEquipment(t.Task.ID), "автомобиль сразу в заказе")
 
@@ -253,7 +234,7 @@ func (s *CarOrderLiveSuite) TestCreate_ExistingCar_ClientAuto_TitleGenerated_Equ
 	s.Equal("plate_mismatch", s.fields(raw)["equipment_id"])
 
 	// удалённый автомобиль заказу не назначить.
-	gone := s.newCar(owner, "Т222ТТ 77", "Kia", "Rio")
+	gone := s.newCar(owner, "Т222ТТ 77")
 	s.softDeleteCar(gone)
 	st, _, raw = s.createTask(s.admin, map[string]any{
 		"plate_number": "Т222ТТ 77", "equipment_id": gone, "column_id": s.column,
@@ -266,21 +247,19 @@ func (s *CarOrderLiveSuite) TestCreate_NewCar_ExistingClient() {
 	client := s.newClient("Клиент Нового Авто")
 	st, t, raw := s.createTask(s.executor, map[string]any{
 		"plate_number": " в333вв  50 ", "client_id": client, "column_id": s.column,
-		"new_equipment": map[string]any{"type_id": s.carType, "brand": " Toyota ", "model": "Camry", "serial": "JTNB11HK103456789"},
+		"new_equipment": map[string]any{},
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	s.Equal(client, t.Task.ClientID)
-	s.Equal("Toyota Camry В333ВВ 50", t.Task.Title)
+	s.Equal("В333ВВ 50", t.Task.Title)
 
 	te := s.taskEquipment(t.Task.ID)
 	s.Require().Len(te, 1)
-	var plate, owner, serial, typeID string
+	var plate, owner string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`SELECT plate_number, client_id::text, serial, type_id::text FROM equipment WHERE id = $1`, te[0]).Scan(&plate, &owner, &serial, &typeID))
+		`SELECT plate_number, client_id::text FROM equipment WHERE id = $1`, te[0]).Scan(&plate, &owner))
 	s.Equal("В333ВВ 50", plate, "госномер сохранён нормализованным")
 	s.Equal(client, owner)
-	s.Equal("JTNB11HK103456789", serial)
-	s.Equal(s.carType, typeID)
 
 	// новый автомобиль теперь находится поиском.
 	_, l, _ := s.lookup(s.admin, "В333ВВ50")
@@ -291,11 +270,11 @@ func (s *CarOrderLiveSuite) TestCreate_NewCar_NewClient() {
 	before := s.rowCounts()
 	st, t, raw := s.createTask(s.admin, map[string]any{
 		"plate_number": "е444ее 750", "column_id": s.column,
-		"new_equipment": map[string]any{"type_id": s.carType, "brand": "", "model": "Logan"},
+		"new_equipment": map[string]any{},
 		"new_client":    map[string]any{"company_name": " Кузнецов Пётр ", "phones": []map[string]string{{"phone": "8 (912) 000-11-22"}}},
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
-	s.Equal("Logan Е444ЕЕ 750", t.Task.Title, "пустая марка пропускается")
+	s.Equal("Е444ЕЕ 750", t.Task.Title)
 	after := s.rowCounts()
 	s.Equal([5]int{before[0] + 1, before[1] + 1, before[2] + 1, before[3] + 1, before[4] + 1}, after)
 
@@ -313,7 +292,7 @@ func (s *CarOrderLiveSuite) TestCreate_NewCar_NewClient() {
 	before = s.rowCounts()
 	st, t, raw = s.createTask(s.executor, map[string]any{
 		"plate_number": "Е555ЕЕ 750", "column_id": s.column,
-		"new_equipment": map[string]any{"type_id": s.carType, "model": "Logan"},
+		"new_equipment": map[string]any{},
 		"new_client":    map[string]any{"company_name": "Исполнитель Создал", "phones": []map[string]string{{"phone": "123"}}},
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
@@ -360,10 +339,10 @@ func (s *CarOrderLiveSuite) TestExecutor_CreatesClient_ViaClientsAPI() {
 func (s *CarOrderLiveSuite) TestLookup_ByClientID() {
 	owner := s.newClient("Владелец Двух Авто")
 	other := s.newClient("Другой Владелец")
-	car1 := s.newCar(owner, "А101АА 77", "Kia", "Rio")
-	car2 := s.newCar(owner, "А102АА 77", "Kia", "Ceed")
-	gone := s.newCar(owner, "А103АА 77", "Kia", "Soul")
-	s.newCar(other, "А104АА 77", "Lada", "Vesta")
+	car1 := s.newCar(owner, "А101АА 77")
+	car2 := s.newCar(owner, "А102АА 77")
+	gone := s.newCar(owner, "А103АА 77")
+	s.newCar(other, "А104АА 77")
 	s.softDeleteCar(gone)
 
 	for _, b := range []*testutil.Browser{s.admin, s.executor} {
@@ -420,10 +399,10 @@ func (s *CarOrderLiveSuite) TestLookup_ByClientID() {
 // q «из одних пробелов/дефисов» → 400 required; %/_ — обычные символы (не LIKE-шаблон).
 func (s *CarOrderLiveSuite) TestLookup_Fragment() {
 	owner := s.newClient("Автодополнение Клиент")
-	mid := s.newCar(owner, "Х9Ч718ЧЧ 99", "Lada", "Granta") // «718» не в начале
-	head := s.newCar(owner, "Ч718ЧЧ 199", "Lada", "Vesta")  // «Ч718» с начала
-	gone := s.newCar(owner, "ЧЧ718Ч 77", "Lada", "Niva")    // удалён — не находится
-	s.newCar(owner, "Ш555ШШ 77", "Lada", "Largus")          // не совпадает
+	mid := s.newCar(owner, "Х9Ч718ЧЧ 99") // «718» не в начале
+	head := s.newCar(owner, "Ч718ЧЧ 199") // «Ч718» с начала
+	gone := s.newCar(owner, "ЧЧ718Ч 77")  // удалён — не находится
+	s.newCar(owner, "Ш555ШШ 77")          // не совпадает
 	s.softDeleteCar(gone)
 
 	get := func(b *testutil.Browser, q string) (int, lookupListDTO, []byte) {
@@ -463,9 +442,7 @@ func (s *CarOrderLiveSuite) TestLookup_Fragment() {
 // автомобиля внутри транзакции: ни одной строки не остаётся (атомарность).
 func (s *CarOrderLiveSuite) TestCreate_ValidationErrors_NoPartialRows() {
 	newClient := map[string]any{"company_name": "Атомарный Клиент", "phones": []map[string]string{{"phone": "+7 900 000-00-00"}}}
-	newCar := func(model string) map[string]any {
-		return map[string]any{"type_id": s.carType, "brand": "Ford", "model": model}
-	}
+	newCar := map[string]any{}
 
 	cases := []struct {
 		name  string
@@ -473,19 +450,16 @@ func (s *CarOrderLiveSuite) TestCreate_ValidationErrors_NoPartialRows() {
 		field string
 		msg   string
 	}{
-		{"нет госномера", map[string]any{"column_id": s.column, "new_equipment": newCar("Focus"), "new_client": newClient}, "plate_number", "required"},
-		{"нет модели", map[string]any{"plate_number": "К100КК 77", "column_id": s.column, "new_equipment": newCar(" "), "new_client": newClient}, "new_equipment.model", "required"},
-		{"плохой госномер", map[string]any{"plate_number": "К100*КК", "column_id": s.column, "new_equipment": newCar("Focus"), "new_client": newClient}, "plate_number", "invalid_format"},
-		{"телефон нового клиента", map[string]any{"plate_number": "К100КК 77", "column_id": s.column, "new_equipment": newCar("Focus"),
+		{"нет госномера", map[string]any{"column_id": s.column, "new_equipment": newCar, "new_client": newClient}, "plate_number", "required"},
+		{"плохой госномер", map[string]any{"plate_number": "К100*КК", "column_id": s.column, "new_equipment": newCar, "new_client": newClient}, "plate_number", "invalid_format"},
+		{"телефон нового клиента", map[string]any{"plate_number": "К100КК 77", "column_id": s.column, "new_equipment": newCar,
 			"new_client": map[string]any{"company_name": "Без Телефона", "phones": []map[string]string{{"phone": "нет"}}}}, "new_client.phones[0].phone", "invalid_format"},
 		{"ни автомобиля, ни нового", map[string]any{"plate_number": "К100КК 77", "column_id": s.column, "client_id": s.newClient("Пустой Заказ")}, "equipment_id", "required"},
 		// отказы ВНУТРИ транзакции — клиент уже вставлен, всё откатывается:
-		{"архивный тип", map[string]any{"plate_number": "К100КК 77", "column_id": s.column, "new_client": newClient,
-			"new_equipment": map[string]any{"type_id": s.newType(false), "model": "Focus"}}, "new_equipment.type_id", "archived"},
 		{"нет ответственного", map[string]any{"plate_number": "К100КК 77", "column_id": s.column, "new_client": newClient,
-			"new_equipment": newCar("Focus"), "assignee_id": "00000000-0000-0000-0000-000000000001"}, "assignee_id", "not_found"},
+			"new_equipment": newCar, "assignee_id": "00000000-0000-0000-0000-000000000001"}, "assignee_id", "not_found"},
 	}
-	before := s.rowCounts() // newClient("Пустой Заказ")/newType выше — до снимка
+	before := s.rowCounts() // newClient("Пустой Заказ") выше — до снимка
 	for _, c := range cases {
 		st, _, raw := s.createTask(s.admin, c.body)
 		s.Require().Equal(http.StatusBadRequest, st, "%s: %s", c.name, raw)
@@ -496,7 +470,7 @@ func (s *CarOrderLiveSuite) TestCreate_ValidationErrors_NoPartialRows() {
 	// строгий разбор тела: неизвестное поле во вложенном объекте — 400 BAD_REQUEST.
 	st, _, raw := s.createTask(s.admin, map[string]any{
 		"plate_number": "К100КК 77", "column_id": s.column, "client_id": s.newClient("Строгий"),
-		"new_equipment": map[string]any{"type_id": s.carType, "model": "Focus", "color": "red"},
+		"new_equipment": map[string]any{"color": "red"},
 	})
 	s.Require().Equal(http.StatusBadRequest, st, string(raw))
 	s.Contains(string(raw), "BAD_REQUEST")

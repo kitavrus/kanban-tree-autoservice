@@ -160,10 +160,7 @@ func (in TaskCreateRequest) prepare() (*carOrder, []errorspkg.Field) {
 	}
 
 	if in.NewEquipment != nil {
-		eq, ef := clients.PrepareEquipment(clients.EquipmentInput{
-			TypeID: in.NewEquipment.TypeID, PlateNumber: in.PlateNumber,
-			Brand: in.NewEquipment.Brand, Model: in.NewEquipment.Model, Serial: in.NewEquipment.Serial,
-		})
+		eq, ef := clients.PrepareEquipment(clients.EquipmentInput{PlateNumber: in.PlateNumber})
 		for _, e := range ef {
 			if e.Name == "plate_number" {
 				continue // госномер — поле верхнего уровня, проверен выше
@@ -189,10 +186,10 @@ func (in TaskCreateRequest) prepare() (*carOrder, []errorspkg.Field) {
 	return car, f
 }
 
-// carTitle — название заказа по автомобилю: «{Марка} {Модель} {ГОСНОМЕР}» (пробелы
-// схлопнуты, пустые части пропущены), не длиннее taskTitleMax символов.
-func carTitle(brand, model, plate string) string {
-	t := strings.Join(strings.Fields(brand+" "+model+" "+plate), " ")
+// carTitle — название заказа по автомобилю: госномер (пробелы схлопнуты), не длиннее
+// taskTitleMax символов.
+func carTitle(plate string) string {
+	t := strings.Join(strings.Fields(plate), " ")
 	if r := []rune(t); len(r) > taskTitleMax {
 		t = strings.TrimSpace(string(r[:taskTitleMax]))
 	}

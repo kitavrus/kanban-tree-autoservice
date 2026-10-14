@@ -480,7 +480,7 @@
       '<div class="card mb-2" data-testid="card-equipment-row" data-row-key="' + key + '" data-equipment-id="' + esc(eq.equipment_id) + '">' +
       '  <div class="card-body py-2">' +
       '    <div class="d-flex justify-content-between align-items-start gap-2">' +
-      '      <div class="card-eq-title">' + plateBadge(eq.plate_number) + '<strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') +
+      '      <div class="card-eq-title">' + plateBadge(eq.plate_number) +
       // единица мягко удалена (soft-delete-clients §8.3 п.3) — в заказе остаётся с бейджем
       (eq.is_deleted ? deletedBadge('card-equipment-deleted') : '') + '</div>' +
       '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>' +
@@ -581,7 +581,7 @@
   function equipmentAddHtml(options) {
     return '<select class="form-select form-select-sm" data-testid="card-equipment-add"><option value="">+ Добавить оборудование клиента…</option>' +
       (options || []).map(function (e) {
-        return '<option value="' + esc(e.id) + '">' + (e.plate_number ? esc(e.plate_number) + ' — ' : '') + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + (e.serial ? ' · ' + esc(e.serial) : '') + '</option>';
+        return '<option value="' + esc(e.id) + '">' + esc(e.plate_number) + '</option>';
       }).join('') + '</select>';
   }
 
@@ -590,12 +590,7 @@
       '<div class="card mt-2" data-testid="card-equipment-new-form">' +
       '  <div class="card-body py-2">' +
       '    <div class="row g-2">' +
-      '      <div class="col-12"><label class="form-label small mb-0">Тип *</label>' +
-      '        <select class="form-select form-select-sm" data-testid="card-equipment-new-type"><option value="">Выберите тип</option></select></div>' +
-      '      <div class="col-6"><label class="form-label small mb-0">Госномер</label><input class="form-control form-control-sm text-uppercase" maxlength="20" placeholder="А123ВС 777" data-testid="card-equipment-new-plate"></div>' +
-      '      <div class="col-6"><label class="form-label small mb-0">Бренд</label><input class="form-control form-control-sm" data-testid="card-equipment-new-brand"></div>' +
-      '      <div class="col-6"><label class="form-label small mb-0">Модель *</label><input class="form-control form-control-sm" data-testid="card-equipment-new-model"></div>' +
-      '      <div class="col-6"><label class="form-label small mb-0">Серийный №</label><input class="form-control form-control-sm" data-testid="card-equipment-new-serial"></div>' +
+      '      <div class="col-6"><label class="form-label small mb-0">Госномер *</label><input class="form-control form-control-sm text-uppercase" maxlength="20" placeholder="А123ВС 777" data-testid="card-equipment-new-plate"></div>' +
       '    </div>' +
       '    <div class="alert alert-danger d-none mt-2 py-1 px-2 small" data-testid="card-equipment-new-error"></div>' +
       '    <div class="d-flex gap-2 mt-2">' +
@@ -676,38 +671,18 @@
     var cancelBtn = $('[data-testid="card-equipment-new-cancel"]', container);
     if (cancelBtn) cancelBtn.addEventListener('click', function () { newEquipmentOpen = false; renderEquipment(); });
 
-    // Список типов оборудования может быть больше «первой страницы» — как каталог услуг/
-    // товаров, тип ищем remote-поиском по вводу (а не одной статичной подгрузкой limit=200),
-    // иначе только что созданный тип может не попасть в список (эталон — combobox.js
-    // remoteClientSearch в board.js).
-    var typeSel = $('[data-testid="card-equipment-new-type"]', container);
-    if (typeSel) {
-      typeSel._cbFetchOptions = function (q) {
-        return KT.api.get('/api/v1/equipment-types?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
-          return r.items.map(function (t) { return { value: t.id, text: t.name }; });
-        });
-      };
-    }
     var saveBtn = $('[data-testid="card-equipment-new-save"]', container);
     if (saveBtn) saveBtn.addEventListener('click', function () {
-      // typeSel — та же ссылка на <select>, захваченная ДО того, как combobox.js перенёс
-      // data-testid на видимую кнопку (js/combobox.js enhanceSelect) — повторный поиск по
-      // testid здесь нашёл бы уже саму кнопку (HTMLButtonElement.value всегда '', баг
-      // найден вживую: клик «Добавить» без выбранного типа, хотя тип был выбран в UI).
-      var typeId = typeSel ? typeSel.value : '';
-      var brand = $('[data-testid="card-equipment-new-brand"]', container).value.trim();
-      var model = $('[data-testid="card-equipment-new-model"]', container).value.trim();
-      var serial = $('[data-testid="card-equipment-new-serial"]', container).value.trim();
       var plate = $('[data-testid="card-equipment-new-plate"]', container).value.trim();
       var errEl = $('[data-testid="card-equipment-new-error"]', container);
-      if (!typeId || !model) {
-        errEl.textContent = 'Укажите тип и модель';
+      if (!plate) {
+        errEl.textContent = 'Укажите госномер';
         errEl.classList.remove('d-none');
         return;
       }
       errEl.classList.add('d-none');
       var ticket = beginRequest();
-      KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { type_id: typeId, plate_number: plate, brand: brand, model: model, sku: '', serial: serial, specs: [], note: '' })
+      KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { plate_number: plate })
         .then(function (equipment) {
           return KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: equipment.id, completeness: '', condition: '' });
         }).then(function (resp) {
@@ -772,7 +747,7 @@
     var equipmentOptions = '<option value="">Без оборудования</option>' + card.equipment.filter(function (e) {
       return !e.is_deleted || e.equipment_id === sub.equipment_id;
     }).map(function (e) {
-      return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + (e.plate_number ? esc(e.plate_number) + ' — ' : '') + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + '</option>';
+      return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.plate_number) + '</option>';
     }).join('');
     var assigneeOptions = '<option value="">Не назначен</option>' + host.getData().assignees.map(function (a) {
       return '<option value="' + esc(a.id) + '"' + (sub.assignee_id === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.is_active === false ? ' (неактивен)' : '') + '</option>';
@@ -1395,10 +1370,7 @@
     clientFromCar = false;
     if (plateAC) plateAC.close();
     $('#task-plate').value = '';
-    ['#task-new-car-brand', '#task-new-car-model', '#task-new-car-vin', '#task-new-client-name', '#task-new-client-phone'].forEach(function (sel) { $(sel).value = ''; });
-    var typeSel = $('#task-new-car-type');
-    typeSel.value = '';
-    if (typeSel._cbSync) typeSel._cbSync();
+    ['#task-new-client-name', '#task-new-client-phone'].forEach(function (sel) { $(sel).value = ''; });
     $('#task-new-client-toggle').checked = false;
     clearFieldErrors();
     renderCar();
@@ -1414,7 +1386,7 @@
   }
 
   function carLabel(it) {
-    return [it.brand, it.model].filter(Boolean).join(' ') + ' · ' + it.plate_number + ' · ' + it.client_name;
+    return it.plate_number + ' · ' + it.client_name;
   }
 
   function chosenCar() {
@@ -1498,7 +1470,6 @@
       if (items.length === 0) {
         setCar({ status: 'notfound', key: key });
         if (!$('#task-client').value || clientFromCar) $('#task-new-client-toggle').checked = true;
-        preloadCarTypes();
       } else {
         setCar({ status: items.length === 1 ? 'found' : 'multi', key: key, items: items, chosenId: items.length === 1 ? items[0].id : '' });
       }
@@ -1590,7 +1561,7 @@
     sel.value = '';
     clientFromCar = false;
     // несколько автомобилей с этим номером, ни один не выбран — новый автомобиль нового клиента.
-    if (carMode()) { setCar({ status: 'notfound', key: plateKey($('#task-plate').value) }); preloadCarTypes(); }
+    if (carMode()) setCar({ status: 'notfound', key: plateKey($('#task-plate').value) });
     $('#task-new-client-toggle').checked = true;
     if (query) {
       if (/^[\d\s()+-]{5,}$/.test(query)) $('#task-new-client-phone').value = query;
@@ -1598,20 +1569,6 @@
     }
     renderCar();
     $('#task-new-client-name').focus();
-  }
-
-  var carTypesLoaded = false;
-  // preloadCarTypes — первая страница активных типов для «Новый автомобиль» (поиск по вводу —
-  // _cbFetchOptions); единственный тип выбирается сразу.
-  function preloadCarTypes() {
-    if (carTypesLoaded) return;
-    carTypesLoaded = true;
-    KT.api.get('/api/v1/equipment-types?limit=200').then(function (r) {
-      var sel = $('#task-new-car-type');
-      (r.items || []).forEach(function (t) { KT.comboboxEnsureOption(sel, t.id, t.name); });
-      if (!sel.value && r.items && r.items.length === 1) sel.value = r.items[0].id;
-      if (sel._cbSync) sel._cbSync();
-    }).catch(function () { carTypesLoaded = false; });
   }
 
   // newOrderPayload — тело POST /api/v1/tasks нового заказа; null — локальная ошибка (показана).
@@ -1640,12 +1597,7 @@
       return null;
     }
     if (body.equipment_id) return body;
-    body.new_equipment = {
-      type_id: $('#task-new-car-type').value,
-      brand: $('#task-new-car-brand').value.trim(),
-      model: $('#task-new-car-model').value.trim(),
-      serial: $('#task-new-car-vin').value.trim().toUpperCase()
-    };
+    body.new_equipment = {};
     if ($('#task-new-client-toggle').checked) {
       var phone = $('#task-new-client-phone').value.trim();
       body.new_client = { company_name: $('#task-new-client-name').value.trim(), phones: phone ? [{ phone: phone, note: '' }] : [] };
@@ -1669,10 +1621,9 @@
     if (rest.length) showHeaderError(rest.join('; '));
   }
 
-  // plateSuggestionHtml — «ГОСНОМЕР · Марка Модель · Клиент» подсказки госномера.
+  // plateSuggestionHtml — «ГОСНОМЕР · Клиент» подсказки госномера.
   function plateSuggestionHtml(it) {
-    var model = [it.brand, it.model].filter(Boolean).join(' ');
-    return '<span class="ac-main">' + esc(it.plate_number) + '</span>' + (model ? ' · ' + esc(model) : '') + ' · ' + esc(it.client_name);
+    return '<span class="ac-main">' + esc(it.plate_number) + '</span> · ' + esc(it.client_name);
   }
 
   var plateAC = null;
@@ -1721,12 +1672,6 @@
       if ($('#task-new-client-toggle').checked) $('#task-new-client-name').focus();
     });
     $('#task-client').addEventListener('change', onClientChanged);
-    var typeSel = $('#task-new-car-type');
-    typeSel._cbFetchOptions = function (q) {
-      return KT.api.get('/api/v1/equipment-types?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
-        return r.items.map(function (t) { return { value: t.id, text: t.name }; });
-      });
-    };
   }
 
   // ==================================================================

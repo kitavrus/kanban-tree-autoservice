@@ -20,7 +20,7 @@ func fieldsOf(fs []errorspkg.Field) map[string]string {
 func onePhone(phone, note string) []PhoneDTO { return []PhoneDTO{{Phone: phone, Note: note}} }
 
 // UT-001: ClientInput: trim; company_name пусто → required, 200/201 rune (кириллица) →
-// ok/too_long; address 500/501; contact_* 200/201.
+// ok/too_long.
 func TestClientInput_Validate_StringLimits(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -33,12 +33,6 @@ func TestClientInput_Validate_StringLimits(t *testing.T) {
 		{"company_name из пробелов — required после trim", ClientInput{CompanyName: "   ", Phones: onePhone("123", "")}, "company_name", msgRequired},
 		{"company_name 200 — граница", ClientInput{CompanyName: strings.Repeat("я", 200), Phones: onePhone("123", "")}, "", ""},
 		{"company_name 201", ClientInput{CompanyName: strings.Repeat("я", 201), Phones: onePhone("123", "")}, "company_name", msgTooLong},
-		{"address 500 — граница", ClientInput{CompanyName: "ООО", Address: strings.Repeat("я", 500), Phones: onePhone("123", "")}, "", ""},
-		{"address 501", ClientInput{CompanyName: "ООО", Address: strings.Repeat("я", 501), Phones: onePhone("123", "")}, "address", msgTooLong},
-		{"contact_name 200 — граница", ClientInput{CompanyName: "ООО", ContactName: strings.Repeat("я", 200), Phones: onePhone("123", "")}, "", ""},
-		{"contact_name 201", ClientInput{CompanyName: "ООО", ContactName: strings.Repeat("я", 201), Phones: onePhone("123", "")}, "contact_name", msgTooLong},
-		{"contact_position 200 — граница", ClientInput{CompanyName: "ООО", ContactPosition: strings.Repeat("я", 200), Phones: onePhone("123", "")}, "", ""},
-		{"contact_position 201", ClientInput{CompanyName: "ООО", ContactPosition: strings.Repeat("я", 201), Phones: onePhone("123", "")}, "contact_position", msgTooLong},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,87 +157,6 @@ func TestSearchDigits(t *testing.T) {
 	}
 }
 
-const validTypeID = "11111111-1111-1111-1111-111111111111"
-
-// UT-005: EquipmentInput: type_id пусто → required, «xyz» → invalid; model
-// required/200/201; brand/sku/serial 200/201; note 1000/1001.
-func TestEquipmentInput_Validate_StringLimits(t *testing.T) {
-	cases := []struct {
-		name  string
-		in    EquipmentInput
-		field string
-		msg   string
-	}{
-		{"валидный", EquipmentInput{TypeID: validTypeID, Model: "M1"}, "", ""},
-		{"type_id пусто", EquipmentInput{Model: "M1"}, "type_id", msgRequired},
-		{"type_id битый uuid", EquipmentInput{TypeID: "xyz", Model: "M1"}, "type_id", msgInvalid},
-		{"model пусто", EquipmentInput{TypeID: validTypeID}, "model", msgRequired},
-		{"model 200 — граница", EquipmentInput{TypeID: validTypeID, Model: strings.Repeat("я", 200)}, "", ""},
-		{"model 201", EquipmentInput{TypeID: validTypeID, Model: strings.Repeat("я", 201)}, "model", msgTooLong},
-		{"brand 200 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", Brand: strings.Repeat("я", 200)}, "", ""},
-		{"brand 201", EquipmentInput{TypeID: validTypeID, Model: "M1", Brand: strings.Repeat("я", 201)}, "brand", msgTooLong},
-		{"sku 200 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", SKU: strings.Repeat("я", 200)}, "", ""},
-		{"sku 201", EquipmentInput{TypeID: validTypeID, Model: "M1", SKU: strings.Repeat("я", 201)}, "sku", msgTooLong},
-		{"serial 200 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", Serial: strings.Repeat("я", 200)}, "", ""},
-		{"serial 201", EquipmentInput{TypeID: validTypeID, Model: "M1", Serial: strings.Repeat("я", 201)}, "serial", msgTooLong},
-		{"note 1000 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", Note: strings.Repeat("я", 1000)}, "", ""},
-		{"note 1001", EquipmentInput{TypeID: validTypeID, Model: "M1", Note: strings.Repeat("я", 1001)}, "note", msgTooLong},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := fieldsOf(tc.in.normalize().validate())
-			if tc.field == "" {
-				assert.Empty(t, got)
-				return
-			}
-			assert.Equal(t, tc.msg, got[tc.field])
-		})
-	}
-}
-
-// UT-006: specs nil → [] (не null в JSON).
-func TestEquipmentInput_Normalize_SpecsNilToEmpty(t *testing.T) {
-	in := EquipmentInput{TypeID: validTypeID, Model: "M1"}.normalize()
-	assert.NotNil(t, in.Specs)
-	assert.Empty(t, in.Specs)
-}
-
-// UT-007: specs: пустые пары отбрасываются; v без k → specs[i].k key_required; k 100/101,
-// v 500/501; 50/51 → too_many; дубли k разрешены.
-func TestEquipmentInput_Validate_Specs(t *testing.T) {
-	in := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{
-		{K: "", V: ""},          // отброшена
-		{K: "  ", V: "  "},      // отброшена (пусто после trim)
-		{K: "", V: "значение"},  // v без k — остаётся, индекс 0
-		{K: "мощность", V: "5"}, // индекс 1
-	}}.normalize()
-	assert.Equal(t, []SpecDTO{{K: "", V: "значение"}, {K: "мощность", V: "5"}}, in.Specs)
-	got := fieldsOf(in.validate())
-	assert.Equal(t, msgKeyRequired, got["specs[0].k"])
-	assert.NotContains(t, got, "specs[1].k")
-
-	borderK := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{{K: strings.Repeat("k", 100), V: strings.Repeat("v", 500)}}}.normalize()
-	assert.Empty(t, fieldsOf(borderK.validate()))
-	overK := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{{K: strings.Repeat("k", 101), V: strings.Repeat("v", 501)}}}.normalize()
-	overFields := fieldsOf(overK.validate())
-	assert.Equal(t, msgTooLong, overFields["specs[0].k"])
-	assert.Equal(t, msgTooLong, overFields["specs[0].v"])
-
-	specs50 := make([]SpecDTO, 50)
-	for i := range specs50 {
-		specs50[i] = SpecDTO{K: "k", V: "v"}
-	}
-	in50 := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: specs50}.normalize()
-	assert.Empty(t, fieldsOf(in50.validate()), "50 характеристик — граница, ok")
-
-	specs51 := append(append([]SpecDTO{}, specs50...), SpecDTO{K: "k", V: "v"})
-	in51 := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: specs51}.normalize()
-	assert.Equal(t, msgTooMany, fieldsOf(in51.validate())["specs"])
-
-	dupSpecs := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{{K: "мощность", V: "5"}, {K: "мощность", V: "7"}}}.normalize()
-	assert.Empty(t, fieldsOf(dupSpecs.validate()))
-}
-
 // Госномер: нормализация — trim, схлопывание пробельных серий в один пробел, верхний
 // регистр (кириллица и латиница).
 func TestNormalizePlateNumber(t *testing.T) {
@@ -259,17 +172,18 @@ func TestNormalizePlateNumber(t *testing.T) {
 	for in, want := range cases {
 		assert.Equal(t, want, NormalizePlateNumber(in), "in=%q", in)
 	}
-	in := EquipmentInput{TypeID: validTypeID, Model: "M1", PlateNumber: " в 777 хх "}.normalize()
+	in := EquipmentInput{PlateNumber: " в 777 хх "}.normalize()
 	assert.Equal(t, "В 777 ХХ", in.PlateNumber)
 }
 
-// Госномер: необязателен; ≤20 символов (руны, после нормализации); только буквы, цифры,
+// Госномер (автомобиль = госномер): обязателен; ≤20 символов (руны, после нормализации); только буквы, цифры,
 // пробел, дефис; NUL/битый UTF-8 → invalid_text.
 func TestEquipmentInput_Validate_PlateNumber(t *testing.T) {
 	cases := []struct {
 		name, plate, msg string
 	}{
-		{"пусто — допустимо", "", ""},
+		{"пусто — required", "", msgRequired},
+		{"из пробелов — required после нормализации", "   ", msgRequired},
 		{"кириллица с пробелом", "а123вс 777", ""},
 		{"латиница с дефисом", "ab-1234", ""},
 		{"20 рун — граница", strings.Repeat("Я", 20), ""},
@@ -283,7 +197,7 @@ func TestEquipmentInput_Validate_PlateNumber(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := fieldsOf(EquipmentInput{TypeID: validTypeID, Model: "M1", PlateNumber: tc.plate}.normalize().validate())
+			got := fieldsOf(EquipmentInput{PlateNumber: tc.plate}.normalize().validate())
 			if tc.msg == "" {
 				assert.Empty(t, got)
 				return

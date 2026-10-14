@@ -33,12 +33,13 @@ var (
 	ErrCategoryNotFound  = pgx.ErrNoRows
 	errCategoryNameTaken = errors.New("catalog: category name taken")
 	errCategoryInUse     = errors.New("catalog: category in use")
+	// errCategoryDeleted — выбранная категория мягко удалена (400 category_id: not_found, DS-014).
+	errCategoryDeleted = errors.New("catalog: category deleted")
 )
 
-// categoryCountSQL — счётчик item_count категории (алиас c): только действующие товары либо
-// услуги — мягко удалённые не в счёт, архивные считаются (soft-delete-catalog §4.3, DS-014).
-const categoryCountSQL = `(CASE c.kind WHEN 'product' THEN (SELECT count(*) FROM products p WHERE p.category_id = c.id AND p.deleted_at IS NULL)
-		ELSE (SELECT count(*) FROM services s WHERE s.category_id = c.id AND s.deleted_at IS NULL) END)`
+// categoryCountSQL — счётчик item_count категории (алиас c): только действующие услуги —
+// мягко удалённые не в счёт, архивные считаются (soft-delete-catalog §4.3, DS-014).
+const categoryCountSQL = `(SELECT count(*) FROM services s WHERE s.category_id = c.id AND s.deleted_at IS NULL)`
 
 type CategoryListParams struct {
 	Kind            string // "" — оба вида
@@ -128,7 +129,7 @@ func (r *CategoryRepo) Rename(ctx context.Context, id, name string) (*Category, 
 	if err != nil {
 		return nil, mapUniqueViolation(err, errCategoryNameTaken)
 	}
-	cnt, err := r.itemCount(ctx, c.Kind, id)
+	cnt, err := r.itemCount(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -166,17 +167,10 @@ func (r *CategoryRepo) Purge(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *CategoryRepo) itemCount(ctx context.Context, kind, id string) (int, error) {
+func (r *CategoryRepo) itemCount(ctx context.Context, id string) (int, error) {
 	var n int
-	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM `+tableOf(kind)+` WHERE category_id = $1::uuid AND deleted_at IS NULL`, id).Scan(&n)
+	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM services WHERE category_id = $1::uuid AND deleted_at IS NULL`, id).Scan(&n)
 	return n, err
-}
-
-func tableOf(kind string) string {
-	if kind == KindProduct {
-		return "products"
-	}
-	return "services"
 }
 
 // mapUniqueViolation — 23505 → target; прочие ошибки (в т.ч. pgx.ErrNoRows) — как есть.

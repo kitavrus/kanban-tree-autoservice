@@ -211,7 +211,6 @@ func (s *CardService) PrintData(ctx context.Context, a Actor, taskID string) (*P
 	return &PrintVM{
 		Card:        *card,
 		ClientName:  header.CompanyName,
-		ContactName: header.ContactName,
 		Phones:      header.Phones,
 		Description: template.HTML(card.Task.DescriptionHTML), //nolint:gosec // ADR-006: хранится только серверно-экранированный HTML
 		PrintedAt:   time.Now(),

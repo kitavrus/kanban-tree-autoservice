@@ -24,18 +24,21 @@ var (
 	pgRowRe   = regexp.MustCompile(`data-testid="(?:product|service)-row" data-name="([^"]*)"`)
 )
 
-// pgSeed — n позиций kind ('product'|'service') в новой категории; имена «<prefix> 001…».
+// pgSeed — n позиций kind ('product'|'service'); имена «<prefix> 001…». Услуги — в новой
+// категории (её id возвращается); у товаров категорий нет — возвращается "".
 func (s *CatalogLiveSuite) pgSeed(kind, prefix string, n int) string {
 	ctx := context.Background()
+	if kind == "product" {
+		_, err := s.Pool.Exec(ctx, `INSERT INTO products (name)
+		SELECT $1 || ' ' || lpad(g::text, 3, '0') FROM generate_series(1, $2::int) g`, prefix, n)
+		s.Require().NoError(err)
+		return ""
+	}
 	var catID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`INSERT INTO catalog_categories (kind, name) VALUES ($1, $2 || ' ' || gen_random_uuid()) RETURNING id`,
 		kind, prefix).Scan(&catID))
-	table := "products"
-	if kind == "service" {
-		table = "services"
-	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO `+table+` (category_id, name)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO services (category_id, name)
 		SELECT $1::uuid, $2 || ' ' || lpad(g::text, 3, '0') FROM generate_series(1, $3::int) g`, catID, prefix, n)
 	s.Require().NoError(err)
 	return catID
@@ -70,8 +73,9 @@ func pgRows(page string) []string {
 // TS-005: /catalog/products?offset=100 при >100 товарах → 200, пейджер «Показаны 101–…»,
 // ссылка назад; offset=-5/abc → как 0.
 func (s *CatalogLiveSuite) TestCatalogLiveSuite_SSRProductsPager_TS005() {
-	cat := s.pgSeed("product", "TS005 Товар", 150)
-	base := "/catalog/products?category=" + cat
+	s.pgSeed("product", "TS005 Товар", 150)
+	q := "TS005 Товар"
+	base := "/catalog/products?q=" + url.QueryEscape(q)
 
 	first := s.pgPage(base)
 	s.Contains(first, `data-testid="catalog-pager"`)
@@ -84,8 +88,7 @@ func (s *CatalogLiveSuite) TestCatalogLiveSuite_SSRProductsPager_TS005() {
 	next, ok := pgHref(pgNextRe, first)
 	s.Require().True(ok)
 	s.Equal("100", next.Query().Get("offset"))
-	s.Equal(cat, next.Query().Get("category"))
-	s.NotContains(first, `data-testid="categories-truncated"`, "DS-006: категорий меньше лимита — пометки нет")
+	s.Equal(q, next.Query().Get("q"), "фильтр q сохраняется в ссылке пейджера")
 
 	second := s.pgPage(base + "&offset=100")
 	s.Contains(second, "Показаны 101–150 из 150")

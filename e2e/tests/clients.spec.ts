@@ -1,7 +1,7 @@
 import { test, expect } from '../fixtures/test';
 import { ClientsPage } from '../pages/ClientsPage';
 import { EquipmentPage } from '../pages/EquipmentPage';
-import { EquipmentTypesPage } from '../pages/EquipmentTypesPage';
+import { uniqPlate } from '../pages/NewOrderDialog';
 
 // Фаза 6: экран «Клиенты» (admin) — AC-001..006, ADR-005 (конфликт версии),
 // ADR-103 (confirm-удаление). Сортировка списка фиксированная (AC-004, Tech Spec В-4 —
@@ -18,7 +18,9 @@ test.describe('CL: создание и валидация', () => {
     await clients.addButton.click();
     await expect(page.locator('.app-title')).toHaveText('Новый клиент');
 
-    await clients.fill({ companyName: name, address: 'г. Москва, ул. Ленина, 1', contactName: 'Иванов Иван', contactPosition: 'Директор' });
+    // адреса, представителя и должности у клиента больше нет.
+    await expect(page.locator('#address, #contact_name, #contact_position')).toHaveCount(0);
+    await clients.fill({ companyName: name });
     await clients.fillPhone(0, { phone: '+7 (999) 123-45-67', note: 'основной' });
     await clients.phoneAdd.click();
     await clients.fillPhone(1, { phone: '8001234567', note: 'доп.' });
@@ -32,7 +34,6 @@ test.describe('CL: создание и валидация', () => {
     await expect(clients.row(name)).toContainText(name);
     await expect(clients.row(name)).toContainText('+7 (999) 123-45-67');
     await expect(clients.row(name)).toContainText('8001234567');
-    await expect(clients.row(name)).toContainText('Иванов Иван');
   });
 
   test('CL-002: обязательные поля, формат и лимит телефонов — ошибки под полями, ввод сохраняется', async ({ adminPage: page, allowHttpErrors }) => {
@@ -41,9 +42,6 @@ test.describe('CL: создание и валидация', () => {
     await clients.gotoNew();
 
     await expect(clients.companyName).toHaveAttribute('maxlength', '200');
-    await expect(clients.address).toHaveAttribute('maxlength', '500');
-    await expect(clients.contactName).toHaveAttribute('maxlength', '200');
-    await expect(clients.contactPosition).toHaveAttribute('maxlength', '200');
     await expect(clients.phoneInput(0)).toHaveAttribute('maxlength', '32');
     await expect(clients.phoneNote(0)).toHaveAttribute('maxlength', '200');
 
@@ -185,16 +183,15 @@ test.describe('CL: список, поиск, правка, удаление', ()
     const company = uniq('Правка Клиент');
     await adminApi.createClient({
       company_name: company,
-      address: 'Старый адрес',
       phones: [{ phone: '1000000000', note: '' }],
     });
     const clients = new ClientsPage(page);
     await clients.goto(`?q=${company}`);
     await clients.open(company);
     await expect(clients.companyName).toHaveValue(company);
-    await expect(clients.address).toHaveValue('Старый адрес');
 
-    await clients.fill({ address: 'Новый адрес', contactName: 'Новый Представитель' });
+    const renamed = uniq('Правка Клиент новое');
+    await clients.fill({ companyName: renamed });
     await clients.fillPhone(0, { phone: '2000000000', note: 'обновлён' });
     await clients.save.click();
 
@@ -202,9 +199,8 @@ test.describe('CL: список, поиск, правка, удаление', ()
     await expect(page).toHaveURL(/\/clients\/[^/]+\?flash=saved$/);
     await expect(clients.flash).toHaveText('Изменения сохранены');
 
-    await clients.goto(`?q=${company}`);
-    await expect(clients.row(company)).toContainText('2000000000');
-    await expect(clients.row(company)).toContainText('Новый Представитель');
+    await clients.goto(`?q=${encodeURIComponent(renamed)}`);
+    await expect(clients.row(renamed)).toContainText('2000000000');
   });
 
   test('CL-008 (TS-043): удаление клиента — окно «Удаление» с причиной, PRG на список и тост; негатив: без причины клиент не удаляется — «Укажите причину удаления»', async ({
@@ -266,27 +262,21 @@ test.describe('CL: права исполнителя', () => {
 
 // Phase 9: хардening — конкурентность (CL-020), XSS (CL-011), adaptive/themes (CL-021).
 test.describe('CL: хардening', () => {
-  test('CL-011: HTML/скрипт в компании, телефоне, модели, характеристике и названии типа — отображается текстом, не исполняется', async ({
+  test('CL-011: HTML/скрипт в компании и примечании телефона — отображается текстом, не исполняется', async ({
     adminPage: page,
     adminApi,
     uniq,
   }) => {
     const payload = '<img src=x onerror=window.xssTriggered=1>';
     const clientTag = uniq('xss-client');
-    const typeTag = uniq('xss-type');
     const company = `${payload} ${clientTag}`;
-    const typeName = `${payload} ${typeTag}`;
 
     const client = await adminApi.createClient({
       company_name: company,
       phones: [{ phone: '9990002222', note: payload }],
     });
-    const type = await adminApi.createEquipmentType({ name: typeName, spec_keys: [payload] });
-    await adminApi.createEquipment(client.id, {
-      type_id: type.id,
-      model: payload,
-      specs: [{ k: payload, v: payload }],
-    });
+    const plate = uniqPlate();
+    await adminApi.createEquipment(client.id, { plate_number: plate });
 
     const noXss = () => expect(page.evaluate(() => (window as unknown as { xssTriggered?: unknown }).xssTriggered)).resolves.toBeUndefined();
 
@@ -297,26 +287,18 @@ test.describe('CL: хардening', () => {
     await expect(clients.row(company)).toContainText(payload);
     await noXss();
 
-    // карточка клиента — значение поля формы и таблица оборудования текстом.
+    // карточка клиента — значение поля формы текстом; в таблице оборудования — только госномер.
     await clients.open(company);
     await expect(clients.companyName).toHaveValue(company);
-    await expect(page.getByTestId('equipment-table')).toContainText(payload);
+    await expect(page.getByTestId('equipment-plate-number')).toHaveText(plate);
     await noXss();
 
-    // карточка единицы оборудования — модель, тип (комбобокс), характеристика текстом.
-    await page.getByTestId('equipment-table').getByRole('link').first().click();
+    // форма автомобиля — имя клиента текстом.
+    await page.getByTestId('equipment-plate-number').getByRole('link').click();
     await expect(page.locator('.app-title')).toHaveText('Оборудование');
     const eq = new EquipmentPage(page);
-    await expect(eq.model).toHaveValue(payload);
-    await expect(eq.typeButton).toContainText(payload);
-    await expect(eq.specKey(0)).toHaveValue(payload);
-    await expect(eq.specValue(0)).toHaveValue(payload);
-    await noXss();
-
-    // список типов оборудования — название типа текстом.
-    const types = new EquipmentTypesPage(page);
-    await types.goto(`?q=${typeTag}`);
-    await expect(types.row(typeName)).toContainText(typeName);
+    await expect(eq.clientName).toHaveText(company);
+    await expect(eq.plate).toHaveValue(plate);
     await noXss();
   });
 
@@ -377,18 +359,14 @@ test.describe('CL: хардening', () => {
     const company = uniq('Адаптив Клиент Оборудование');
     const client = await adminApi.createClient({
       company_name: company,
-      address: 'г. Москва, очень длинный адрес для проверки переноса строк в узкой карточке, дом 1, офис 100500',
-      contact_name: 'Очень-Длинное-Имя-Представителя-Без-Пробелов Иванович',
-      contact_position: 'Генеральный директор по особо важным вопросам снабжения и логистики',
       phones: [
         { phone: '+7 (999) 111-22-33', note: 'основной номер телефона с длинным примечанием' },
         { phone: '+7 (999) 444-55-66', note: 'запасной номер' },
         { phone: '9997778899', note: '' },
       ],
     });
-    const type = await adminApi.createEquipmentType({ name: uniq('Тип Адаптив Клиент') });
-    await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Очень-Длинное-Название-Модели-Без-Пробелов-XL9000' });
-    await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Вторая единица оборудования клиента' });
+    await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+    await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
 
     const clients = new ClientsPage(page);
     const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);

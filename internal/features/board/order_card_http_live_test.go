@@ -54,10 +54,7 @@ type equipmentHistoryDTO struct {
 
 type cardEquipmentDTO struct {
 	EquipmentID  string                `json:"equipment_id"`
-	TypeName     string                `json:"type_name"`
-	Brand        string                `json:"brand"`
-	Model        string                `json:"model"`
-	Serial       string                `json:"serial"`
+	PlateNumber  string                `json:"plate_number"`
 	Completeness string                `json:"completeness"`
 	Condition    string                `json:"condition"`
 	History      []equipmentHistoryDTO `json:"history"`
@@ -237,19 +234,12 @@ func (s *OrderCardLiveSuite) addLog(subtaskID, text string) {
 	s.Require().NoError(err)
 }
 
-func (s *OrderCardLiveSuite) newEquipmentType() string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO equipment_types (name) VALUES ('CardLive Type ' || gen_random_uuid()) RETURNING id`).Scan(&id))
-	return id
-}
-
-// newEquipment — единица напрямую SQL (клиентская фича — не в API этой фазы).
+// newEquipment — автомобиль (госномер) напрямую SQL (клиентская фича — не в API этой фазы).
 func (s *OrderCardLiveSuite) newEquipment(clientID string) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO equipment (client_id, type_id, brand, model, serial) VALUES ($1, $2, 'Brand', 'Model', 'SN') RETURNING id`,
-		clientID, s.newEquipmentType()).Scan(&id))
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'М001ММ 77') RETURNING id`,
+		clientID).Scan(&id))
 	return id
 }
 
@@ -279,18 +269,11 @@ func (s *OrderCardLiveSuite) doCard(b *testutil.Browser, method, path string, bo
 
 // ---- фикстуры фазы 03: товары/комплекты услуг ----
 
-func (s *OrderCardLiveSuite) newProductCategory() string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'CardLive Prod ' || gen_random_uuid()) RETURNING id`).Scan(&id))
-	return id
-}
-
 func (s *OrderCardLiveSuite) newProduct(price, stock, minStock string) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, 'Товар', 'шт', $2::numeric, $3::numeric, $4::numeric) RETURNING id`,
-		s.newProductCategory(), price, stock, minStock).Scan(&id))
+		`INSERT INTO products (name, unit, price, stock, min_stock) VALUES ('Товар', 'шт', $1::numeric, $2::numeric, $3::numeric) RETURNING id`,
+		price, stock, minStock).Scan(&id))
 	return id
 }
 
@@ -450,10 +433,9 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_NewFromCard() {
 	c := s.newClient("Клиент-Оборудование-Новое")
 	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
-	typeID := s.newEquipmentType()
 
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/clients/"+c+"/equipment", map[string]any{
-		"type_id": typeID, "brand": "Brand", "model": "Model-New", "serial": "SN-New",
+		"plate_number": "н002нн 77",
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var eq equipmentCreateDTO
@@ -464,7 +446,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_NewFromCard() {
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	s.Require().Len(m.Card.Equipment, 1)
-	s.Equal("Model-New", m.Card.Equipment[0].Model)
+	s.Equal("Н002НН 77", m.Card.Equipment[0].PlateNumber)
 }
 
 // LV-110/AC-006: история других заказов с той же единицей оборудования.

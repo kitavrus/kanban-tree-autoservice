@@ -25,7 +25,6 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     loginAs,
     _boardCleanup,
   }) => {
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-004 легковой') });
     const login = uniq('exec-no004');
     const user = await makeUser({ login });
     await loginAs(page, login, user.password);
@@ -38,7 +37,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     await board.goto();
     await board.openTaskAdd();
 
-    await dlg.fillNewCar(plate, { type: carType.name, brand: 'Renault', model: 'Duster' });
+    await dlg.fillNewCar(plate);
     // клиент не выбран — «Новый клиент» открыт сразу и исполнителю.
     await expect(dlg.newClientToggle).toBeChecked();
     await expect(dlg.newClientName).toBeVisible();
@@ -48,7 +47,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     await board.taskSave.click();
     const id = await createdTaskId(card);
     _boardCleanup(id);
-    await expect(dlg.titleField).toHaveValue(`Renault Duster ${plate}`);
+    await expect(dlg.titleField).toHaveValue(plate);
 
     const task = await adminApi.getTask(id);
     const client = await adminApi.getClient(task.client_id);
@@ -56,7 +55,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     expect(client.phones.map((p) => p.phone)).toEqual(['+7 913 111-22-33']);
     const eq = (await adminApi.getCard(id)).equipment;
     expect(eq).toHaveLength(1);
-    expect(eq[0]).toMatchObject({ plate_number: plate, model: 'Duster' });
+    expect(eq[0]).toMatchObject({ plate_number: plate });
     await adminApi.purgeClient(task.client_id, [id]);
   });
 
@@ -68,9 +67,8 @@ test.describe('NO: госномер ↔ клиент, автодополнени
   }) => {
     const name = uniq('NO-005 Смирнова А. П.');
     const client = await adminApi.createClient({ company_name: name, phones: [{ phone: '9990000805', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-005 легковой') });
     const plate = uniqPlate();
-    const car = await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Mazda', model: '3' });
+    const car = await adminApi.createEquipment(client.id, { plate_number: plate });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -80,7 +78,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
 
     await dlg.searchClient(name.slice(-22), name);
     await expect(dlg.plate).toHaveValue(plate);
-    await expect(dlg.carFound).toContainText(`Mazda 3 · ${plate} · ${name}`);
+    await expect(dlg.carFound).toContainText(`${plate} · ${name}`);
     await expect(dlg.clientLocked).toBeVisible();
     await expect(dlg.client).toBeDisabled();
     await expect(dlg.newCar).toBeHidden();
@@ -100,11 +98,10 @@ test.describe('NO: госномер ↔ клиент, автодополнени
   }) => {
     const name = uniq('NO-006 Волков И. И.');
     const client = await adminApi.createClient({ company_name: name, phones: [{ phone: '9990000806', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-006 легковой') });
     const plate1 = uniqPlate();
     const plate2 = uniqPlate() + 'B';
-    await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate1, brand: 'Toyota', model: 'Camry' });
-    const car2 = await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate2, brand: 'Toyota', model: 'RAV4' });
+    await adminApi.createEquipment(client.id, { plate_number: plate1 });
+    const car2 = await adminApi.createEquipment(client.id, { plate_number: plate2 });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -116,7 +113,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     await expect(dlg.carOptions).toHaveCount(2);
     await expect(dlg.plateStatus).toContainText('Автомобилей у клиента: 2');
     await expect(dlg.plate).toHaveValue('');
-    await page.getByRole('radio', { name: new RegExp(`RAV4 · ${plate2}`) }).check();
+    await page.getByRole('radio', { name: new RegExp(`^${plate2} · `) }).check();
     await expect(dlg.plate).toHaveValue(plate2);
     await expect(dlg.clientLocked).toBeVisible();
     await expect(dlg.client).toContainText(name);
@@ -137,11 +134,10 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     const nameB = uniq('NO-007 Второй Владелец');
     const a = await adminApi.createClient({ company_name: nameA, phones: [{ phone: '9990000807', note: '' }] });
     const b = await adminApi.createClient({ company_name: nameB, phones: [{ phone: '9990000808', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-007 легковой') });
     const plateA = uniqPlate();
     const plateB = uniqPlate() + 'C';
-    await adminApi.createEquipment(a.id, { type_id: carType.id, plate_number: plateA, brand: 'Ford', model: 'Focus' });
-    await adminApi.createEquipment(b.id, { type_id: carType.id, plate_number: plateB, brand: 'Opel', model: 'Astra' });
+    await adminApi.createEquipment(a.id, { plate_number: plateA });
+    await adminApi.createEquipment(b.id, { plate_number: plateB });
 
     const board = new BoardPage(page);
     const dlg = board.newOrder;
@@ -162,7 +158,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
 
     // номер другого владельца — клиент переключается на него.
     await dlg.useFoundCar(plateB);
-    await expect(dlg.carFound).toContainText(`Opel Astra · ${plateB} · ${nameB}`);
+    await expect(dlg.carFound).toContainText(`${plateB} · ${nameB}`);
     await expect(dlg.client).toContainText(nameB);
     await expect(dlg.client).toBeDisabled();
 
@@ -191,9 +187,8 @@ test.describe('NO: госномер ↔ клиент, автодополнени
   }) => {
     const name = uniq('NO-008 Кузьмина О. О.');
     const client = await adminApi.createClient({ company_name: name, phones: [{ phone: '9990000809', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-008 легковой') });
     const plate = uniqPlate();
-    const car = await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Nissan', model: 'Qashqai' });
+    const car = await adminApi.createEquipment(client.id, { plate_number: plate });
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -207,14 +202,14 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     await dlg.plate.pressSequentially(fragment, { delay: 20 });
     await expect(dlg.plateSuggestions).toBeVisible();
     const option = dlg.plateSuggestion.filter({ hasText: plate });
-    await expect(option).toContainText(`${plate} · Nissan Qashqai · ${name}`);
+    await expect(option).toContainText(`${plate} · ${name}`);
     await expect(dlg.plate).toHaveAttribute('role', 'combobox');
     await expect(dlg.plate).toHaveAttribute('aria-expanded', 'true');
     await option.click();
 
     await expect(dlg.plateSuggestions).toBeHidden();
     await expect(dlg.plate).toHaveValue(plate);
-    await expect(dlg.carFound).toContainText(`Nissan Qashqai · ${plate} · ${name}`);
+    await expect(dlg.carFound).toContainText(`${plate} · ${name}`);
     await expect(dlg.client).toContainText(name);
     await expect(dlg.client).toBeDisabled();
 
@@ -232,9 +227,8 @@ test.describe('NO: госномер ↔ клиент, автодополнени
   }) => {
     const name = uniq('NO-009 Белов Д. Д.');
     const client = await adminApi.createClient({ company_name: name, phones: [{ phone: '9990000810', note: '' }] });
-    const carType = await adminApi.createEquipmentType({ name: uniq('NO-009 легковой') });
     const plate = uniqPlate();
-    await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Skoda', model: 'Rapid' });
+    await adminApi.createEquipment(client.id, { plate_number: plate });
 
     const board = new BoardPage(page);
     const dlg = board.newOrder;
@@ -255,7 +249,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     await expect(dlg.plate).toHaveAttribute('aria-activedescendant', /.+/);
     await dlg.plate.press('Enter');
     await expect(dlg.plate).toHaveValue(plate);
-    await expect(dlg.carFound).toContainText(`Skoda Rapid · ${plate} · ${name}`);
+    await expect(dlg.carFound).toContainText(`${plate} · ${name}`);
     await expect(dlg.client).toBeDisabled();
   });
 });

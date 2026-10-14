@@ -70,13 +70,10 @@ type stockSummaryDTO struct {
 
 func (s *StockLiveSuite) createProduct(stock, minStock string) string {
 	ctx := context.Background()
-	var categoryID string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'StockLive ' || gen_random_uuid()) RETURNING id`).Scan(&categoryID))
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name, stock, min_stock) VALUES ($1, 'Товар остатков', $2::numeric, $3::numeric) RETURNING id`,
-		categoryID, stock, minStock).Scan(&productID))
+		`INSERT INTO products (name, stock, min_stock) VALUES ('Товар остатков', $1::numeric, $2::numeric) RETURNING id`,
+		stock, minStock).Scan(&productID))
 	return productID
 }
 

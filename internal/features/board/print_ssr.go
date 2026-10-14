@@ -26,7 +26,6 @@ type PrintVM struct {
 	Kind        string // intake | handover (Enum PrintKind)
 	Card        OrderCardResponse
 	ClientName  string
-	ContactName string
 	Phones      string
 	Description template.HTML // task.description_html (ADR-006) — хранится уже экранированным
 	PrintedAt   time.Time

@@ -58,7 +58,7 @@ func (s *CategoryService) List(ctx context.Context, q CategoryListQuery, isAdmin
 	includeArchived := q.IncludeArchived && isAdmin
 
 	kind := strings.TrimSpace(q.Kind)
-	if kind != KindService && kind != KindProduct {
+	if kind != KindService {
 		kind = ""
 	}
 	items, total, err := s.repo.List(ctx, CategoryListParams{Kind: kind, IncludeArchived: includeArchived, Limit: limit, Offset: offset})

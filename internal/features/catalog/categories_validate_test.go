@@ -18,8 +18,8 @@ func fieldsOf(fs []errorspkg.Field) map[string]string {
 }
 
 func TestCategoryInput_Normalize(t *testing.T) {
-	in := CategoryInput{Kind: "  product  ", Name: "  Фильтры  "}.normalize()
-	assert.Equal(t, "product", in.Kind)
+	in := CategoryInput{Kind: "  service  ", Name: "  Фильтры  "}.normalize()
+	assert.Equal(t, "service", in.Kind)
 	assert.Equal(t, "Фильтры", in.Name)
 }
 
@@ -30,15 +30,15 @@ func TestCategoryInput_ValidateCreate(t *testing.T) {
 		field string
 		msg   string
 	}{
-		{"валидный product", CategoryInput{Kind: KindProduct, Name: "Расходники"}, "", ""},
+		{"product больше не допускается", CategoryInput{Kind: "product", Name: "Расходники"}, "kind", msgInvalid},
 		{"валидный service", CategoryInput{Kind: KindService, Name: "Ремонт"}, "", ""},
 		{"kind пуст", CategoryInput{Kind: "", Name: "X"}, "kind", msgInvalid},
 		{"kind мусор", CategoryInput{Kind: "junk", Name: "X"}, "kind", msgInvalid},
-		{"имя пусто", CategoryInput{Kind: KindProduct, Name: ""}, "name", msgRequired},
-		{"имя из пробелов", CategoryInput{Kind: KindProduct, Name: "   "}, "name", msgRequired},
-		{"имя 100 — граница", CategoryInput{Kind: KindProduct, Name: strings.Repeat("я", 100)}, "", ""},
-		{"имя 101", CategoryInput{Kind: KindProduct, Name: strings.Repeat("я", 101)}, "name", msgTooLong},
-		{"NUL-байт", CategoryInput{Kind: KindProduct, Name: "X\u0000"}, "name", msgInvalidText},
+		{"имя пусто", CategoryInput{Kind: KindService, Name: ""}, "name", msgRequired},
+		{"имя из пробелов", CategoryInput{Kind: KindService, Name: "   "}, "name", msgRequired},
+		{"имя 100 — граница", CategoryInput{Kind: KindService, Name: strings.Repeat("я", 100)}, "", ""},
+		{"имя 101", CategoryInput{Kind: KindService, Name: strings.Repeat("я", 101)}, "name", msgTooLong},
+		{"NUL-байт", CategoryInput{Kind: KindService, Name: "X\u0000"}, "name", msgInvalidText},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

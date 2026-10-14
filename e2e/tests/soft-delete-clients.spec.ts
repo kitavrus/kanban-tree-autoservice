@@ -4,6 +4,7 @@ import { ClientsPage } from '../pages/ClientsPage';
 import { DeletedPage } from '../pages/DeletedPage';
 import { EquipmentPage } from '../pages/EquipmentPage';
 import { OrderCardPage } from '../pages/OrderCardPage';
+import { uniqPlate } from '../pages/NewOrderDialog';
 
 // Мягкое удаление — клиенты и оборудование клиентов (docs/features/soft-delete-clients/
 // draft-spec.md §8.1–§8.3, §11): клиент с заказом и оборудованием удаляется с причиной, в заказе
@@ -27,9 +28,8 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
   }) => {
     const company = uniq('SDCL-001 клиент');
     const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990004301', note: '' }] });
-    const type = await adminApi.createEquipmentType({ name: uniq('SDCL-001 тип') });
-    const first = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Raycus', model: uniq('SDCL-001 первая') });
-    const second = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Raycus', model: uniq('SDCL-001 вторая') });
+    const first = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+    const second = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
     const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
     const task = await adminApi.createTask({ title: uniq('SDCL-001 заказ'), client_id: client.id, column_id: column.id });
     await adminApi.addTaskEquipment(task.id, first.id);
@@ -102,7 +102,7 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await expect(del.tab('equipment')).toHaveClass(/active/);
       await expect(del.rows).toHaveCount(2);
       for (const unit of [first, second]) {
-        await expect(del.rowTitle(unit.id)).toHaveText(`${type.name} Raycus ${unit.model}`);
+        await expect(del.rowTitle(unit.id)).toHaveText(unit.plate_number);
         await expect(del.rowSubtitle(unit.id)).toHaveText(company);
         await expect(del.rowWith(unit.id)).toHaveText('вместе с клиентом');
         await expect(del.rowReason(unit.id)).toHaveText(reason);
@@ -110,7 +110,7 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
 
       // негатив: единицу удалённого клиента отдельно не восстановить — тост, строка остаётся.
       await del.restoreBtn(first.id).click();
-      await expect(del.dialogText).toHaveText(`Восстановить «${type.name} Raycus ${first.model}»?`);
+      await expect(del.dialogText).toHaveText(`Восстановить «${first.plate_number}»?`);
       await del.dialogOk.click();
       await expect(del.toastError).toHaveText('Сначала восстановите клиента');
       await expect(del.row(first.id)).toBeVisible();
@@ -145,16 +145,15 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
     }
   });
 
-  test('SDCL-002 (TS-043): единица заказа удаляется отдельно с причиной → карточка клиента без единицы, тост; в карточке заказа бейдж «удалён» только у неё; в «Удалённых» вкладка «Оборудование» — «тип марка модель», клиент, без бейджа «вместе с клиентом»; «Восстановить» → тост «Восстановлено», единица снова у клиента; негатив: клиент при этом не удалён и бейджа у клиента нет', async ({
+  test('SDCL-002 (TS-043): единица заказа удаляется отдельно с причиной → карточка клиента без единицы, тост; в карточке заказа бейдж «удалён» только у неё; в «Удалённых» вкладка «Оборудование» — госномер, клиент, без бейджа «вместе с клиентом»; «Восстановить» → тост «Восстановлено», единица снова у клиента; негатив: клиент при этом не удалён и бейджа у клиента нет', async ({
     adminPage: page,
     adminApi,
     uniq,
   }) => {
     const company = uniq('SDCL-002 клиент');
     const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990004302', note: '' }] });
-    const type = await adminApi.createEquipmentType({ name: uniq('SDCL-002 тип') });
-    const gone = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Qilin', model: uniq('SDCL-002 списана') });
-    const kept = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Qilin', model: uniq('SDCL-002 остаётся') });
+    const gone = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+    const kept = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
     const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
     const task = await adminApi.createTask({ title: uniq('SDCL-002 заказ'), client_id: client.id, column_id: column.id });
     await adminApi.addTaskEquipment(task.id, gone.id);
@@ -168,8 +167,8 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await eq.confirmDelete(reason);
       await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_deleted$`));
       await expect(eq.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
-      await expect(page.getByTestId('equipment-table')).toContainText(kept.model);
-      await expect(page.getByTestId('equipment-table')).not.toContainText(gone.model);
+      await expect(page.getByTestId('equipment-table')).toContainText(kept.plate_number);
+      await expect(page.getByTestId('equipment-table')).not.toContainText(gone.plate_number);
 
       // §8.3: в карточке заказа бейдж только у удалённой единицы; клиент — без бейджа.
       const board = new BoardPage(page);
@@ -185,9 +184,9 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
 
       // §8.2: вкладка «Оборудование» — без бейджа «вместе с клиентом».
       const del = new DeletedPage(page);
-      await del.goto(`kind=equipment&q=${encodeURIComponent(gone.model)}`);
+      await del.goto(`kind=equipment&q=${encodeURIComponent(gone.plate_number)}`);
       await expect(del.rows).toHaveCount(1);
-      await expect(del.rowTitle(gone.id)).toHaveText(`${type.name} Qilin ${gone.model}`);
+      await expect(del.rowTitle(gone.id)).toHaveText(gone.plate_number);
       await expect(del.rowSubtitle(gone.id)).toHaveText(company);
       await expect(del.rowWith(gone.id)).toHaveCount(0);
       await expect(del.rowReason(gone.id)).toHaveText(reason);

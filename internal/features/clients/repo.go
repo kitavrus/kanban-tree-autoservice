@@ -2,7 +2,6 @@ package clients
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -14,19 +13,15 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
 )
 
-// Client — карточка клиента (repo-модель). Version — оптимистичная блокировка (D28),
-// только у clients (у equipment_types её нет).
+// Client — карточка клиента (repo-модель). Version — оптимистичная блокировка (D28).
 type Client struct {
-	ID              string
-	CompanyName     string
-	Address         string
-	ContactName     string
-	ContactPosition string
-	Phones          []PhoneDTO
-	EquipmentCount  int
-	Version         int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID             string
+	CompanyName    string
+	Phones         []PhoneDTO
+	EquipmentCount int
+	Version        int64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type Repo struct {
@@ -41,10 +36,6 @@ var (
 	// errClientGone — 23503 на equipment.client_id (клиент удалён параллельно с созданием
 	// единицы оборудования, ADR из design-sql.md `## Create Equipment Query`).
 	errClientGone = errors.New("clients: client gone")
-	// errTypeGone — 23503 на equipment.type_id (тип удалён параллельно между TypeActive-
-	// проверкой в сервисе и вставкой/обновлением строки, code review LOW#1): сервис маппит
-	// в поле `type_id: not_found`, а не в 404/500 клиента.
-	errTypeGone = errors.New("clients: type gone")
 	// errNotDeleted — восстановление действующей записи (409 NOT_DELETED, DS-024).
 	errNotDeleted = errors.New("clients: not deleted")
 	// errClientDeleted — восстановление единицы, чей клиент в удалённых (409 CLIENT_DELETED,
@@ -55,11 +46,8 @@ var (
 	errInUse = errors.New("clients: record in use")
 )
 
-// mapEquipmentFKViolation — 23503 на equipment различает нарушенный constraint по имени:
-// client_id (клиент удалён параллельно) → errClientGone, type_id (тип удалён параллельно)
-// → errTypeGone. Раньше любой 23503 в CreateEquipment трактовался как errClientGone, а в
-// UpdateEquipment не обрабатывался вовсе — оба случая уходили в 500/неверный 404
-// (code review LOW#1).
+// mapEquipmentFKViolation — 23503 на equipment.client_id (клиент удалён параллельно) →
+// errClientGone (code review LOW#1).
 func mapEquipmentFKViolation(err error) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
@@ -68,59 +56,26 @@ func mapEquipmentFKViolation(err error) error {
 	switch pgErr.ConstraintName {
 	case "equipment_client_id_fkey":
 		return errClientGone
-	case "equipment_type_id_fkey":
-		return errTypeGone
 	default:
 		return err
 	}
 }
 
-// Equipment — единица оборудования клиента (repo-модель, JOIN с equipment_types).
+// Equipment — автомобиль клиента (repo-модель): только госномер.
 type Equipment struct {
-	ID           string
-	ClientID     string
-	TypeID       string
-	TypeName     string
-	TypeIsActive bool
-	// TypeIsDeleted — тип единицы мягко удалён: единица остаётся действующей, тип показывается
-	// с бейджем «удалён» (soft-delete-catalog §6.9, DS-014).
-	TypeIsDeleted bool
-	PlateNumber   string
-	Brand         string
-	Model         string
-	SKU           string
-	Serial        string
-	Specs         []SpecDTO
-	Note          string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID          string
+	ClientID    string
+	PlateNumber string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
-// TypeOption — опция <select> формы единицы (ADR-102: только SQL-чтение equipment_types,
-// без Go-импорта пакета equipmenttypes).
-type TypeOption struct {
-	ID       string
-	Name     string
-	SpecKeys []string
-	IsActive bool
-	// IsDeleted — текущий тип единицы мягко удалён (в выборе для других единиц его нет).
-	IsDeleted bool
-}
-
-const equipmentColumns = `e.id, e.client_id, e.type_id, t.name, t.is_active, e.plate_number, e.brand, e.model, e.sku, e.serial,
-	e.specs, e.note, e.created_at, e.updated_at, t.deleted_at IS NOT NULL`
+const equipmentColumns = `e.id, e.client_id, e.plate_number, e.created_at, e.updated_at`
 
 func scanEquipment(row pgx.Row) (*Equipment, error) {
 	var e Equipment
-	var specsRaw []byte
-	if err := row.Scan(&e.ID, &e.ClientID, &e.TypeID, &e.TypeName, &e.TypeIsActive,
-		&e.PlateNumber, &e.Brand, &e.Model, &e.SKU, &e.Serial, &specsRaw, &e.Note, &e.CreatedAt, &e.UpdatedAt, &e.TypeIsDeleted); err != nil {
+	if err := row.Scan(&e.ID, &e.ClientID, &e.PlateNumber, &e.CreatedAt, &e.UpdatedAt); err != nil {
 		return nil, err
-	}
-	if len(specsRaw) > 0 {
-		if err := json.Unmarshal(specsRaw, &e.Specs); err != nil {
-			return nil, fmt.Errorf("clients: unmarshal specs: %w", err)
-		}
 	}
 	return &e, nil
 }
@@ -166,7 +121,7 @@ func (r *Repo) ListClients(ctx context.Context, p ListParams) ([]Client, int, er
 			digitsAltLike = "%" + p.DigitsAlt + "%"
 		}
 		args = []any{likeQ, digitsLike, digitsAltLike, p.PlateLike}
-		where = ` AND (c.company_name ILIKE $1 OR c.contact_name ILIKE $1
+		where = ` AND (c.company_name ILIKE $1
 			OR ($4 <> '' AND EXISTS (SELECT 1 FROM equipment e
 			           WHERE e.client_id = c.id AND e.deleted_at IS NULL
 			             AND ` + sqlutil.PlateCompactSQL("e.plate_number") + ` LIKE $4))
@@ -183,7 +138,7 @@ func (r *Repo) ListClients(ctx context.Context, p ListParams) ([]Client, int, er
 	}
 
 	// company_name регистронезависимо, id вторым ключом — стабильный порядок при равенстве.
-	q := `SELECT c.id, c.company_name, c.address, c.contact_name, c.contact_position,
+	q := `SELECT c.id, c.company_name,
 	       c.version, c.created_at, c.updated_at,
 	       (SELECT count(*) FROM equipment e WHERE e.client_id = c.id AND e.deleted_at IS NULL) AS equipment_count
 	FROM clients c WHERE c.deleted_at IS NULL` + where +
@@ -198,7 +153,7 @@ func (r *Repo) ListClients(ctx context.Context, p ListParams) ([]Client, int, er
 	ids := []string{}
 	for rows.Next() {
 		var c Client
-		if err := rows.Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition,
+		if err := rows.Scan(&c.ID, &c.CompanyName,
 			&c.Version, &c.CreatedAt, &c.UpdatedAt, &c.EquipmentCount); err != nil {
 			return nil, 0, err
 		}
@@ -249,11 +204,11 @@ func (r *Repo) phonesBatch(ctx context.Context, clientIDs []string) (map[string]
 func (r *Repo) GetClient(ctx context.Context, id string) (*Client, error) {
 	var c Client
 	err := r.pool.QueryRow(ctx,
-		`SELECT c.id, c.company_name, c.address, c.contact_name, c.contact_position,
+		`SELECT c.id, c.company_name,
 		        c.version, c.created_at, c.updated_at,
 		        (SELECT count(*) FROM equipment e WHERE e.client_id = c.id AND e.deleted_at IS NULL)
 		 FROM clients c WHERE c.id = $1::uuid AND c.deleted_at IS NULL`, id).
-		Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition,
+		Scan(&c.ID, &c.CompanyName,
 			&c.Version, &c.CreatedAt, &c.UpdatedAt, &c.EquipmentCount)
 	if err != nil {
 		return nil, err
@@ -289,11 +244,11 @@ func (r *Repo) CreateClient(ctx context.Context, in ClientInput) (*Client, error
 func insertClient(ctx context.Context, tx pgx.Tx, in ClientInput) (*Client, error) {
 	var c Client
 	err := tx.QueryRow(ctx,
-		`INSERT INTO clients (company_name, address, contact_name, contact_position)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, company_name, address, contact_name, contact_position, version, created_at, updated_at`,
-		in.CompanyName, in.Address, in.ContactName, in.ContactPosition).
-		Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition, &c.Version, &c.CreatedAt, &c.UpdatedAt)
+		`INSERT INTO clients (company_name)
+		 VALUES ($1)
+		 RETURNING id, company_name, version, created_at, updated_at`,
+		in.CompanyName).
+		Scan(&c.ID, &c.CompanyName, &c.Version, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -317,12 +272,11 @@ func (r *Repo) UpdateClient(ctx context.Context, id string, version int64, in Cl
 
 	var c Client
 	err = tx.QueryRow(ctx,
-		`UPDATE clients SET company_name = $2, address = $3, contact_name = $4, contact_position = $5,
-		        version = version + 1, updated_at = now()
-		 WHERE id = $1::uuid AND version = $6 AND deleted_at IS NULL
-		 RETURNING id, company_name, address, contact_name, contact_position, version, created_at, updated_at`,
-		id, in.CompanyName, in.Address, in.ContactName, in.ContactPosition, version).
-		Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition, &c.Version, &c.CreatedAt, &c.UpdatedAt)
+		`UPDATE clients SET company_name = $2, version = version + 1, updated_at = now()
+		 WHERE id = $1::uuid AND version = $3 AND deleted_at IS NULL
+		 RETURNING id, company_name, version, created_at, updated_at`,
+		id, in.CompanyName, version).
+		Scan(&c.ID, &c.CompanyName, &c.Version, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if scanErr := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM clients WHERE id = $1::uuid AND deleted_at IS NULL)`, id).Scan(&exists); scanErr != nil {
@@ -381,8 +335,7 @@ func insertPhones(ctx context.Context, tx pgx.Tx, clientID string, phones []Phon
 	return err
 }
 
-// ListEquipment — оборудование клиента (JOIN с equipment_types для type_name/type_is_active,
-// ADR-102). Сервис проверяет существование клиента до вызова (design-sql.md).
+// ListEquipment — оборудование клиента. Сервис проверяет существование клиента до вызова (design-sql.md).
 func (r *Repo) ListEquipment(ctx context.Context, clientID string, limit, offset int) ([]Equipment, int, error) {
 	var total int
 	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM equipment WHERE client_id = $1::uuid AND deleted_at IS NULL`, clientID).Scan(&total); err != nil {
@@ -390,7 +343,7 @@ func (r *Repo) ListEquipment(ctx context.Context, clientID string, limit, offset
 	}
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+equipmentColumns+`
-		 FROM equipment e JOIN equipment_types t ON t.id = e.type_id
+		 FROM equipment e
 		 WHERE e.client_id = $1::uuid AND e.deleted_at IS NULL
 		 ORDER BY e.created_at, e.id
 		 LIMIT $2 OFFSET $3`, clientID, limit, offset)
@@ -414,45 +367,19 @@ func (r *Repo) ListEquipment(ctx context.Context, clientID string, limit, offset
 func (r *Repo) GetEquipment(ctx context.Context, id string) (*Equipment, error) {
 	return scanEquipment(r.pool.QueryRow(ctx,
 		`SELECT `+equipmentColumns+`
-		 FROM equipment e JOIN equipment_types t ON t.id = e.type_id
+		 FROM equipment e
 		 WHERE e.id = $1::uuid AND e.deleted_at IS NULL`, id))
 }
 
-// TypeActive — ADR-004: ErrNoRows → тип не существует либо мягко удалён (сервис маппит в поле
-// type_id not_found, soft-delete-catalog DS-014), false → тип в архиве (поле type_id archived).
-func (r *Repo) TypeActive(ctx context.Context, typeID string) (bool, error) {
-	var active bool
-	err := r.pool.QueryRow(ctx, `SELECT is_active FROM equipment_types WHERE id = $1::uuid AND deleted_at IS NULL`, typeID).Scan(&active)
-	return active, err
-}
-
-// lockLiveType — выбранный тип под FOR SHARE с условием «не удалён» до конца транзакции записи
-// единицы: удаление типа (UPDATE строки) либо уже видно (errTypeGone → type_id: not_found),
-// либо ждёт — новая ссылка на тип не появится «между проверкой и записью» (DS-014).
-func lockLiveType(ctx context.Context, tx pgx.Tx, typeID string) error {
-	var one int
-	err := tx.QueryRow(ctx, `SELECT 1 FROM equipment_types WHERE id = $1::uuid AND deleted_at IS NULL FOR SHARE`, typeID).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errTypeGone
-	}
-	return err
-}
-
-// CreateEquipment — вставка + повторное чтение (Get Equipment Query) ради type_name/
-// type_is_active. 23503 различается по constraint (mapEquipmentFKViolation): client_id
-// (клиент удалён параллельно) → errClientGone, type_id (тип удалён параллельно между
-// TypeActive-проверкой сервиса и вставкой) → errTypeGone.
+// CreateEquipment — вставка + повторное чтение (Get Equipment Query). 23503 на client_id
+// (клиент удалён параллельно) → errClientGone.
 func (r *Repo) CreateEquipment(ctx context.Context, clientID string, in EquipmentInput) (*Equipment, error) {
-	specsJSON, err := json.Marshal(in.Specs)
-	if err != nil {
-		return nil, fmt.Errorf("clients: marshal specs: %w", err)
-	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	id, err := insertEquipment(ctx, tx, clientID, in, specsJSON)
+	id, err := insertEquipment(ctx, tx, clientID, in)
 	if err != nil {
 		return nil, err
 	}
@@ -462,9 +389,9 @@ func (r *Repo) CreateEquipment(ctx context.Context, clientID string, in Equipmen
 	return r.GetEquipment(ctx, id)
 }
 
-// insertEquipment — блокировки «клиент → тип» и INSERT единицы в транзакции вызывающего
+// insertEquipment — блокировка клиента и INSERT единицы в транзакции вызывающего
 // (общая для POST /clients/:id/equipment и атомарного создания заказа, CreateEquipmentTx).
-func insertEquipment(ctx context.Context, tx pgx.Tx, clientID string, in EquipmentInput, specsJSON []byte) (string, error) {
+func insertEquipment(ctx context.Context, tx pgx.Tx, clientID string, in EquipmentInput) (string, error) {
 	// soft-delete-clients DS-015: клиент читается FOR KEY SHARE с условием «не удалён» и
 	// держится до коммита — удаление клиента (FOR UPDATE) либо уже видно (errClientGone → 404),
 	// либо ждёт вставку и забирает новую единицу в удалённые вместе с клиентом.
@@ -476,94 +403,27 @@ func insertEquipment(ctx context.Context, tx pgx.Tx, clientID string, in Equipme
 	if err != nil {
 		return "", err
 	}
-	// порядок блокировок: клиент → тип.
-	if err := lockLiveType(ctx, tx, in.TypeID); err != nil {
-		return "", err
-	}
 	var id string
 	err = tx.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, type_id, brand, model, sku, serial, specs, note, plate_number)
-		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8, $9)
-		 RETURNING id`,
-		clientID, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note, in.PlateNumber).Scan(&id)
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1::uuid, $2) RETURNING id`,
+		clientID, in.PlateNumber).Scan(&id)
 	if err != nil {
 		return "", mapEquipmentFKViolation(err)
 	}
 	return id, nil
 }
 
-// UpdateEquipment — полная замена (LWW, без version). check — валидация архивного типа
-// (ADR-004): архивный допустим, только если type_id не менялся; вызывается ВНУТРИ tx с
-// текущим type_id единицы, чтобы избежать TOCTOU-гонки со сменой типа. ErrNoRows → ErrNotFound.
-func (r *Repo) UpdateEquipment(ctx context.Context, id string, in EquipmentInput, check func(curTypeID string) error) (*Equipment, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	var curTypeID string
-	if err := tx.QueryRow(ctx, `SELECT type_id FROM equipment WHERE id = $1::uuid AND deleted_at IS NULL`, id).Scan(&curTypeID); err != nil {
-		return nil, err
-	}
-	if err := check(curTypeID); err != nil {
-		return nil, err
-	}
-	// Смена типа — новая ссылка: тип-цель под FOR SHARE и не удалён. Сохранение единицы без
-	// смены уже удалённого типа разрешено (soft-delete-catalog §4.4).
-	if curTypeID != in.TypeID {
-		if err := lockLiveType(ctx, tx, in.TypeID); err != nil {
-			return nil, err
-		}
-	}
-
-	specsJSON, err := json.Marshal(in.Specs)
-	if err != nil {
-		return nil, fmt.Errorf("clients: marshal specs: %w", err)
-	}
+// UpdateEquipment — полная замена (LWW, без version). ErrNoRows → ErrNotFound.
+func (r *Repo) UpdateEquipment(ctx context.Context, id string, in EquipmentInput) (*Equipment, error) {
 	var updatedID string
-	err = tx.QueryRow(ctx,
-		`UPDATE equipment SET type_id = $2::uuid, brand = $3, model = $4, sku = $5, serial = $6,
-		        specs = $7::jsonb, note = $8, plate_number = $9, updated_at = now()
+	err := r.pool.QueryRow(ctx,
+		`UPDATE equipment SET plate_number = $2, updated_at = now()
 		 WHERE id = $1::uuid AND deleted_at IS NULL RETURNING id`,
-		id, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note, in.PlateNumber).Scan(&updatedID)
+		id, in.PlateNumber).Scan(&updatedID)
 	if err != nil {
-		// 23503 на type_id (тип удалён параллельно между check(curTypeID) выше и этим
-		// UPDATE) — раньше уходило в 500 (code review LOW#1), теперь errTypeGone → сервис
-		// мапит в поле type_id: not_found, как при создании.
-		return nil, mapEquipmentFKViolation(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return r.GetEquipment(ctx, updatedID)
-}
-
-// TypeOptions — опции формы единицы (ADR-102): активные + текущий тип единицы (может быть
-// архивным либо мягко удалённым — правка без смены такого типа допустима; удалённый отдаётся с
-// признаком IsDeleted и в выборе других единиц отсутствует). currentTypeID == "" — новая единица.
-func (r *Repo) TypeOptions(ctx context.Context, currentTypeID string) ([]TypeOption, error) {
-	var curArg any
-	if currentTypeID != "" {
-		curArg = currentTypeID
-	}
-	rows, err := r.pool.Query(ctx,
-		`SELECT id, name, spec_keys, is_active, deleted_at IS NOT NULL FROM equipment_types
-		 WHERE (is_active AND deleted_at IS NULL) OR id = $1::uuid
-		 ORDER BY lower(name), id`, curArg)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []TypeOption{}
-	for rows.Next() {
-		var t TypeOption
-		if err := rows.Scan(&t.ID, &t.Name, &t.SpecKeys, &t.IsActive, &t.IsDeleted); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
 }
 
 // equipmentLookupFilter — фильтры поиска автомобиля (значения уже провалидированы и приведены
@@ -581,7 +441,6 @@ type equipmentLookupFilter struct {
 func (r *Repo) LookupEquipment(ctx context.Context, f equipmentLookupFilter, limit, offset int) ([]EquipmentLookupItem, int, error) {
 	const from = ` FROM equipment e
 		 JOIN clients c ON c.id = e.client_id AND c.deleted_at IS NULL
-		 JOIN equipment_types t ON t.id = e.type_id
 		 WHERE e.deleted_at IS NULL`
 	compact := sqlutil.PlateCompactSQL("e.plate_number")
 	cond, args := "", []any{}
@@ -607,7 +466,7 @@ func (r *Repo) LookupEquipment(ctx context.Context, f equipmentLookupFilter, lim
 	}
 	page := fmt.Sprintf(` LIMIT %s OFFSET %s`, arg(limit), arg(offset))
 	rows, err := r.pool.Query(ctx,
-		`SELECT e.id, e.client_id, c.company_name, e.type_id, t.name, e.plate_number, e.brand, e.model, e.serial`+
+		`SELECT e.id, e.client_id, c.company_name, e.plate_number`+
 			from+cond+order+page, args...)
 	if err != nil {
 		return nil, 0, err
@@ -616,8 +475,8 @@ func (r *Repo) LookupEquipment(ctx context.Context, f equipmentLookupFilter, lim
 	out := []EquipmentLookupItem{}
 	for rows.Next() {
 		var it EquipmentLookupItem
-		if err := rows.Scan(&it.ID, &it.ClientID, &it.ClientName, &it.TypeID, &it.TypeName,
-			&it.PlateNumber, &it.Brand, &it.Model, &it.Serial); err != nil {
+		if err := rows.Scan(&it.ID, &it.ClientID, &it.ClientName,
+			&it.PlateNumber); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, it)

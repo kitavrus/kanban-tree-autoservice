@@ -144,12 +144,21 @@ func (s *ClientsLiveSuite) restoreUnit(b *testutil.Browser, id string) (int, []b
 	return b.Do(http.MethodPost, "/api/v1/equipment/"+id+"/restore", nil)
 }
 
-// unit — действующая единица клиента (тип — общий на тест, SQL-фикстура).
-func (s *ClientsLiveSuite) unit(clientID, typeID, model string) string {
-	st, e, raw := s.createEquipment(s.admin, clientID, map[string]any{"type_id": typeID, "brand": "Бренд", "model": model})
+// unit — действующий автомобиль клиента с уникальным госномером (label — только для
+// читаемости теста).
+func (s *ClientsLiveSuite) unit(clientID, _ string) string {
+	return s.unitPlate(clientID, uniquePlate())
+}
+
+// unitPlate — действующий автомобиль клиента с заданным госномером.
+func (s *ClientsLiveSuite) unitPlate(clientID, plate string) string {
+	st, e, raw := s.createEquipment(s.admin, clientID, carBody(plate))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	return e.ID
 }
+
+// uniquePlate — уникальный допустимый госномер (латиница/цифры из uuid, ≤20 символов).
+func uniquePlate() string { return "SD " + strings.ToUpper(uuid.NewString()[:8]) }
 
 // clientState — «удалён|кто|причина» клиента; пустая строка — строки нет.
 func (s *ClientsLiveSuite) clientState(id string) string {
@@ -230,9 +239,8 @@ func (s *ClientsLiveSuite) executor(login string) *testutil.Browser {
 func (s *ClientsLiveSuite) TestTS022_DeleteClientWithTasksAndDocuments() {
 	m := mark()
 	c := s.newClient("SD-022 Клиент " + m)
-	typeID := s.newType("SD-022 Тип " + m)
-	u1, u2 := s.unit(c.ID, typeID, "M-022-1"), s.unit(c.ID, typeID, "M-022-2")
-	early := s.unit(c.ID, typeID, "M-022-раньше")
+	u1, u2 := s.unit(c.ID, "M-022-1"), s.unit(c.ID, "M-022-2")
+	early := s.unit(c.ID, "M-022-раньше")
 	task := s.apiTask(s.admin, c.ID, "SD-022 заказ "+m, u1, u2, early)
 	s.mustDeleteUnit(early, "Списана раньше клиента")
 
@@ -301,9 +309,8 @@ func (s *ClientsLiveSuite) TestTS022_DeleteClientWithTasksAndDocuments() {
 func (s *ClientsLiveSuite) TestTS023_RestoreClient() {
 	m := mark()
 	c := s.newClient("SD-023 Клиент " + m)
-	typeID := s.newType("SD-023 Тип " + m)
-	u1, u2 := s.unit(c.ID, typeID, "M-023-1"), s.unit(c.ID, typeID, "M-023-2")
-	early := s.unit(c.ID, typeID, "M-023-раньше")
+	u1, u2 := s.unit(c.ID, "M-023-1"), s.unit(c.ID, "M-023-2")
+	early := s.unit(c.ID, "M-023-раньше")
 	s.mustDeleteUnit(early, "Списана раньше")
 	s.Equal(2, s.mustDeleteClient(c.ID, "Удалён по ошибке").EquipmentDeleted)
 
@@ -365,8 +372,7 @@ func (s *ClientsLiveSuite) TestTS023_RestoreClient() {
 func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 	m := mark()
 	c := s.newClient("SD-024 Клиент " + m)
-	typeID := s.newType("SD-024 Тип " + m)
-	used, spare := s.unit(c.ID, typeID, "M-024-в-заказе"), s.unit(c.ID, typeID, "M-024-свободна")
+	used, spare := s.unit(c.ID, "M-024-в-заказе"), s.unit(c.ID, "M-024-свободна")
 	task := s.apiTask(s.admin, c.ID, "SD-024 заказ "+m, used, spare)
 
 	// услуга заказа с этой единицей (subtasks.equipment_id).
@@ -405,7 +411,7 @@ func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 	}{
 		{http.MethodGet, "/api/v1/equipment/" + used, nil},
 		{http.MethodGet, "/api/v1/equipment/" + used + "/history", nil},
-		{http.MethodPut, "/api/v1/equipment/" + used, map[string]any{"type_id": typeID, "model": "x"}},
+		{http.MethodPut, "/api/v1/equipment/" + used, carBody("Х000ХХ 77")},
 		{http.MethodDelete, "/api/v1/equipment/" + used, reasonBody("Повтор")},
 	} {
 		st, raw = s.admin.Do(rq.method, rq.path, rq.body)
@@ -443,9 +449,8 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 	m := mark()
 	gone := s.newClient("SD-025 Удалённый " + m)
 	live := s.newClient("SD-025 Действующий " + m)
-	typeID := s.newType("SD-025 Тип " + m)
-	s.unit(gone.ID, typeID, "M-025-ушла-"+m)
-	keep, dropped := s.unit(live.ID, typeID, "M-025-живая-"+m), s.unit(live.ID, typeID, "M-025-удалена-"+m)
+	s.unit(gone.ID, "M-025-ушла-"+m)
+	keep, dropped := s.unit(live.ID, "M-025-живая-"+m), s.unit(live.ID, "M-025-удалена-"+m)
 	task := s.apiTask(s.admin, live.ID, "SD-025 заказ "+m)
 	s.mustDeleteUnit(dropped, "Списана")
 	s.mustDeleteClient(gone.ID, "Закрылся")
@@ -498,7 +503,7 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 		{s.admin, http.MethodGet, "/api/v1/clients/" + gone.ID, nil},
 		{s.admin, http.MethodPut, "/api/v1/clients/" + gone.ID, card(gone, nil)},
 		{s.admin, http.MethodGet, "/api/v1/clients/" + gone.ID + "/equipment", nil},
-		{exec, http.MethodPost, "/api/v1/clients/" + gone.ID + "/equipment", map[string]any{"type_id": typeID, "model": "Новая"}},
+		{exec, http.MethodPost, "/api/v1/clients/" + gone.ID + "/equipment", carBody(uniquePlate())},
 	} {
 		st, raw = rq.b.Do(rq.method, rq.path, rq.body)
 		s.Equal(http.StatusNotFound, st, "%s %s: %s", rq.method, rq.path, raw)
@@ -524,8 +529,7 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 func (s *ClientsLiveSuite) TestTS026_CardMarks() {
 	m := mark()
 	c := s.newClient("SD-026 Клиент " + m)
-	typeID := s.newType("SD-026 Тип " + m)
-	gone, live := s.unit(c.ID, typeID, "M-026-удалена"), s.unit(c.ID, typeID, "M-026-живая")
+	gone, live := s.unit(c.ID, "M-026-удалена"), s.unit(c.ID, "M-026-живая")
 	task := s.apiTask(s.admin, c.ID, "SD-026 заказ "+m, gone, live)
 
 	flags := func() (bool, map[string]bool) {
@@ -595,7 +599,7 @@ func (s *ClientsLiveSuite) TestTS026_CardMarks() {
 func (s *ClientsLiveSuite) TestTS033_SoftDeleteAdminOnly() {
 	m := mark()
 	c := s.newClient("SD-033 Клиент " + m)
-	u := s.unit(c.ID, s.newType("SD-033 Тип "+m), "M-033")
+	u := s.unit(c.ID, "M-033")
 	deletedClient := s.newClient("SD-033 Удалённый " + m)
 	s.mustDeleteClient(deletedClient.ID, "Фикстура")
 	exec := s.executor("sd-033-exec-" + m)
@@ -627,7 +631,7 @@ func (s *ClientsLiveSuite) TestTS033_SoftDeleteAdminOnly() {
 // ---- раздел «Удалённые» (§6.5, §8.2) ----
 
 // Виды clients и equipment раздела «Удалённые» (DS-011, DS-015): клиент — title = название
-// компании, subtitle пуст, deleted_with = null; единица — title «тип марка модель», subtitle —
+// компании, subtitle пуст, deleted_with = null; автомобиль — title = госномер, subtitle —
 // название клиента, deleted_with = "client" только у ушедшей с клиентом; причина и «кто удалил»
 // — как у записи; поиск по названию и причине; счётчики summary совпадают с total списков.
 // Негатив: действующие и восстановленные записи в списки не входят.
@@ -635,10 +639,10 @@ func (s *ClientsLiveSuite) TestDeletedTabs_ClientsAndEquipment() {
 	m := mark()
 	c := s.newClient("SD-tab Клиент " + m)
 	other := s.newClient("SD-tab Сосед " + m)
-	typeID := s.newType("Принтер-" + m)
-	with := s.unit(c.ID, typeID, "LJ-с-клиентом")
-	alone := s.unit(other.ID, typeID, "LJ-отдельно")
-	live := s.unit(other.ID, typeID, "LJ-живая")
+	plateWith, plateAlone := uniquePlate(), uniquePlate()
+	with := s.unitPlate(c.ID, plateWith)
+	alone := s.unitPlate(other.ID, plateAlone)
+	live := s.unit(other.ID, "живая")
 	s.mustDeleteUnit(alone, "Списана "+m)
 	s.mustDeleteClient(c.ID, "Закрылся "+m)
 
@@ -657,15 +661,15 @@ func (s *ClientsLiveSuite) TestDeletedTabs_ClientsAndEquipment() {
 		byID[it.ID] = it
 	}
 	s.NotContains(byID, live)
-	s.Equal("Принтер-"+m+" Бренд LJ-с-клиентом", byID[with].Title)
+	s.Equal(plateWith, byID[with].Title, "заголовок — госномер")
 	s.Equal(c.CompanyName, byID[with].Subtitle)
 	s.Equal("Закрылся "+m, byID[with].DeleteReason, "причина наследуется от клиента")
 	s.Require().NotNil(byID[with].DeletedWith)
 	s.Equal("client", *byID[with].DeletedWith)
-	s.Equal("Принтер-"+m+" Бренд LJ-отдельно", byID[alone].Title)
+	s.Equal(plateAlone, byID[alone].Title)
 	s.Equal(other.CompanyName, byID[alone].Subtitle)
 	s.Nil(byID[alone].DeletedWith, "удалена отдельно — deleted_with = null")
-	s.Len(s.deletedList("equipment", "LJ-отдельно"), 1, "поиск по модели")
+	s.Len(s.deletedList("equipment", plateAlone), 1, "поиск по госномеру")
 	s.Len(s.deletedList("equipment", c.CompanyName), 1, "поиск по названию клиента")
 
 	// счётчики вкладок = total своих списков.
@@ -695,19 +699,18 @@ func (s *ClientsLiveSuite) TestDeletedTabs_ClientsAndEquipment() {
 // остаётся; нет записи либо битый идентификатор → 404 NOT_FOUND. Негатив: исполнитель → 403.
 func (s *ClientsLiveSuite) TestPurge_ClientsAndEquipment() {
 	m := mark()
-	typeID := s.newType("SD-purge Тип " + m)
 	purge := func(b *testutil.Browser, kind, id string) (int, []byte) {
 		return b.Do(http.MethodDelete, "/api/v1/test/purge/"+kind+"/"+id, nil)
 	}
 
 	live := s.newClient("SD-purge Действует " + m)
-	liveUnit := s.unit(live.ID, typeID, "M-purge-1")
+	liveUnit := s.unit(live.ID, "M-purge-1")
 	gone := s.newClient("SD-purge Удалён " + m)
-	s.unit(gone.ID, typeID, "M-purge-2")
+	s.unit(gone.ID, "M-purge-2")
 	s.mustDeleteClient(gone.ID, "Фикстура")
 	held := s.newClient("SD-purge С заказом " + m)
-	heldUnit := s.unit(held.ID, typeID, "M-purge-в-заказе")
-	freeUnit := s.unit(held.ID, typeID, "M-purge-свободна")
+	heldUnit := s.unit(held.ID, "M-purge-в-заказе")
+	freeUnit := s.unit(held.ID, "M-purge-свободна")
 	s.apiTask(s.admin, held.ID, "SD-purge заказ "+m, heldUnit)
 	s.mustDeleteUnit(freeUnit, "Фикстура")
 
@@ -772,8 +775,8 @@ func (s *ClientsLiveSuite) postForm(path string, form url.Values) (int, string, 
 func (s *ClientsLiveSuite) TestSSR_SoftDeleteForms() {
 	m := mark()
 	c := s.newClient("SD-ssr Клиент " + m)
-	typeID := s.newType("SD-ssr Тип " + m)
-	u1, u2 := s.unit(c.ID, typeID, "M-ssr-1"), s.unit(c.ID, typeID, "M-ssr-2")
+	plate2 := uniquePlate()
+	u1, u2 := s.unit(c.ID, "M-ssr-1"), s.unitPlate(c.ID, plate2)
 	s.apiTask(s.admin, c.ID, "SD-ssr заказ "+m, u1, u2)
 
 	// форма клиента: окно «Удаление» с пояснением и числом единиц.
@@ -805,7 +808,7 @@ func (s *ClientsLiveSuite) TestSSR_SoftDeleteForms() {
 	st, page = s.admin.Do(http.MethodGet, loc, nil)
 	s.Require().Equal(http.StatusOK, st)
 	s.Contains(string(page), `data-kt-toast="Удалено. Восстановить можно в разделе «Удалённые»"`)
-	s.NotContains(string(page), "M-ssr-2", "удалённой единицы в списке клиента нет")
+	s.NotContains(string(page), plate2, "удалённой единицы в списке клиента нет")
 	s.Equal("true|clients-admin|Списана клиентом|false", s.unitState(u2))
 
 	status, loc, _ = s.postForm("/clients/"+c.ID+"/delete", url.Values{"reason": {"Закрылся"}})
@@ -906,12 +909,11 @@ func (s *ClientsLiveSuite) TestRace_TaskCreateWaitsForClientDelete() {
 func (s *ClientsLiveSuite) TestRace_EquipmentCreateWaitsForClientDelete() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-единица " + m)
-	typeID := s.newType("SD-race Тип-единица " + m)
-	s.unit(c.ID, typeID, "M-race-была")
+	s.unit(c.ID, "M-race-была")
 	exec := s.executor("sd-race-exec-" + m)
 
 	res := s.race(s.holdClientDelete(c.ID), func() (int, []byte) {
-		st, _, raw := s.createEquipment(exec, c.ID, map[string]any{"type_id": typeID, "model": "M-race-новая"})
+		st, _, raw := s.createEquipment(exec, c.ID, carBody(uniquePlate()))
 		return st, raw
 	})
 	s.Require().Equal(http.StatusNotFound, res.status, string(res.raw))
@@ -928,7 +930,7 @@ func (s *ClientsLiveSuite) TestRace_EquipmentCreateWaitsForClientDelete() {
 func (s *ClientsLiveSuite) TestRace_UnitRestoreWaitsForClientDelete() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-восстановление " + m)
-	u := s.unit(c.ID, s.newType("SD-race Тип-восстановление "+m), "M-race-удалена-раньше")
+	u := s.unit(c.ID, "M-race-удалена-раньше")
 	s.mustDeleteUnit(u, "Списана раньше")
 
 	res := s.race(s.holdClientDelete(c.ID), func() (int, []byte) { return s.restoreUnit(s.admin, u) })
@@ -959,7 +961,7 @@ func (s *ClientsLiveSuite) holdUnitDelete(unitID string) func(ctx context.Contex
 func (s *ClientsLiveSuite) TestRace_TaskEquipmentAddWaitsForUnitDelete() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-в-заказ " + m)
-	u := s.unit(c.ID, s.newType("SD-race Тип-в-заказ "+m), "M-race-в-заказ")
+	u := s.unit(c.ID, "M-race-в-заказ")
 	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m)
 
 	res := s.race(s.holdUnitDelete(u), func() (int, []byte) { return s.addUnit(s.admin, task.ID, u) })
@@ -975,7 +977,7 @@ func (s *ClientsLiveSuite) TestRace_TaskEquipmentAddWaitsForUnitDelete() {
 func (s *ClientsLiveSuite) TestRace_UnitDeleteWaitsForTaskEquipmentAdd() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-из-заказа " + m)
-	u := s.unit(c.ID, s.newType("SD-race Тип-из-заказа "+m), "M-race-из-заказа")
+	u := s.unit(c.ID, "M-race-из-заказа")
 	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m)
 
 	res := s.race(func(ctx context.Context) func() {
@@ -1006,7 +1008,7 @@ func (s *ClientsLiveSuite) TestRace_UnitDeleteWaitsForTaskEquipmentAdd() {
 func (s *ClientsLiveSuite) TestRace_SubtaskAssignWaitsForUnitDelete() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-услуга " + m)
-	u := s.unit(c.ID, s.newType("SD-race Тип-услуга "+m), "M-race-услуга")
+	u := s.unit(c.ID, "M-race-услуга")
 	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m, u)
 	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", task.ID),
 		map[string]any{"service_id": s.newServiceDirect("SD-race услуга " + m)})
@@ -1036,8 +1038,7 @@ func (s *ClientsLiveSuite) TestRace_SubtaskAssignWaitsForUnitDelete() {
 func (s *ClientsLiveSuite) TestRace_ClientRestoreVsUnitOperations() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-возврат " + m)
-	typeID := s.newType("SD-race Тип-возврат " + m)
-	with, alone := s.unit(c.ID, typeID, "M-race-с-клиентом"), s.unit(c.ID, typeID, "M-race-отдельно")
+	with, alone := s.unit(c.ID, "M-race-с-клиентом"), s.unit(c.ID, "M-race-отдельно")
 	s.apiTask(s.admin, c.ID, "SD-race заказ "+m, with)
 	second := s.apiTask(s.admin, c.ID, "SD-race второй заказ "+m)
 	s.mustDeleteUnit(alone, "Списана раньше")

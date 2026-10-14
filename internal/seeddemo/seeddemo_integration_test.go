@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,12 +35,12 @@ func TestSeedDemoSuite(t *testing.T) {
 
 func (s *SeedDemoSuite) SetupTest() {
 	ctx := context.Background()
-	// CASCADE тянет transitively products/services (FK на catalog_categories),
+	// CASCADE тянет transitively services (FK на catalog_categories),
 	// tasks/subtasks/subtask_products/task_stock/stock_movements (FK на users/clients/
 	// products/services) и columns (FK deleted_by → users) — колонки по умолчанию
 	// восстанавливаются ниже тем же набором, что сеет миграция 0005 (Сид D32).
 	_, err := s.Pool.Exec(ctx,
-		`TRUNCATE TABLE users, clients, equipment_types, catalog_categories RESTART IDENTITY CASCADE`)
+		`TRUNCATE TABLE users, clients, catalog_categories, products RESTART IDENTITY CASCADE`)
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `
 		INSERT INTO columns (name, color, is_final, consumes_stock, position) VALUES
@@ -203,32 +202,26 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 	s.assertExecutorPayouts()
 }
 
-// assertPlates — госномер живёт в equipment.plate_number: у каждого действующего авто —
-// российский номер «А123ВС 777» (кириллица), VIN — в serial (17 символов); у снятого
-// агрегата (двигатель) номера нет.
+// assertPlates — автомобиль = госномер (equipment.plate_number): у каждого действующего
+// авто — российский номер «А123ВС 777» (кириллица), в том числе у машины снятого двигателя
+// («Р126ОР 750»).
 func (s *SeedDemoSuite) assertPlates() {
 	ctx := context.Background()
-	rows, err := s.Pool.Query(ctx, `
-		SELECT e.plate_number, e.serial, t.name FROM equipment e JOIN equipment_types t ON t.id = e.type_id
-		WHERE e.deleted_at IS NULL`)
+	rows, err := s.Pool.Query(ctx, `SELECT plate_number FROM equipment WHERE deleted_at IS NULL`)
 	s.Require().NoError(err)
 	defer rows.Close()
-	cars, engines := 0, 0
+	cars := 0
+	plates := map[string]bool{}
 	for rows.Next() {
-		var plate, serial, typeName string
-		s.Require().NoError(rows.Scan(&plate, &serial, &typeName))
-		if typeName == "Двигатель (снятый агрегат)" {
-			engines++
-			s.Empty(plate)
-			continue
-		}
+		var plate string
+		s.Require().NoError(rows.Scan(&plate))
 		cars++
+		plates[plate] = true
 		s.Regexp(seeddemo.PlateRe, plate)
-		s.Regexp(regexp.MustCompile(`^[A-HJ-NPR-Z0-9]{17}$`), serial)
 	}
 	s.Require().NoError(rows.Err())
-	s.Equal(17, cars)
-	s.Equal(1, engines)
+	s.Equal(18, cars)
+	s.True(plates["Р126ОР 750"], "у автомобиля снятого двигателя тоже есть госномер")
 }
 
 // assertAttachments — у каждого заказа есть фото приёмки; есть видео; файл каждой строки
@@ -288,13 +281,13 @@ func (s *SeedDemoSuite) assertSuppliers(adminID string) {
 }
 
 // assertDeletedCatalog — soft-delete-catalog: ровно по одной мягко удалённой записи каждого
-// вида каталога с причиной и автором удаления — вкладки «Товары», «Услуги», «Категории», «Типы
-// оборудования» раздела «Удалённые» на демо-стенде непустые. Действующих товаров и услуг —
-// столько же, сколько в Result; удалённый товар — из архива и без остатка (DS-021); на
-// удалённые категорию и тип никто не ссылается.
+// вида каталога с причиной и автором удаления — вкладки «Товары», «Услуги», «Категории»
+// раздела «Удалённые» на демо-стенде непустые. Действующих товаров и услуг — столько же,
+// сколько в Result; удалённый товар — из архива и без остатка (DS-021); на удалённую
+// категорию никто не ссылается; категории — только услуг.
 func (s *SeedDemoSuite) assertDeletedCatalog(adminID string, res seeddemo.Result) {
 	ctx := context.Background()
-	for _, table := range []string{"products", "services", "catalog_categories", "equipment_types"} {
+	for _, table := range []string{"products", "services", "catalog_categories"} {
 		var deleted int
 		var reason, by string
 		s.Require().NoError(s.Pool.QueryRow(ctx, `
@@ -304,24 +297,23 @@ func (s *SeedDemoSuite) assertDeletedCatalog(adminID string, res seeddemo.Result
 		s.NotEmpty(reason, "%s: причина удаления", table)
 		s.Equal(adminID, by, "%s: кто удалил", table)
 	}
-	var liveProducts, liveServices, deletedProductStock, refsToDeletedCategory, refsToDeletedType int
+	var liveProducts, liveServices, deletedProductStock, refsToDeletedCategory, productCategories int
 	var deletedProductActive bool
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
 		SELECT (SELECT count(*) FROM products WHERE deleted_at IS NULL),
 		       (SELECT count(*) FROM services WHERE deleted_at IS NULL),
 		       (SELECT is_active FROM products WHERE deleted_at IS NOT NULL),
 		       (SELECT count(*) FROM products p WHERE p.deleted_at IS NOT NULL AND p.stock <> 0),
-		       (SELECT count(*) FROM catalog_categories c WHERE c.deleted_at IS NOT NULL AND (
-		              EXISTS (SELECT 1 FROM products p WHERE p.category_id = c.id)
-		           OR EXISTS (SELECT 1 FROM services sv WHERE sv.category_id = c.id))),
-		       (SELECT count(*) FROM equipment e JOIN equipment_types t ON t.id = e.type_id WHERE t.deleted_at IS NOT NULL)`).
-		Scan(&liveProducts, &liveServices, &deletedProductActive, &deletedProductStock, &refsToDeletedCategory, &refsToDeletedType))
+		       (SELECT count(*) FROM catalog_categories c WHERE c.deleted_at IS NOT NULL AND
+		              EXISTS (SELECT 1 FROM services sv WHERE sv.category_id = c.id)),
+		       (SELECT count(*) FROM catalog_categories WHERE kind <> 'service')`).
+		Scan(&liveProducts, &liveServices, &deletedProductActive, &deletedProductStock, &refsToDeletedCategory, &productCategories))
 	s.Equal(res.Products, liveProducts)
 	s.Equal(res.Services, liveServices)
 	s.False(deletedProductActive, "удалённый товар — из архива (бейдж «в архиве»)")
 	s.Zero(deletedProductStock, "у удалённого товара нет остатка")
 	s.Zero(refsToDeletedCategory, "на удалённую категорию никто не ссылается")
-	s.Zero(refsToDeletedType, "на удалённый тип никто не ссылается")
+	s.Zero(productCategories, "категорий товаров нет — категории только у услуг")
 }
 
 // assertExecutorPayouts — TS-019 (executor-payouts, D71): часть выполненных услуг выплачена

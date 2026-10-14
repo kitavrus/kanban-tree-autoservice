@@ -12,9 +12,6 @@ export class ClientsPage {
   // форма
   readonly form: Locator;
   readonly companyName: Locator;
-  readonly address: Locator;
-  readonly contactName: Locator;
-  readonly contactPosition: Locator;
   readonly phonesRows: Locator;
   readonly phoneAdd: Locator;
   readonly save: Locator;
@@ -32,9 +29,6 @@ export class ClientsPage {
     this.total = page.getByTestId('clients-total');
     this.form = page.getByTestId('client-form');
     this.companyName = page.locator('#company_name');
-    this.address = page.locator('#address');
-    this.contactName = page.locator('#contact_name');
-    this.contactPosition = page.locator('#contact_position');
     this.phonesRows = page.getByTestId('phone-row');
     this.phoneAdd = page.getByTestId('phone-add');
     this.save = page.getByTestId('client-save');
@@ -62,7 +56,7 @@ export class ClientsPage {
     return this.row(company).getByTestId('client-equipment-count');
   }
 
-  fieldError(field: 'company_name' | 'address' | 'contact_name' | 'contact_position' | 'phones'): Locator {
+  fieldError(field: 'company_name' | 'phones'): Locator {
     return this.page.getByTestId(`error-${field}`);
   }
 
@@ -91,11 +85,8 @@ export class ClientsPage {
     await expect(this.form).toBeVisible();
   }
 
-  async fill(c: { companyName?: string; address?: string; contactName?: string; contactPosition?: string }) {
+  async fill(c: { companyName?: string }) {
     if (c.companyName !== undefined) await this.companyName.fill(c.companyName);
-    if (c.address !== undefined) await this.address.fill(c.address);
-    if (c.contactName !== undefined) await this.contactName.fill(c.contactName);
-    if (c.contactPosition !== undefined) await this.contactPosition.fill(c.contactPosition);
   }
 
   async fillPhone(index: number, p: { phone?: string; note?: string }) {

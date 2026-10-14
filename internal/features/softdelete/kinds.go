@@ -17,7 +17,6 @@ const (
 	KindProducts          Kind = "products"
 	KindServices          Kind = "services"
 	KindCatalogCategories Kind = "catalog-categories"
-	KindEquipmentTypes    Kind = "equipment-types"
 	KindSuppliers         Kind = "suppliers"
 )
 
@@ -25,7 +24,7 @@ const (
 // подключён (его часть мастер-спеки не смержена), отдаёт пустой список и счётчик 0.
 var Kinds = []Kind{
 	KindTasks, KindColumns, KindClients, KindEquipment, KindProducts,
-	KindServices, KindCatalogCategories, KindEquipmentTypes, KindSuppliers,
+	KindServices, KindCatalogCategories, KindSuppliers,
 }
 
 // IsKind — v входит в реестр.

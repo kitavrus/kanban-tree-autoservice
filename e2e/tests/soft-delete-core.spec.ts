@@ -32,8 +32,7 @@ async function order(adminApi: AdminApi, uniq: Uniq, tag: string, columnName = '
 
 /** Товар с остатком stock + услуга каталога. */
 async function goods(adminApi: AdminApi, uniq: Uniq, tag: string, stock: number) {
-  const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq(`${tag} категория товаров`) });
-  const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq(`${tag} товар`), stock });
+  const product = await adminApi.createProduct({ name: uniq(`${tag} товар`), stock });
   const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq(`${tag} категория услуг`) });
   const service = await adminApi.createService({ category_id: svcCat.id, name: uniq(`${tag} услуга`) });
   return { product, service };

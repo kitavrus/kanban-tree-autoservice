@@ -19,7 +19,6 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/features/board"
 	"github.com/kitavrus/kanban-tree/internal/features/catalog"
 	"github.com/kitavrus/kanban-tree/internal/features/clients"
-	"github.com/kitavrus/kanban-tree/internal/features/equipmenttypes"
 	"github.com/kitavrus/kanban-tree/internal/features/executorpayouts"
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
 	"github.com/kitavrus/kanban-tree/internal/features/suppliers"
@@ -142,10 +141,6 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	if err != nil {
 		return nil, err
 	}
-	typesR, err := ssr.NewRenderer(equipmenttypes.Root, ssr.SharedRoot)
-	if err != nil {
-		return nil, err
-	}
 	clientsR, err := ssr.NewRenderer(clients.Root, ssr.SharedRoot)
 	if err != nil {
 		return nil, err
@@ -171,8 +166,6 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	auth.Register(app, api, auth.NewHandler(authSvc, guard, authR, shell), guard)
 	usersSvc := users.NewService(pool, store)
 	users.Register(app, api, guard, users.NewHandler(usersSvc), users.NewSSR(usersSvc, usersR, shell, status))
-	typesSvc := equipmenttypes.NewService(pool)
-	equipmenttypes.Register(app, api, guard, equipmenttypes.NewHandler(typesSvc), equipmenttypes.NewSSR(typesSvc, pool, typesR, shell, status))
 	clientsSvc := clients.NewService(pool)
 	clients.Register(app, api, guard, clients.NewHandler(clientsSvc), clients.NewSSR(clientsSvc, clientsR, shell, status))
 	catCatSvc := catalog.NewCategoryService(pool)
@@ -196,11 +189,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 		// Часть 4 (soft-delete-clients) — клиенты и единицы оборудования.
 		Register(softdelete.KindClients, softdelete.NewClientsSource(pool)).
 		Register(softdelete.KindEquipment, softdelete.NewEquipmentSource(pool)).
-		// Часть 5 (soft-delete-catalog) — товары, услуги, категории каталога и типы оборудования.
+		// Часть 5 (soft-delete-catalog) — товары, услуги, категории каталога.
 		Register(softdelete.KindProducts, softdelete.NewProductsSource(pool)).
 		Register(softdelete.KindServices, softdelete.NewServicesSource(pool)).
 		Register(softdelete.KindCatalogCategories, softdelete.NewCatalogCategoriesSource(pool)).
-		Register(softdelete.KindEquipmentTypes, softdelete.NewEquipmentTypesSource(pool)).
 		// Часть 6 (soft-delete-suppliers) — поставщики.
 		Register(softdelete.KindSuppliers, softdelete.NewSuppliersSource(pool))
 	softdelete.Register(app, api, guard, softdelete.NewHandler(deletedSvc), softdelete.NewSSR(deletedR, shell, status))
@@ -224,11 +216,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 			// Служебная уборка видов clients и equipment (soft-delete-clients DS-027).
 			WithPurger(string(softdelete.KindClients), clientsSvc.PurgeClient).
 			WithPurger(string(softdelete.KindEquipment), clientsSvc.PurgeEquipment).
-			// Служебная уборка видов каталога и типов оборудования (soft-delete-catalog DS-027).
+			// Служебная уборка видов каталога (soft-delete-catalog DS-027).
 			WithPurger(string(softdelete.KindProducts), catProdSvc.Purge).
 			WithPurger(string(softdelete.KindServices), catSvcSvc.Purge).
 			WithPurger(string(softdelete.KindCatalogCategories), catCatSvc.Purge).
-			WithPurger(string(softdelete.KindEquipmentTypes), typesSvc.Purge).
 			// Служебная уборка вида поставщик (soft-delete-suppliers DS-027).
 			WithPurger(string(softdelete.KindSuppliers), suppliersSvc.Purge),
 		Assignees:   board.NewAssigneesHandler(pool),

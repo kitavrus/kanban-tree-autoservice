@@ -4,7 +4,6 @@ package catalog_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
@@ -48,17 +47,16 @@ type categoryDTO struct {
 type amount = json.Number
 
 type productDTO struct {
-	ID         string `json:"id"`
-	CategoryID string `json:"category_id"`
-	Name       string `json:"name"`
-	SKU        string `json:"sku"`
-	Unit       string `json:"unit"`
-	Price      amount `json:"price"`
-	IsActive   bool   `json:"is_active"`
-	Stock      amount `json:"stock"`
-	MinStock   amount `json:"min_stock"`
-	Box        string `json:"box"`
-	Place      string `json:"place"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	SKU      string `json:"sku"`
+	Unit     string `json:"unit"`
+	Price    amount `json:"price"`
+	IsActive bool   `json:"is_active"`
+	Stock    amount `json:"stock"`
+	MinStock amount `json:"min_stock"`
+	Box      string `json:"box"`
+	Place    string `json:"place"`
 }
 
 // delReason — тело DELETE мягкого удаления (soft-delete-catalog DS-020, DS-028).
@@ -95,9 +93,17 @@ func (s *CatalogLiveSuite) newCategory(b *testutil.Browser, kind, name string) c
 	return c
 }
 
-func productBody(categoryID string, patch map[string]any) map[string]any {
+// newService — услуга в категории напрямую SQL (категории есть только у услуг).
+func (s *CatalogLiveSuite) newService(categoryID, name string) string {
+	var id string
+	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
+		`INSERT INTO services (category_id, name) VALUES ($1::uuid, $2) RETURNING id`, categoryID, name).Scan(&id))
+	return id
+}
+
+func productBody(patch map[string]any) map[string]any {
 	m := map[string]any{
-		"category_id": categoryID, "name": "Фильтр масляный", "sku": "F-001", "unit": "шт",
+		"name": "Фильтр масляный", "sku": "F-001", "unit": "шт",
 		"price": 199.9, "stock": 5, "min_stock": 2, "box": "К-07", "place": "Стеллаж A",
 	}
 	for k, v := range patch {
@@ -106,8 +112,8 @@ func productBody(categoryID string, patch map[string]any) map[string]any {
 	return m
 }
 
-func (s *CatalogLiveSuite) newProduct(b *testutil.Browser, categoryID string, patch map[string]any) productDTO {
-	st, raw := b.Do(http.MethodPost, "/api/v1/products", productBody(categoryID, patch))
+func (s *CatalogLiveSuite) newProduct(b *testutil.Browser, patch map[string]any) productDTO {
+	st, raw := b.Do(http.MethodPost, "/api/v1/products", productBody(patch))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var p productDTO
 	s.Require().NoError(json.Unmarshal(raw, &p))
@@ -116,7 +122,7 @@ func (s *CatalogLiveSuite) newProduct(b *testutil.Browser, categoryID string, pa
 
 func productPutBody(p productDTO, patch map[string]any) map[string]any {
 	m := map[string]any{
-		"category_id": p.CategoryID, "name": p.Name, "sku": p.SKU, "unit": p.Unit,
+		"name": p.Name, "sku": p.SKU, "unit": p.Unit,
 		"price": p.Price, "stock": p.Stock, "min_stock": p.MinStock, "box": p.Box, "place": p.Place,
 		"is_active": p.IsActive,
 	}
@@ -129,13 +135,14 @@ func productPutBody(p productDTO, patch map[string]any) map[string]any {
 // ---- happy path: категории + товары CRUD ----
 
 func (s *CatalogLiveSuite) TestCategoryProductCreateGetList() {
-	cat := s.newCategory(s.admin, "product", "  Расходники  ")
+	cat := s.newCategory(s.admin, "service", "  Расходники  ")
 	s.Equal("Расходники", cat.Name)
+	s.Equal("service", cat.Kind)
 	s.True(cat.IsActive)
 	s.Equal(0, cat.ItemCount)
 
-	p := s.newProduct(s.admin, cat.ID, nil)
-	s.Equal("Фильтр масляный", p.Name)
+	p := s.newProduct(s.admin, map[string]any{"name": "Фильтр масляный CPG-1"})
+	s.Equal("Фильтр масляный CPG-1", p.Name)
 	s.Equal("199.90", p.Price.String())
 	s.True(p.IsActive)
 
@@ -143,9 +150,9 @@ func (s *CatalogLiveSuite) TestCategoryProductCreateGetList() {
 	s.Equal(http.StatusOK, st)
 	s.Contains(string(raw), `"sku":"F-001"`)
 
-	// category_id сужает поиск — БД общая на весь suite, другие тесты тоже заводят товары
+	// уникальное имя сужает поиск — БД общая на весь suite, другие тесты тоже заводят товары
 	// с дефолтным именем "Фильтр масляный" (productBody).
-	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?category_id="+cat.ID+"&q=фильтр", nil)
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?q="+url.QueryEscape("cpg-1"), nil)
 	s.Equal(http.StatusOK, st)
 	var list struct {
 		Items  []productDTO `json:"items"`
@@ -157,31 +164,33 @@ func (s *CatalogLiveSuite) TestCategoryProductCreateGetList() {
 	s.Equal(1, list.Total)
 	s.Equal(50, list.Limit, "лимит по умолчанию для списка товаров — 50 (task.md §API)")
 
+	s.newService(cat.ID, "Услуга CPG-1")
 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+cat.ID, nil)
 	s.Equal(http.StatusOK, st)
 	var got categoryDTO
 	s.Require().NoError(json.Unmarshal(raw, &got))
-	s.Equal(1, got.ItemCount, "категория теперь используется одним товаром")
+	s.Equal(1, got.ItemCount, "категория теперь используется одной услугой")
 }
 
 // ---- D16: дубль имени категории без учёта регистра/пробелов → 409 ----
 
 func (s *CatalogLiveSuite) TestCategory_DuplicateName409() {
-	s.newCategory(s.admin, "product", "Крепёж")
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "product", "name": "  КРЕПЁЖ  "})
+	s.newCategory(s.admin, "service", "Крепёж")
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "service", "name": "  КРЕПЁЖ  "})
 	s.Equal(http.StatusConflict, st, string(raw))
 	s.Equal("CATEGORY_NAME_TAKEN", s.errOf(raw).Code)
 
-	// разные виды (kind) с тем же именем — не конфликт.
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "service", "name": "Крепёж"})
-	s.Equal(http.StatusCreated, st, string(raw))
+	// категорий товаров больше нет: kind=product → 400 kind invalid.
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "product", "name": "Крепёж товары"})
+	s.Equal(http.StatusBadRequest, st, string(raw))
+	s.Equal("invalid", s.fields(raw)["kind"])
 }
 
 // ---- рename конфликтует с существующей категорией того же вида ----
 
 func (s *CatalogLiveSuite) TestCategory_RenameConflict() {
-	a := s.newCategory(s.admin, "product", "Электрика")
-	b := s.newCategory(s.admin, "product", "Сантехника")
+	a := s.newCategory(s.admin, "service", "Электрика")
+	b := s.newCategory(s.admin, "service", "Сантехника")
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/catalog-categories/"+b.ID, map[string]any{"name": "электрика"})
 	s.Equal(http.StatusConflict, st, string(raw))
 	s.Equal("CATEGORY_NAME_TAKEN", s.errOf(raw).Code)
@@ -190,14 +199,14 @@ func (s *CatalogLiveSuite) TestCategory_RenameConflict() {
 	s.Require().Equal(http.StatusOK, st, string(raw))
 }
 
-// ---- архив категории (as-is) и мягкое удаление категории с товаром: отказ CATEGORY_IN_USE
-// снят (soft-delete-catalog DS-014) — 200 с телом, товар остаётся действующим ----
+// ---- архив категории (as-is) и мягкое удаление категории с услугой: отказ CATEGORY_IN_USE
+// снят (soft-delete-catalog DS-014) — 200 с телом, услуга остаётся действующей ----
 
 func (s *CatalogLiveSuite) TestCategory_ArchiveRestore_UsedDeletes200() {
-	used := s.newCategory(s.admin, "product", "Используемая")
-	p := s.newProduct(s.admin, used.ID, nil)
+	used := s.newCategory(s.admin, "service", "Используемая")
+	svcID := s.newService(used.ID, "Услуга используемой категории")
 
-	st, raw := s.admin.Do(http.MethodPost, "/catalog/categories/"+used.ID+"/archive", url.Values{"kind": {"product"}})
+	st, raw := s.admin.Do(http.MethodPost, "/catalog/categories/"+used.ID+"/archive", url.Values{"kind": {"service"}})
 	_ = raw
 	s.Equal(http.StatusSeeOther, st)
 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+used.ID, nil)
@@ -211,11 +220,11 @@ func (s *CatalogLiveSuite) TestCategory_ArchiveRestore_UsedDeletes200() {
 	s.Contains(string(raw), `"deleted_at"`)
 	st, _ = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+used.ID, nil)
 	s.Equal(http.StatusNotFound, st, "удалённая категория для обычных адресов не существует")
-	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products/"+p.ID, nil)
-	s.Require().Equal(http.StatusOK, st, "товар удалённой категории остаётся действующим: %s", raw)
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/services/"+svcID, nil)
+	s.Require().Equal(http.StatusOK, st, "услуга удалённой категории остаётся действующей: %s", raw)
 	s.Contains(string(raw), `"category_is_deleted":true`)
 
-	free := s.newCategory(s.admin, "product", "Свободная")
+	free := s.newCategory(s.admin, "service", "Свободная")
 	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/catalog-categories/"+free.ID, delReason)
 	s.Equal(http.StatusOK, st, string(raw))
 }
@@ -226,8 +235,7 @@ func (s *CatalogLiveSuite) TestCategory_ArchiveRestore_UsedDeletes200() {
 // остатком не удаляется (DS-021, отдельные тесты). ----
 
 func (s *CatalogLiveSuite) TestProduct_UsedInKit_ArchiveAndDelete200() {
-	cat := s.newCategory(s.admin, "product", "Для комплекта")
-	used := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "USED-1", "stock": 0})
+	used := s.newProduct(s.admin, map[string]any{"sku": "USED-1", "stock": 0})
 
 	svcCat := s.newCategory(s.admin, "service", "Услуги для теста")
 	var serviceID string
@@ -247,7 +255,7 @@ func (s *CatalogLiveSuite) TestProduct_UsedInKit_ArchiveAndDelete200() {
 		`SELECT count(*) FROM service_products WHERE product_id = $1::uuid`, used.ID).Scan(&kept))
 	s.Equal(1, kept, "строка комплекта остаётся при удалении товара")
 
-	free := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "FREE-1", "stock": 0})
+	free := s.newProduct(s.admin, map[string]any{"sku": "FREE-1", "stock": 0})
 	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/products/"+free.ID, delReason)
 	s.Equal(http.StatusOK, st, string(raw))
 }
@@ -256,8 +264,7 @@ func (s *CatalogLiveSuite) TestProduct_UsedInKit_ArchiveAndDelete200() {
 // delta=0 → записи нет. ----
 
 func (s *CatalogLiveSuite) TestProduct_Update_StockMovementManual() {
-	cat := s.newCategory(s.admin, "product", "Учёт остатка")
-	p := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "STK-1", "stock": 10})
+	p := s.newProduct(s.admin, map[string]any{"sku": "STK-1", "stock": 10})
 
 	var adminID string
 	s.Require().NoError(s.Pool.QueryRow(s.T().Context(), `SELECT id FROM users WHERE login = 'catalog4-admin'`).Scan(&adminID))
@@ -294,16 +301,15 @@ func (s *CatalogLiveSuite) TestValidation_GarbageNot500() {
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal(map[string]string{"kind": "invalid", "name": "required"}, s.fields(raw))
 
-	cat := s.newCategory(s.admin, "product", "Валидация")
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{"category_id": cat.ID})
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{"sku": "VAL-0"})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("required", s.fields(raw)["name"])
 
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, map[string]any{"price": -5}))
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(map[string]any{"price": -5}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("invalid", s.fields(raw)["price"])
 
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, map[string]any{"unit": "тонна"}))
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(map[string]any{"unit": "тонна"}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("invalid", s.fields(raw)["unit"])
 
@@ -312,10 +318,10 @@ func (s *CatalogLiveSuite) TestValidation_GarbageNot500() {
 		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
 	}
 
-	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?limit=-5&offset=-1&category_id=not-a-uuid", nil)
+	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?limit=-5&offset=-1", nil)
 	s.Equal(http.StatusOK, st, string(raw))
 
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, map[string]any{"name": "Тип\u0000"}))
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(map[string]any{"name": "Тип\u0000"}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("invalid_text", s.fields(raw)["name"])
 }
@@ -323,8 +329,6 @@ func (s *CatalogLiveSuite) TestValidation_GarbageNot500() {
 // ---- code review Блокер 1: границы NUMERIC(12,2)/(12,3) → 400 по своему полю, не 500 ----
 
 func (s *CatalogLiveSuite) TestProduct_NumericBoundaries400() {
-	cat := s.newCategory(s.admin, "product", "Границы NUMERIC")
-
 	for _, tc := range []struct {
 		name    string
 		patch   map[string]any
@@ -338,7 +342,7 @@ func (s *CatalogLiveSuite) TestProduct_NumericBoundaries400() {
 		{"min_stock 1000000000 — переполнение", map[string]any{"min_stock": 1000000000}, "min_stock", "too_large"},
 		{"stock 0.0004 — лишняя точность", map[string]any{"stock": 0.0004}, "stock", "too_precise"},
 	} {
-		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, tc.patch))
+		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", productBody(tc.patch))
 		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
 		s.NotEqual(http.StatusInternalServerError, st, "%s → 500 недопустим", tc.name)
 		s.Equal(tc.message, s.fields(raw)[tc.field], "%s → %s", tc.name, raw)
@@ -353,12 +357,11 @@ func (s *CatalogLiveSuite) TestProduct_NumericBoundaries400() {
 		field string
 		body  string
 	}{
-		{"цена 1e10 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e10,"stock":0,"min_stock":0,"box":"","place":""}`},
-		{"цена 1e5 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e5,"stock":0,"min_stock":0,"box":"","place":""}`},
-		{"stock 1e10 — экспонента", "stock", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":0,"stock":1e10,"min_stock":0,"box":"","place":""}`},
+		{"цена 1e10 — экспонента", "price", `{"name":"Тип","sku":"","unit":"","price":1e10,"stock":0,"min_stock":0,"box":"","place":""}`},
+		{"цена 1e5 — экспонента", "price", `{"name":"Тип","sku":"","unit":"","price":1e5,"stock":0,"min_stock":0,"box":"","place":""}`},
+		{"stock 1e10 — экспонента", "stock", `{"name":"Тип","sku":"","unit":"","price":0,"stock":1e10,"min_stock":0,"box":"","place":""}`},
 	} {
-		body := fmt.Sprintf(tc.body, cat.ID)
-		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", body)
+		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", tc.body)
 		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
 		s.NotEqual(http.StatusInternalServerError, st, "%s → 500 недопустим", tc.name)
 		s.Equal("invalid_format", s.fields(raw)[tc.field], "%s → %s", tc.name, raw)
@@ -370,8 +373,7 @@ func (s *CatalogLiveSuite) TestProduct_NumericBoundaries400() {
 // (9 целых цифр) → 400 по полю "stock", не 500. ----
 
 func (s *CatalogLiveSuite) TestProduct_StockDeltaOverflow400() {
-	cat := s.newCategory(s.admin, "product", "Переполнение дельты остатка")
-	p := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "DELTA-1", "stock": -600000000})
+	p := s.newProduct(s.admin, map[string]any{"sku": "DELTA-1", "stock": -600000000})
 
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, productPutBody(p, map[string]any{"stock": 600000000}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
@@ -393,25 +395,12 @@ func (s *CatalogLiveSuite) TestBadOrMissingID_404() {
 	}
 }
 
-// ---- невалидная категория (не существует / не тот kind) → 400, не 500/404 ----
-
-func (s *CatalogLiveSuite) TestProduct_InvalidCategory400() {
-	svcCat := s.newCategory(s.admin, "service", "Услуги, не товары")
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", productBody(svcCat.ID, nil))
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("invalid", s.fields(raw)["category_id"])
-
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody("00000000-0000-0000-0000-000000000000", nil))
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("invalid", s.fields(raw)["category_id"])
-}
-
 // ---- D19: исполнитель читает только активные, мутации 403; аноним 401 ----
 
 func (s *CatalogLiveSuite) TestAuthz_ExecutorReadOnlyActive_MutationsForbidden_AnonUnauthorized() {
-	cat := s.newCategory(s.admin, "product", "Права")
-	active := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "ACT-1"})
-	archived := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "ARC-1"})
+	cat := s.newCategory(s.admin, "service", "Права")
+	active := s.newProduct(s.admin, map[string]any{"sku": "ACT-1"})
+	archived := s.newProduct(s.admin, map[string]any{"sku": "ARC-1"})
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+archived.ID, productPutBody(archived, map[string]any{"is_active": false}))
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
@@ -450,8 +439,7 @@ func (s *CatalogLiveSuite) TestAuthz_ExecutorReadOnlyActive_MutationsForbidden_A
 // ---- CSRF: мутация без корректного токена → 403 ----
 
 func (s *CatalogLiveSuite) TestCSRF_MissingToken403() {
-	cat := s.newCategory(s.admin, "product", "CSRF")
-	resp := s.admin.Request(http.MethodPost, "/api/v1/products", productBody(cat.ID, nil), map[string]string{"X-Csrf-Token": ""})
+	resp := s.admin.Request(http.MethodPost, "/api/v1/products", productBody(nil), map[string]string{"X-Csrf-Token": ""})
 	defer resp.Body.Close()
 	s.Equal(http.StatusForbidden, resp.StatusCode)
 }
@@ -477,8 +465,7 @@ func (s *CatalogLiveSuite) TestSSR_RootRedirect_ProductFormFlow() {
 	s.Equal(http.StatusOK, st)
 	s.Contains(string(page), `data-testid="catalog-tab-products"`)
 
-	cat := s.newCategory(s.admin, "product", "SSR категория")
-	form := url.Values{"category_id": {cat.ID}, "name": {"SSR Товар"}, "sku": {"SSR-1"}, "unit": {"шт"}, "price": {"10"},
+	form := url.Values{"name": {"SSR Товар"}, "sku": {"SSR-1"}, "unit": {"шт"}, "price": {"10"},
 		"stock": {"1"}, "min_stock": {"0"}, "box": {"SSR-К"}, "place": {"SSR-полка"}}
 	resp = s.admin.Request(http.MethodPost, "/catalog/products", form, nil)
 	resp.Body.Close()
@@ -487,7 +474,7 @@ func (s *CatalogLiveSuite) TestSSR_RootRedirect_ProductFormFlow() {
 
 	var stock, box, place string
 	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
-		`SELECT stock::text, box, place FROM products WHERE sku = 'SSR-1' AND category_id = $1::uuid`, cat.ID).Scan(&stock, &box, &place))
+		`SELECT stock::text, box, place FROM products WHERE sku = 'SSR-1'`).Scan(&stock, &box, &place))
 	s.Equal("1.000", stock)
 	s.Equal("SSR-К", box)
 	s.Equal("SSR-полка", place)
@@ -498,8 +485,7 @@ func (s *CatalogLiveSuite) TestSSR_RootRedirect_ProductFormFlow() {
 // min_stock < 0 и старый формат stocks[] → 400; SSR-форма — одиночные поля. ----
 
 func (s *CatalogLiveSuite) TestProduct_SingleStock() {
-	cat := s.newCategory(s.admin, "product", "Единый остаток")
-	p := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "ONE-1", "stock": 10, "min_stock": 2, "box": "Б-9", "place": "Полка-единая"})
+	p := s.newProduct(s.admin, map[string]any{"sku": "ONE-1", "stock": 10, "min_stock": 2, "box": "Б-9", "place": "Полка-единая"})
 	s.Equal("10.000", p.Stock.String())
 	s.Equal("2.000", p.MinStock.String())
 	s.Equal("Б-9", p.Box)
@@ -514,14 +500,16 @@ func (s *CatalogLiveSuite) TestProduct_SingleStock() {
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var resp map[string]any
 	s.Require().NoError(json.Unmarshal(raw, &resp))
-	for _, k := range []string{"stock", "min_stock", "box", "place", "category_is_deleted", "created_at", "updated_at"} {
+	for _, k := range []string{"stock", "min_stock", "box", "place", "created_at", "updated_at"} {
 		s.Contains(resp, k)
 	}
+	s.NotContains(resp, "category_id", "у товара больше нет категории")
+	s.NotContains(resp, "category_is_deleted")
 	s.NotContains(resp, "stocks")
 	s.NotContains(resp, "total_stock")
 
 	for _, q := range []string{"Б-9", "Полка-единая"} {
-		st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?category_id="+cat.ID+"&q="+url.QueryEscape(q), nil)
+		st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?q="+url.QueryEscape(q), nil)
 		s.Require().Equal(http.StatusOK, st, string(raw))
 		s.Contains(string(raw), p.ID, "поиск q=%s", q)
 	}
@@ -543,7 +531,7 @@ func (s *CatalogLiveSuite) TestProduct_SingleStock() {
 	s.Contains(s.fields(raw), "min_stock")
 
 	// старый формат stocks[] — неизвестное поле, строгий JSON → 400.
-	body := productBody(cat.ID, map[string]any{"sku": "ONE-2"})
+	body := productBody(map[string]any{"sku": "ONE-2"})
 	body["stocks"] = []map[string]any{{"stock": 1}}
 	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", body)
 	s.Equal(http.StatusBadRequest, st, string(raw))

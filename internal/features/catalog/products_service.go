@@ -22,8 +22,6 @@ var (
 	// ErrProductHasStock — товар с ненулевым остатком не удаляется (DS-021).
 	ErrProductHasStock = errorspkg.New("PRODUCT_HAS_STOCK", http.StatusConflict,
 		"У товара есть остаток на складе — сначала спишите его")
-	// errProductCategoryInvalid из репозитория маппится в 400 (поле category_id) —
-	// отдельного AppError-кода не заводим, категория — обычная валидация формы.
 )
 
 type ProductService struct {
@@ -35,7 +33,6 @@ func NewProductService(pool *pgxpool.Pool) *ProductService {
 }
 
 type ProductListQuery struct {
-	CategoryID      string
 	Q               string
 	IncludeArchived bool
 	Limit, Offset   int
@@ -54,16 +51,12 @@ func (s *ProductService) List(ctx context.Context, q ProductListQuery, isAdmin b
 	offset = max(offset, 0)
 	includeArchived := q.IncludeArchived && isAdmin
 
-	categoryID := q.CategoryID
-	if categoryID != "" && uuid.Validate(categoryID) != nil {
-		categoryID = "" // мусор в category_id — как без фильтра, не 500/404
-	}
 	query := strings.TrimSpace(q.Q)
 	if sqlutil.HasInvalidText(query) {
 		query = ""
 	}
 	items, total, err := s.repo.List(ctx, ProductListParams{
-		CategoryID: categoryID, Q: query, IncludeArchived: includeArchived, Limit: limit, Offset: offset,
+		Q: query, IncludeArchived: includeArchived, Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return nil, err
@@ -101,10 +94,6 @@ func (s *ProductService) Create(ctx context.Context, in ProductInput) (*ProductR
 	}
 	p, err := s.repo.Create(ctx, in)
 	switch {
-	case errors.Is(err, errProductCategoryInvalid):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgInvalid})
-	case errors.Is(err, errCategoryDeleted):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgNotFound})
 	case errors.Is(err, errAmountOutOfRange):
 		return nil, ErrAmountOutOfRange
 	case err != nil:
@@ -127,10 +116,6 @@ func (s *ProductService) Update(ctx context.Context, id, userID string, in Produ
 	switch {
 	case errors.Is(err, ErrProductNotFound):
 		return nil, ErrProductNotFoundErr
-	case errors.Is(err, errProductCategoryInvalid):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgInvalid})
-	case errors.Is(err, errCategoryDeleted):
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgNotFound})
 	case errors.Is(err, errStockDeltaOutOfRange):
 		return nil, errorspkg.Validation(errorspkg.Field{Name: "stock", Message: msgTooLarge})
 	case errors.Is(err, errAmountOutOfRange):
@@ -168,8 +153,8 @@ func (s *ProductService) toResponses(_ context.Context, items []Product) ([]Prod
 
 func toProductResponse(p Product) ProductResponse {
 	return ProductResponse{
-		ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
-		Price: Amount(p.Price), IsActive: p.IsActive, CategoryIsDeleted: p.CategoryIsDeleted,
+		ID: p.ID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
+		Price: Amount(p.Price), IsActive: p.IsActive,
 		Stock: Amount(p.Stock), MinStock: Amount(p.MinStock), Box: p.Box, Place: p.Place,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}

@@ -16,7 +16,7 @@ type ProductHandler struct {
 
 func NewProductHandler(svc *ProductService) *ProductHandler { return &ProductHandler{svc: svc} }
 
-// List — GET /api/v1/products?category_id=&q=&include_archived=&limit=&offset=.
+// List — GET /api/v1/products?q=&include_archived=&limit=&offset=.
 func (h *ProductHandler) List(c fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	offset, _ := strconv.Atoi(c.Query("offset"))
@@ -26,7 +26,7 @@ func (h *ProductHandler) List(c fiber.Ctx) error {
 		isAdmin = p.IsAdmin()
 	}
 	resp, err := h.svc.List(c.Context(), ProductListQuery{
-		CategoryID: c.Query("category_id"), Q: c.Query("q"), IncludeArchived: includeArchived, Limit: limit, Offset: offset,
+		Q: c.Query("q"), IncludeArchived: includeArchived, Limit: limit, Offset: offset,
 	}, isAdmin)
 	if err != nil {
 		return err
@@ -45,7 +45,7 @@ func (h *ProductHandler) Get(c fiber.Ctx) error {
 
 func inputFromCreate(req ProductCreateRequest) ProductInput {
 	return ProductInput{
-		CategoryID: req.CategoryID, Name: req.Name, SKU: req.SKU, Unit: req.Unit,
+		Name: req.Name, SKU: req.SKU, Unit: req.Unit,
 		Price: req.Price.String(), Stock: req.Stock.String(), MinStock: req.MinStock.String(),
 		Box: req.Box, Place: req.Place,
 	}
@@ -79,7 +79,7 @@ func (h *ProductHandler) Update(c fiber.Ctx) error {
 		userID = p.ID
 	}
 	in := ProductInput{
-		CategoryID: req.CategoryID, Name: req.Name, SKU: req.SKU, Unit: req.Unit,
+		Name: req.Name, SKU: req.SKU, Unit: req.Unit,
 		Price: req.Price.String(), Stock: req.Stock.String(), MinStock: req.MinStock.String(),
 		Box: req.Box, Place: req.Place, IsActive: *req.IsActive,
 	}

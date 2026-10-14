@@ -4,23 +4,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
 func validProductInput() ProductInput {
 	return ProductInput{
-		CategoryID: uuid.Must(uuid.NewV7()).String(), Name: "Фильтр масляный", SKU: "F-001",
+		Name: "Фильтр масляный", SKU: "F-001",
 		Unit: "шт", Price: "199.90", Stock: "5", MinStock: "2", Box: "К-07", Place: "Стеллаж A",
 	}
 }
 
 func TestProductInput_Normalize(t *testing.T) {
 	in := ProductInput{
-		CategoryID: "  id  ", Name: "  Фильтр  ", SKU: " F1 ", Unit: " шт ",
+		Name: "  Фильтр  ", SKU: " F1 ", Unit: " шт ",
 		Price: "  ", Stock: " 5 ", MinStock: "", Box: " К1 ", Place: " Полка ",
 	}.normalize()
-	assert.Equal(t, "id", in.CategoryID)
 	assert.Equal(t, "Фильтр", in.Name)
 	assert.Equal(t, "F1", in.SKU)
 	assert.Equal(t, "шт", in.Unit)
@@ -33,16 +31,6 @@ func TestProductInput_Normalize(t *testing.T) {
 
 func TestProductInput_Validate_HappyPath(t *testing.T) {
 	assert.Empty(t, fieldsOf(validProductInput().normalize().validate()))
-}
-
-func TestProductInput_Validate_CategoryID(t *testing.T) {
-	in := validProductInput()
-	in.CategoryID = ""
-	assert.Equal(t, map[string]string{"category_id": msgRequired}, fieldsOf(in.normalize().validate()))
-
-	in = validProductInput()
-	in.CategoryID = "not-a-uuid"
-	assert.Equal(t, map[string]string{"category_id": msgInvalid}, fieldsOf(in.normalize().validate()))
 }
 
 func TestProductInput_Validate_Name(t *testing.T) {

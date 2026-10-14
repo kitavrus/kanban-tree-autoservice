@@ -1,16 +1,13 @@
 import { test, expect } from '../fixtures/board';
 import { CatalogPage } from '../pages/CatalogPage';
 import { DeletedPage } from '../pages/DeletedPage';
-import { EquipmentPage } from '../pages/EquipmentPage';
-import { EquipmentTypesPage } from '../pages/EquipmentTypesPage';
 import { StockPage } from '../pages/StockPage';
 
-// Мягкое удаление — каталог (товары, услуги, категории) и типы оборудования
+// Мягкое удаление — каталог (товары, услуги, категории услуг)
 // (docs/features/soft-delete-catalog/draft-spec.md §8.1–§8.3, §11): удаление с причиной рядом с
-// архивом, вкладки «Товары», «Услуги», «Категории», «Типы оборудования» раздела «Удалённые»,
-// свободное название удалённой категории и отказ восстановления при занятом (TS-044), остаток
-// удалённого товара в отчёте «Остатки» (TS-054) и только его списание (TS-063), тип оборудования
-// с единицами (TS-061).
+// архивом, вкладки «Товары», «Услуги», «Категории» раздела «Удалённые», свободное название
+// удалённой категории и отказ восстановления при занятом (TS-044), остаток удалённого товара в
+// отчёте «Остатки» (TS-054) и только его списание (TS-063). Типов оборудования больше нет.
 // Удаление товара и услуги, стоящих в заказе, и бейджи в карточке заказа — BD-019a / BD-019b
 // (board-guards.spec.ts); окно «Удаление» без причины — CT-005, ET-003. Адаптив и темы раздела
 // «Удалённые» и окна удаления — SD-007 / SD-008 (soft-delete-core.spec.ts).
@@ -22,7 +19,7 @@ test.use({ colorScheme: 'light' });
 const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
 const TOAST_DELETED = 'Удалено. Восстановить можно в разделе «Удалённые»';
 
-test.describe('SDCT: мягкое удаление каталога и типов оборудования', () => {
+test.describe('SDCT: мягкое удаление каталога', () => {
   test('SDCT-001 (TS-044): категория удаляется с причиной → её товар остаётся с бейджем «категория удалена»; новая категория с тем же названием создаётся; «Восстановить» старую → «Название занято — переименуйте действующую запись», строка остаётся; после переименования новой — «Восстановлено»; архивный товар после удаления и восстановления остаётся в архиве (бейдж «в архиве», «Запись вернётся в архив»); негатив: товар с остатком — «У товара есть остаток на складе — сначала спишите его», товар не удалён', async ({
     adminPage: page,
     adminApi,
@@ -31,43 +28,44 @@ test.describe('SDCT: мягкое удаление каталога и типо�
     catalogCleanup,
   }) => {
     const catName = uniq('SDCT-001 расходники');
-    const category = await adminApi.createCategory({ kind: 'product', name: catName });
-    const keepCatName = uniq('SDCT-001 запчасти');
-    const keepCat = await adminApi.createCategory({ kind: 'product', name: keepCatName });
-    const inCatName = uniq('SDCT-001 товар категории');
-    const inCat = await adminApi.createProduct({ category_id: category.id, name: inCatName });
+    const category = await adminApi.createCategory({ kind: 'service', name: catName });
+    const inCatName = uniq('SDCT-001 услуга категории');
+    const inCat = await adminApi.createService({ category_id: category.id, name: inCatName });
     const archivedName = uniq('SDCT-001 архивный товар');
-    const archived = await adminApi.createProduct({ category_id: keepCat.id, name: archivedName });
+    const archivedSku = uniq('SDCT-001-SKU');
+    const archived = await adminApi.createProduct({ name: archivedName, sku: archivedSku });
     const stockName = uniq('SDCT-001 товар с остатком');
-    const withStock = await adminApi.createProduct({ category_id: keepCat.id, name: stockName, stock: 3 });
+    const withStock = await adminApi.createProduct({ name: stockName, stock: 3 });
     allowHttpErrors((url, status) => url.endsWith(`/api/v1/catalog-categories/${category.id}/restore`) && status === 409);
     allowHttpErrors((url, status) => url.endsWith(`/catalog/products/${withStock.id}/delete`) && status === 409);
 
-    // ---- §8.1: удаление категории из панели — окно с пояснением про товары и услуги ----
+    // ---- §8.1: удаление категории из панели услуг — окно с пояснением ----
+    // Категории есть только у услуг: панель категорий — на вкладке «Услуги».
     const catalog = new CatalogPage(page);
-    await catalog.gotoProductsByName(inCatName);
-    await expect(catalog.categoryDeletedBadge(inCatName)).toHaveCount(0);
+    await catalog.gotoServicesByName(inCatName);
+    await expect(catalog.serviceRow(inCatName).getByTestId('category-deleted-badge')).toHaveCount(0);
     await catalog.categoryDelete(catName).click();
     await expect(catalog.deleteDialogTitle).toHaveText(`Удалить «${catName}»?`);
-    await expect(catalog.deleteDialogText).toHaveText('Товары и услуги категории останутся в каталоге с пометкой «категория удалена»');
+    await expect(catalog.deleteDialogText).toHaveText('Услуги категории останутся в каталоге с пометкой «категория удалена»');
     const catReason = uniq('SDCT-001 категория не нужна');
     await catalog.deleteReason.fill(catReason);
     await catalog.deleteDialogOk.click();
-    await expect(page).toHaveURL(/\/catalog\/products\?flash=category_deleted$/);
+    await expect(page).toHaveURL(/\/catalog\/services\?flash=category_deleted$/);
     await expect(catalog.toast).toHaveText(TOAST_DELETED);
     await expect(catalog.categoryRowById(category.id)).toHaveCount(0);
 
-    // товар удалённой категории остался в каталоге — с бейджем; в форме категория «удалена».
-    await catalog.gotoProductsByName(inCatName);
-    await expect(catalog.row(inCatName)).toBeVisible();
-    await expect(catalog.categoryDeletedBadge(inCatName)).toHaveText('категория удалена');
-    await catalog.open(inCatName);
+    // услуга удалённой категории осталась в каталоге — с бейджем; в форме категория «удалена».
+    await catalog.gotoServicesByName(inCatName);
+    await expect(catalog.serviceRow(inCatName)).toBeVisible();
+    await expect(catalog.serviceRow(inCatName).getByTestId('category-deleted-badge')).toHaveText('категория удалена');
+    await page.goto(`/catalog/services/${inCat.id}`);
+    await expect(catalog.serviceForm).toBeVisible();
     await expect(catalog.formCategoryDeletedBadge).toHaveText('удалена');
-    await expect(catalog.category).toContainText(`${catName} (удалена)`);
-    expect((await adminApi.findCatalogByName('products', inCatName))?.id).toBe(inCat.id);
+    await expect(catalog.serviceCategory).toContainText(`${catName} (удалена)`);
+    expect((await adminApi.findCatalogByName('services', inCatName))?.id).toBe(inCat.id);
 
     // ---- название удалённой категории свободно: новая с тем же названием создаётся ----
-    await catalog.gotoProducts();
+    await catalog.gotoServices();
     await catalog.addCategory(catName);
     await expect(page).toHaveURL(/flash=category_created/);
     await expect(catalog.flash).toHaveText('Категория создана');
@@ -83,10 +81,11 @@ test.describe('SDCT: мягкое удаление каталога и типо�
     await expect(del.tab('catalog-categories')).toContainText('Категории');
     await expect(del.tab('products')).toContainText('Товары');
     await expect(del.tab('services')).toContainText('Услуги');
-    await expect(del.tab('equipment-types')).toContainText('Типы оборудования');
+    // вкладки «Типы оборудования» больше нет.
+    await expect(page.getByTestId('deleted-tab-equipment-types')).toHaveCount(0);
     await expect(del.rows).toHaveCount(1);
     await expect(del.rowTitle(category.id)).toHaveText(catName);
-    await expect(del.rowSubtitle(category.id)).toHaveText('товары');
+    await expect(del.rowSubtitle(category.id)).toHaveText('услуги');
     await expect(del.rowArchived(category.id)).toHaveCount(0);
     await expect(del.rowReason(category.id)).toHaveText(catReason);
     await expect(del.rowBy(category.id)).toHaveText('Админ Прогона');
@@ -103,7 +102,7 @@ test.describe('SDCT: мягкое удаление каталога и типо�
 
     // новая переименована — старая восстанавливается.
     const renamed = uniq('SDCT-001 расходники новые');
-    await catalog.gotoProducts();
+    await catalog.gotoServices();
     await catalog.categoryRenameInput(catName).fill(renamed);
     await catalog.categoryRenameSubmit(catName).click();
     await expect(page).toHaveURL(/flash=category_saved/);
@@ -112,9 +111,9 @@ test.describe('SDCT: мягкое удаление каталога и типо�
     await expect(del.toast).toHaveText('Восстановлено');
     await expect(del.row(category.id)).toHaveCount(0);
     await expect(del.tabCount('catalog-categories')).toHaveText(String(summary.counts.catalog_categories - 1));
-    await catalog.gotoProductsByName(inCatName);
+    await catalog.gotoServicesByName(inCatName);
     await expect(catalog.categoryRowById(category.id)).toBeVisible();
-    await expect(catalog.categoryDeletedBadge(inCatName)).toHaveCount(0);
+    await expect(catalog.serviceRow(inCatName).getByTestId('category-deleted-badge')).toHaveCount(0);
 
     // ---- архив и удаление независимы: архивный товар возвращается в архив ----
     await catalog.gotoProductsByName(archivedName);
@@ -133,7 +132,7 @@ test.describe('SDCT: мягкое удаление каталога и типо�
     await del.goto(`kind=products&q=${encodeURIComponent(archivedName)}`);
     await expect(del.rows).toHaveCount(1);
     await expect(del.rowTitle(archived.id)).toHaveText(archivedName);
-    await expect(del.rowSubtitle(archived.id)).toHaveText(keepCatName);
+    await expect(del.rowSubtitle(archived.id)).toHaveText(archivedSku);
     await expect(del.rowArchived(archived.id)).toHaveText('в архиве');
     await expect(del.rowReason(archived.id)).toHaveText(productReason);
     await del.restoreBtn(archived.id).click();
@@ -165,9 +164,8 @@ test.describe('SDCT: мягкое удаление каталога и типо�
     uniq,
     insertSubtask,
   }) => {
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('SDCT-002 категория товаров') });
     const productName = uniq('SDCT-002 товар');
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: productName, stock: 2 });
+    const product = await adminApi.createProduct({ name: productName, stock: 2 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('SDCT-002 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('SDCT-002 услуга') });
     const client = await adminApi.createClient({ company_name: uniq('SDCT-002 клиент'), phones: [{ phone: '9990005402', note: '' }] });
@@ -213,72 +211,6 @@ test.describe('SDCT: мягкое удаление каталога и типо�
     }
   });
 
-  test('SDCT-003 (TS-061): тип оборудования с единицей клиента удаляется с причиной → список без типа, тост; в форме единицы и в карточке клиента у типа бейдж «удалён», в выборе типа новой единицы его нет; в «Удалённых» вкладка «Типы оборудования» — строка типа; «Восстановить» → «Восстановлено», бейдж исчезает; негатив: единица при удалении типа не удалена', async ({
-    adminPage: page,
-    adminApi,
-    uniq,
-  }) => {
-    const typeName = uniq('SDCT-003 тип');
-    const type = await adminApi.createEquipmentType({ name: typeName });
-    const client = await adminApi.createClient({ company_name: uniq('SDCT-003 клиент'), phones: [{ phone: '9990005403', note: '' }] });
-    const unit = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Raycus', model: uniq('SDCT-003 единица') });
-
-    try {
-      // §8.1: форма типа → окно «Удаление»; единица клиента удалению не мешает (DS-014).
-      const types = new EquipmentTypesPage(page);
-      await types.goto(`?q=${encodeURIComponent(typeName)}`);
-      await expect(types.rowCount(typeName)).toHaveText('1'); // счётчик единиц типа — действующие
-      await types.open(typeName);
-      const reason = uniq('SDCT-003 тип заведён по ошибке');
-      await types.confirmDelete(reason);
-      await expect(page).toHaveURL(/\/catalog\/equipment-types\?flash=deleted$/);
-      await expect(types.toast).toHaveText(TOAST_DELETED);
-      await types.goto(`?archived=1&q=${encodeURIComponent(typeName)}`);
-      await expect(types.row(typeName)).toHaveCount(0);
-
-      // §8.3: единица осталась действующей — у типа бейдж «удалён» в форме и в карточке клиента.
-      expect((await adminApi.getClient(client.id)).equipment_count, 'единица не удалена').toBe(1);
-      const eq = new EquipmentPage(page);
-      await eq.gotoEdit(unit.id);
-      await expect(page.getByTestId('type-deleted-badge')).toHaveText('удалён');
-      await expect(eq.typeButton).toContainText(`${typeName} (удалён)`);
-      await page.goto(`/clients/${client.id}`);
-      await expect(page.getByTestId('equipment-table').getByTestId('type-deleted-badge')).toHaveText('удалён');
-      // в выборе типа новой единицы удалённого типа нет.
-      await eq.gotoNew(client.id);
-      await eq.typeButton.click();
-      await expect(page.getByTestId('combobox-dropdown').getByText(typeName)).toHaveCount(0);
-      await page.keyboard.press('Escape');
-
-      // §8.2: «Удалённые» → «Типы оборудования».
-      const del = new DeletedPage(page);
-      await del.goto(`kind=equipment-types&q=${encodeURIComponent(typeName)}`);
-      await expect(del.tab('equipment-types')).toHaveClass(/active/);
-      await expect(del.rows).toHaveCount(1);
-      await expect(del.rowTitle(type.id)).toHaveText(typeName);
-      await expect(del.rowSubtitle(type.id)).toHaveCount(0);
-      await expect(del.rowArchived(type.id)).toHaveCount(0);
-      await expect(del.rowReason(type.id)).toHaveText(reason);
-      await expect(del.rowAt(type.id)).toHaveText(DATE_TIME);
-
-      await del.restoreBtn(type.id).click();
-      await expect(del.dialogText).toHaveText(`Восстановить «${typeName}»?`);
-      await del.dialogOk.click();
-      await expect(del.toast).toHaveText('Восстановлено');
-      await expect(del.row(type.id)).toHaveCount(0);
-      await expect(del.empty).toBeVisible();
-
-      // тип снова в справочнике со своей единицей; бейдж у единицы исчез.
-      await types.goto(`?q=${encodeURIComponent(typeName)}`);
-      await expect(types.rowCount(typeName)).toHaveText('1');
-      await eq.gotoEdit(unit.id);
-      await expect(eq.form).toBeVisible();
-      await expect(page.getByTestId('type-deleted-badge')).toHaveCount(0);
-    } finally {
-      await adminApi.purgeClient(client.id);
-    }
-  });
-
   test('SDCT-004 (TS-063): остаток удалённого товара — только списание: увеличение → «Товар удалён — его остаток можно только списать», окно остаётся, остаток прежний; списание части проходит; списание до нуля — строка исчезает', async ({
     adminPage: page,
     adminApi,
@@ -286,9 +218,8 @@ test.describe('SDCT: мягкое удаление каталога и типо�
     insertSubtask,
     allowHttpErrors,
   }) => {
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('SDCT-004 категория товаров') });
     const productName = uniq('SDCT-004 товар');
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: productName, stock: 4 });
+    const product = await adminApi.createProduct({ name: productName, stock: 4 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('SDCT-004 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('SDCT-004 услуга') });
     const client = await adminApi.createClient({ company_name: uniq('SDCT-004 клиент'), phones: [{ phone: '9990006304', note: '' }] });

@@ -33,9 +33,9 @@ test.describe('CT: каталог — вкладки и меню', () => {
     await expect(page).toHaveURL(/\/catalog\/products$/);
     await expect(catalog.tabProducts).toHaveClass(/active/);
 
-    await catalog.tabTypes.click();
-    await expect(page).toHaveURL(/\/catalog\/equipment-types$/);
-    await expect(catalog.tabTypes).toHaveClass(/active/);
+    // вкладки «Типы оборудования» больше нет; у товаров нет панели категорий.
+    await expect(page.getByTestId('catalog-tab-equipment-types')).toHaveCount(0);
+    await expect(catalog.categoryPanel).toHaveCount(0);
 
     await catalog.tabServices.click();
     await expect(page).toHaveURL(/\/catalog\/services$/);
@@ -43,11 +43,12 @@ test.describe('CT: каталог — вкладки и меню', () => {
 });
 
 test.describe('CT: категории', () => {
-  test('CT-002: создать категорию, дубль → ошибка, переименовать, фильтр в URL', async ({ adminPage: page, adminApi, uniq, catalogCleanup }) => {
+  test('CT-002: создать категорию услуг, дубль → ошибка, переименовать, фильтр в URL', async ({ adminPage: page, adminApi, uniq, catalogCleanup }) => {
     // дубль категории — SSR всегда 303 (флаг ошибки в query, не HTTP-статус) — сеть чистая.
+    // Панель категорий есть только у услуг (у товаров категорий нет).
     const catalog = new CatalogPage(page);
     const name = uniq('Расходники');
-    await catalog.gotoProducts();
+    await catalog.gotoServices();
 
     await catalog.addCategory(name);
     await expect(page).toHaveURL(/flash=category_created/);
@@ -89,12 +90,9 @@ test.describe('CT: товары', () => {
     // required-валидация формы (SSR /catalog/products) отвечает 422 на саму навигацию.
     allowHttpErrors((url, status) => url.endsWith('/catalog/products') && status === 422);
     const catalog = new CatalogPage(page);
-    const catName = uniq('Категория товаров');
-    await adminApi.createCategory({ kind: 'product', name: catName });
-
     const name = uniq('Фильтр масляный');
     await catalog.gotoNewProduct();
-    await catalog.fill({ categoryName: catName, name, sku: 'F-100', unit: 'шт', price: '199.9', stock: '1', minStock: '2', box: 'К-01', place: 'Стеллаж A' });
+    await catalog.fill({ name, sku: 'F-100', unit: 'шт', price: '199.9', stock: '1', minStock: '2', box: 'К-01', place: 'Стеллаж A' });
     await catalog.save.click();
 
     await expect(page).toHaveURL(/\/catalog\/products\?flash=created$/);
@@ -110,7 +108,7 @@ test.describe('CT: товары', () => {
 
     // required-валидация: пустое название.
     await catalog.gotoNewProduct();
-    await catalog.fill({ categoryName: catName, name: '' });
+    await catalog.fill({ name: '' });
     await catalog.save.click();
     await expect(catalog.fieldError('name')).toHaveText('Обязательное поле');
 
@@ -137,12 +135,10 @@ test.describe('CT: услуги', () => {
     const catalog = new CatalogPage(page);
     const svcCatName = uniq('Категория услуг');
     await adminApi.createCategory({ kind: 'service', name: svcCatName });
-    const prodCatName = uniq('Категория товаров услуги');
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: prodCatName });
     const p1 = uniq('Прокладка ГБЦ');
-    await adminApi.createProduct({ category_id: prodCat.id, name: p1 });
+    await adminApi.createProduct({ name: p1 });
     const p2 = uniq('Масло моторное');
-    await adminApi.createProduct({ category_id: prodCat.id, name: p2 });
+    await adminApi.createProduct({ name: p2 });
 
     const name = uniq('Замена двигателя');
     await catalog.gotoNewService();
@@ -186,17 +182,15 @@ test.describe('CT: удаление и архив', () => {
     allowHttpErrors,
   }) => {
     const catalog = new CatalogPage(page);
-    const prodCatName = uniq('Категория для удаления');
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: prodCatName });
     const svcCatName = uniq('Категория услуги для удаления');
     const svcCat = await adminApi.createCategory({ kind: 'service', name: svcCatName });
 
     const usedName = uniq('Товар в комплекте');
-    const used = await adminApi.createProduct({ category_id: prodCat.id, name: usedName });
+    const used = await adminApi.createProduct({ name: usedName });
     const freeName = uniq('Свободный товар');
-    const free = await adminApi.createProduct({ category_id: prodCat.id, name: freeName });
+    const free = await adminApi.createProduct({ name: freeName });
     const archivedName = uniq('Товар для архива');
-    await adminApi.createProduct({ category_id: prodCat.id, name: archivedName });
+    await adminApi.createProduct({ name: archivedName });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('Услуга с комплектом'), products: [{ product_id: used.id, qty: 1 }] });
     // серверная форма удаления без причины отвечает 422 на саму навигацию.
     allowHttpErrors((url, status) => url.endsWith(`/catalog/products/${free.id}/delete`) && status === 422);
@@ -261,10 +255,8 @@ test.describe('CT: удаление и архив', () => {
 test.describe('CT: поиск и архив переживают reload', () => {
   test('CT-006 (товары): ?q= и «Показать архивные» сохраняются при reload', async ({ adminPage: page, adminApi, uniq }) => {
     const catalog = new CatalogPage(page);
-    const catName = uniq('Категория поиска');
-    const cat = await adminApi.createCategory({ kind: 'product', name: catName });
     const name = uniq('Товар для поиска');
-    await adminApi.createProduct({ category_id: cat.id, name });
+    await adminApi.createProduct({ name });
 
     await catalog.gotoProducts();
     await catalog.search.fill(name);
@@ -341,9 +333,7 @@ test.describe('CT: права', () => {
 // Phase 9: хардение — adaptive:min.
 test.describe('CT: адаптив и тема', () => {
   test('CT-008: 360×1280 без горизонтального overflow (товары и услуги), тёмная тема', async ({ adminPage: page, adminApi, uniq }) => {
-    const catName = uniq('Категория адаптива');
-    const cat = await adminApi.createCategory({ kind: 'product', name: catName });
-    const product = await adminApi.createProduct({ category_id: cat.id, name: uniq('Товар адаптива'), sku: 'ADPT-1' });
+    const product = await adminApi.createProduct({ name: uniq('Товар адаптива'), sku: 'ADPT-1' });
     const svcCatName = uniq('Категория адаптива услуг');
     const svcCat = await adminApi.createCategory({ kind: 'service', name: svcCatName });
     const svc = await adminApi.createService({

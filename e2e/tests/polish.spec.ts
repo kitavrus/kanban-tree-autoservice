@@ -3,6 +3,7 @@ import { BoardPage } from '../pages/BoardPage';
 import { OrderCardPage } from '../pages/OrderCardPage';
 import type { AdminApi } from '../fixtures/auth';
 import type { Page } from '@playwright/test';
+import { uniqPlate } from '../pages/NewOrderDialog';
 
 // Фаза 8 (plan.md §6, polish): сводный smoke адаптива (adaptive:min, US-1/§TD-6.6) и тем
 // (themes:both) по ВСЕМ SSR-экранам. Для каждого экрана × {360, 1280} × {light, dark}:
@@ -70,8 +71,6 @@ async function sweep(page: Page, screens: Array<{ path: string; testid: string }
 async function newClient(adminApi: AdminApi, uniq: (s: string) => string, label: string) {
   return adminApi.createClient({
     company_name: uniq(`PL клиент ${label}`),
-    address: 'г. Москва, ул. Длинная-предлинная, дом 1, строение 2, офис 345',
-    contact_name: 'Иванов Иван Иванович',
     phones: [{ phone: '9990000801', note: 'основной' }],
   });
 }
@@ -79,15 +78,8 @@ async function newClient(adminApi: AdminApi, uniq: (s: string) => string, label:
 /** Заказ с оборудованием и услугой с товаром — карточка с таблицей товаров и журналом. */
 async function richTask(adminApi: AdminApi, uniq: (s: string) => string, label: string) {
   const client = await newClient(adminApi, uniq, label);
-  const type = await adminApi.createEquipmentType({ name: uniq(`PL тип ${label}`), spec_keys: ['Мощность'] });
-  const eq = await adminApi.createEquipment(client.id, {
-    type_id: type.id,
-    brand: 'Brand',
-    model: 'Model-X',
-    serial: 'SN-0123456789ABCDEFGHIJ0123456789ABCDEFGHIJ',
-  });
-  const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq(`PL кат. товаров ${label}`) });
-  const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq(`PL товар ${label}`), price: 150, stock: 10, min_stock: 2 });
+  const eq = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+  const product = await adminApi.createProduct({ name: uniq(`PL товар ${label}`), price: 150, stock: 10, min_stock: 2 });
   const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq(`PL кат. услуг ${label}`) });
   const svc = await adminApi.createService({
     category_id: svcCat.id,
@@ -104,7 +96,7 @@ async function richTask(adminApi: AdminApi, uniq: (s: string) => string, label: 
   });
   await adminApi.addTaskEquipment(task.id, eq.id);
   await adminApi.createSubtask(task.id, svc.id);
-  return { client, type, eq, prodCat, product, svcCat, svc, task };
+  return { client, eq, product, svcCat, svc, task };
 }
 
 test.describe('PL: адаптив и темы по всем экранам', () => {
@@ -217,16 +209,6 @@ test.describe('PL: адаптив и темы по всем экранам', () 
       { path: `/catalog/products?q=${encodeURIComponent(product.name)}`, testid: 'products-table' },
       { path: '/catalog/products/new', testid: 'product-form' },
       { path: `/catalog/products/${product.id}`, testid: 'product-form' },
-    ]);
-  });
-
-  test('PL-010: типы оборудования — список, новый, редактирование, обе темы', async ({ adminPage: page, adminApi, uniq }) => {
-    test.setTimeout(90_000);
-    const type = await adminApi.createEquipmentType({ name: uniq('PL-010 тип'), spec_keys: ['Напряжение', 'Мощность'] });
-    await sweep(page, [
-      { path: `/catalog/equipment-types?q=${encodeURIComponent(type.name)}`, testid: 'types-table' },
-      { path: '/catalog/equipment-types/new', testid: 'type-form' },
-      { path: `/catalog/equipment-types/${type.id}`, testid: 'type-form' },
     ]);
   });
 

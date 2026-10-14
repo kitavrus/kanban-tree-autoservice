@@ -42,10 +42,10 @@ func (s *PrintLiveSuite) SetupSuite() {
 
 // ---- фикстуры (самодостаточные — не переиспользуют OrderCardLiveSuite: другой сьют) ----
 
-func (s *PrintLiveSuite) newClient(company, contactName, phone string) string {
+func (s *PrintLiveSuite) newClient(company, phone string) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO clients (company_name, contact_name) VALUES ($1, $2) RETURNING id`, company, contactName).Scan(&id))
+		`INSERT INTO clients (company_name) VALUES ($1) RETURNING id`, company).Scan(&id))
 	if phone != "" {
 		_, err := s.Pool.Exec(context.Background(),
 			`INSERT INTO client_phones (client_id, position, phone) VALUES ($1, 1, $2)`, id, phone)
@@ -86,18 +86,11 @@ func (s *PrintLiveSuite) markPaid(taskID, clientID, columnID string, version int
 	s.Require().Equal(http.StatusOK, st, string(raw))
 }
 
-func (s *PrintLiveSuite) newEquipmentType(name string) string {
+func (s *PrintLiveSuite) newEquipment(clientID, plate string) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO equipment_types (name) VALUES ($1 || ' ' || gen_random_uuid()) RETURNING id`, name).Scan(&id))
-	return id
-}
-
-func (s *PrintLiveSuite) newEquipment(clientID, brand, model, serial string) string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO equipment (client_id, type_id, brand, model, serial) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		clientID, s.newEquipmentType("PrintLive Type"), brand, model, serial).Scan(&id))
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, $2) RETURNING id`,
+		clientID, plate).Scan(&id))
 	return id
 }
 
@@ -129,18 +122,11 @@ func (s *PrintLiveSuite) newService(name, price string) string {
 	return id
 }
 
-func (s *PrintLiveSuite) newProductCategory() string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'PrintLive Prod ' || gen_random_uuid()) RETURNING id`).Scan(&id))
-	return id
-}
-
 func (s *PrintLiveSuite) newProduct(name, price, stock, minStock string) string {
 	var id string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO products (category_id, name, unit, price, stock, min_stock) VALUES ($1, $2, 'шт', $3::numeric, $4::numeric, $5::numeric) RETURNING id`,
-		s.newProductCategory(), name, price, stock, minStock).Scan(&id))
+		`INSERT INTO products (name, unit, price, stock, min_stock) VALUES ($1, 'шт', $2::numeric, $3::numeric, $4::numeric) RETURNING id`,
+		name, price, stock, minStock).Scan(&id))
 	return id
 }
 
@@ -191,10 +177,10 @@ func (s *PrintLiveSuite) addProduct(subtaskID, productID string, qty float64) {
 // и executor (D19), не только admin. ----
 
 func (s *PrintLiveSuite) TestPrintLiveSuite_Intake_FullContent() {
-	c := s.newClient("Клиент-Печать-Приём", "Иванов Иван", "8 900 000-00-01")
+	c := s.newClient("Клиент-Печать-Приём", "8 900 000-00-01")
 	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col, "<b>Не включается</b>\n\nВторой абзац")
-	eqID := s.newEquipment(c, "BrandX", "ModelY", "SN-INTAKE-1")
+	eqID := s.newEquipment(c, "П123РН 777")
 	s.addEquipment(taskID, eqID)
 
 	resp := s.admin.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/intake", taskID), nil, nil)
@@ -205,11 +191,8 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Intake_FullContent() {
 	body := s.readBody(resp)
 	s.Contains(body, fmt.Sprintf("Акт приёма №%d", taskID))
 	s.Contains(body, "Клиент-Печать-Приём")
-	s.Contains(body, "Иванов Иван")
 	s.Contains(body, "8 900 000-00-01")
-	s.Contains(body, "BrandX")
-	s.Contains(body, "ModelY")
-	s.Contains(body, "SN-INTAKE-1")
+	s.Contains(body, "П123РН 777", "госномер автомобиля в акте")
 	s.Contains(body, "Полный комплект")
 	s.Contains(body, "Хорошее")
 	s.Contains(body, "&lt;b&gt;Не включается&lt;/b&gt;", "описание — серверно-экранированный HTML (ADR-006)")
@@ -230,7 +213,7 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Intake_FullContent() {
 // оплаты, подписи «Выдал»/«Получил». ----
 
 func (s *PrintLiveSuite) TestPrintLiveSuite_Handover_FullContent() {
-	c := s.newClient("Клиент-Печать-Выдача", "Петров Пётр", "8 900 000-00-02")
+	c := s.newClient("Клиент-Печать-Выдача", "8 900 000-00-02")
 	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c, col, "")
 
@@ -269,7 +252,7 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Handover_FullContent() {
 // заказ → 404; XSS в описании экранирован. ----
 
 func (s *PrintLiveSuite) TestPrintLiveSuite_EmptyFirmAndEdgeCases() {
-	c := s.newClient("Клиент-Печать-Грани", "", "")
+	c := s.newClient("Клиент-Печать-Грани", "")
 	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col, "<script>alert(1)</script>")
 

@@ -34,8 +34,7 @@ test.describe('BD: экран «Остатки»', () => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-015');
     const from = columnByName(columns, 'Приёмка'); // не списывающая — товар считается "в новых заказах" (pending)
 
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-015 категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-015 товар'), stock: 10, min_stock: 5, box: 'A1', place: 'Стеллаж 1' });
+    const product = await adminApi.createProduct({ name: uniq('BD-015 товар'), stock: 10, min_stock: 5, box: 'A1', place: 'Стеллаж 1' });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-015 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-015 услуга') });
     const task = await adminApi.createTask({ title: uniq('BD-015 заказ'), client_id: client.id, column_id: from.id });
@@ -112,8 +111,7 @@ test.describe('BD: бейдж «Остатков» живой', () => {
     const from = columnByName(columns, 'Приёмка');
     const work = columnByName(columns, 'В ремонте'); // consumes_stock=true (сид D32)
 
-    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-016 категория товаров') });
-    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-016 товар'), stock: 6, min_stock: 5 });
+    const product = await adminApi.createProduct({ name: uniq('BD-016 товар'), stock: 6, min_stock: 5 });
     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-016 категория услуг') });
     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-016 услуга') });
     const task = await adminApi.createTask({ title: uniq('BD-016 заказ'), client_id: client.id, column_id: from.id });

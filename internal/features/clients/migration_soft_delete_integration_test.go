@@ -97,13 +97,11 @@ func (s *ClientsSoftDeleteMigrationSuite) TestTS012_Migration0021_UpDown() {
 
 	// ---- данные «до» (0012): клиент с телефоном и единицей ----
 	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'csd-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, csdAdminID)
-	var clientID, typeID, unitID string
+	var clientID, unitID string
 	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO clients (company_name) VALUES ('Клиент до миграции 0013') RETURNING id`).Scan(&clientID))
 	defer s.exec(`DELETE FROM clients WHERE id = $1`, clientID)
 	s.exec(`INSERT INTO client_phones (client_id, position, phone) VALUES ($1, 0, '111')`, clientID)
-	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO equipment_types (name) VALUES ('Тип до миграции 0013') RETURNING id`).Scan(&typeID))
-	defer s.exec(`DELETE FROM equipment_types WHERE id = $1`, typeID)
-	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO equipment (client_id, type_id, model) VALUES ($1, $2, 'M-0013') RETURNING id`, clientID, typeID).Scan(&unitID))
+	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'М013ММ 77') RETURNING id`, clientID).Scan(&unitID))
 	defer s.exec(`DELETE FROM equipment WHERE id = $1`, unitID)
 
 	// ---- up → 0013 ----

@@ -147,13 +147,10 @@ func (s *BoardLiveSuite) columnID(name string) string {
 
 func (s *BoardLiveSuite) createProduct(stock, minStock string) string {
 	ctx := context.Background()
-	var categoryID string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'BoardLive ' || gen_random_uuid()) RETURNING id`).Scan(&categoryID))
 	var productID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO products (category_id, name, stock, min_stock) VALUES ($1, 'Товар', $2::numeric, $3::numeric) RETURNING id`,
-		categoryID, stock, minStock).Scan(&productID))
+		`INSERT INTO products (name, stock, min_stock) VALUES ('Товар', $1::numeric, $2::numeric) RETURNING id`,
+		stock, minStock).Scan(&productID))
 	return productID
 }
 
@@ -630,8 +627,8 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_Combination() {
 	s.Equal(0, list.Total, "новый заказ не оплачен")
 }
 
-// plan.md §Доска/§Оборудование клиента: q ищет по описанию, услуге, товару и модели/SN
-// оборудования заказа (не только по названию/клиенту/#N).
+// plan.md §Доска/§Оборудование клиента: q ищет по описанию, услуге, товару и госномеру
+// автомобиля заказа (не только по названию/клиенту/#N).
 func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 	ctx := context.Background()
 	client := s.newClient("Поиск-Клиент")
@@ -652,12 +649,10 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 	s.Require().NoError(err)
 	s.addSubtaskProduct(subID, productID, "1")
 
-	var typeID, equipmentID string
+	var equipmentID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment_types (name) VALUES ('Поиск-тип ' || gen_random_uuid()) RETURNING id`).Scan(&typeID))
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, type_id, model, serial) VALUES ($1, $2, 'Модель-RX900', 'SN-77AB12') RETURNING id`,
-		client, typeID).Scan(&equipmentID))
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'Р900ХК 177') RETURNING id`,
+		client).Scan(&equipmentID))
 	_, err = s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2)`, target.ID, equipmentID)
 	s.Require().NoError(err)
 
@@ -673,7 +668,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 		return ids
 	}
 
-	for _, q := range []string{`стучит & "греется"`, "турбины-qx7", "фильтр-zk42", "rx900", "sn-77ab"} {
+	for _, q := range []string{`стучит & "греется"`, "турбины-qx7", "фильтр-zk42", "р900хк"} {
 		ids := search(q)
 		s.Contains(ids, target.ID, "q=%q", q)
 		s.NotContains(ids, other.ID, "q=%q", q)
@@ -691,12 +686,10 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchByPlateNumber() {
 	target := s.newTask(client, s.columnID("Приёмка"))
 	other := s.newTask(client, s.columnID("Приёмка"))
 
-	var typeID, equipmentID string
+	var equipmentID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment_types (name) VALUES ('Госномер-тип ' || gen_random_uuid()) RETURNING id`).Scan(&typeID))
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, type_id, model, plate_number) VALUES ($1, $2, 'Vesta', 'Х987КМ 199') RETURNING id`,
-		client, typeID).Scan(&equipmentID))
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'Х987КМ 199') RETURNING id`,
+		client).Scan(&equipmentID))
 	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2)`, target.ID, equipmentID)
 	s.Require().NoError(err)
 

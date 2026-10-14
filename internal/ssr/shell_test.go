@@ -24,7 +24,7 @@ func TestShell_NavActive(t *testing.T) {
 		{"clients matches nested", "/clients/abc", "/clients", true},
 		{"clients exact match", "/clients", "/clients", true},
 		{"users does not match users-x", "/users-x", "/users", false},
-		{"catalog matches nested", "/catalog/equipment-types", "/catalog", true},
+		{"catalog matches nested", "/catalog/products", "/catalog", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

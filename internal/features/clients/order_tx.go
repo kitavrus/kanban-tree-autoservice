@@ -2,9 +2,7 @@ package clients
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -21,10 +19,6 @@ import (
 var (
 	// ErrOrderClientGone — клиент не существует либо мягко удалён (в т.ч. параллельно).
 	ErrOrderClientGone = errors.New("clients: client not found")
-	// ErrOrderTypeNotFound — тип оборудования не существует либо мягко удалён.
-	ErrOrderTypeNotFound = errors.New("clients: equipment type not found")
-	// ErrOrderTypeArchived — тип в архиве: новая единица только с активным типом (ADR-004).
-	ErrOrderTypeArchived = errors.New("clients: equipment type archived")
 )
 
 // PrepareClient — normalize + validate карточки клиента (правила POST /api/v1/clients).
@@ -49,29 +43,11 @@ func CreateClientTx(ctx context.Context, tx pgx.Tx, in ClientInput) (string, err
 }
 
 // CreateEquipmentTx — единица клиента в транзакции вызывающего; in — после PrepareEquipment.
-// Тип проверяется под FOR SHARE (не удалён и активен), клиент — FOR KEY SHARE (не удалён):
-// порядок блокировок «клиент → тип», как у POST /clients/:id/equipment.
+// Клиент — FOR KEY SHARE (не удалён), как у POST /clients/:id/equipment.
 func CreateEquipmentTx(ctx context.Context, tx pgx.Tx, clientID string, in EquipmentInput) (string, error) {
-	var active bool
-	err := tx.QueryRow(ctx, `SELECT is_active FROM equipment_types WHERE id = $1::uuid AND deleted_at IS NULL`, in.TypeID).Scan(&active)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", ErrOrderTypeNotFound
-	case err != nil:
-		return "", err
-	case !active:
-		return "", ErrOrderTypeArchived
-	}
-	specsJSON, err := json.Marshal(in.Specs)
-	if err != nil {
-		return "", fmt.Errorf("clients: marshal specs: %w", err)
-	}
-	id, err := insertEquipment(ctx, tx, clientID, in, specsJSON)
-	switch {
-	case errors.Is(err, errClientGone):
+	id, err := insertEquipment(ctx, tx, clientID, in)
+	if errors.Is(err, errClientGone) {
 		return "", ErrOrderClientGone
-	case errors.Is(err, errTypeGone):
-		return "", ErrOrderTypeNotFound
 	}
 	return id, err
 }
