@@ -287,9 +287,10 @@ func (s *ClientsLiveSuite) TestSSRList_TruncatedNotice() {
 	s.Contains(string(raw), "Клиентов: 1</p>")
 }
 
-// ---- LV-040 (clients API часть, authz): исполнитель читает, мутации 403; аноним 401 ----
+// ---- LV-040 (clients API часть, authz): исполнитель читает и заводит клиента, правка/
+// удаление 403; аноним 401 ----
 
-func (s *ClientsLiveSuite) TestAuthz_ExecutorReadOnly_MutationsForbidden_AnonUnauthorized() {
+func (s *ClientsLiveSuite) TestAuthz_ExecutorReadsCreates_EditDeleteForbidden_AnonUnauthorized() {
 	c := s.newClient("Права-Клиент")
 
 	s.SeedUser("clients-exec", "password1", "Клиенты Исп", "executor", true)
@@ -301,8 +302,17 @@ func (s *ClientsLiveSuite) TestAuthz_ExecutorReadOnly_MutationsForbidden_AnonUna
 	st, _ = exec.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
 	s.Equal(http.StatusOK, st, "чтение карточки разрешено исполнителю")
 
+	// создание исполнителю разрешено: проходит гард и упирается в валидацию (не 403).
+	st, raw := exec.Do(http.MethodPost, "/api/v1/clients", map[string]any{"company_name": "x"})
+	s.Equal(http.StatusBadRequest, st, string(raw))
+	s.Equal("required", s.fields(raw)["phones"])
+	st, created, raw := s.create(exec, map[string]any{
+		"company_name": "Права-Клиент Исполнителя", "phones": []map[string]any{{"phone": "123"}},
+	})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	s.Equal("Права-Клиент Исполнителя", created.CompanyName)
+
 	for _, cs := range []struct{ method, path string }{
-		{http.MethodPost, "/api/v1/clients"},
 		{http.MethodPut, "/api/v1/clients/" + c.ID},
 		{http.MethodDelete, "/api/v1/clients/" + c.ID},
 	} {

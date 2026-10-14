@@ -139,7 +139,7 @@ test.describe('SH: выпадающий список с поиском (D6)', ()
     await expect(shell.dropdown.locator('.cb-group')).toHaveText(['Фильтры', 'Запчасти']);
     await expect(shell.dropdown.locator('.cb-opt')).toHaveCount(4);
 
-    const search = shell.dropdown.getByRole('textbox', { name: 'Поиск' });
+    const search = shell.dropdown.getByRole('combobox', { name: 'Поиск' });
     await search.fill('воздуш'); // только data-search
     await expect(shell.dropdown.locator('.cb-opt')).toHaveCount(1);
     await expect(shell.dropdown.locator('.cb-opt')).toContainText('Фильтр салона');
@@ -188,7 +188,7 @@ test.describe('SH: выпадающий список с поиском (D6)', ()
     // печать буквы на кнопке открывает список с этой буквой в поиске
     await btn.focus();
     await page.keyboard.press('l'); // «l» есть в подсказках FL-01, FL-02, LN-10
-    await expect(shell.dropdown.getByRole('textbox', { name: 'Поиск' })).toHaveValue('l');
+    await expect(shell.dropdown.getByRole('combobox', { name: 'Поиск' })).toHaveValue('l');
     await expect(shell.dropdown.locator('.cb-opt')).toHaveCount(3);
     await page.mouse.click(5, 5); // клик мимо закрывает
     await expect(shell.dropdown).toHaveCount(0);
@@ -208,7 +208,7 @@ test.describe('SH: выпадающий список — экранирован�
     const btn = page.getByTestId('xss-sel');
     await btn.click();
     await expect(shell.dropdown.locator('.cb-opt')).toContainText('<b>жирный</b>');
-    await shell.dropdown.getByRole('textbox', { name: 'Поиск' }).fill('img');
+    await shell.dropdown.getByRole('combobox', { name: 'Поиск' }).fill('img');
     await expect(shell.dropdown.locator('.cb-opt small')).toContainText('<img src=x');
     await expect(shell.dropdown.locator('img, b')).toHaveCount(0);
     await shell.dropdown.locator('.cb-opt').click();

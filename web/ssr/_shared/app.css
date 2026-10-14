@@ -196,6 +196,11 @@ body { background: var(--bs-body-bg); }
 .cb-opt.sel { font-weight: 600; color: var(--bs-primary); }
 .cb-opt mark { padding: 0 1px; border-radius: 2px; color: inherit; }
 .cb-empty { padding: 12px; color: var(--bs-secondary-color); text-align: center; }
+/* пункт-действие в конце списка комбобокса («+ Новый клиент») */
+.cb-opt.cb-action { color: var(--bs-primary); border-top: 1px solid var(--bs-border-color); border-radius: 0 0 4px 4px; margin-top: 2px; }
+/* автодополнение текстового поля (KT.autocomplete) — та же «выпадашка», без поля поиска */
+.ac-dd { max-height: 280px; }
+.ac-dd .cb-opt .ac-main { font-weight: 600; letter-spacing: .02em; }
 
 /* ---- страницы без сайдбара (вход, ошибки) ---- */
 .app-bare { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--space-4); position: relative; background: var(--bs-tertiary-bg); }

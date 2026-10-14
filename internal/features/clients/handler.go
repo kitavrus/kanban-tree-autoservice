@@ -41,7 +41,7 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// Create — POST /api/v1/clients (admin).
+// Create — POST /api/v1/clients (любой авторизованный: исполнитель тоже заводит клиента).
 func (h *Handler) Create(c fiber.Ctx) error {
 	var req ClientCreateRequest
 	if err := c.Bind().Body(&req); err != nil {
@@ -111,12 +111,16 @@ func (h *Handler) Restore(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// LookupEquipment — GET /api/v1/equipment?plate_number=&limit=&offset= (RequireAPI, D19: и
-// исполнителю — диалог «Новый заказ» ищет автомобиль по госномеру).
+// LookupEquipment — GET /api/v1/equipment?plate_number=&q=&client_id=&limit=&offset=
+// (RequireAPI, D19: и исполнителю — диалог «Новый заказ»: точный поиск по госномеру,
+// автодополнение по фрагменту номера, автомобили выбранного клиента).
 func (h *Handler) LookupEquipment(c fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	offset, _ := strconv.Atoi(c.Query("offset"))
-	resp, err := h.svc.LookupEquipment(c.Context(), c.Query("plate_number"), limit, offset)
+	resp, err := h.svc.LookupEquipment(c.Context(), EquipmentLookupQuery{
+		PlateNumber: c.Query("plate_number"), Q: c.Query("q"), ClientID: c.Query("client_id"),
+		Limit: limit, Offset: offset,
+	})
 	if err != nil {
 		return err
 	}

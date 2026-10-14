@@ -86,10 +86,6 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 	if !a.IsAdmin && in.IsPaid != nil && *in.IsPaid {
 		return nil, ErrPaidAdminOnly
 	}
-	// нового клиента заводит только admin — то же правило, что у POST /api/v1/clients.
-	if !a.IsAdmin && car != nil && car.newClient != nil {
-		return nil, ErrClientCreateAdminOnly
-	}
 
 	var taskID int64
 	var reconcile ReconcileResult

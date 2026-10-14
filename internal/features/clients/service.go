@@ -334,24 +334,51 @@ const (
 	lookupMaxLimit     = 50
 )
 
-// LookupEquipment — GET /api/v1/equipment?plate_number=…: точное совпадение госномера без
-// учёта регистра/пробелов/дефисов; только действующие единицы действующих клиентов. Пустой
-// госномер → 400 plate_number: required (список всего оборудования этот адрес не отдаёт).
-func (s *Service) LookupEquipment(ctx context.Context, plate string, limit, offset int) (*EquipmentLookupResponse, error) {
-	plate = NormalizePlateNumber(plate)
+// EquipmentLookupQuery — фильтры GET /api/v1/equipment (все — по AND).
+type EquipmentLookupQuery struct {
+	PlateNumber string // точное совпадение госномера (без учёта регистра/пробелов/дефисов)
+	Q           string // фрагмент госномера (подстрока, без учёта регистра/пробелов/дефисов)
+	ClientID    string // автомобили клиента
+	Limit       int
+	Offset      int
+}
+
+// LookupEquipment — GET /api/v1/equipment?plate_number=|q=|client_id=: только действующие
+// единицы действующих клиентов (диалог «Новый заказ»: точный поиск по госномеру,
+// автодополнение по фрагменту, автомобили выбранного клиента). Хотя бы один фильтр
+// обязателен (список всего оборудования этот адрес не отдаёт) → иначе 400
+// plate_number/q/client_id: required. При q — сначала совпадения с начала номера.
+func (s *Service) LookupEquipment(ctx context.Context, in EquipmentLookupQuery) (*EquipmentLookupResponse, error) {
+	plate := NormalizePlateNumber(in.PlateNumber)
+	q := NormalizePlateNumber(in.Q)
+	clientID := strings.TrimSpace(in.ClientID)
+	var fields []errorspkg.Field
 	if sqlutil.HasInvalidText(plate) {
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "plate_number", Message: msgInvalidText})
+		fields = append(fields, errorspkg.Field{Name: "plate_number", Message: msgInvalidText})
 	}
-	compact := sqlutil.PlateCompact(plate)
-	if compact == "" {
-		return nil, errorspkg.Validation(errorspkg.Field{Name: "plate_number", Message: msgRequired})
+	if sqlutil.HasInvalidText(q) {
+		fields = append(fields, errorspkg.Field{Name: "q", Message: msgInvalidText})
 	}
+	if clientID != "" && uuid.Validate(clientID) != nil {
+		fields = append(fields, errorspkg.Field{Name: "client_id", Message: msgInvalid})
+	}
+	if len(fields) > 0 {
+		return nil, errorspkg.Validation(fields...)
+	}
+	f := equipmentLookupFilter{plate: sqlutil.PlateCompact(plate), fragment: sqlutil.PlateCompact(q), clientID: clientID}
+	if f.plate == "" && f.fragment == "" && f.clientID == "" {
+		return nil, errorspkg.Validation(
+			errorspkg.Field{Name: "plate_number", Message: msgRequired},
+			errorspkg.Field{Name: "q", Message: msgRequired},
+			errorspkg.Field{Name: "client_id", Message: msgRequired},
+		)
+	}
+	limit, offset := in.Limit, max(in.Offset, 0)
 	if limit <= 0 {
 		limit = lookupDefaultLimit
 	}
 	limit = min(limit, lookupMaxLimit)
-	offset = max(offset, 0)
-	items, total, err := s.repo.LookupEquipmentByPlate(ctx, compact, limit, offset)
+	items, total, err := s.repo.LookupEquipment(ctx, f, limit, offset)
 	if err != nil {
 		return nil, err
 	}

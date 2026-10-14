@@ -7,9 +7,9 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
 )
 
-// Register — JSON API /api/v1/clients + /api/v1/equipment/:id (чтение — RequireAPI, мутации —
-// +admin; POST /clients/:id/equipment — RequireAPI без admin, D19: исполнитель создаёт
-// оборудование) + SSR-экран /clients + форма единицы оборудования /equipment/:id (только
+// Register — JSON API /api/v1/clients + /api/v1/equipment/:id (чтение — RequireAPI, правка/
+// удаление — +admin; POST /clients и POST /clients/:id/equipment — RequireAPI без admin:
+// исполнитель заводит клиента и оборудование, D19) + SSR-экран /clients + форма единицы оборудования /equipment/:id (только
 // admin, ADR-005/ADR-006). При s == nil SSR-группа не регистрируется (используется в
 // тестах, где рендерер не нужен — эталон equipmenttypes/routes.go).
 func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
@@ -19,7 +19,7 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, 
 	sdAdmin := softdelete.AdminOnly()
 	g := api.Group("/clients", a.RequireAPI())
 	g.Get("", h.List)
-	g.Post("", admin, h.Create)
+	g.Post("", h.Create) // исполнитель тоже заводит клиента (новый заказ)
 	g.Get("/:id", h.Get)
 	g.Put("/:id", admin, h.Update)
 	g.Delete("/:id", sdAdmin, h.Delete)
@@ -28,7 +28,7 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, 
 	g.Post("/:id/equipment", h.CreateEquipment) // D19: без admin-guard
 
 	e := api.Group("/equipment", a.RequireAPI())
-	e.Get("", h.LookupEquipment) // ?plate_number= — поиск автомобиля для нового заказа
+	e.Get("", h.LookupEquipment) // ?plate_number=|q=|client_id= — поиск автомобиля для нового заказа
 	e.Get("/:id", h.GetEquipment)
 	e.Get("/:id/history", h.EquipmentHistory)
 	e.Put("/:id", admin, h.UpdateEquipment)

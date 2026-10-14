@@ -566,22 +566,49 @@ func (r *Repo) TypeOptions(ctx context.Context, currentTypeID string) ([]TypeOpt
 	return out, rows.Err()
 }
 
-// LookupEquipmentByPlate — действующие единицы действующих клиентов с ТОЧНЫМ совпадением
-// госномера без учёта пробелов/дефисов (compact — sqlutil.PlateCompact, верхний регистр;
-// в БД госномер хранится нормализованным). Свежие — первыми.
-func (r *Repo) LookupEquipmentByPlate(ctx context.Context, compact string, limit, offset int) ([]EquipmentLookupItem, int, error) {
-	const where = ` FROM equipment e
+// equipmentLookupFilter — фильтры поиска автомобиля (значения уже провалидированы и приведены
+// сервисом: plate/fragment — sqlutil.PlateCompact, clientID — uuid). Пустое поле не фильтрует.
+type equipmentLookupFilter struct {
+	plate    string // точный компактный госномер
+	fragment string // подстрока компактного госномера
+	clientID string
+}
+
+// LookupEquipment — действующие единицы действующих клиентов. В БД госномер хранится
+// нормализованным (верхний регистр), сравнение — по PlateCompactSQL; подстрока — strpos (без
+// LIKE-экранирования). Порядок: при fragment — сначала совпадения с начала номера, затем по
+// позиции и номеру; иначе — свежие первыми.
+func (r *Repo) LookupEquipment(ctx context.Context, f equipmentLookupFilter, limit, offset int) ([]EquipmentLookupItem, int, error) {
+	const from = ` FROM equipment e
 		 JOIN clients c ON c.id = e.client_id AND c.deleted_at IS NULL
 		 JOIN equipment_types t ON t.id = e.type_id
-		 WHERE e.deleted_at IS NULL AND e.plate_number <> '' AND `
-	cond := sqlutil.PlateCompactSQL("e.plate_number") + ` = $1`
+		 WHERE e.deleted_at IS NULL`
+	compact := sqlutil.PlateCompactSQL("e.plate_number")
+	cond, args := "", []any{}
+	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
+	if f.plate != "" {
+		cond += ` AND e.plate_number <> '' AND ` + compact + ` = ` + arg(f.plate)
+	}
+	fragPos := ""
+	if f.fragment != "" {
+		fragPos = `strpos(` + compact + `, ` + arg(f.fragment) + `)`
+		cond += ` AND e.plate_number <> '' AND ` + fragPos + ` > 0`
+	}
+	if f.clientID != "" {
+		cond += ` AND e.client_id = ` + arg(f.clientID) + `::uuid`
+	}
+	order := ` ORDER BY e.created_at DESC, e.id`
+	if fragPos != "" {
+		order = ` ORDER BY ` + fragPos + `, e.plate_number, e.created_at DESC, e.id`
+	}
 	var total int
-	if err := r.pool.QueryRow(ctx, `SELECT count(*)`+where+cond, compact).Scan(&total); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT count(*)`+from+cond, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
+	page := fmt.Sprintf(` LIMIT %s OFFSET %s`, arg(limit), arg(offset))
 	rows, err := r.pool.Query(ctx,
 		`SELECT e.id, e.client_id, c.company_name, e.type_id, t.name, e.plate_number, e.brand, e.model, e.serial`+
-			where+cond+` ORDER BY e.created_at DESC, e.id LIMIT $2 OFFSET $3`, compact, limit, offset)
+			from+cond+order+page, args...)
 	if err != nil {
 		return nil, 0, err
 	}

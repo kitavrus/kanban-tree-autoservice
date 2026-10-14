@@ -123,8 +123,10 @@ test.describe('NO: новый заказ по госномеру', () => {
     await dlg.fillNewCar(plate.toLowerCase(), { type: carType.name, brand: 'Skoda', model: 'Octavia', vin: 'xw8zzz1z0123456' });
     await expect(dlg.plate).toHaveValue(plate);
     await expect(dlg.carFound).toBeHidden();
+    // клиент не выбран — поля «Новый клиент» открыты сразу, без флажка.
+    await expect(dlg.newClientToggle).toBeChecked();
+    await expect(dlg.newClientName).toBeVisible();
     await dlg.fillNewClient(clientName, '+7 912 000-11-22');
-    await expect(dlg.client).toBeDisabled();
     await board.fillTask({ column: columnByName(columns, 'Приёмка').name });
 
     await board.taskSave.click();

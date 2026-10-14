@@ -25,9 +25,6 @@ var (
 	ErrStockDeletedWriteOffOnly = errorspkg.New("PRODUCT_DELETED_WRITE_OFF_ONLY", http.StatusConflict,
 		"Товар удалён — его остаток можно только списать")
 	ErrPaidAdminOnly = errorspkg.New("PAID_ADMIN_ONLY", http.StatusForbidden, "Оплату меняет только администратор")
-	// ErrClientCreateAdminOnly — новый заказ с new_client от исполнителя: нового клиента
-	// заводит только администратор (то же правило, что у POST /api/v1/clients).
-	ErrClientCreateAdminOnly = errorspkg.New("CLIENT_CREATE_ADMIN_ONLY", http.StatusForbidden, "Нового клиента заводит только администратор")
 
 	// Sentinel'ы фазы 6 (design-errors.md §Codes 16-22, карточка заказа).
 	ErrSubtaskNotFound        = errorspkg.New("SUBTASK_NOT_FOUND", http.StatusNotFound, "Услуга не найдена")

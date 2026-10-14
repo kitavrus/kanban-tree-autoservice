@@ -33,6 +33,9 @@ export class NewOrderDialog {
   readonly newClientPhone: Locator;
   readonly titleField: Locator;
   readonly dropdown: Locator;
+  readonly plateSuggestions: Locator;
+  readonly plateSuggestion: Locator;
+  readonly clientNewAction: Locator;
 
   constructor(readonly page: Page) {
     this.plate = page.getByTestId('task-plate');
@@ -53,6 +56,9 @@ export class NewOrderDialog {
     this.newClientPhone = page.getByTestId('task-new-client-phone');
     this.titleField = page.getByTestId('task-title');
     this.dropdown = page.getByTestId('combobox-dropdown');
+    this.plateSuggestions = page.getByTestId('task-plate-suggestions');
+    this.plateSuggestion = page.getByTestId('task-plate-suggestion');
+    this.clientNewAction = page.getByTestId('task-client-new-action');
   }
 
   /** Ввод госномера; ждёт окончания поиска (статус не «Поиск…»). */
@@ -88,7 +94,16 @@ export class NewOrderDialog {
     await this.dropdown.locator('.cb-opt', { hasText: name }).first().click();
   }
 
-  /** Новый клиент нового автомобиля (только admin). */
+  /** Поиск клиента в комбобоксе «Клиент» по фрагменту (имя / телефон) и выбор пункта. */
+  async searchClient(fragment: string, name: string) {
+    await this.client.click();
+    await expect(this.dropdown).toBeVisible();
+    await this.dropdown.locator('.cb-search').fill(fragment);
+    await this.dropdown.locator('.cb-opt', { hasText: name }).first().click();
+    await expect(this.dropdown).toBeHidden();
+  }
+
+  /** Новый клиент нового автомобиля (поля открываются сами, если клиент не выбран). */
   async fillNewClient(name: string, phone: string) {
     await this.newClientToggle.check();
     await this.newClientName.fill(name);

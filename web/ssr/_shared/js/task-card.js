@@ -278,6 +278,10 @@
         return r.items.map(function (c) { return { value: c.id, text: c.company_name }; });
       });
     };
+    // «+ Новый клиент» в конце списка — только в новом заказе (клиента заводит и исполнитель).
+    clientSel._cbAction = function () {
+      return taskId ? null : { text: '+ Новый клиент', testid: 'task-client-new-action', run: startNewClient };
+    };
 
     var colSel = $('#task-column');
     colSel.innerHTML = data.columns.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>'; }).join('');
@@ -1319,11 +1323,14 @@
   // заказ; название «{Марка} {Модель} {ГОСНОМЕР}» генерирует сервер.
   // ==================================================================
 
-  var PLATE_LOOKUP_MIN = 4;      // символов госномера (без пробелов/дефисов) для поиска
+  var PLATE_LOOKUP_MIN = 4;      // символов госномера (без пробелов/дефисов) для точного поиска
+  var PLATE_SUGGEST_MIN = 2;     // символов для подсказок по фрагменту номера
   var PLATE_LOOKUP_DELAY = 350;  // debounce ввода, мс
-  // car.status: idle (номер не введён) | searching | found (один) | multi (несколько —
-  // выбрать) | notfound (форма «Новый автомобиль») | error (поиск не удался — повтор при сохранении)
-  var car = { status: 'idle', key: '', items: [], chosenId: '' };
+  // car.status: idle (номер не введён) | pending (ввод, поиск по debounce) | searching |
+  // clientcars (загрузка автомобилей выбранного клиента) | found (один) | multi (несколько —
+  // выбрать) | notfound (форма «Новый автомобиль») | error (поиск не удался — повтор при
+  // сохранении). car.source: plate (по номеру) | client (автомобили выбранного клиента).
+  var car = { status: 'idle', key: '', items: [], chosenId: '', source: 'plate', noCars: false };
   var lookupTimer = null;
   var lookupSeq = 0;
   var lookupPromise = null;
@@ -1360,6 +1367,7 @@
     if (!isNew) {
       clearTimeout(lookupTimer);
       lookupSeq++;
+      if (plateAC) plateAC.close();
       $('#task-car').classList.add('d-none');
       $('#task-new-client-toggle-wrap').classList.add('d-none');
       $('#task-new-client').classList.add('d-none');
@@ -1374,12 +1382,18 @@
     if (sel._cbSync) sel._cbSync();
   }
 
-  function resetCar() {
+  // setCar — новое состояние поиска; любой летящий поиск (по номеру/клиенту) устаревает.
+  function setCar(next) {
     clearTimeout(lookupTimer);
     lookupSeq++;
     lookupPromise = null;
-    car = { status: 'idle', key: '', items: [], chosenId: '' };
+    car = { status: next.status, key: next.key || '', items: next.items || [], chosenId: next.chosenId || '', source: next.source || 'plate', noCars: !!next.noCars };
+  }
+
+  function resetCar() {
+    setCar({ status: 'idle' });
     clientFromCar = false;
+    if (plateAC) plateAC.close();
     $('#task-plate').value = '';
     ['#task-new-car-brand', '#task-new-car-model', '#task-new-car-vin', '#task-new-client-name', '#task-new-client-phone'].forEach(function (sel) { $(sel).value = ''; });
     var typeSel = $('#task-new-car-type');
@@ -1394,6 +1408,11 @@
     $$('#task-modal [data-error-for]').forEach(function (el) { el.textContent = ''; el.classList.add('d-none'); });
   }
 
+  function clearFieldError(name) {
+    var err = $('#task-modal [data-error-for="' + name + '"]');
+    if (err) { err.textContent = ''; err.classList.add('d-none'); }
+  }
+
   function carLabel(it) {
     return [it.brand, it.model].filter(Boolean).join(' ') + ' · ' + it.plate_number + ' · ' + it.client_name;
   }
@@ -1402,27 +1421,37 @@
     return car.items.filter(function (it) { return it.id === car.chosenId; })[0] || null;
   }
 
-  // renderCar — блок под госномером и поле «Клиент» по состоянию поиска.
+  // carMode — заказ по существующему автомобилю (найден по номеру / выбран из автомобилей клиента).
+  function carMode() { return car.status === 'found' || car.status === 'multi'; }
+
+  // renderCar — блок под госномером и поле «Клиент» по состоянию поиска. Клиент
+  // найденного/выбранного автомобиля — его владелец (поле заблокировано); номер стёрт либо
+  // сменился — блокировка снимается сразу, владелец прежнего автомобиля сбрасывается.
   function renderCar() {
-    var data = host.getData();
     var status = $('#task-plate-status');
     var box = $('#task-car');
     var found = $('#task-car-found');
     var choices = $('#task-car-choices');
     var newCar = $('#task-new-car');
+    var toggle = $('#task-new-client-toggle');
     var chosen = chosenCar();
-    var newClient = car.status === 'notfound' && data.isAdmin && $('#task-new-client-toggle').checked;
+    var byCar = carMode();
+    if (byCar) toggle.checked = false;
+    var newClient = !byCar && toggle.checked;
+    var fromClient = car.source === 'client';
 
     status.textContent = {
-      idle: 'Введите госномер — автомобиль найдётся автоматически',
+      idle: car.noCars ? 'У клиента нет автомобилей — укажите госномер нового' : 'Введите госномер — автомобиль найдётся автоматически',
+      pending: 'Поиск автомобиля…',
       searching: 'Поиск автомобиля…',
-      found: 'Автомобиль найден',
-      multi: 'Найдено автомобилей: ' + car.items.length + ' — выберите нужный',
+      clientcars: 'Загрузка автомобилей клиента…',
+      found: fromClient ? 'Автомобиль клиента' : 'Автомобиль найден',
+      multi: fromClient ? ('Автомобилей у клиента: ' + car.items.length + ' — выберите нужный') : ('Найдено автомобилей: ' + car.items.length + ' — выберите нужный'),
       notfound: 'Автомобиль не найден — заполните данные нового',
       error: 'Не удалось проверить госномер — повторим при сохранении'
     }[car.status] || '';
 
-    box.classList.toggle('d-none', !(car.status === 'found' || car.status === 'multi' || car.status === 'notfound'));
+    box.classList.toggle('d-none', !(byCar || car.status === 'notfound'));
     found.classList.toggle('d-none', car.status !== 'found');
     if (car.status === 'found' && chosen) {
       found.innerHTML = plateBadge(chosen.plate_number) + '<span data-testid="task-car-found-text">' + esc(carLabel(chosen)) + '</span>';
@@ -1436,58 +1465,65 @@
     }
     newCar.classList.toggle('d-none', car.status !== 'notfound');
 
-    // клиент: найденный/выбранный автомобиль — его владелец (поле заблокировано).
-    var owner = (car.status === 'found' || car.status === 'multi') && chosen;
+    var owner = byCar && chosen;
     var sel = $('#task-client');
     if (owner) {
-      KT.comboboxEnsureOption(sel, chosen.client_id, chosen.client_name);
-      sel.value = chosen.client_id;
-      clientFromCar = true;
+      if (sel.value !== chosen.client_id) {
+        KT.comboboxEnsureOption(sel, chosen.client_id, chosen.client_name);
+        sel.value = chosen.client_id;
+        clientFromCar = true;
+      }
     } else if (clientFromCar) {
       sel.value = ''; // владелец прежнего найденного автомобиля — не выбор пользователя
       clientFromCar = false;
     }
+    var isNew = !taskId;
     $('#task-client-locked').classList.toggle('d-none', !owner);
-    $('#task-new-client-toggle-wrap').classList.toggle('d-none', !(car.status === 'notfound' && data.isAdmin));
-    $('#task-new-client').classList.toggle('d-none', !newClient);
-    setClientLocked(!!owner || newClient);
+    $('#task-new-client-toggle-wrap').classList.toggle('d-none', !isNew || byCar);
+    $('#task-new-client').classList.toggle('d-none', !isNew || !newClient);
+    setClientLocked(!!owner);
   }
 
   // runLookup — GET /api/v1/equipment?plate_number=…; ответы устаревших вводов отбрасываются.
+  // Не найден и клиент не выбран — сразу открываются поля «Новый клиент».
   function runLookup() {
-    clearTimeout(lookupTimer);
     var value = $('#task-plate').value;
     var key = plateKey(value);
-    var seq = ++lookupSeq;
-    car = { status: 'searching', key: key, items: [], chosenId: '' };
+    setCar({ status: 'searching', key: key });
+    var seq = lookupSeq;
     renderCar();
     lookupPromise = KT.api.get('/api/v1/equipment?plate_number=' + encodeURIComponent(value) + '&limit=20').then(function (r) {
       if (seq !== lookupSeq) return;
       var items = r.items || [];
-      car = {
-        status: items.length === 0 ? 'notfound' : (items.length === 1 ? 'found' : 'multi'),
-        key: key, items: items, chosenId: items.length === 1 ? items[0].id : ''
-      };
-      if (car.status === 'notfound') preloadCarTypes();
+      if (items.length === 0) {
+        setCar({ status: 'notfound', key: key });
+        if (!$('#task-client').value || clientFromCar) $('#task-new-client-toggle').checked = true;
+        preloadCarTypes();
+      } else {
+        setCar({ status: items.length === 1 ? 'found' : 'multi', key: key, items: items, chosenId: items.length === 1 ? items[0].id : '' });
+      }
       renderCar();
     }).catch(function () {
       if (seq !== lookupSeq) return;
-      car = { status: 'error', key: key, items: [], chosenId: '' };
+      setCar({ status: 'error', key: key });
       renderCar();
     });
     return lookupPromise;
   }
 
-  function scheduleLookup() {
-    clearTimeout(lookupTimer);
+  // onPlateChanged — ввод в поле госномера: прежняя сводка/блокировка клиента снимаются СРАЗУ
+  // (не дожидаясь нового ответа), затем поиск с debounce.
+  function onPlateChanged() {
     var key = plateKey($('#task-plate').value);
     if (key === car.key && car.status !== 'idle' && car.status !== 'error') return;
     if (key.length < PLATE_LOOKUP_MIN) {
-      lookupSeq++;
-      car = { status: 'idle', key: key, items: [], chosenId: '' };
+      if (car.status === 'idle') return; // «у клиента нет автомобилей» и т.п. — не сбрасывать
+      setCar({ status: 'idle' });
       renderCar();
       return;
     }
+    setCar({ status: 'pending' });
+    renderCar();
     lookupTimer = setTimeout(runLookup, PLATE_LOOKUP_DELAY);
   }
 
@@ -1496,8 +1532,72 @@
     var key = plateKey($('#task-plate').value);
     if (!key) return Promise.resolve();
     if (key === car.key && car.status === 'searching' && lookupPromise) return lookupPromise;
-    if (key !== car.key || car.status === 'idle' || car.status === 'error') return runLookup();
+    if (key !== car.key || car.status === 'idle' || car.status === 'error' || car.status === 'pending') return runLookup();
     return Promise.resolve();
+  }
+
+  // pickCar — автомобиль выбран (подсказка госномера / автомобиль клиента): номер в поле,
+  // клиент — владелец (заблокирован).
+  function pickCar(item, items, source) {
+    $('#task-plate').value = item.plate_number;
+    clearFieldError('plate_number');
+    clearFieldError('equipment_id');
+    setCar({ status: items.length > 1 ? 'multi' : 'found', key: plateKey(item.plate_number), items: items, chosenId: item.id, source: source });
+    renderCar();
+  }
+
+  // loadClientCars — клиент выбран первым (номер пуст / не дописан): GET
+  // /api/v1/equipment?client_id=…; один автомобиль — номер и автомобиль подставляются,
+  // несколько — выбор, нет — номер вводится вручную (новый автомобиль этого клиента).
+  function loadClientCars(clientID) {
+    var plateVal = $('#task-plate').value;
+    setCar({ status: 'clientcars', key: plateKey(plateVal), source: 'client' });
+    var seq = lookupSeq;
+    renderCar();
+    KT.api.get('/api/v1/equipment?client_id=' + encodeURIComponent(clientID) + '&limit=50').then(function (r) {
+      if (seq !== lookupSeq) return;
+      var items = r.items || [];
+      if (items.length === 1) { pickCar(items[0], items, 'client'); return; }
+      if (items.length > 1) setCar({ status: 'multi', key: plateKey(plateVal), items: items, source: 'client' });
+      else setCar({ status: 'idle', noCars: true, source: 'client' });
+      renderCar();
+    }).catch(function () {
+      if (seq !== lookupSeq) return;
+      setCar({ status: 'idle' });
+      renderCar();
+    });
+  }
+
+  // onClientChanged — пользователь выбрал клиента в комбобоксе нового заказа.
+  function onClientChanged() {
+    if (taskId) return;
+    var id = $('#task-client').value;
+    clientFromCar = false;
+    if (id) $('#task-new-client-toggle').checked = false;
+    if (id && car.status === 'multi' && !car.chosenId) {
+      var own = car.items.filter(function (it) { return it.client_id === id; })[0];
+      if (own) { pickCar(own, car.items, car.source); return; }
+    }
+    // номер уже введён и не найден — новый автомобиль будет у выбранного клиента.
+    if (id && !carMode() && car.status !== 'notfound') { loadClientCars(id); return; }
+    renderCar();
+  }
+
+  // startNewClient — «+ Новый клиент» из комбобокса «Клиент»: поля нового клиента, введённый
+  // в поиске текст — ФИО (либо телефон, если это цифры).
+  function startNewClient(query) {
+    var sel = $('#task-client');
+    sel.value = '';
+    clientFromCar = false;
+    // несколько автомобилей с этим номером, ни один не выбран — новый автомобиль нового клиента.
+    if (carMode()) { setCar({ status: 'notfound', key: plateKey($('#task-plate').value) }); preloadCarTypes(); }
+    $('#task-new-client-toggle').checked = true;
+    if (query) {
+      if (/^[\d\s()+-]{5,}$/.test(query)) $('#task-new-client-phone').value = query;
+      else $('#task-new-client-name').value = query;
+    }
+    renderCar();
+    $('#task-new-client-name').focus();
   }
 
   var carTypesLoaded = false;
@@ -1526,11 +1626,7 @@
       is_paid: $('#task-paid').checked,
       description: $('#task-description').value
     };
-    if (!plateKey(body.plate_number)) {
-      showFieldErrors([{ name: 'plate_number', message: 'required' }]);
-      return null;
-    }
-    if (car.status === 'found' || car.status === 'multi') {
+    if (carMode()) {
       var chosen = chosenCar();
       if (!chosen) {
         showFieldErrors([{ name: 'equipment_id', message: 'required' }], 'Выберите автомобиль');
@@ -1538,15 +1634,19 @@
       }
       body.equipment_id = chosen.id;
       body.client_id = chosen.client_id;
-      return body;
     }
+    if (!plateKey(body.plate_number)) {
+      showFieldErrors([{ name: 'plate_number', message: 'required' }]);
+      return null;
+    }
+    if (body.equipment_id) return body;
     body.new_equipment = {
       type_id: $('#task-new-car-type').value,
       brand: $('#task-new-car-brand').value.trim(),
       model: $('#task-new-car-model').value.trim(),
       serial: $('#task-new-car-vin').value.trim().toUpperCase()
     };
-    if (host.getData().isAdmin && $('#task-new-client-toggle').checked) {
+    if ($('#task-new-client-toggle').checked) {
       var phone = $('#task-new-client-phone').value.trim();
       body.new_client = { company_name: $('#task-new-client-name').value.trim(), phones: phone ? [{ phone: phone, note: '' }] : [] };
     } else {
@@ -1569,35 +1669,58 @@
     if (rest.length) showHeaderError(rest.join('; '));
   }
 
+  // plateSuggestionHtml — «ГОСНОМЕР · Марка Модель · Клиент» подсказки госномера.
+  function plateSuggestionHtml(it) {
+    var model = [it.brand, it.model].filter(Boolean).join(' ');
+    return '<span class="ac-main">' + esc(it.plate_number) + '</span>' + (model ? ' · ' + esc(model) : '') + ' · ' + esc(it.client_name);
+  }
+
+  var plateAC = null;
   function bindCarLookup() {
     var plate = $('#task-plate');
+    // автодополнение по фрагменту номера (GET /api/v1/equipment?q=) — подключается ДО keydown
+    // поля: Enter по подсказке не должен уводить фокус.
+    plateAC = KT.autocomplete(plate, {
+      min: PLATE_SUGGEST_MIN,
+      minLength: function (v) { return plateKey(v).length; },
+      testid: 'task-plate-suggestions',
+      optionTestid: 'task-plate-suggestion',
+      fetch: function (v) {
+        return KT.api.get('/api/v1/equipment?q=' + encodeURIComponent(plateKey(v)) + '&limit=10').then(function (r) {
+          return (r.items || []).map(function (it) { return { html: plateSuggestionHtml(it), item: it }; });
+        });
+      },
+      onSelect: function (it) { pickCar(it, [it], 'plate'); }
+    });
     plate.addEventListener('input', function () {
       var pos = plate.selectionStart;
       var up = plate.value.toUpperCase();
       if (up !== plate.value) { plate.value = up; try { plate.setSelectionRange(pos, pos); } catch (e) { /* noop */ } }
-      var err = $('#task-modal [data-error-for="plate_number"]');
-      err.textContent = ''; err.classList.add('d-none');
-      scheduleLookup();
+      clearFieldError('plate_number');
+      onPlateChanged();
     });
     plate.addEventListener('blur', function () {
       plate.value = plateTidy(plate.value);
-      scheduleLookup();
+      onPlateChanged();
     });
     plate.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); plate.blur(); }
     });
     $('#task-car-choices').addEventListener('change', function (e) {
       if (e.target && e.target.name === 'task-car-choice') {
-        car.chosenId = e.target.value;
-        var err = $('#task-modal [data-error-for="equipment_id"]');
-        err.textContent = ''; err.classList.add('d-none');
-        renderCar();
+        var it = car.items.filter(function (x) { return x.id === e.target.value; })[0];
+        if (it) pickCar(it, car.items, car.source);
       }
     });
     $('#task-new-client-toggle').addEventListener('change', function () {
+      if ($('#task-new-client-toggle').checked) {
+        $('#task-client').value = '';
+        clientFromCar = false;
+      }
       renderCar();
       if ($('#task-new-client-toggle').checked) $('#task-new-client-name').focus();
     });
+    $('#task-client').addEventListener('change', onClientChanged);
     var typeSel = $('#task-new-car-type');
     typeSel._cbFetchOptions = function (q) {
       return KT.api.get('/api/v1/equipment-types?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
