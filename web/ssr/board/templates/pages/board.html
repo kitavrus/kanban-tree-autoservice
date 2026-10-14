@@ -58,7 +58,17 @@
         <div class="alert alert-danger d-none" id="task-error" data-testid="task-error"></div>
 
         <div class="row g-3">
-          <div class="col-md-6">
+          <!-- Новый заказ: первое поле — госномер; автомобиль ищется по нему (js/task-card.js
+               carLookup), название заказа генерируется сервером «{Марка} {Модель} {ГОСНОМЕР}». -->
+          <div class="col-md-6" id="task-plate-wrap" data-testid="task-plate-wrap">
+            <label class="form-label" for="task-plate">Госномер *</label>
+            <input class="form-control text-uppercase" id="task-plate" data-testid="task-plate" maxlength="20"
+                   placeholder="А123ВС 777" autocomplete="off" required>
+            <div class="small text-body-secondary mt-1" id="task-plate-status" data-testid="task-plate-status" aria-live="polite"></div>
+            <div class="text-danger small d-none" data-error-for="plate_number" data-testid="task-plate-error"></div>
+          </div>
+          <!-- В карточке существующего заказа название по-прежнему правится вручную. -->
+          <div class="col-md-6 d-none" id="task-title-wrap">
             <label class="form-label" for="task-title">Название *</label>
             <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
           </div>
@@ -67,7 +77,58 @@
             <select class="form-select" id="task-client" data-testid="task-client" required>
               <option value="">Выберите клиента</option>
             </select>
+            <div class="small text-body-secondary mt-1 d-none" id="task-client-locked" data-testid="task-client-locked">Владелец автомобиля</div>
             <div class="text-danger small d-none" id="task-client-error" data-testid="task-client-error"></div>
+            <div class="form-check mt-1 d-none" id="task-new-client-toggle-wrap">
+              <input type="checkbox" class="form-check-input" id="task-new-client-toggle" data-testid="task-new-client-toggle">
+              <label class="form-check-label" for="task-new-client-toggle">Новый клиент</label>
+            </div>
+            <div class="row g-2 mt-0 d-none" id="task-new-client" data-testid="task-new-client">
+              <div class="col-12">
+                <label class="form-label small mb-0" for="task-new-client-name">ФИО *</label>
+                <input class="form-control form-control-sm" id="task-new-client-name" data-testid="task-new-client-name" maxlength="200">
+                <div class="text-danger small d-none" data-error-for="new_client.company_name"></div>
+              </div>
+              <div class="col-12">
+                <label class="form-label small mb-0" for="task-new-client-phone">Телефон *</label>
+                <input type="tel" class="form-control form-control-sm" id="task-new-client-phone" data-testid="task-new-client-phone" maxlength="32" placeholder="+7 900 000-00-00">
+                <div class="text-danger small d-none" data-error-for="new_client.phones"></div>
+                <div class="text-danger small d-none" data-error-for="new_client.phones[0].phone"></div>
+              </div>
+            </div>
+          </div>
+          <!-- Результат поиска по госномеру: найден один / несколько / «Новый автомобиль». -->
+          <div class="col-12 d-none" id="task-car" data-testid="task-car">
+            <div class="alert alert-light border py-2 mb-0 d-none" id="task-car-found" data-testid="task-car-found"></div>
+            <div class="d-none" id="task-car-choices" data-testid="task-car-choices" role="radiogroup" aria-label="Автомобиль"></div>
+            <div class="text-danger small d-none" data-error-for="equipment_id" data-testid="task-car-error"></div>
+            <div class="card d-none" id="task-new-car" data-testid="task-new-car">
+              <div class="card-body py-2">
+                <div class="fw-semibold small mb-2">Новый автомобиль</div>
+                <div class="row g-2">
+                  <div class="col-md-6">
+                    <label class="form-label small mb-0" for="task-new-car-type">Тип *</label>
+                    <select class="form-select form-select-sm" id="task-new-car-type" data-testid="task-new-car-type"><option value="">Выберите тип</option></select>
+                    <div class="text-danger small d-none" data-error-for="new_equipment.type_id"></div>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label small mb-0" for="task-new-car-vin">VIN</label>
+                    <input class="form-control form-control-sm text-uppercase" id="task-new-car-vin" data-testid="task-new-car-vin" maxlength="200">
+                    <div class="text-danger small d-none" data-error-for="new_equipment.serial"></div>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label small mb-0" for="task-new-car-brand">Марка</label>
+                    <input class="form-control form-control-sm" id="task-new-car-brand" data-testid="task-new-car-brand" maxlength="200">
+                    <div class="text-danger small d-none" data-error-for="new_equipment.brand"></div>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label small mb-0" for="task-new-car-model">Модель *</label>
+                    <input class="form-control form-control-sm" id="task-new-car-model" data-testid="task-new-car-model" maxlength="200">
+                    <div class="text-danger small d-none" data-error-for="new_equipment.model"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="col-md-4">
             <label class="form-label" for="task-column">Колонка *</label>

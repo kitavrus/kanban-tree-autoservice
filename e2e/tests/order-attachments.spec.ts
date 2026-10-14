@@ -2,6 +2,7 @@ import { test, expect, columnByName } from '../fixtures/board';
 import type { AdminApi } from '../fixtures/auth';
 import { BoardPage } from '../pages/BoardPage';
 import { OrderCardPage } from '../pages/OrderCardPage';
+import { uniqPlate } from '../pages/NewOrderDialog';
 
 // Фаза 7 (D21): вложения заказа в карточке (js/task-card.js, раздел «Вложения»). Файлы
 // генерируются в тесте (валидные сигнатуры PNG/MP4/PDF — тип сервер определяет по
@@ -197,7 +198,11 @@ test.describe('AT: удаление и права', () => {
     await expect(card.attachmentsLocked).toBeVisible();
     await expect(card.attachmentUpload).toHaveCount(0);
 
-    await card.fillHeader({ title: uniq('AT-006 заказ'), client: client.company_name, column: columnByName(columns, 'Приёмка').name });
+    const plate = uniqPlate();
+    const carType = await adminApi.createEquipmentType({ name: uniq('AT-006 тип') });
+    await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Kia', model: 'Rio' });
+    await card.newOrder.useFoundCar(plate);
+    await card.fillHeader({ column: columnByName(columns, 'Приёмка').name });
     await card.save();
     await expect(card.title).toContainText('#');
     const id = Number((await card.title.textContent())!.replace(/\D+/g, ''));

@@ -238,9 +238,9 @@ func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService
 
 	// подзадача-услуга с потребностью в товаре — напрямую SQL (subtask_products не входит
 	// в DTO заказа фазы 03, появится в фазе 6), заказ и его перенос — через сервис.
-	create, err := taskSvc.Create(ctx, actor, board.TaskCreateRequest{
+	create, err := taskSvc.Create(ctx, actor, board.TaskCreateRequest{TaskHeader: board.TaskHeader{
 		Title: "IT-010 заказ", ClientID: seClientID, ColumnID: seColTodo,
-	})
+	}})
 	s.Require().NoError(err)
 	taskID := create.Task.ID
 

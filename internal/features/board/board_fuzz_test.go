@@ -87,7 +87,7 @@ func FuzzTaskInputValidate(f *testing.F) {
 	allowed := map[string]bool{"title": true, "client_id": true, "column_id": true, "assignee_id": true, "due_date": true}
 
 	f.Fuzz(func(t *testing.T, title, clientID, columnID, assigneeID, dueDate string, isPaid bool) {
-		in := TaskCreateRequest{
+		in := TaskHeader{
 			Title: title, ClientID: clientID, ColumnID: columnID,
 			AssigneeID: &assigneeID, DueDate: &dueDate, IsPaid: &isPaid,
 		}

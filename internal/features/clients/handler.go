@@ -111,6 +111,18 @@ func (h *Handler) Restore(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
+// LookupEquipment — GET /api/v1/equipment?plate_number=&limit=&offset= (RequireAPI, D19: и
+// исполнителю — диалог «Новый заказ» ищет автомобиль по госномеру).
+func (h *Handler) LookupEquipment(c fiber.Ctx) error {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	offset, _ := strconv.Atoi(c.Query("offset"))
+	resp, err := h.svc.LookupEquipment(c.Context(), c.Query("plate_number"), limit, offset)
+	if err != nil {
+		return err
+	}
+	return c.JSON(resp)
+}
+
 // ListEquipment — GET /api/v1/clients/:id/equipment (RequireAPI, D19: без admin-guard).
 func (h *Handler) ListEquipment(c fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit"))

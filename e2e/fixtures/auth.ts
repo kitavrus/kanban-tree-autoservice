@@ -56,6 +56,8 @@ export type Client = {
 export type Spec = { k: string; v: string };
 export type NewEquipment = {
   type_id: string;
+  /** Госномер автомобиля (clients.NormalizePlateNumber на сервере). */
+  plate_number?: string;
   brand?: string;
   model: string;
   sku?: string;
@@ -71,6 +73,7 @@ export type Equipment = {
   type_is_active: boolean;
   /** Тип единицы мягко удалён — бейдж «удалён» у типа (soft-delete-catalog DS-014). */
   type_is_deleted: boolean;
+  plate_number: string;
   brand: string;
   model: string;
   sku: string;

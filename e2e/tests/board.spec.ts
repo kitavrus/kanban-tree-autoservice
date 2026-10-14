@@ -1,5 +1,6 @@
 import { test, expect, columnByName } from '../fixtures/board';
 import { BoardPage } from '../pages/BoardPage';
+import { carTitle, uniqPlate } from '../pages/NewOrderDialog';
 import { ShellPage } from '../pages/ShellPage';
 import { StockPage } from '../pages/StockPage';
 import { loginContext, type AdminApi } from '../fixtures/auth';
@@ -324,9 +325,17 @@ test.describe('BD: форма заказа', () => {
       if (r.method() === 'POST' && r.url().endsWith('/api/v1/tasks')) createCalls++;
     });
 
-    const title = uniq('BD-009 заказ');
+    // Новый заказ — по госномеру автомобиля клиента: клиент подставляется, название
+    // генерирует сервер («{Марка} {Модель} {ГОСНОМЕР}»).
+    const plate = uniqPlate();
+    const carType = await adminApi.createEquipmentType({ name: uniq('BD-009 тип') });
+    const model = uniq('BD-009 Vesta');
+    await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Lada', model });
+    const title = carTitle('Lada', model, plate);
     await board.openTaskAdd();
-    await board.fillTask({ title, client: client.company_name, column: columnByName(columns, 'Приёмка').name });
+    await board.newOrder.useFoundCar(plate);
+    await expect(board.taskClient).toContainText(client.company_name);
+    await board.fillTask({ column: columnByName(columns, 'Приёмка').name });
     // Два клика синхронно в одном browser-тике (а не Playwright dblclick — реальные мышиные
     // события дают гонку между вкладом браузера в обработку disabled и таймингом теста):
     // saving-флаг выставляется синхронно первым же кликом ДО await fetch, поэтому второй

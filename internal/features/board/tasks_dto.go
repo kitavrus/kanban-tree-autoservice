@@ -3,6 +3,7 @@ package board
 import (
 	"time"
 
+	"github.com/kitavrus/kanban-tree/internal/features/clients"
 	"github.com/kitavrus/kanban-tree/pkg/numeric"
 )
 
@@ -75,9 +76,9 @@ type TaskResponse struct {
 	DescriptionHTML string     `json:"description_html"` // хранимый HTML (ADR-006); клиент берёт текст через DOMParser
 }
 
-// TaskCreateRequest — POST /api/v1/tasks. IsPaid: executor — nil|false, иначе 403
-// PAID_ADMIN_ONLY (AC-011).
-type TaskCreateRequest struct {
+// TaskHeader — поля шапки заказа, общие для POST и PUT. IsPaid: executor — nil|false, иначе
+// 403 PAID_ADMIN_ONLY (AC-011).
+type TaskHeader struct {
 	Title      string  `json:"title"`
 	ClientID   string  `json:"client_id"`
 	ColumnID   string  `json:"column_id"`
@@ -89,10 +90,44 @@ type TaskCreateRequest struct {
 	Description *string `json:"description"`
 }
 
-// TaskUpdateRequest — PUT /api/v1/tasks/:id, полная замена карточки. Version обязателен
+// TaskCreateRequest — POST /api/v1/tasks. Два режима (одна транзакция в обоих):
+//
+//   - «по автомобилю» (диалог «Новый заказ»): plate_number обязателен и ровно одно из
+//     equipment_id (найденный автомобиль — клиент берётся его владелец, client_id можно не
+//     передавать) либо new_equipment (новый автомобиль клиента client_id либо нового клиента
+//     new_client — только admin). title пуст → «{Марка} {Модель} {ГОСНОМЕР}». Автомобиль
+//     сразу добавляется в заказ (task_equipment).
+//   - без автомобиля (служебные сценарии, фикстуры): title и client_id обязательны, как раньше.
+//
+// Ошибки полей — details.fields[] с путями new_equipment.model, new_client.phones[0].phone и т.п.
+type TaskCreateRequest struct {
+	TaskHeader
+	PlateNumber  string            `json:"plate_number"`
+	EquipmentID  string            `json:"equipment_id"`
+	NewEquipment *TaskNewEquipment `json:"new_equipment"`
+	NewClient    *TaskNewClient    `json:"new_client"`
+}
+
+// TaskNewEquipment — новый автомобиль (госномер — plate_number запроса). Правила полей —
+// как у POST /api/v1/clients/:id/equipment: type_id (активный тип) и model обязательны.
+type TaskNewEquipment struct {
+	TypeID string `json:"type_id"`
+	Brand  string `json:"brand"`
+	Model  string `json:"model"`
+	Serial string `json:"serial"` // VIN
+}
+
+// TaskNewClient — новый клиент-владелец нового автомобиля. Правила — как у POST
+// /api/v1/clients: company_name (ФИО) и хотя бы один телефон обязательны.
+type TaskNewClient struct {
+	CompanyName string             `json:"company_name"`
+	Phones      []clients.PhoneDTO `json:"phones"`
+}
+
+// TaskUpdateRequest — PUT /api/v1/tasks/:id, полная замена шапки. Version обязателен
 // (§FE-1.1, оптимистичная блокировка).
 type TaskUpdateRequest struct {
-	TaskCreateRequest
+	TaskHeader
 	Version *int64 `json:"version"`
 }
 

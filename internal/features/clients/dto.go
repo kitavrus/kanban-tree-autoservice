@@ -95,3 +95,25 @@ type EquipmentRequest struct {
 	Specs       []SpecDTO `json:"specs"`
 	Note        string    `json:"note"`
 }
+
+// EquipmentLookupItem — автомобиль, найденный по госномеру, с владельцем (GET
+// /api/v1/equipment?plate_number=…, диалог «Новый заказ»). ClientName — clients.company_name
+// (ФИО/название клиента).
+type EquipmentLookupItem struct {
+	ID          string `json:"id"`
+	ClientID    string `json:"client_id"`
+	ClientName  string `json:"client_name"`
+	TypeID      string `json:"type_id"`
+	TypeName    string `json:"type_name"`
+	PlateNumber string `json:"plate_number"`
+	Brand       string `json:"brand"`
+	Model       string `json:"model"`
+	Serial      string `json:"serial"`
+}
+
+type EquipmentLookupResponse struct {
+	Items  []EquipmentLookupItem `json:"items"`
+	Total  int                   `json:"total"`
+	Limit  int                   `json:"limit"`
+	Offset int                   `json:"offset"`
+}

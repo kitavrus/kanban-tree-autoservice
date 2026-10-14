@@ -71,6 +71,21 @@ func NormalizePlateNumber(s string) string {
 	return strings.ToUpper(s)
 }
 
+// PlateNumberProblem — код ошибки поля госномера после NormalizePlateNumber ("" — госномер
+// допустим; пустой тоже допустим — обязательность решает вызывающий). Общий для единицы
+// оборудования и нового заказа по госномеру (board).
+func PlateNumberProblem(p string) string {
+	switch {
+	case sqlutil.HasInvalidText(p):
+		return msgInvalidText
+	case utf8.RuneCountInString(p) > equipmentPlateMax:
+		return msgTooLong
+	case !plateNumberRe.MatchString(p):
+		return msgInvalidFormat
+	}
+	return ""
+}
+
 // ClientInput — нормализованные поля карточки клиента + телефонов (общие для API и
 // SSR-формы).
 type ClientInput struct {
@@ -211,13 +226,8 @@ func (in EquipmentInput) validate() []errorspkg.Field {
 		add("type_id", msgInvalid)
 	}
 
-	switch {
-	case sqlutil.HasInvalidText(in.PlateNumber):
-		add("plate_number", msgInvalidText)
-	case utf8.RuneCountInString(in.PlateNumber) > equipmentPlateMax:
-		add("plate_number", msgTooLong)
-	case !plateNumberRe.MatchString(in.PlateNumber):
-		add("plate_number", msgInvalidFormat)
+	if msg := PlateNumberProblem(in.PlateNumber); msg != "" {
+		add("plate_number", msg)
 	}
 
 	switch n := utf8.RuneCountInString(in.Model); {

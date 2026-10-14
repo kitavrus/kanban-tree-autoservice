@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from '@playwright/test';
+import { NewOrderDialog } from './NewOrderDialog';
 
 // POM карточки заказа (фаза 6, testid-контракт js/task-card.js — KT.taskCard). Разделяет
 // шапку (переиспользует testid простой формы фазы 5 — task-title/task-client/task-column/
@@ -56,7 +57,11 @@ export class OrderCardPage {
 
   readonly dropdown: Locator;
 
+  /** Диалог «Новый заказ»: госномер, найденный/новый автомобиль, новый клиент. */
+  readonly newOrder: NewOrderDialog;
+
   constructor(readonly page: Page) {
+    this.newOrder = new NewOrderDialog(page);
     this.modal = page.getByTestId('task-form');
     this.title = page.locator('#task-modal-title');
     this.error = page.getByTestId('task-error');

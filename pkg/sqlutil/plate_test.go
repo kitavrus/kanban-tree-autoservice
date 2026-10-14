@@ -25,3 +25,18 @@ func TestPlateCompactSQL(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestPlateCompact(t *testing.T) {
+	cases := map[string]string{
+		"":              "",
+		" - ":           "",
+		"о718мр 199":    "О718МР199",
+		" O-718 mp199 ": "O718MP199",
+		"x%_":           "X%_",
+	}
+	for in, want := range cases {
+		if got := PlateCompact(in); got != want {
+			t.Errorf("PlateCompact(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

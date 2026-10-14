@@ -13,10 +13,9 @@ func PlateCompactSQL(col string) string {
 	return "replace(replace(" + col + ", ' ', ''), '-', '')"
 }
 
-// PlatePattern — LIKE-шаблон поиска по госномеру: запрос без пробельных символов и дефисов,
-// в верхнем регистре, с экранированием LIKE («а123вс 777» → «%А123ВС777%»). "" — в запросе
-// нет ни одного символа для сравнения (сравнение по госномеру не применяется).
-func PlatePattern(q string) string {
+// PlateCompact — госномер для ТОЧНОГО сравнения с PlateCompactSQL: без пробельных символов
+// и дефисов, в верхнем регистре («а123-вс 777» → «А123ВС777»). "" — сравнивать нечего.
+func PlateCompact(q string) string {
 	var b strings.Builder
 	for _, r := range q {
 		if unicode.IsSpace(r) || r == '-' {
@@ -24,8 +23,16 @@ func PlatePattern(q string) string {
 		}
 		b.WriteRune(unicode.ToUpper(r))
 	}
-	if b.Len() == 0 {
+	return b.String()
+}
+
+// PlatePattern — LIKE-шаблон поиска по госномеру: запрос без пробельных символов и дефисов,
+// в верхнем регистре, с экранированием LIKE («а123вс 777» → «%А123ВС777%»). "" — в запросе
+// нет ни одного символа для сравнения (сравнение по госномеру не применяется).
+func PlatePattern(q string) string {
+	c := PlateCompact(q)
+	if c == "" {
 		return ""
 	}
-	return "%" + EscapeLike(b.String()) + "%"
+	return "%" + EscapeLike(c) + "%"
 }

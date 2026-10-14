@@ -1,6 +1,7 @@
 import { test, expect, columnByName } from '../fixtures/board';
 import { BoardPage } from '../pages/BoardPage';
 import { OrderCardPage } from '../pages/OrderCardPage';
+import { uniqPlate } from '../pages/NewOrderDialog';
 
 // Фаза 6: карточка заказа `/` — task-card.js (design-tests.md §E2E OC-001…023, эта фаза
 // покрывает OC-001, OC-003…OC-013, OC-015, OC-016, OC-019…OC-023; OC-002/OC-014 — фаза 06
@@ -30,8 +31,11 @@ test.describe('OC: новый заказ — карточка вместо пр�
     await expect(card.equipmentLocked).toBeVisible();
     await expect(card.subtasksLocked).toBeVisible();
 
-    const title = uniq('OC-001 заказ');
-    await card.fillHeader({ title, client: client.company_name, column: columnByName(columns, 'Приёмка').name });
+    const plate = uniqPlate();
+    const carType = await adminApi.createEquipmentType({ name: uniq('OC-001 тип') });
+    await adminApi.createEquipment(client.id, { type_id: carType.id, plate_number: plate, brand: 'Kia', model: 'Rio' });
+    await card.newOrder.useFoundCar(plate);
+    await card.fillHeader({ column: columnByName(columns, 'Приёмка').name });
     await card.save();
 
     await expect(card.modal).toBeVisible();

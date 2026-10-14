@@ -16,6 +16,10 @@ const equipmentFieldMax = 1000
 // §Validation Fields: POST /tasks/:id/equipment, «оборудование другого клиента»).
 const msgForeignClient = "foreign_client"
 
+// msgPlateMismatch — найденный автомобиль (equipment_id) с другим госномером, чем plate_number
+// нового заказа (тип нового автомобиля в архиве — общий msgArchived, ADR-004).
+const msgPlateMismatch = "plate_mismatch"
+
 func (in TaskEquipmentCreateRequest) normalize() TaskEquipmentCreateRequest {
 	in.EquipmentID = strings.ToLower(strings.TrimSpace(in.EquipmentID)) // uuid — нижний регистр
 	in.Completeness = strings.TrimSpace(in.Completeness)

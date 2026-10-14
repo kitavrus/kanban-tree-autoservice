@@ -29,6 +29,33 @@ func (r *TaskEquipmentRepo) EquipmentClient(ctx context.Context, tx pgx.Tx, equi
 	return clientID, err
 }
 
+// OrderCar — автомобиль для нового заказа по госномеру (CarForOrder).
+type OrderCar struct {
+	ClientID    string
+	PlateNumber string
+	Brand       string
+	Model       string
+}
+
+// CarForOrder — действующий автомобиль действующего клиента под FOR SHARE (как
+// EquipmentClient: удаление единицы/клиента либо уже видно, либо ждёт создание заказа).
+// Нет/удалён → errNotFound.
+func (r *TaskEquipmentRepo) CarForOrder(ctx context.Context, tx pgx.Tx, equipmentID string) (*OrderCar, error) {
+	var c OrderCar
+	err := tx.QueryRow(ctx, `
+		SELECT e.client_id, e.plate_number, e.brand, e.model
+		FROM equipment e JOIN clients cl ON cl.id = e.client_id AND cl.deleted_at IS NULL
+		WHERE e.id = $1 AND e.deleted_at IS NULL
+		FOR SHARE OF e`, equipmentID).Scan(&c.ClientID, &c.PlateNumber, &c.Brand, &c.Model)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 // Insert — идемпотентно (ON CONFLICT DO NOTHING): повторный POST той же единицы — 201 без
 // изменений, не ошибка (design-errors.md §Validation Fields). inserted=false — единица уже
 // была в заказе.

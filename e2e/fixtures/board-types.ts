@@ -208,6 +208,8 @@ export type CardEquipment = {
   /** Единица мягко удалена — бейдж «удалён» в блоке «Оборудование» (soft-delete-clients §6.5). */
   is_deleted: boolean;
   type_name: string;
+  /** Госномер автомобиля. */
+  plate_number: string;
   brand: string;
   model: string;
   serial: string;

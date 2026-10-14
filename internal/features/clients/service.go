@@ -326,3 +326,34 @@ func toEquipmentResponse(e Equipment) EquipmentResponse {
 		CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,
 	}
 }
+
+// lookupDefaultLimit/lookupMaxLimit — поиск автомобиля по госномеру: совпадений единицы
+// (перепроданный автомобиль у нескольких клиентов), лимит — защита от неограниченной выборки.
+const (
+	lookupDefaultLimit = 20
+	lookupMaxLimit     = 50
+)
+
+// LookupEquipment — GET /api/v1/equipment?plate_number=…: точное совпадение госномера без
+// учёта регистра/пробелов/дефисов; только действующие единицы действующих клиентов. Пустой
+// госномер → 400 plate_number: required (список всего оборудования этот адрес не отдаёт).
+func (s *Service) LookupEquipment(ctx context.Context, plate string, limit, offset int) (*EquipmentLookupResponse, error) {
+	plate = NormalizePlateNumber(plate)
+	if sqlutil.HasInvalidText(plate) {
+		return nil, errorspkg.Validation(errorspkg.Field{Name: "plate_number", Message: msgInvalidText})
+	}
+	compact := sqlutil.PlateCompact(plate)
+	if compact == "" {
+		return nil, errorspkg.Validation(errorspkg.Field{Name: "plate_number", Message: msgRequired})
+	}
+	if limit <= 0 {
+		limit = lookupDefaultLimit
+	}
+	limit = min(limit, lookupMaxLimit)
+	offset = max(offset, 0)
+	items, total, err := s.repo.LookupEquipmentByPlate(ctx, compact, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return &EquipmentLookupResponse{Items: items, Total: total, Limit: limit, Offset: offset}, nil
+}

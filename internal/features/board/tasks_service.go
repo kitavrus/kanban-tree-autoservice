@@ -13,9 +13,11 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/kitavrus/kanban-tree/internal/features/clients"
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
 	"github.com/kitavrus/kanban-tree/internal/filestore"
 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
 )
 
 // Actor — вызывающий пользователь (design-go-layers.md §Service Interface). Из
@@ -77,11 +79,16 @@ func (s *TaskService) Get(ctx context.Context, a Actor, idStr string) (*TaskResp
 // client/assignee → Insert (позиция в конец) → Reconcile (no-op без услуг; единообразие).
 func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest) (*TaskMutationResponse, error) {
 	in = in.normalize()
-	if f := in.validate(); len(f) > 0 {
+	car, f := in.prepare()
+	if len(f) > 0 {
 		return nil, errorspkg.Validation(f...)
 	}
 	if !a.IsAdmin && in.IsPaid != nil && *in.IsPaid {
 		return nil, ErrPaidAdminOnly
+	}
+	// нового клиента заводит только admin — то же правило, что у POST /api/v1/clients.
+	if !a.IsAdmin && car != nil && car.newClient != nil {
+		return nil, ErrClientCreateAdminOnly
 	}
 
 	var taskID int64
@@ -92,12 +99,22 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 			return columnRefError(err)
 		}
 
-		exists, err := s.repo.ClientExists(ctx, tx, in.ClientID)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return errorspkg.Validation(errorspkg.Field{Name: "client_id", Message: msgNotFound})
+		// Заказ по автомобилю: клиент/автомобиль резолвятся (либо создаются) в этой же tx —
+		// любой отказ ниже откатывает и нового клиента, и новый автомобиль.
+		clientID, title, equipmentID := in.ClientID, in.Title, ""
+		if car != nil {
+			clientID, title, equipmentID, err = s.resolveCar(ctx, tx, in, car)
+			if err != nil {
+				return err
+			}
+		} else {
+			exists, err := s.repo.ClientExists(ctx, tx, clientID)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return errorspkg.Validation(errorspkg.Field{Name: "client_id", Message: msgNotFound})
+			}
 		}
 
 		assigneeID := nilIfEmpty(in.AssigneeID)
@@ -123,7 +140,7 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 		}
 
 		created, err := s.repo.Insert(ctx, tx, taskRow{
-			Title: in.Title, ClientID: in.ClientID, ColumnID: in.ColumnID,
+			Title: title, ClientID: clientID, ColumnID: in.ColumnID,
 			AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
 			IsPaid: in.IsPaid != nil && *in.IsPaid, Position: pos, DescriptionHTML: descHTML,
 		}, a.ID)
@@ -131,6 +148,12 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 			return mapTaskFKError(err)
 		}
 		taskID = created.ID
+
+		if equipmentID != "" {
+			if _, err := s.equipment.Insert(ctx, tx, taskID, TaskEquipmentCreateRequest{EquipmentID: equipmentID}); err != nil {
+				return err
+			}
+		}
 
 		res, err := s.engine.Reconcile(ctx, tx, taskID, target.ConsumesStock, a.ID)
 		if err != nil {
@@ -143,6 +166,59 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 		return nil, err
 	}
 	return s.mutationResponse(ctx, a, taskID, reconcile)
+}
+
+// resolveCar — заказ по автомобилю (tx вызывающего): найденный автомобиль → его владелец
+// (сверка госномера и client_id), иначе новый автомобиль у client_id либо у нового клиента.
+// Возвращает клиента заказа, название (пустой title → «{Марка} {Модель} {ГОСНОМЕР}») и
+// автомобиль для task_equipment. Ошибки — Validation с путями полей формы.
+func (s *TaskService) resolveCar(ctx context.Context, tx pgx.Tx, in TaskCreateRequest, car *carOrder) (clientID, title, equipmentID string, err error) {
+	clientID, title = in.ClientID, in.Title
+	field := func(name, msg string) error {
+		return errorspkg.Validation(errorspkg.Field{Name: name, Message: msg})
+	}
+
+	if car.equipmentID != "" {
+		found, err := s.equipment.CarForOrder(ctx, tx, car.equipmentID)
+		if errors.Is(err, errNotFound) {
+			return "", "", "", field("equipment_id", msgNotFound)
+		}
+		if err != nil {
+			return "", "", "", err
+		}
+		if sqlutil.PlateCompact(found.PlateNumber) != sqlutil.PlateCompact(car.plate) {
+			return "", "", "", field("equipment_id", msgPlateMismatch)
+		}
+		if clientID != "" && clientID != found.ClientID {
+			return "", "", "", field("equipment_id", msgForeignClient)
+		}
+		if title == "" {
+			title = carTitle(found.Brand, found.Model, found.PlateNumber)
+		}
+		return found.ClientID, title, car.equipmentID, nil
+	}
+
+	if car.newClient != nil {
+		clientID, err = clients.CreateClientTx(ctx, tx, *car.newClient)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
+	equipmentID, err = clients.CreateEquipmentTx(ctx, tx, clientID, *car.newEquipment)
+	switch {
+	case errors.Is(err, clients.ErrOrderClientGone):
+		return "", "", "", field("client_id", msgNotFound)
+	case errors.Is(err, clients.ErrOrderTypeNotFound):
+		return "", "", "", field("new_equipment.type_id", msgNotFound)
+	case errors.Is(err, clients.ErrOrderTypeArchived):
+		return "", "", "", field("new_equipment.type_id", msgArchived)
+	case err != nil:
+		return "", "", "", err
+	}
+	if title == "" {
+		title = carTitle(car.newEquipment.Brand, car.newEquipment.Model, car.newEquipment.PlateNumber)
+	}
+	return clientID, title, equipmentID, nil
 }
 
 // Update — полная замена карточки (LWW по version). column_id сменился → шаги

@@ -28,6 +28,7 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, 
 	g.Post("/:id/equipment", h.CreateEquipment) // D19: без admin-guard
 
 	e := api.Group("/equipment", a.RequireAPI())
+	e.Get("", h.LookupEquipment) // ?plate_number= — поиск автомобиля для нового заказа
 	e.Get("/:id", h.GetEquipment)
 	e.Get("/:id/history", h.EquipmentHistory)
 	e.Put("/:id", admin, h.UpdateEquipment)

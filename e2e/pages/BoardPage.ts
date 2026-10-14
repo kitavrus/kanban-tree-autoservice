@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from '@playwright/test';
+import { NewOrderDialog } from './NewOrderDialog';
 
 // POM доски заказов «/» (design-go-layers.md §Frontend Modules testid-контракт,
 // эталон структуры — e2e/pages/ClientsPage.ts). Комбобоксы (client/column/assignee)
@@ -43,7 +44,11 @@ export class BoardPage {
   readonly toastWarnings: Locator;
   readonly dropdown: Locator;
 
+  /** Диалог «Новый заказ»: госномер, найденный/новый автомобиль, новый клиент. */
+  readonly newOrder: NewOrderDialog;
+
   constructor(readonly page: Page) {
+    this.newOrder = new NewOrderDialog(page);
     this.root = page.getByTestId('board-root');
     this.filters = page.getByTestId('board-filters');
     this.filterClient = page.getByTestId('filter-client');

@@ -274,8 +274,21 @@ func (r *Repo) CreateClient(ctx context.Context, in ClientInput) (*Client, error
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	c, err := insertClient(ctx, tx, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// insertClient — строка клиента + телефоны в транзакции вызывающего (общая для POST /clients
+// и атомарного создания заказа с новым клиентом, CreateClientTx).
+func insertClient(ctx context.Context, tx pgx.Tx, in ClientInput) (*Client, error) {
 	var c Client
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`INSERT INTO clients (company_name, address, contact_name, contact_position)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING id, company_name, address, contact_name, contact_position, version, created_at, updated_at`,
@@ -285,9 +298,6 @@ func (r *Repo) CreateClient(ctx context.Context, in ClientInput) (*Client, error
 		return nil, err
 	}
 	if err := insertPhones(ctx, tx, c.ID, in.Phones); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	c.Phones = in.Phones
@@ -442,20 +452,33 @@ func (r *Repo) CreateEquipment(ctx context.Context, clientID string, in Equipmen
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	id, err := insertEquipment(ctx, tx, clientID, in, specsJSON)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.GetEquipment(ctx, id)
+}
+
+// insertEquipment — блокировки «клиент → тип» и INSERT единицы в транзакции вызывающего
+// (общая для POST /clients/:id/equipment и атомарного создания заказа, CreateEquipmentTx).
+func insertEquipment(ctx context.Context, tx pgx.Tx, clientID string, in EquipmentInput, specsJSON []byte) (string, error) {
 	// soft-delete-clients DS-015: клиент читается FOR KEY SHARE с условием «не удалён» и
 	// держится до коммита — удаление клиента (FOR UPDATE) либо уже видно (errClientGone → 404),
 	// либо ждёт вставку и забирает новую единицу в удалённые вместе с клиентом.
 	var one int
-	err = tx.QueryRow(ctx, `SELECT 1 FROM clients WHERE id = $1::uuid AND deleted_at IS NULL FOR KEY SHARE`, clientID).Scan(&one)
+	err := tx.QueryRow(ctx, `SELECT 1 FROM clients WHERE id = $1::uuid AND deleted_at IS NULL FOR KEY SHARE`, clientID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, errClientGone
+		return "", errClientGone
 	}
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	// порядок блокировок: клиент → тип.
 	if err := lockLiveType(ctx, tx, in.TypeID); err != nil {
-		return nil, err
+		return "", err
 	}
 	var id string
 	err = tx.QueryRow(ctx,
@@ -464,12 +487,9 @@ func (r *Repo) CreateEquipment(ctx context.Context, clientID string, in Equipmen
 		 RETURNING id`,
 		clientID, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note, in.PlateNumber).Scan(&id)
 	if err != nil {
-		return nil, mapEquipmentFKViolation(err)
+		return "", mapEquipmentFKViolation(err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return r.GetEquipment(ctx, id)
+	return id, nil
 }
 
 // UpdateEquipment — полная замена (LWW, без version). check — валидация архивного типа
@@ -544,4 +564,36 @@ func (r *Repo) TypeOptions(ctx context.Context, currentTypeID string) ([]TypeOpt
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// LookupEquipmentByPlate — действующие единицы действующих клиентов с ТОЧНЫМ совпадением
+// госномера без учёта пробелов/дефисов (compact — sqlutil.PlateCompact, верхний регистр;
+// в БД госномер хранится нормализованным). Свежие — первыми.
+func (r *Repo) LookupEquipmentByPlate(ctx context.Context, compact string, limit, offset int) ([]EquipmentLookupItem, int, error) {
+	const where = ` FROM equipment e
+		 JOIN clients c ON c.id = e.client_id AND c.deleted_at IS NULL
+		 JOIN equipment_types t ON t.id = e.type_id
+		 WHERE e.deleted_at IS NULL AND e.plate_number <> '' AND `
+	cond := sqlutil.PlateCompactSQL("e.plate_number") + ` = $1`
+	var total int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*)`+where+cond, compact).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT e.id, e.client_id, c.company_name, e.type_id, t.name, e.plate_number, e.brand, e.model, e.serial`+
+			where+cond+` ORDER BY e.created_at DESC, e.id LIMIT $2 OFFSET $3`, compact, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []EquipmentLookupItem{}
+	for rows.Next() {
+		var it EquipmentLookupItem
+		if err := rows.Scan(&it.ID, &it.ClientID, &it.ClientName, &it.TypeID, &it.TypeName,
+			&it.PlateNumber, &it.Brand, &it.Model, &it.Serial); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, it)
+	}
+	return out, total, rows.Err()
 }
