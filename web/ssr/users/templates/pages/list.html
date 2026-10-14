@@ -1,0 +1,47 @@
+{{ define "actions" }}<a href="/users/new" class="btn btn-primary" data-testid="user-add">+ Сотрудник</a>{{ end }}
+{{ define "content" }}
+{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
+<form class="d-flex flex-wrap gap-2 mb-3" method="get" action="/users" data-testid="users-filters">
+  <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск: ФИО, логин, телефон" aria-label="Поиск" data-testid="filter-q">
+  <select class="form-select" style="max-width:200px" name="role" aria-label="Роль" data-testid="filter-role" onchange="this.form.submit()">
+    <option value="">Все роли</option>
+    <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
+    <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
+  </select>
+  <select class="form-select" style="max-width:200px" name="status" aria-label="Статус" data-testid="filter-status" onchange="this.form.submit()">
+    <option value="">Любой статус</option>
+    <option value="active"{{ if eq .Status "active" }} selected{{ end }}>Активные</option>
+    <option value="blocked"{{ if eq .Status "blocked" }} selected{{ end }}>Заблокированные</option>
+  </select>
+  <button class="btn btn-outline-secondary" type="submit">Найти</button>
+  {{ if or .Q .Role .Status }}<a class="btn btn-link" href="/users" data-testid="filter-reset">Сбросить</a>{{ end }}
+</form>
+{{ if .Items }}
+<div class="table-responsive">
+<table class="table table-hover align-middle" data-testid="users-table">
+  <thead><tr><th>Сотрудник</th><th>Логин</th><th>Роль</th><th class="d-none d-md-table-cell">Телефон</th><th class="text-end">Активных заказов</th></tr></thead>
+  <tbody>
+  {{ range .Items }}
+    <tr data-testid="user-row" data-login="{{ .Login }}">
+      <td>
+        <div class="d-flex align-items-center gap-2">
+          <span class="app-avatar">{{ initials .Name }}</span>
+          <a href="/users/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
+          {{ if not .IsActive }}<span class="badge-off" data-testid="user-blocked">заблокирован</span>{{ end }}
+        </div>
+      </td>
+      <td>{{ .Login }}</td>
+      <td>{{ if eq .Role "admin" }}Администратор{{ else }}Исполнитель{{ end }}</td>
+      <td class="d-none d-md-table-cell">{{ .Phone }}</td>
+      <td class="text-end" data-testid="user-active-tasks">{{ with .ActiveTasks }}{{ . }}{{ else }}0{{ end }}</td>
+    </tr>
+  {{ end }}
+  </tbody>
+</table>
+</div>
+<p class="text-body-secondary small" data-testid="users-total">Сотрудников: {{ .Total }}{{ if gt .Total (len .Items) }} — показаны первые {{ len .Items }}, уточните поиск{{ end }}</p>
+{{ else }}
+<div class="empty-state" data-testid="users-empty">{{ if or .Q .Role .Status }}Никого не нашли по фильтрам.{{ else }}Сотрудников пока нет.{{ end }}</div>
+{{ end }}
+<p class="text-body-secondary small mt-3">Администратор: справочники, сотрудники, колонки, оплата, удаление заказов. Исполнитель: доска, создание и редактирование заказов, статусы услуг, вложения.</p>
+{{ end }}

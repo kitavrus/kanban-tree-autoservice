@@ -1,0 +1,91 @@
+{"type": "stage_start", "stage": "0-setup", "ts": "2026-09-25T14:02:39+05:00"}
+{"type": "wait_start", "stage": "0-setup", "label": "стартовые вопросы pipeline", "ts": "2026-09-25T14:02:46+05:00"}
+{"type": "wait_end", "ts": "2026-09-25T14:04:16+05:00"}
+{"type": "stage_end", "stage": "0-setup", "status": "ok", "ts": "2026-09-25T14:04:16+05:00"}
+{"type": "stage_start", "stage": "1-research", "ts": "2026-09-25T14:04:23+05:00"}
+{"type": "handoff", "stage": "1-research", "kind": "bundle", "path": "1-research/input-bundle.md", "bytes": 1596, "rules": 1, "missing": 1, "passport_bytes": 1299, "ts": "2026-09-25T14:04:24+05:00"}
+{"type": "handoff", "stage": "1-research", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-25T14:04:24+05:00"}
+{"type": "handoff", "stage": "1-research", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-25T14:04:33+05:00"}
+{"type": "event_start", "stage": "1-research", "label": "fix-loop #1: artifact_lint file:line + size", "kind": "fix-loop", "ts": "2026-09-25T14:13:08+05:00"}
+{"type": "event_end", "stage": "1-research", "label": "fix-loop #1: artifact_lint file:line + size", "status": "ok", "ts": "2026-09-25T14:19:16+05:00"}
+{"type": "handoff", "stage": "1-research", "kind": "contract-clear", "ts": "2026-09-25T14:19:16+05:00"}
+{"type": "stage_end", "stage": "1-research", "status": "ok", "ts": "2026-09-25T14:19:16+05:00"}
+{"type": "stage_start", "stage": "2-spec-interview", "ts": "2026-09-25T14:19:26+05:00"}
+{"type": "handoff", "stage": "2-spec-interview", "kind": "bundle", "path": "2-spec-interview/input-bundle.md", "bytes": 17123, "rules": 3, "missing": 2, "passport_bytes": 1361, "ts": "2026-09-25T14:19:27+05:00"}
+{"type": "handoff", "stage": "2-spec-interview", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-25T14:19:27+05:00"}
+{"type": "wait_start", "stage": "2-spec-interview", "label": "spec-interview батч 1", "ts": "2026-09-25T14:21:26+05:00"}
+{"type": "wait_end", "ts": "2026-09-25T14:28:15+05:00"}
+{"type": "stage_start", "stage": "2.5-prd-review", "ts": "2026-09-25T14:29:22+05:00"}
+{"type": "wait_start", "stage": "2.5-prd-review", "label": "PRD review", "ts": "2026-09-25T14:29:22+05:00"}
+{"type": "wait_end", "ts": "2026-09-25T14:29:45+05:00"}
+{"type": "stage_end", "stage": "2.5-prd-review", "status": "ok", "ts": "2026-09-25T14:29:45+05:00"}
+{"type": "wait_start", "stage": "2-spec-interview", "label": "spec-interview батч 2", "ts": "2026-09-25T14:31:08+05:00"}
+{"type": "wait_end", "ts": "2026-09-25T14:35:06+05:00"}
+{"type": "handoff", "stage": "2-spec-interview", "kind": "contract-clear", "ts": "2026-09-25T14:37:01+05:00"}
+{"type": "stage_end", "stage": "2-spec-interview", "status": "ok", "ts": "2026-09-25T14:37:01+05:00"}
+{"type": "stage_start", "stage": "3-design", "ts": "2026-09-25T14:37:15+05:00"}
+{"type": "handoff", "stage": "3-design", "kind": "bundle", "path": "3-design/input-bundle.md", "bytes": 36888, "rules": 3, "missing": 0, "passport_bytes": 2399, "ts": "2026-09-25T14:37:15+05:00"}
+{"type": "handoff", "stage": "3-design", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-25T14:37:15+05:00"}
+{"type": "handoff", "stage": "3-design", "kind": "contract-clear", "ts": "2026-09-25T14:46:14+05:00"}
+{"type": "stage_end", "stage": "3-design", "status": "ok", "ts": "2026-09-25T14:46:14+05:00"}
+{"type": "stage_start", "stage": "4-swimlane", "ts": "2026-09-25T14:46:22+05:00"}
+{"type": "handoff", "stage": "4-swimlane", "kind": "bundle", "path": "4-swimlane/input-bundle.md", "bytes": 31875, "rules": 1, "missing": 0, "passport_bytes": 2575, "ts": "2026-09-25T14:46:22+05:00"}
+{"type": "handoff", "stage": "4-swimlane", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-25T14:46:23+05:00"}
+{"type": "handoff", "stage": "4-swimlane", "kind": "contract-clear", "ts": "2026-09-25T14:48:28+05:00"}
+{"type": "stage_end", "stage": "4-swimlane", "status": "ok", "ts": "2026-09-25T14:48:28+05:00"}
+{"type": "stage_start", "stage": "5-design-review", "ts": "2026-09-25T14:48:28+05:00"}
+{"type": "handoff", "stage": "5-design-review", "kind": "bundle", "path": "5-design-review/input-bundle.md", "bytes": 3373, "rules": 3, "missing": 0, "passport_bytes": 2575, "ts": "2026-09-25T14:48:28+05:00"}
+{"type": "handoff", "stage": "5-design-review", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-25T14:48:28+05:00"}
+{"type": "event_start", "stage": "5-design-review", "label": "fix-loop #1: mobile HIGH EQUIPMENT_TYPE_NAME_TAKEN", "kind": "fix-loop", "ts": "2026-09-25T14:52:28+05:00"}
+{"type": "event_end", "stage": "5-design-review", "label": "fix-loop #1: mobile HIGH EQUIPMENT_TYPE_NAME_TAKEN", "status": "ok", "ts": "2026-09-25T14:54:25+05:00"}
+{"type": "handoff", "stage": "5-design-review", "kind": "contract-clear", "ts": "2026-09-25T14:56:44+05:00"}
+{"type": "stage_end", "stage": "5-design-review", "status": "ok", "ts": "2026-09-25T14:56:44+05:00"}
+{"type": "wait_start", "stage": "", "label": "подтверждение дизайна", "ts": "2026-09-25T14:56:44+05:00"}
+{"type": "wait_end", "ts": "2026-09-25T14:57:09+05:00"}
+{"type": "stage_start", "stage": "6-plan", "ts": "2026-09-25T14:57:10+05:00"}
+{"type": "handoff", "stage": "6-plan", "kind": "bundle", "path": "6-plan/input-bundle.md", "bytes": 4748, "rules": 3, "missing": 1, "passport_bytes": 2648, "ts": "2026-09-25T14:57:10+05:00"}
+{"type": "handoff", "stage": "6-plan", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-25T14:57:10+05:00"}
+{"type": "handoff", "stage": "6-plan", "kind": "contract-clear", "ts": "2026-09-25T15:03:36+05:00"}
+{"type": "stage_end", "stage": "6-plan", "status": "ok", "ts": "2026-09-25T15:03:36+05:00"}
+{"type": "wait_start", "stage": "", "label": "подтверждение плана", "ts": "2026-09-25T15:03:36+05:00"}
+{"type": "wait_end", "ts": "2026-09-25T21:00:48+05:00"}
+{"type": "stage_start", "stage": "7-executing", "ts": "2026-09-25T21:00:48+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "01", "layer": "frontend", "path": "6-plan/phase-bundles/phase-01-input.md", "bytes": 33825, "phase_source": "ok", "ts": "2026-09-25T21:00:48+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "02", "layer": "backend", "path": "6-plan/phase-bundles/phase-02-input.md", "bytes": 50328, "phase_source": "ok", "ts": "2026-09-25T21:14:26+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "03", "layer": "backend", "path": "6-plan/phase-bundles/phase-03-input.md", "bytes": 52633, "phase_source": "ok", "ts": "2026-09-25T21:23:18+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "04", "layer": "frontend", "path": "6-plan/phase-bundles/phase-04-input.md", "bytes": 34963, "phase_source": "ok", "ts": "2026-09-25T21:38:46+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "05", "layer": "backend", "path": "6-plan/phase-bundles/phase-05-input.md", "bytes": 52715, "phase_source": "ok", "ts": "2026-09-25T22:01:24+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "06", "layer": "frontend", "path": "6-plan/phase-bundles/phase-06-input.md", "bytes": 36363, "phase_source": "ok", "ts": "2026-09-25T23:39:28+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "07", "layer": "backend", "path": "6-plan/phase-bundles/phase-07-input.md", "bytes": 52426, "phase_source": "ok", "ts": "2026-09-25T23:58:55+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "08", "layer": "frontend", "path": "6-plan/phase-bundles/phase-08-input.md", "bytes": 35232, "phase_source": "ok", "ts": "2026-09-26T00:08:48+05:00"}
+{"type": "mark", "stage": "7-executing", "label": "EQ-004 spec rows 3 vs 2", "kind": "e2e-fail", "ts": "2026-09-26T00:26:17+05:00"}
+{"type": "event_start", "stage": "7-executing", "label": "fix-loop phase08 #1: EQ-004", "kind": "fix-loop", "ts": "2026-09-26T00:26:17+05:00"}
+{"type": "event_end", "stage": "7-executing", "label": "fix-loop phase08 #1: EQ-004", "status": "ok", "ts": "2026-09-26T00:29:13+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "09", "layer": "frontend", "path": "6-plan/phase-bundles/phase-09-input.md", "bytes": 35019, "phase_source": "ok", "ts": "2026-09-26T00:29:13+05:00"}
+{"type": "event_end", "stage": "7-executing", "label": "e2e-full сводный гейт", "status": "ok", "ts": "2026-09-26T00:37:58+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-26T00:38:08+05:00"}
+{"type": "stage_end", "stage": "7-executing", "status": "ok", "ts": "2026-09-26T00:38:50+05:00"}
+{"type": "stage_start", "stage": "8-code-review", "ts": "2026-09-26T00:38:59+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 16383, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 268145, "ts": "2026-09-26T00:38:59+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.5, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-26T00:38:59+05:00"}
+{"type": "event_start", "stage": "8-code-review", "label": "fix-loop #1: review MEDIUM 1-4 + LOW 500/PRG", "kind": "fix-loop", "ts": "2026-09-26T00:44:12+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "07", "layer": "backend", "path": "6-plan/phase-bundles/phase-07-input.md", "bytes": 52426, "phase_source": "ok", "ts": "2026-09-26T00:44:12+05:00"}
+{"type": "event_end", "stage": "8-code-review", "label": "fix-loop #1: review MEDIUM 1-4 + LOW 500/PRG", "status": "ok", "ts": "2026-09-26T01:11:27+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 17537, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 291272, "ts": "2026-09-26T01:11:34+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.6, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.1}], "ts": "2026-09-26T01:11:34+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 17848, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 295545, "ts": "2026-09-26T01:20:40+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.5, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-26T01:20:40+05:00"}
+{"type": "stage_end", "stage": "8-code-review", "status": "ok", "ts": "2026-09-26T01:21:53+05:00"}
+{"type": "stage_start", "stage": "9-validation", "ts": "2026-09-26T01:22:01+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-26T01:23:10+05:00"}
+{"type": "wait_start", "stage": "9-validation", "label": "watch-gate финал", "ts": "2026-09-26T01:26:37+05:00"}
+{"type": "wait_end", "ts": "2026-09-26T07:04:39+05:00"}
+{"type": "stage_end", "stage": "9-validation", "status": "ok", "ts": "2026-09-26T07:04:39+05:00"}
+{"type": "stage_start", "stage": "10-qa", "ts": "2026-09-26T07:04:46+05:00"}
+{"type": "handoff", "stage": "10-qa", "kind": "bundle", "path": "10-qa/input-bundle.md", "bytes": 55237, "rules": 10, "missing": 1, "passport_bytes": 3280, "ts": "2026-09-26T07:04:46+05:00"}
+{"type": "handoff", "stage": "10-qa", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-26T07:04:46+05:00"}
+{"type": "handoff", "stage": "10-qa", "kind": "contract-clear", "ts": "2026-09-26T07:12:59+05:00"}
+{"type": "stage_end", "stage": "10-qa", "status": "ok", "ts": "2026-09-26T07:12:59+05:00"}
+{"type": "stage_start", "stage": "11-report", "ts": "2026-09-26T07:12:59+05:00"}
+{"type": "handoff", "stage": "11-report", "kind": "bundle", "path": "11-report/input-bundle.md", "bytes": 13450, "rules": 9, "missing": 1, "passport_bytes": 3337, "ts": "2026-09-26T07:12:59+05:00"}
+{"type": "stage_end", "stage": "11-report", "status": "ok", "ts": "2026-09-26T07:15:02+05:00"}

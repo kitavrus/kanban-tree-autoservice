@@ -1,0 +1,55 @@
+{{ define "content" }}
+<div id="del" data-testid="deleted-root" style="min-width:0">
+  <!-- Вкладки по видам записей со счётчиками (рисует js/deleted.js: «Заказы», «Перемещения») -->
+  <ul class="nav nav-tabs mb-3" id="del-tabs" data-testid="deleted-tabs" role="tablist"></ul>
+
+  <!-- Фильтры: сочетание по «И», значения — в адресной строке -->
+  <div class="d-flex flex-wrap align-items-start gap-2 mb-3" data-testid="deleted-filters">
+    <div style="flex:1 1 220px;max-width:320px;min-width:0">
+      <input type="search" class="form-control form-control-sm" id="del-q" placeholder="Поиск" aria-label="Поиск" autocomplete="off" data-testid="deleted-filter-q">
+      <div class="invalid-feedback" id="del-q-error" data-testid="deleted-filter-q-error"></div>
+    </div>
+    <div style="min-width:0">
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <label class="small text-body-secondary mb-0" for="del-from">Удалено с</label>
+        <input type="date" class="form-control form-control-sm" id="del-from" style="max-width:150px" data-testid="deleted-filter-from">
+        <label class="small text-body-secondary mb-0" for="del-to">по</label>
+        <input type="date" class="form-control form-control-sm" id="del-to" style="max-width:150px" data-testid="deleted-filter-to">
+      </div>
+      <div class="text-danger small d-none" id="del-period-error" data-testid="deleted-filter-period-error"></div>
+    </div>
+    <select class="form-select form-select-sm" id="del-by" data-native="1" style="max-width:220px" aria-label="Кто удалил" data-testid="deleted-filter-by">
+      <option value="">Кто удалил: все</option>
+    </select>
+    <button type="button" class="btn btn-link btn-sm ms-auto" id="del-reset" data-testid="deleted-filter-reset">Сбросить</button>
+  </div>
+
+  <!-- Предупреждения после восстановления: не исчезает сам, закрывается крестиком.
+       Жёлтый блок (DS-033): app.css перекрашивает .alert-warning в нейтральный серо-синий
+       (--bs-secondary; в тёмной теме контраст ниже 4.5), поэтому цвета заданы родными
+       warning-токенами Bootstrap — как блок предупреждений экрана «Перемещения». -->
+  <div class="alert alert-warning bg-warning-subtle text-warning-emphasis border-warning-subtle d-none" id="del-warnings" data-testid="deleted-warnings" role="alert">
+    <button type="button" class="btn-close float-end" id="del-warnings-close" aria-label="Закрыть" data-testid="deleted-warnings-close"></button>
+    <div id="del-warnings-body"></div>
+  </div>
+
+  <div class="text-body-secondary small d-none mb-2" id="del-loading" data-testid="deleted-loading" role="status">Загрузка…</div>
+  <div class="table-responsive d-none" id="del-table-wrap">
+    <table class="table table-hover align-middle" data-testid="deleted-table">
+      <thead><tr><th>Что удалено</th><th>Причина</th><th>Кто удалил</th><th>Когда</th><th></th></tr></thead>
+      <tbody id="del-tbody"></tbody>
+    </table>
+  </div>
+  <div class="empty-state d-none" id="del-empty" data-testid="deleted-empty"></div>
+
+  <div class="d-flex flex-wrap align-items-center gap-2 mt-2 d-none" id="del-pager" data-testid="deleted-pager">
+    <button type="button" class="btn btn-outline-secondary btn-sm" id="del-prev" data-testid="deleted-prev">Назад</button>
+    <button type="button" class="btn btn-outline-secondary btn-sm" id="del-next" data-testid="deleted-next">Вперёд</button>
+    <span class="text-body-secondary small" id="del-shown" data-testid="deleted-shown"></span>
+  </div>
+</div>
+{{ end }}
+
+{{ define "scripts" }}
+<script src="/assets/ssr-shared/js/deleted.js"></script>
+{{ end }}

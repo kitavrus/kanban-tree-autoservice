@@ -1,0 +1,34 @@
+=== AC-005: PUT version conflict (2 сохранения одним version=1) ===
+1) PUT version=1 (company_name v2) -> 200, version=2
+2) повтор PUT version=1 (HACK) -> 409 CLIENT_VERSION_CONFLICT, message «Карточку уже изменил другой пользователь — ваши правки не сохранены»
+3) GET после конфликта -> данные = v2 (company_name="ООО Ромашка v2"), НЕ HACK -> правки победителя не потеряны, правки проигравшего не применены.
+4) PUT без version -> 400 VALIDATION {version: required}
+
+=== AC-006: DELETE client -> CASCADE ===
+DELETE /clients/{id} (2 equipment внутри) -> 204
+GET /clients/{id} -> 404 CLIENT_NOT_FOUND
+GET /equipment/{id} (принадлежавший клиенту) -> 404 EQUIPMENT_NOT_FOUND (CASCADE подтверждён)
+повторный DELETE -> 404 CLIENT_NOT_FOUND (идемпотентность подтверждена)
+
+=== AC-012: RESTRICT на equipment_type_id при использовании ===
+DELETE /equipment-types/{id используемого типа} -> 409 EQUIPMENT_TYPE_IN_USE (RESTRICT FK сработал)
+PUT is_active:false -> 200 (архивация вместо удаления)
+POST /clients/{id}/equipment с архивным типом -> 400 VALIDATION {type_id: archived}
+GET /equipment/{id существующего с архивным типом} -> type_is_active:false, сама единица не тронута
+PUT существующей единицы с тем же архивным типом (не меняя тип) -> 200 (per LV-013, разрешено)
+GET /equipment-types?include_archived=true (admin) -> архивный тип виден
+DELETE неиспользуемого типа -> 204
+
+=== AC-011: уникальность lower(btrim(name)) ===
+POST "QA Принтер" -> 201
+POST " qa принтер " (тот же с учётом регистра/пробелов) -> 409 EQUIPMENT_TYPE_NAME_TAKEN
+
+=== Class 5: state machine equipment_types.is_active (архив/восстановление) ===
+Повторная архивация уже архивного типа (idempotent PUT is_active:false x2) -> 200, без ошибки, без дублей
+Восстановление (is_active:true) -> 200
+PUT без is_active -> 400 {is_active: required}
+
+=== Известная проблема (review LOW #3, подтверждена, НЕ новый finding) ===
+PUT /equipment-types/{id} с ОДНОВРЕМЕННО невалидным name="" И отсутствующим is_active
+-> вернулась ТОЛЬКО ошибка is_active (ранний return в handler.go:67 из code-review LOW #3);
+ошибка name пропущена. Соответствует известной проблеме из 8-code-review/output.md (LOW, "можно в следующем PR").

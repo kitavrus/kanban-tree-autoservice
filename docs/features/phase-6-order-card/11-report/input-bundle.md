@@ -1,0 +1,234 @@
+# Input Bundle: phase-6-order-card / стадия 11-report — generated 2026-09-27 16:24
+
+> Твой ЕДИНСТВЕННЫЙ документный вход (пайп-контракт). Upstream-доки напрямую НЕ читать;
+> точечный grep по конкретному ID (DS-NNN/AC-NNN/TS-NNN) — разрешён. Отсутствие нужного
+> факта в бандле = сигнал оркестратору (дырка контракта), не повод читать всё.
+
+## Источник: 1-research/output.md [verdict]
+---
+stage: 1-research
+feature: phase-6-order-card
+tier: M
+---
+# Research: phase-6-order-card
+
+## Источник: 2-spec-interview/output.md [verdict]
+---
+stage: 2-spec-interview
+feature: phase-6-order-card
+tier: M
+---
+# Spec: Полная карточка заказа (фаза 6)
+
+## Источник: 3-design/output.md [verdict]
+---
+stage: 3-design
+feature: phase-6-order-card
+tier: M
+---
+# Design: phase-6-order-card — полная карточка заказа
+
+## Источник: 5-design-review/output.md [verdict]
+---
+stage: 5-design-review
+feature: phase-6-order-card
+tier: M
+verdict: APPROVED
+high: 0
+medium: 0
+low: 2
+---
+# Design Review: phase-6-order-card — APPROVED
+
+## Источник: 8-code-review/output.md [verdict]
+---
+stage: 8-code-review
+feature: phase-6-order-card
+tier: M
+verdict: APPROVED
+high: 0
+medium: 0
+low: 3
+---
+# Code Review: phase-6-order-card — APPROVED
+
+## Источник: 9-validation/output.md [verdict]
+---
+stage: 9-validation
+feature: phase-6-order-card
+tier: M
+---
+# Validation: phase-6-order-card — PASS
+
+## Источник: 10-qa/output.md [verdict]
+---
+stage: 10-qa
+feature: phase-6-order-card
+tier: M
+verdict: APPROVED
+high: 0
+medium: 0
+low: 1
+---
+# QA: phase-6-order-card — APPROVED
+
+## Источник: 0-setup/timeline.md [full]
+# Хронометраж: phase-6-order-card
+
+Обновлено: 2026-09-27T16:24:44+05:00
+
+## Стадии
+
+| Стадия | Начало | Конец | Длит. | Ожидание | Чистое | Рестарты | Переделки |
+|---|---|---|---|---|---|---|---|
+| 0-setup | 27.09 10:35 | 27.09 10:36 | 44с | 44с | 0с | — | — |
+| 1-research | 27.09 10:36 | 27.09 10:49 | 12м 32с | — | 12м 32с | — | — |
+| 2-spec-interview | 27.09 10:49 | 27.09 11:01 | 12м 52с | 7м 30с | 5м 22с | — | — |
+| 3-design | 27.09 11:01 | 27.09 11:13 | 11м 48с | — | 11м 48с | — | — |
+| 4-swimlane | 27.09 11:13 | 27.09 11:16 | 2м 45с | — | 2м 45с | — | — |
+| 5-design-review | 27.09 11:16 | 27.09 11:31 | 15м 25с | — | 15м 25с | — | 6м 32с |
+| 6-plan | 27.09 11:31 | 27.09 11:38 | 6м 38с | — | 6м 38с | — | — |
+| 7-executing | 27.09 11:38 | 27.09 15:25 | 3ч 46м | — | 3ч 46м | — | 20м 09с |
+| 8-code-review | 27.09 15:25 | 27.09 16:07 | 42м 20с | — | 42м 20с | — | 28м 59с |
+| 9-validation | 27.09 16:07 | 27.09 16:11 | 4м 20с | — | 4м 20с | — | — |
+| 10-qa | 27.09 16:11 | 27.09 16:24 | 13м 02с | — | 13м 02с | — | — |
+| **Итого (union)** | 27.09 10:35 | 27.09 16:24 | **5ч 48м** | **8м 14с** | **5ч 40м** |  | **55м 40с** |
+
+Wall-clock (первое→последнее событие журнала): **5ч 48м**; застаймлено (union стадий): 5ч 48м.
+
+## События (fix-loop / повторные гейты / ошибки)
+
+| Стадия | Тип | Событие | Начало | Длит. | Статус |
+|---|---|---|---|---|---|
+| 5-design-review | fix-loop | fix-loop #1: swimlane DTO + mobile H-01 self-race + backfill position | 27.09 11:25 | 6м 32с | ok |
+| 7-executing | e2e-fail | полный E2E #1: 104/110, catalog/users — изоляция от объёма dev-БД | 27.09 15:04 | — | — |
+| 7-executing | fix-loop | fix-loop: изоляция catalog/users E2E | 27.09 15:04 | 20м 09с | ok |
+| 8-code-review | fix-loop | fix-loop #1: спаны, generation/order в task-card.js, шапка, коды 404 | 27.09 15:30 | 28м 59с | ok |
+
+## Инструменты (тайминги гейтов/чекеров)
+
+| Время | Инструмент | Статус | Итого | Шаги (по убыванию) |
+|---|---|---|---|---|
+| 27.09 15:23 | e2e_evidence | PASS | 0с | status:passed 0s |
+| 27.09 15:25 | review_bundle | PASS | 1с | go_naming 0.1s · api_conventions 0.1s · contract 0.1s · date_bound 0.1s · live_suite 0.1s · +4 шагов (0.1s) |
+| 27.09 15:59 | review_bundle | PASS | 0с | date_bound 0.1s · live_suite 0.1s · fixture_sync 0.1s · go_naming 0.0s · api_conventions 0.0s · +4 шагов (0.0s) |
+| 27.09 16:11 | e2e_evidence | PASS | 0с | status:passed 0s |
+
+## ⚠ BLIND-GAP — интервалы без записей журнала (>5 мин)
+
+Тяжёлый прогон обязан обрамляться `event-start`/`event-end` (§EE anti-polling):
+без них нельзя отличить фоновый прогон от sleep-поллинга.
+
+| Стадия | Начало | Конец | Длит. |
+|---|---|---|---|
+| 8-code-review | 27.09 15:30 | 27.09 15:59 | 28м 59с |
+| 10-qa | 27.09 16:11 | 27.09 16:24 | 13м 02с |
+| 1-research | 27.09 10:36 | 27.09 10:49 | 12м 32с |
+| 3-design | 27.09 11:01 | 27.09 11:13 | 11м 48с |
+| 5-design-review | 27.09 11:16 | 27.09 11:25 | 8м 52с |
+| 8-code-review | 27.09 15:59 | 27.09 16:07 | 8м 03с |
+| 6-plan | 27.09 11:31 | 27.09 11:38 | 6м 38с |
+| 5-design-review | 27.09 11:25 | 27.09 11:31 | 6м 32с |
+| 8-code-review | 27.09 15:25 | 27.09 15:30 | 5м 16с |
+
+Суммарно вне наблюдения: **1ч 41м** (9 интервал(ов)).
+
+## Пайп-передачи (§3.6: бандлы, контракты)
+
+| Время | Стадия | Вид | Артефакт | Размер | Детали |
+|---|---|---|---|---|---|
+| 27.09 10:36 | 1-research | bundle | 1-research/input-bundle.md | 1KB | правил 1, MISSING 1; паспорт 1KB |
+| 27.09 10:36 | 1-research | contract-emit | — | — | mode warn |
+| 27.09 10:49 | 1-research | contract-clear | — | — | — |
+| 27.09 10:49 | 2-spec-interview | bundle | 2-spec-interview/input-bundle.md | 9KB | правил 3, MISSING 2; паспорт 1KB |
+| 27.09 10:49 | 2-spec-interview | contract-emit | — | — | mode warn |
+| 27.09 11:01 | 2-spec-interview | contract-clear | — | — | — |
+| 27.09 11:01 | 3-design | bundle | 3-design/input-bundle.md | 31KB | правил 3, MISSING 0; паспорт 2KB |
+| 27.09 11:01 | 3-design | contract-emit | — | — | mode warn |
+| 27.09 11:13 | 3-design | contract-clear | — | — | — |
+| 27.09 11:13 | 4-swimlane | bundle | 4-swimlane/input-bundle.md | 31KB | правил 1, MISSING 0; паспорт 2KB |
+| 27.09 11:13 | 4-swimlane | contract-emit | — | — | mode warn |
+| 27.09 11:16 | 4-swimlane | contract-clear | — | — | — |
+| 27.09 11:16 | 5-design-review | bundle | 5-design-review/input-bundle.md | 3KB | правил 3, MISSING 0; паспорт 2KB |
+| 27.09 11:16 | 5-design-review | contract-emit | — | — | mode warn |
+| 27.09 11:31 | 5-design-review | contract-clear | — | — | — |
+| 27.09 11:31 | 6-plan | bundle | 6-plan/input-bundle.md | 4KB | правил 3, MISSING 1; паспорт 2KB |
+| 27.09 11:31 | 6-plan | contract-emit | — | — | mode warn |
+| 27.09 11:38 | 6-plan | contract-clear | — | — | — |
+| 27.09 11:38 | 7-executing | phase-bundle | 6-plan/phase-bundles/phase-01-input.md | 54KB | фаза 01 (backend) |
+| 27.09 11:38 | 7-executing | contract-emit | — | — | mode warn |
+| 27.09 11:47 | 7-executing | phase-bundle | 6-plan/phase-bundles/phase-02-input.md | 59KB | фаза 02 (backend) |
+| 27.09 12:12 | 7-executing | phase-bundle | 6-plan/phase-bundles/phase-03-input.md | 35KB | фаза 03 (frontend) |
+| 27.09 13:02 | 7-executing | phase-bundle | 6-plan/phase-bundles/phase-04-input.md | 55KB | фаза 04 (backend) |
+| 27.09 13:18 | 7-executing | phase-bundle | 6-plan/phase-bundles/phase-05-input.md | 30KB | фаза 05 (frontend) |
+| 27.09 14:29 | 7-executing | phase-bundle | 6-plan/phase-bundles/phase-06-input.md | 28KB | фаза 06 (frontend) |
+| 27.09 15:25 | 7-executing | contract-clear | — | — | — |
+| 27.09 15:25 | 8-code-review | bundle | 8-code-review/input-bundle.md | 17KB | чекеры 8✅/0❌/1⚠; патчи 424KB |
+| 27.09 15:59 | 8-code-review | bundle | 8-code-review/input-bundle.md | 19KB | чекеры 8✅/0❌/1⚠; патчи 446KB |
+| 27.09 16:11 | 10-qa | bundle | 10-qa/input-bundle.md | 65KB | правил 10, MISSING 1; паспорт 3KB |
+| 27.09 16:11 | 10-qa | contract-emit | — | — | mode warn |
+| 27.09 16:24 | 10-qa | contract-clear | — | — | — |
+
+Бандлов: 15, суммарно 449KB — весь документный контекст, переданный между стадиями.
+Нарушения пайп-контракта (context-violations.jsonl): `1-research`: 2, `2-spec-interview`: 3, `4-swimlane`: 2, `5-design-review`: 3, `6-plan`: 2, `7-executing`: 8.
+
+## Ожидание пользователя
+
+| Стадия | Причина | Начало | Длит. |
+|---|---|---|---|
+| 0-setup | стартовые вопросы | 27.09 10:35 | 44с |
+| 2-spec-interview | spec батч 1 | 27.09 10:50 | 4м 18с |
+| 2-spec-interview | PRD review + батч 2 | 27.09 10:56 | 3м 12с |
+
+## Диаграмма
+
+```mermaid
+gantt
+    dateFormat YYYY-MM-DDTHH:mm:ss
+    axisFormat %H:%M
+    title Хронометраж phase-6-order-card
+    section Стадии
+    0-setup : 2026-09-27T10:35:46, 2026-09-27T10:36:30
+    1-research : 2026-09-27T10:36:30, 2026-09-27T10:49:02
+    2-spec-interview : 2026-09-27T10:49:02, 2026-09-27T11:01:54
+    3-design : 2026-09-27T11:01:54, 2026-09-27T11:13:42
+    4-swimlane : 2026-09-27T11:13:42, 2026-09-27T11:16:27
+    5-design-review : 2026-09-27T11:16:27, 2026-09-27T11:31:52
+    6-plan : 2026-09-27T11:31:52, 2026-09-27T11:38:30
+    7-executing : 2026-09-27T11:38:30, 2026-09-27T15:25:02
+    8-code-review : 2026-09-27T15:25:02, 2026-09-27T16:07:22
+    9-validation : 2026-09-27T16:07:22, 2026-09-27T16:11:42
+    10-qa : 2026-09-27T16:11:42, 2026-09-27T16:24:44
+    section Ожидание
+    стартовые вопросы : 2026-09-27T10:35:46, 2026-09-27T10:36:30
+    spec батч 1 : 2026-09-27T10:50:46, 2026-09-27T10:55:04
+    PRD review + батч 2 : 2026-09-27T10:56:35, 2026-09-27T10:59:47
+```
+
+## Источник: 6-plan/code-plan-status.md [head]
+# Code Plan Status: phase-6-order-card
+**Последнее обновление:** 2026-09-27T00:00:00Z
+
+| # | Фаза | Файл | Статус | Обновлено | Примечание |
+|---|------|------|--------|-----------|------------|
+| 1 | Миграция 0006 + errors 16-22 + lock-retry | [phase-01](code-plan-phase-01-migration-errors-lock.md) | completed | 2026-09-27T12:40:00Z | — |
+| 2 | Card API + оборудование заказа | [phase-02](code-plan-phase-02-card-api-equipment.md) | completed | 2026-09-27T13:40:00Z | — |
+| 3 | Услуги/товары + журнал + фикстуры API | [phase-03](code-plan-phase-03-subtasks-products-logs.md) | completed | 2026-09-27T15:35:00Z | E2E — 21/21 дважды подряд после рестарта сервера. Fix-loop 1: `TestCardSuite_Concurrency_TaskMovedRetry` (IT-013) флакал на CI-прогоне (`errTaskMovedRetry` после исчерпания `txMaxRetries` под 15-параллельным Move — легитимный ADR-100/ADR-104-исход, не баг) — тест переписан на допустимые исходы (успех либо именно `errTaskMovedRetry`) + гарантированная попытка после гонки; заодно найден и исправлен тот же класс переоценки инварианта в `TestCardSuite_Concurrency_DeleteVsUpdate` (IT-012): «ровно один успех» неверно для полностью сериализованных Lock Order транзакций (Update может успеть целиком раньше Delete — тогда успешны ОБЕ). `txMaxRetries` (3, ADR-104) оставлен без изменений — cross-cutting константа для всех мутаций доски, стресс синтетический (15 одновременных Move одной строки без пауз — нереалистичная нагрузка для проекта), риск регрессии для остальных фич не оправдан точечным флаком теста. Продукт (`internal/features/board/*.go`) не менялся — рестарт сервера не требовался. Проверено: `go test -tags=integration -race -count=8 -run TestCardSuite ./internal/features/board/` — 8/8 зелёных; `make lint` — 0 issues; `BASE=9580596 make test-integration-scoped` — OK (FULL, весь `./...` с `-race`). |
+| 4 | Печать актов SSR | [phase-04](code-plan-phase-04-print-ssr.md) | completed | 2026-09-27T16:45:00Z | `internal/ssr/render_test.go: TestRenderer_Errors` обновлён (board теперь держит свой layout `print` — конструктор без shared-набора больше не падает пустотой layouts/, только рендер с несуществующим layout "base"). `BASE=9580596 make test-integration-scoped` — FULL (миграция 0006 из фазы 01 в диапазоне), весь `./...` с `-race` зелёный. |
+| 5 | UI карточки task-card.js + E2E | [phase-05](code-plan-phase-05-ui-task-card.md) | completed | 2026-09-27T19:15:00Z | E2E полного набора фазы (order-card 19 + order-print 2 + board 15 + board-guards 4 + stock 2 = 42) — 42/42 дважды подряд. Testid-контракт сверен с design-go-layers.md §Frontend Modules (разрешено оркестратором точечно после дырки контракта в бандле) — приведён к дизайну: `card-equipment-remove` (было `-delete`), `card-equipment-history` (было `-history-item`), `card-product-*` вместо `card-subtask-product-*` (row/qty/price/hint/delete/add), `card-log-row`/`card-log-text`/`card-log-add` без префикса `subtask-` (оставлены свои `card-log-edit`/`card-log-delete` — совпали с дизайном сразу), общий `card-warning` вместо частного `-qty-error`; confirm-тексты выровнены под дизайн («Оборудование другого клиента будет убрано из заказа.», «Услуга удалится вместе с товарами и журналом.»). Найдено и исправлено в продукте по ходу прогонов: (1) баг `card-equipment-new-type` — Save-хендлер повторно искал `<select>` по testid ПОСЛЕ того, как combobox.js перенёс testid на видимую кнопку (HTMLButtonElement.value всегда '' → ложная валидация «укажите тип»); фикс — captured-ссылка на select с момента wire, не повторный querySelector; (2) тип оборудования в мини-форме переведён с одноразовой подгрузки `limit=200` на remote-поиск `q=` (та же гонка объёма данных, что и клиенты/услуги/товары — эталон remoteClientSearch); (3) `#card-equipment`/`#card-subtasks` дублировали testid контейнера из board.html на вложенный div — убрано; (4) `tasksQuery()` в board.js: лимит `500`→`1000` (сервер допускает до 1000, design-go-layers.md TaskListResponse) — на общей dev-БД накопилось 851 заказов, «Сбросить» (снимает `client_id`) переставал находить недавно созданные заказы на предыдущем лимите (BD-013). **Fix-loop 1 (координатор поймал 41/42, BD-006 детерминированно 3/3 на `--repeat-each=3`):** реальная причина — ДВЕ независимые проблемы объёма dev-БД, найденные прямыми запросами к API: (а) `GET /api/v1/columns?limit=100` (as-is) отдавал 100 из 102 колонок — BD-006 намеренно оставляет непустую «занятую» колонку неудалённой на каждом прогоне (гард 409 COLUMN_NOT_EMPTY), поэтому счёт колонок стабильно растёт со всех прошлых прогонов всех фаз; новая колонка теста получала `position` 101+ и НЕ попадала на доску вовсе (`columnByName` не находил её, `element(s) not found`) — лимит поднят до `1000` (тот же потолок сервера, что и у tasks); (б) настоящая причина «нестабильной» кнопки диалога — `cardHTML()` строил список «Переместить в…» ЭЖЕРНО для КАЖДОЙ карточки на КАЖДЫЙ `renderBoard()`, перебирая ВСЕ остальные колонки (`state.columns.filter(...).map(...)`) — при count(cards)×count(columns), выросших за счёт лимита 1000×100+, это на живом стенде раздувало DOM до сотен тысяч узлов на каждый рендер и вешало главный поток на десятки секунд, из-за чего Playwright видел «двигающийся»/«нестабильный» элемент диалога поверх ещё не отрисовавшейся доски. Фикс — ленивая генерация: `cardHTML()` рендерит пустой `<ul data-task-move-menu>`, пункты строятся ПО ФАКТУ открытия конкретного меню через один делегированный `show.bs.dropdown` на `#board` (bindBoardDelegates, биндится один раз в `init()`, переживает `innerHTML`-перерисовки); клик по `.task-move-link` — тоже один делегированный обработчик вместо N-биндинга. Результат: `BD-006 --repeat-each=3` — 3/3 (было 3/3 падений), время прогона упало с 13–27с до 9–10с на попытку; полный набор фазы — 42/42, общее время прогона снизилось (~1.5 мин против ~1.8–1.9 мин). Go build/lint/test — зелёные (Go в фазе не менялся). `node --check`/`tsc --noEmit` — чисто. Honest caveat: лимиты 1000 для tasks/columns — временный запас, не постраничная выдача; dev-БД растёт с каждым e2e-прогоном пайплайна (BD-006 добавляет +1 колонку/+1 заказ на каждый свой прогон, не только в этой фазе) — рано или поздно новый порог тоже будет исчерпан; настоящее решение (постраничная доска либо периодическая очистка dev-БД) — вне scope фазы «UI карточки заказа», стоит завести отдельной задачей. |
+| 6 | Доска: итоги/deep-link + полировка | [phase-06](code-plan-phase-06-board-integration-polish.md) | completed | 2026-09-27T20:45:00Z | `board.js`: `cardHTML` — `task-card-total`/`task-card-last-log`; `column-total` — сумма `total_amount` видимых карточек в копейках (`moneySum`/`fmtMoneyCents`, ADR-005), клиентский расчёт, конверт `GET /tasks` не расширен. Deep-link `/?task=N` — `openDeepLinkTask()` вызывается после полного рендера доски (справочники готовы); закрытие карточки ЛЮБЫМ путём и автозакрытие task-card.js на 404 «Заказ не найден» унифицированы через один `'hidden.bs.modal'`-листener → `stripTaskFromUrl()` (сохраняет прочие фильтры). E2E: OC-002 (order-card.spec.ts), BD-021 «итог заказа и колонки» (board.spec.ts, AC-013 — переименован из BD-020 во избежание коллизии id с существующим тестом адаптива; тест сам заводит журнал услуги через прямой API-запрос с CSRF страницы — AdminApi без метода журнала, он больше никому не нужен — и прогоняет цикл 375px×{light,dark} с проверкой видимости/отсутствия overflow именно для `task-card-total`/`task-card-last-log`/`column-total`, UI-scope DoD). Полный регресс-набор фазы (order-card 20 + order-print 2 + board 16 + board-guards 4 + stock 2 = 44) — 44/44 дважды подряд (после чего ещё раз 44/44 после доводки BD-021), headed, chromium. **Гигиена dev-стенда (доп. решение оркестратора):** autouse test-фикстура `_boardCleanup` (`e2e/fixtures/test.ts`) оборачивает `adminApi.createTask/createColumn` на время теста и удаляет созданные тестом заказы, затем колонки (`.catch` глотает уже-удалённые/непустые — тесты, намеренно проверяющие 409 COLUMN_NOT_EMPTY, не ломаются); чужие данные/seed-demo не трогает (не через обёрнутый adminApi). Fix-loop по ходу: `board-guards.spec.ts` BD-019b детерминированно падал (`catalog.gotoServices()` без `?q=` не находил свежесозданную услугу в разросшемся каталоге — тот же класс проблемы объёма dev-БД, что BD-006/BD-009/BD-013 фазы 05) — добавлен `?q=` фильтр по эталону `clients.goto('?q='+company)` из этого же файла; не связано с board.js/deep-link, но блокировало обязательный регресс-гейт фазы. Go в фазе не менялся: `go build`, `go test ./... -race -count=1`, `make lint` — 0 issues; `go test ./internal/features/board/... -tags integration` — OK; FZ-001…003 (`FuzzSubtaskUpdateBody/FuzzSubtaskProductBody/FuzzSubtaskLogAndEquipmentBody`, 10s smoke) — PASS; `api_conventions_check.py --feature board` / `go_naming_check.py --feature board` — PASS; `node --check`/`tsc --noEmit` — чисто. **Fix-loop 2 (сводный гейт, фазы 2/4 не этой фазы):** catalog.spec.ts CT-002/003/004/006×2 и users.spec.ts US-001 падали на тот же класс объёма dev-БД (catalog_categories: 702 услуг/589 товаров, products/services — по несколько сотен) — редиректы после создания/архивирования не сохраняют `q`, а списки без фильтра режутся `defaultLimit`; сорт по `lower(name)` — новая запись с произвольным uniq()-именем не попадает в первые N. Тесты правлены по эталону US-004/BD-019b: `?q=` сразу после редиректа, до проверки строки (CT-003, CT-004, US-001, превентивно ET-001/ET-003); для CT-006×2 добавлено повторное `?q=` перед переключением «Показать архивные» (архивный toggle тоже не сохраняет фильтр). CT-002 (панель категорий) фильтром не чинится — панель не принимает query вообще, а 589/702 категории уже выше `defaultLimit=500`, из-за чего свежесозданная категория пропадала и из левой панели, и из комбобокса выбора категории в форме товара/услуги (это и было причиной таймаута CT-003/CT-004 на `chooseCategory`/`chooseServiceCategory` — опция никогда не появлялась). Продуктовое решение (оркестратор санкционировал в FIX-LOOP): `internal/features/catalog/categories_service.go` — `defaultLimit`/`maxLimit` 500→2000 (общая для категорий/товаров/услуг константа каталога, обратно совместима — только поднимает потолок; в реальной мастерской категорий/товаров/услуг — десятки-сотни, 2000 — запас без нужды в UI-пагинации). `equipmenttypes` не тронут (свой отдельный `defaultLimit`, сейчас 357 записей < 500, гейт не падал). Требовался рестарт сервера — после него ретест CT-002/003/004 (без q-фикса, только продукт) не проводился в этом ходу. Проверено без рестарта: `make build`, `go test ./... -race -count=1`, `make lint` (0 issues), `BASE=9580596 make test-integration-scoped` (весь `./...`, FULL из-за миграции 0006 в диапазоне) — все зелёные; `cd e2e && npx tsc --noEmit -p .` — чисто; `npx playwright test tests/users.spec.ts -g US-001`, `tests/catalog.spec.ts -g CT-006`, `tests/equipment-types.spec.ts -g "ET-001|ET-003"` (только test-side правки, сервер не менялся) — все зелёные, включая повторный прогон. **Fix-loop 3 (Code Review 8-code-review/output.md, CHANGES REQUESTED):** HIGH Monitoring Spec — приведены имена/атрибуты спанов к дизайну (design-go-layers.md:186, output.md §Monitoring): `subtasks.create/update` → `subtasks.mutate`, `subtask_products.create/update` → `subtask_products.mutate` (везде добавлен `attribute.String("op", "create"/"update"/"delete")` + `subtask_id`/`product_id`); добавлены отсутствовавшие спаны — `tasks.card` (`CardService.Card`), `tasks.print` (`PrintData`), `subtask_logs.mutate` (Create/Update/DeleteLog — их не было вовсе), и на `DeleteSubtask`/`DeleteSubtaskProduct` (были без спана). MEDIUM-3 drift кодов — `card_service.go`: новый `lockRowsScopeFor(ctx, tx, taskID, notFound)` (обёртка над `lockRowsScope`, подменяет `ErrTaskNotFound` на переданный sentinel), применён в `UpdateSubtask`/`DeleteSubtask` → `ErrSubtaskNotFound`, в `CreateSubtaskProduct` → `ErrSubtaskNotFound` (путь `/subtasks/:id/products`), `UpdateSubtaskProduct`/`DeleteSubtaskProduct` → `ErrSubtaskProductNotFound` (путь `/subtask-products/:id`); `CreateSubtask` (путь `/tasks/:id/subtasks`) оставлен как есть — там `TASK_NOT_FOUND` корректен. MEDIUM-1 гонки ответов (`task-card.js`) — `openGeneration` (инкремент в `open()` и на `hidden.bs.modal`) + монотонный `requestSeq`/`appliedSeq` (`beginRequest()`/`applyCardIfCurrent()`): каждый row-запрос и `loadCard` несёт «билет», ответ применяется только если билет не устарел ни по поколению (закрыли A → открыли B), ни по seq (ответ из более раннего запроса пришёл позже ответа на более поздний — не откатывает состояние другой строки). MEDIUM-2 — `headerDirty` (true на любой input/change поля шапки в `bindStatic`, сбрасывается только в `loadCard`/`open`/`hidden.bs.modal`): `renderAll()` не трогает поля шапки, пока есть несохранённая правка — правка title/клиента больше не откатывается сохранением строки услуги. LOW — цена услуги: валидация как у qty/price товара (пусто/`≥0`, иначе `card-subtask-warning` у поля, без сохранения «abc»→0); `onRowError` — для ключей `subtask:*` берёт `card-subtask-warning` вместо первого `card-warning` вложенного товара; `flushRow` переустанавливает `aria-busy` перед КАЖДЫМ запросом цепочки (терялся после re-render предыдущего ответа); `board.js` — `onChanged` больше не дёргает `reloadAndRender()` на каждую row-мутацию, копит флаг и перечитывает доску один раз на `hidden.bs.modal`; `e2e/fixtures/test.ts` `_boardCleanup` — неожиданные (не 404/409) ошибки удаления идут в `console.warn` вместо молчаливого `.catch(() => {})`, добавлен `registerTaskForCleanup`-колбэк (фикстура теперь `(taskId) => void`) для заказов, созданных тестом в обход `adminApi.createTask`. Лимиты 1000/2000 — не тронуты (as-is). Проверено: `make build`, `go test ./... -race -count=1`, `make lint` (0 issues), `BASE=9580596 make test-integration-scoped` (весь `./...` с `-race`, включая `OrderCardLiveSuite`/`PrintLiveSuite`) — все зелёные; `node --check` (task-card.js, board.js), `cd e2e && npx tsc --noEmit -p .` — чисто. E2E Playwright прогон в этом ходу НЕ проводился (сервер `:8080` работает со старым бинарём — .go/.html изменены, нужен рестарт). **После рестарта сервера — добавлены E2E OC-024/025/026 (`e2e/tests/order-card.spec.ts`, новый describe «гонки применения ответов между карточками/строками»):** OC-024 — MEDIUM-1(а) (`page.route`+`route.fetch()` придерживает ТОЛЬКО доставку ответа PUT `/subtasks/:id`, закрыть A → открыть B → дождаться доставки — title/task-title карточки остаются B, `card-subtask-row` от A не подмешались); OC-025 — MEDIUM-2 (правка `task-title` без сохранения переживает мутацию статуса услуги И qty товара; после «Сохранить» — именно несохранённое значение ушло на сервер); OC-026 — MEDIUM-1(б) (ответ статуса услуги придержан за доставку, ответ qty товара (другой ключ) приходит первым — после оседания обоих не откатывается ни qty, ни статус). Регрессионность проверена вручную: с временно отключённым guard'ом (`applyCardIfCurrent` без проверки `ticket`/`appliedSeq`) OC-024 и OC-026 детерминированно падали на реальном значении (title откатывался на A; qty откатывался 3→1), OC-025 не зависит от этого guard'а (защищён отдельно `headerDirty`) и остаётся зелёным в обоих случаях — фикс подтверждён тестами, не совпадением. `card.subtaskStatus` после `combobox.js`-энхансмента — `<button>` без `data-row-key`, поэтому aria-busy этой же строки проверяется через `card.subtaskPrice`/`card.productQty` (эталон — OC-022/023). Полный регресс-набор фазы (order-card 23 + order-print 2 + board 16 + board-guards 4 + stock 2 = **47**) — **47/47 дважды подряд**, headed, chromium, реальный бинарь после рестарта. `cd e2e && npx tsc --noEmit -p .` — чисто (после добавления тестов, повторно). **Fix-loop 4 (повторный Code Review, два LOW, только `task-card.js`):** (1) окно в seq-guard'е — `appliedSeq`/`requestSeq` отражают порядок ОТПРАВКИ, а не commit на сервере; если ответ строки X отброшен как «устаревший» (пришёл позже применённого ответа строки Y), глобальный `card` не содержит уже подтверждённое сервером изменение X, и следующий PUT строки X, собранный из `baseGetter()` над таким `card`, откатывал бы это изменение полной заменой. Фикс — `rowQueue[key]` хранит `lastBody`/`lastBodySeq`: тело PUT строится из `q.lastBody` (если есть), а НЕ из глобального `card`; `q.lastBody` обновляется после КАЖДОГО успешного ответа ЭТОЙ строки из `resp.card` (гарантированно отражает состояние строки сразу после её собственного commit'а) — независимо от того, применился ли `resp.card` к `card` через `applyCardIfCurrent`. `baseGetter` во всех 4 местах (`subtasks`, `subtask-products` ×2 — qty/price, `equipment`) сменил сигнатуру на `function(source)`, `currentSubtask`/`currentProduct` получили опциональный параметр `source` (по умолчанию — глобальная `card`). (2) `loadCard` — `appliedSeq = ticket.seq` выставлялся безусловно; добавлена та же проверка, что у `applyCardIfCurrent`: применяется только при `ticket.gen === openGeneration && ticket.seq > appliedSeq` (симметрично защищает от позднего `loadCard`, напр. вызванного из `onRowError`, откатывающего уже более свежее состояние). Гейт: `node --check` — OK; `cd e2e && npx tsc --noEmit -p .` — чисто; `npx playwright test tests/order-card.spec.ts --project=chromium --headed --workers=1 --reporter=list` — **23/23 дважды подряд** (сервер уже с актуальным бинарём, JS подхватывается без рестарта). |
+
+## Легенда статусов
+- `pending` — не начата
+- `in_progress` — выполняется сейчас (в таблице ровно одна фаза с этим статусом)
+- `completed` — завершена, все Definition of Done выполнены
+- `blocked` — заблокирована (указать причину в «Примечание»)
+
+## Паспорт (выжимка)
+# Passport: phase-6-order-card (generated — руками не править; stage_bundle.py)
+**Tier:** M | **Совместимость:** ? (pipeline-doctrine.md §CM-1; ? → уточни у оркестратора)
+**Трек:** обычный (prefs нет — дефолт) — режимы агентов (`spec-track delta/micro/mini/merged`) включает ТОЛЬКО строка `Режим:` в prompt оркестратора; DS/TS-индексы ниже присутствуют на ЛЮБОМ треке при наличии draft-spec.
+**Layout:** автодетект (tools/layout_resolve.py)
+**UI-scope (pipeline-doctrine.md §US-1, 0-setup/ui-scope-prefs.md):** swagger:no | adaptive:min | themes:both
+
+**Индексы:** AC 17 / DS 0 / TS 0 — полные списки: `0-setup/passport.md` (разрешён контрактом); конкретное решение — точечный grep по `DS-NNN`/`TS-NNN` в draft-spec §9/§11 (разрешён).

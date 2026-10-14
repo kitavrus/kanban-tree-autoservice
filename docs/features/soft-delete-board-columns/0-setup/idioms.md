@@ -1,0 +1,216 @@
+# Идиомы проекта — слепок с фичи `softdelete`
+
+> СГЕНЕРИРОВАНО `tools/idiom_digest.py` из живого кода. Показывает, КАК в этом
+> проекте пишется слой: структура, сигнатуры, контракты, SQL. **Тела функций
+> вырезаны намеренно** — там доменная специфика образца, твоей фиче она не нужна.
+> Нужна конкретная реализация — открой файл точечно, но не вычитывай фичу целиком
+> (§context-mode: обзорное чтение — в sandbox).
+
+## Раскладка каталогов
+
+- `internal/features/softdelete`
+
+## Образцы слоёв (по одному файлу на слой; ещё 11 однотипных файлов не включены — идиома у слоя одна)
+
+### `internal/features/softdelete/reason.go`
+
+```go
+// Package softdelete — мягкое удаление: общие заготовки всех видов записей (валидатор причины,
+// код NOT_DELETED, реестр видов) и чтение раздела «Удалённые» (GET /api/v1/deleted, страница
+// /deleted). Само удаление и восстановление записи живёт в пакете её вида (заказ — board);
+// softdelete их не импортирует — зависимость односторонняя: вид → softdelete.
+package softdelete
+
+import (
+	"net/http"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
+)
+
+// ReasonMax — причина удаления, символов после обрезки крайних пробелов (DS-020).
+const ReasonMax = 500
+
+// Коды ошибок полей (details.fields[].message) — общий словарь проекта.
+const (
+
+// ErrNotDeleted — восстановление записи, которая не удалена (уже восстановлена) — DS-024.
+// Общий для всех видов записей.
+var ErrNotDeleted = errorspkg.New("NOT_DELETED", http.StatusConflict, "Запись уже восстановлена")
+
+// DeleteRequest — тело DELETE /api/v1/{ресурс}/:id (DS-028). Указатель: тело без reason и
+// reason из пробелов дают один ответ — required.
+type DeleteRequest struct {
+	Reason *string `json:"reason"`
+}
+
+// ValidateReason — причина удаления: 1–500 символов после обрезки крайних пробелов, без NUL
+// и битого UTF-8. Возвращает обрезанную причину либо ошибку поля reason (400 VALIDATION).
+func ValidateReason(raw *string) (string, []errorspkg.Field)
+```
+
+### `internal/features/softdelete/softdelete_http_live_test.go`
+
+```go
+//go:build integration
+
+package softdelete_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/suite"
+
+	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
+	"github.com/kitavrus/kanban-tree/pkg/testutil"
+)
+
+// SoftDeleteLiveSuite (§TD-8: боевой бинарь, реальный логин) — раздел «Удалённые»
+// (docs/features/soft-delete-core/draft-spec.md §6.3, §6.4, §8.1): TS-009 (список: вид,
+// фильтры по «И», конверт, сортировка), TS-010 (период в поясе пользователя), TS-011
+// (счётчики вкладок), TS-033 (права на адресах раздела), SSR-оболочка экрана /deleted и пункт
+// меню. Заказы создаются и удаляются через API доски того же сервера.
+type SoftDeleteLiveSuite struct {
+	testutil.LiveSuite
+	admin   *testutil.Browser
+	adminID string
+}
+
+func TestSoftDeleteLiveSuite(t *testing.T)
+
+func (s *SoftDeleteLiveSuite) SetupSuite()
+
+// ---- wire-типы (1:1 с softdelete.Item / ListResponse / SummaryResponse, §TD-6.2) ----
+
+type itemDTO struct {
+	Kind      string    `json:"kind"`
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Subtitle  string    `json:"subtitle"`
+	DeletedAt time.Time `json:"deleted_at"`
+	DeletedBy struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"deleted_by"`
+	DeleteReason string  `json:"delete_reason"`
+	DeletedWith  *string `json:"deleted_with"`
+	IsArchived   bool    `json:"is_archived"`
+}
+
+type listDTO struct {
+	Items  []itemDTO `json:"items"`
+	Total  int       `json:"total"`
+	Limit  int       `json:"limit"`
+	Offset int       `json:"offset"`
+}
+
+type summaryDTO struct {
+	Counts map[string]int `json:"counts"`
+}
+
+type errDTO struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Details *struct {
+		Fields []struct {
+			Name    string `json:"name"`
+			Message string `json:"message"`
+		} `json:"fields"`
+	} `json:"details"`
+}
+
+const api = "/api/v1/deleted"
+
+func (s *SoftDeleteLiveSuite) errOf(raw []byte) errDTO
+
+func (s *SoftDeleteLiveSuite) fields(raw []byte) map[string]string
+
+// list — GET /api/v1/deleted от имени b; query — пары ключ, значение.
+func (s *SoftDeleteLiveSuite) list(b *testutil.Browser, kv ...string) (int, listDTO, []byte)
+
+func (s *SoftDeleteLiveSuite) mustList(kv ...string) listDTO
+
+func ids(l listDTO) []string
+
+// ---- фикстуры ----
+
+func (s *SoftDeleteLiveSuite) newClient(company string) string
+
+func (s *SoftDeleteLiveSuite) columnID() string
+
+func (s *SoftDeleteLiveSuite) newTask(b *testutil.Browser, clientID, title string) int64
+
+// deleted — заказ, мягко удалённый b с причиной reason; at != "" — момент удаления
+// (фикстура времени, SQL: не предмет теста). Возвращает номер заказа строкой.
+func (s *SoftDeleteLiveSuite) deleted(b *testutil.Browser, clientID, title, reason, at string) string
+
+func (s *SoftDeleteLiveSuite) user(login, name, role string) (*testutil.Browser, string)
+
+func (s *SoftDeleteLiveSuite) setTimezone(b *testutil.Browser, tz string)
+
+// ---- TS-009 ----
+
+// TS-009 (DS-011, DS-028): kind обязателен и из реестра; параметры валидируются (400 с
+// details.fields[]). Негатив: kind=orders → invalid, limit=201 → invalid.
+func (s *SoftDeleteLiveSuite) TestTS009_Validation()
+
+// TS-009: строка списка и конверт {items, total, limit, offset}; сортировка — deleted_at по
+// убыванию, при равенстве — id; пагинация; фильтры q (название, причина, номер — без учёта
+// регистра), deleted_by, период — сочетаются по «И». Виды, чья часть не смержена, — пустой
+// список без ошибки.
+func (s *SoftDeleteLiveSuite) TestTS009_ListFiltersEnvelopeOrder()
+
+// ---- TS-009: вид transfers (часть 2, soft-delete-transfers §6.3, §8.2) ----
+
+// newTransfer — заявка «склад → склад» Алматы → Москва с одной товарной строкой, созданная b
+// через API документов того же сервера (товар — SQL-фикстура).
+func (s *SoftDeleteLiveSuite) newTransfer(b *testutil.Browser, mark string) (int64, int)
+
+// TS-009 (DS-011, soft-delete-transfers §6.3): вид transfers отдаёт удалённые документы —
+// title «Перемещение #N», subtitle «направление · статус», is_archived = false, deleted_with =
+// null; сортировка — deleted_at по убыванию; поиск по причине и номеру («#N»), фильтр «кто
+// удалил»; counts.transfers = total списка. Восстановленный документ из списка уходит.
+// Негатив: действующий документ в список не входит; исполнитель → 403.
+func (s *SoftDeleteLiveSuite) TestTS009_TransfersKind()
+
+// ---- TS-010 ----
+
+// TS-010 (DS-025): заказ удалён 2026-10-06T23:30:00Z — это 6 октября для пользователя с
+// поясом UTC и 7 октября для пользователя с поясом Europe/Moscow (+03:00): каждый находит его
+// в «свой» день и не находит в соседний. Негатив: deleted_to раньше deleted_from → 400.
+func (s *SoftDeleteLiveSuite) TestTS010_PeriodInUserTimezone()
+
+// ---- TS-011 ----
+
+// TS-011 (DS-011): счётчики вкладок — по всем 11 видам реестра (ключи snake_case), каждый
+// совпадает с total своего списка; удаление и восстановление заказа меняют counts.tasks.
+// Негатив: исполнитель → 403.
+func (s *SoftDeleteLiveSuite) TestTS011_Summary()
+
+// ---- TS-033 ----
+
+// TS-033 (DS-003, abuse case 1): раздел «Удалённые» — только администратору: исполнитель →
+// 403 «Нет доступа» на списке (при любых параметрах, включая некорректные) и счётчиках; без
+// сессии → 401.
+func (s *SoftDeleteLiveSuite) TestTS033_AdminOnly()
+
+// ---- SSR ----
+
+// Экран /deleted (§8.1): администратору — 200, оболочка экрана и пункт меню «Удалённые»;
+// исполнителю — страница отказа «Нет доступа» (403), пункта меню нет.
+func (s *SoftDeleteLiveSuite) TestSSR_PageAndMenu()
+```
+
+---
+
+Исходники образца: 46,565 символов · слепок: 6,958 · сжатие ×6.7

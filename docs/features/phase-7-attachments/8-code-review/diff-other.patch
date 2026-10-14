@@ -1,0 +1,298 @@
+diff --git a/.env.example b/.env.example
+index bb3ed9b..0ee0801 100644
+--- a/.env.example
++++ b/.env.example
+@@ -17,3 +17,5 @@ LOGIN_FAILURE_WINDOW=15m
+ FIRM_NAME=
+ FIRM_ADDRESS=
+ FIRM_PHONE=
++# Каталог вложений заказов (фото/видео/PDF, фаза 7); относительный путь — от рабочего каталога бинаря
++UPLOADS_DIR=./uploads
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index 0690e16..d82ec63 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -294,3 +294,18 @@ body { background: var(--bs-body-bg); }
+   .stock-kpi { flex: 1 1 45%; padding: var(--space-2) var(--space-3); }
+   .stock-view .d-flex.flex-wrap .form-select, .stock-view .d-flex.flex-wrap .form-control, .stock-view .d-flex.flex-wrap .cb { flex: 1 1 100%; max-width: none !important; }
+ }
++
++/* ---- вложения заказа (фаза 7, D21; эталон prototype/index.html .gallery/.thumb) ----
++   Цвета — только --bs-* токены (обе темы). */
++.att-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 8px; }
++.att-item { position: relative; border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); background: var(--bs-secondary-bg); overflow: hidden; min-width: 0; display: flex; flex-direction: column; }
++.att-media { aspect-ratio: 4 / 3; display: grid; place-items: center; background: var(--bs-tertiary-bg); }
++.att-media img, .att-media video { width: 100%; height: 100%; object-fit: cover; display: block; }
++.att-media video { object-fit: contain; background: #000; }
++.att-pdf-icon { font-size: 36px; text-decoration: none; }
++.att-meta { padding: 4px 6px; font-size: var(--text-xs); min-width: 0; }
++.att-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.att-sub { color: var(--bs-secondary-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.att-delete { position: absolute; top: 4px; right: 4px; line-height: 1; padding: 2px 6px; }
++.att-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
++.att-upload .progress { flex: 1 1 160px; min-width: 120px; }
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index f35cef5..f937a14 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -35,6 +35,9 @@
+   var saving = false;        // защита от двойного submit шапки
+   var newEquipmentOpen = false;
+   var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
++  // upload (фаза 7) — идущая загрузка вложения {gen, name, percent} либо null; переживает
++  // renderAll (секция перерисовывается после любой row-мутации), кнопка заблокирована.
++  var upload = null;
+ 
+   // rowQueue (ADR-105): key -> {inFlight, pending, baseGetter, requestFn, lastBody, lastBodySeq}
+   var rowQueue = {};
+@@ -171,6 +174,7 @@
+     rowQueue = {};
+     newEquipmentOpen = false;
+     headerDirty = false;
++    upload = null;
+     openGeneration++; // новое поколение — ответы предыдущей карточки больше не применяются
+     requestSeq = 0;
+     appliedSeq = 0;
+@@ -268,6 +272,7 @@
+   function renderLockedSections() {
+     $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить оборудование</p>';
+     $('#card-subtasks').innerHTML = '<p class="text-body-secondary small" data-testid="card-subtasks-locked">Сохраните заказ, чтобы добавить услуги</p>';
++    $('#card-attachments').innerHTML = '<p class="text-body-secondary small" data-testid="card-attachments-locked">Сохраните заказ, чтобы добавить фото, видео или PDF</p>';
+   }
+ 
+   // ---------- полный рендер (после loadCard/applyCard) ----------
+@@ -308,6 +313,7 @@
+     renderPrintActions(t.id);
+     renderEquipment();
+     renderSubtasks();
++    renderAttachments();
+     renderTotal();
+   }
+ 
+@@ -909,6 +915,178 @@
+     $('[data-testid="card-subtask-log-cancel"]', rowEl).addEventListener('click', function () { renderSubtasks(); });
+   }
+ 
++  // ==================================================================
++  // Вложения заказа (фаза 7, D21): фото — миниатюра (открытие в полный размер в новой
++  // вкладке), видео — <video controls>, PDF — ссылка. Тип определяет сервер по содержимому;
++  // здесь — только ранняя подсказка по размеру (сервер всё равно проверяет, 413/400).
++  // Загрузка — XHR (fetch не даёт прогресса отправки), ответ — {card, warnings}.
++  // ==================================================================
++
++  var ATT_MAX_VIDEO = 500 * 1024 * 1024;
++  var ATT_MAX_OTHER = 20 * 1024 * 1024;
++  var ATT_ACCEPT = 'image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,application/pdf';
++
++  function fmtSize(n) {
++    n = num(n);
++    if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' МБ';
++    if (n >= 1024) return Math.round(n / 1024) + ' КБ';
++    return n + ' Б';
++  }
++
++  function attachmentMediaHtml(a) {
++    var url = esc(a.url);
++    if (a.kind === 'photo') {
++      return '<a class="att-media" href="' + url + '" target="_blank" rel="noopener" data-testid="card-attachment-open" title="Открыть в полном размере">' +
++        '<img src="' + url + '" alt="' + esc(a.original_name) + '" loading="lazy" data-testid="card-attachment-thumb"></a>';
++    }
++    if (a.kind === 'video') {
++      return '<div class="att-media"><video controls preload="metadata" src="' + url + '" data-testid="card-attachment-video"></video></div>';
++    }
++    return '<a class="att-media att-pdf-icon" href="' + url + '" target="_blank" rel="noopener" data-testid="card-attachment-pdf" title="Открыть PDF">📄</a>';
++  }
++
++  function attachmentItemHtml(a) {
++    return '<div class="att-item" data-testid="card-attachment" data-attachment-id="' + esc(a.id) + '" data-kind="' + esc(a.kind) + '">' +
++      attachmentMediaHtml(a) +
++      '<div class="att-meta">' +
++        '<span class="att-name" title="' + esc(a.original_name) + '" data-testid="card-attachment-name">' + esc(a.original_name) + '</span>' +
++        '<div class="att-sub">' + esc(fmtSize(a.size)) + ' · ' + esc(a.author_name) + '</div>' +
++      '</div>' +
++      (a.can_delete ? '<button type="button" class="btn btn-sm btn-dark att-delete" data-testid="card-attachment-delete" data-attachment-id="' + esc(a.id) + '" aria-label="Удалить вложение ' + esc(a.original_name) + '">✕</button>' : '') +
++    '</div>';
++  }
++
++  function renderAttachments() {
++    var container = $('#card-attachments');
++    if (!container || !card) return;
++    var items = card.attachments || [];
++    var busy = !!(upload && upload.gen === openGeneration);
++    var list = items.length
++      ? '<div class="att-gallery" data-testid="card-attachments-list">' + items.map(attachmentItemHtml).join('') + '</div>'
++      : '<p class="text-body-secondary small" data-testid="card-attachments-empty">Вложений пока нет</p>';
++    var pct = busy ? upload.percent : 0;
++    container.innerHTML = list +
++      '<div class="att-upload">' +
++        '<label class="btn btn-outline-secondary btn-sm mb-0' + (busy ? ' disabled' : '') + '" data-testid="card-attachment-upload"' + (busy ? ' aria-disabled="true"' : '') + '>' +
++          (busy ? 'Загрузка…' : '📎 Загрузить фото, видео или PDF') +
++          '<input type="file" hidden accept="' + ATT_ACCEPT + '" data-testid="card-attachment-input"' + (busy ? ' disabled' : '') + '>' +
++        '</label>' +
++        '<div class="progress' + (busy ? '' : ' d-none') + '" role="progressbar" aria-label="Загрузка вложения" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" data-testid="card-attachment-progress">' +
++          '<div class="progress-bar" style="width:' + pct + '%">' + pct + '%</div>' +
++        '</div>' +
++        '<span class="small text-body-secondary' + (busy ? '' : ' d-none') + '" data-testid="card-attachment-uploading-name">' + (busy ? esc(upload.name) : '') + '</span>' +
++      '</div>' +
++      '<div class="text-danger small mt-1 d-none" role="alert" data-testid="card-attachment-error"></div>';
++    wireAttachments(container);
++  }
++
++  function showAttachmentError(msg) {
++    var el = $('[data-testid="card-attachment-error"]');
++    if (!el) return;
++    el.textContent = msg;
++    el.classList.remove('d-none');
++  }
++
++  function setUploadProgress(pct) {
++    if (!upload) return;
++    upload.percent = pct;
++    var bar = $('[data-testid="card-attachment-progress"]');
++    if (!bar) return;
++    bar.setAttribute('aria-valuenow', String(pct));
++    var inner = bar.querySelector('.progress-bar');
++    inner.style.width = pct + '%';
++    inner.textContent = pct + '%';
++  }
++
++  function csrfToken() {
++    var m = document.querySelector('meta[name="csrf-token"]');
++    return m ? m.content : '';
++  }
++
++  // xhrUpload — POST multipart с прогрессом; ошибки — KT.ApiError (тот же wire, что KT.api).
++  function xhrUpload(tid, file, onProgress) {
++    return new Promise(function (resolve, reject) {
++      var xhr = new XMLHttpRequest();
++      xhr.open('POST', '/api/v1/tasks/' + encodeURIComponent(tid) + '/attachments');
++      xhr.setRequestHeader('Accept', 'application/json');
++      xhr.setRequestHeader('X-Csrf-Token', csrfToken());
++      xhr.upload.onprogress = function (e) {
++        if (e.lengthComputable) onProgress(Math.min(99, Math.floor(e.loaded * 100 / e.total)));
++      };
++      xhr.onload = function () {
++        var data = null;
++        try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
++        if (xhr.status >= 200 && xhr.status < 300 && data) { onProgress(100); resolve(data); return; }
++        reject(new KT.ApiError(xhr.status, data || { message: 'Не удалось загрузить файл (HTTP ' + xhr.status + ')' }));
++      };
++      xhr.onerror = function () { reject(new KT.ApiError(0, { message: 'Сеть недоступна — файл не загружен' })); };
++      var fd = new FormData();
++      fd.append('file', file, file.name);
++      xhr.send(fd);
++    });
++  }
++
++  function startUpload(file) {
++    if (!taskId || !card || upload) return;
++    var tooBig = file.type.indexOf('video/') === 0 ? file.size > ATT_MAX_VIDEO : file.size > ATT_MAX_OTHER;
++    if (file.size > ATT_MAX_VIDEO || tooBig) {
++      showAttachmentError('Файл «' + file.name + '» слишком большой: фото и PDF — до 20 МБ, видео — до 500 МБ');
++      return;
++    }
++    var tid = taskId;
++    var ticket = beginRequest();
++    upload = { gen: openGeneration, name: file.name, percent: 0 };
++    renderAttachments();
++    xhrUpload(tid, file, setUploadProgress).then(function (resp) {
++      if (ticket.gen !== openGeneration) return; // карточку уже закрыли/сменили
++      upload = null;
++      // Загрузка долгая: пока она шла, могли примениться более поздние ответы row-мутаций
++      // (seq выше) — тогда снимок из этого ответа устарел, перечитываем карточку целиком.
++      if (!applyCard(resp.card, ticket)) { loadCard(tid); return; }
++      host.onChanged();
++    }).catch(function (err) {
++      if (ticket.gen !== openGeneration) return;
++      upload = null;
++      renderAttachments();
++      if (err && err.status === 404 && err.code === 'TASK_NOT_FOUND') {
++        KT.uiAlert('Заказ уже удалён', 'Не удалось загрузить').then(close);
++        return;
++      }
++      var msg = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return f.message; }).join('; ') : ((err && err.message) || 'Не удалось загрузить файл');
++      showAttachmentError(msg);
++    });
++  }
++
++  function wireAttachments(container) {
++    var input = $('[data-testid="card-attachment-input"]', container);
++    if (input) input.addEventListener('change', function () {
++      var file = input.files && input.files[0];
++      input.value = '';
++      if (file) startUpload(file);
++    });
++
++    $$('[data-testid="card-attachment-delete"]', container).forEach(function (btn) {
++      btn.addEventListener('click', function () {
++        var id = btn.dataset.attachmentId;
++        var a = (card.attachments || []).filter(function (x) { return x.id === id; })[0];
++        KT.uiConfirm('Удалить вложение «' + (a ? a.original_name : '') + '»?').then(function (ok) {
++          if (!ok) return;
++          var ticket = beginRequest();
++          KT.api.del('/api/v1/attachments/' + id).then(function (resp) {
++            if (!applyCard(resp.card, ticket)) return;
++            host.onChanged();
++          }).catch(function (err) {
++            if (err && err.code === 'ATTACHMENT_NOT_FOUND') {
++              KT.uiAlert('Вложение уже удалено', 'Не удалось удалить').then(function () { loadCard(taskId); });
++              return;
++            }
++            KT.uiAlert((err && err.message) || 'Не удалось удалить вложение', 'Ошибка');
++          });
++        });
++      });
++    });
++  }
++
+   function renderTotal() {
+     $('#card-total').innerHTML = '<strong data-testid="card-total">Итог заказа: ' + money(card.task.total_amount) + '</strong>';
+   }
+@@ -1012,7 +1190,7 @@
+     });
+ 
+     $('#task-modal').addEventListener('hidden.bs.modal', function () {
+-      card = null; taskId = null; rowQueue = {}; newEquipmentOpen = false; headerDirty = false;
++      card = null; taskId = null; rowQueue = {}; newEquipmentOpen = false; headerDirty = false; upload = null;
+       openGeneration++; // закрыли без переоткрытия — ответы запросов в полёте больше не применяем
+     });
+   }
+diff --git a/web/ssr/_shared/js/ui-dialog.js b/web/ssr/_shared/js/ui-dialog.js
+index 5b110e7..88fa6db 100644
+--- a/web/ssr/_shared/js/ui-dialog.js
++++ b/web/ssr/_shared/js/ui-dialog.js
+@@ -17,7 +17,19 @@
+     return n;
+   }
+ 
++  // Очередь диалогов: следующий показывается только ПОСЛЕ того, как предыдущий полностью
++  // скрыт и удалён из DOM (hidden.bs.modal). Без неё повторный вызов во время fade-out
++  // предыдущего (напр. «Отмена» → сразу снова «Удалить») давал два узла [data-testid=
++  // ui-dialog] разом и два backdrop'а (AT-005 фазы 7).
++  var queue = Promise.resolve();
++
+   function uiDialog(opts) {
++    var run = queue.then(function () { return showDialog(opts); });
++    queue = run.then(function () {}, function () {});
++    return run;
++  }
++
++  function showDialog(opts) {
+     var o = Object.assign({ text: '', input: null, ok: 'OK', cancel: 'Отмена', danger: false }, opts);
+     return new Promise(function (resolve) {
+       var root = el('div', 'modal fade');
+diff --git a/web/ssr/board/templates/pages/board.html b/web/ssr/board/templates/pages/board.html
+index ad4a0f9..fe03272 100644
+--- a/web/ssr/board/templates/pages/board.html
++++ b/web/ssr/board/templates/pages/board.html
+@@ -94,6 +94,10 @@
+         <h3 class="fs-6">Услуги</h3>
+         <div id="card-subtasks" data-testid="card-subtasks"></div>
+ 
++        <hr>
++        <h3 class="fs-6">Вложения</h3>
++        <div id="card-attachments" data-testid="card-attachments"></div>
++
+         <hr>
+         <div id="card-total"></div>
+       </div>

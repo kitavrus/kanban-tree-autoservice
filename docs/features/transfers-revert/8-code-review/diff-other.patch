@@ -1,0 +1,932 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index c121c89..f82e06f 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -198,6 +198,12 @@ export type Transfer = {
+   supplier_name: string | null;
+   status: TransferStatus;
+   note: string;
++  /** Последняя отмена проведения (transfers-revert §6.1): кто, когда, причина; у документа
++   *  без отката — null и пустая причина. Сохраняются и после повторной приёмки. */
++  unreceived_by: string | null;
++  unreceived_by_name: string | null;
++  unreceived_at: string | null;
++  unreceive_reason: string;
+   version: number;
+   /** Сумма накладной: Σ line_total; 0.00 вне «склад → клиент» и без товаров (transfers-sales). */
+   amount: number | string;
+@@ -222,12 +228,24 @@ export type TransferSummary = {
+   note: string;
+   items_count: number;
+   created_by_name: string;
++  /** Последняя отмена проведения — значок «↩» у документа, возвращённого в «В пути». */
++  unreceived_at: string | null;
+   created_at: string;
+   updated_at: string;
+   version: number;
+   /** Сумма накладной (0.00 вне «склад → клиент»). */
+   amount: number | string;
+ };
++/** Тело POST /api/v1/transfers/:id/unreceive (TransferUnreceiveRequest). */
++export type TransferUnreceive = { version: number; reason: string };
++/** Ответ DELETE /api/v1/transfers/:id (TransferDeleteResponse). */
++export type TransferDeleteResponse = { id: number };
++/** 409 отмены проведения: единицу увёз более поздний документ либо она в другом незавершённом. */
++export type TransferUnreceiveBlocked = {
++  code: 'TRANSFER_UNRECEIVE_BLOCKED';
++  message: string;
++  details: { equipment_id: string; transfer_id?: number };
++};
+ export type TransferList = { items: TransferSummary[]; total: number; limit: number; offset: number };
+ /** Фильтры списка §6.1; created_from / created_to — календарные даты YYYY-MM-DD в поясе пользователя. */
+ export type TransferListQuery = {
+@@ -482,6 +500,78 @@ export class AdminApi {
+     return res.json();
+   }
+ 
++  /** «Отменить проведение» (transfers-revert §6.1) с актуальным version: received → in_transit. */
++  async unreceiveTransfer(id: number, reason = 'Ошибочное проведение'): Promise<Transfer> {
++    const cur = await this.getTransfer(id);
++    const data: TransferUnreceive = { version: cur.version, reason };
++    const res = await this.ctx.post(`/api/v1/transfers/${id}/unreceive`, { data, headers: await this.headers() });
++    expect(res.status(), `отмена проведения перемещения #${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  /** Удаление документа (transfers-revert §6.2; «Заявка» / «Отменён») с актуальным version. */
++  async deleteTransfer(id: number): Promise<TransferDeleteResponse> {
++    const cur = await this.getTransfer(id);
++    const res = await this.ctx.delete(`/api/v1/transfers/${id}?version=${cur.version}`, { headers: await this.headers() });
++    expect(res.status(), `удаление перемещения #${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  /**
++   * Уборка одного документа (best-effort, никогда не бросает): привести к удаляемому статусу
++   * и удалить — «Получено» → отмена проведения, «В пути» / «Заявка» → отмена, затем DELETE.
++   * Откат идёт в обратном порядке (DS-023): на 409 TRANSFER_UNRECEIVE_BLOCKED сначала так же
++   * убирается мешающий документ (details.transfer_id), затем попытка повторяется. Документ уже
++   * удалён (404) либо изменён параллельно (409) — не ошибка: шаг пропускается.
++   */
++  async removeTransferForCleanup(id: number, depth = 0): Promise<void> {
++    const h = await this.headers();
++    const read = async (): Promise<Transfer | null> => {
++      const res = await this.ctx.get(`/api/v1/transfers/${id}`).catch(() => null);
++      return res && res.status() === 200 ? ((await res.json()) as Transfer) : null;
++    };
++    try {
++      let cur = await read();
++      for (let attempt = 0; cur && cur.status === 'received' && attempt < 8; attempt++) {
++        const data: TransferUnreceive = { version: cur.version, reason: 'e2e: уборка тестовых данных' };
++        const res = await this.ctx.post(`/api/v1/transfers/${id}/unreceive`, { data, headers: h });
++        if (res.status() === 409 && depth < 8) {
++          const body = (await res.json().catch(() => null)) as Partial<TransferUnreceiveBlocked> | null;
++          const blocker = body?.code === 'TRANSFER_UNRECEIVE_BLOCKED' ? body.details?.transfer_id : undefined;
++          if (!blocker) break; // версия/статус изменились либо мешающего документа нет
++          await this.removeTransferForCleanup(blocker, depth + 1);
++        } else if (res.status() !== 200) {
++          break;
++        }
++        cur = await read();
++      }
++      if (cur && (cur.status === 'in_transit' || cur.status === 'requested')) {
++        await this.ctx.post(`/api/v1/transfers/${id}/cancel`, { data: { version: cur.version }, headers: h });
++        cur = await read();
++      }
++      if (cur && cur.status === 'cancelled') {
++        await this.ctx.delete(`/api/v1/transfers/${id}?version=${cur.version}`, { headers: h });
++      }
++    } catch {
++      /* уборка не должна валить тест: остаток покажет предупреждение удаления заказа */
++    }
++  }
++
++  /**
++   * Уборка заказа вместе с его документами «Перемещение» (transfers-revert DS-025): заказ с
++   * неотменённым документом не удаляется (409 TASK_HAS_TRANSFERS), поэтому сначала каждый
++   * документ заказа приводится к «Отменён» и удаляется (новые — первыми: откат в обратном
++   * порядке), затем удаляется заказ. Бросает только финальное удаление заказа (как deleteTask).
++   */
++  async purgeTask(id: number): Promise<void> {
++    const res = await this.ctx.get('/api/v1/transfers', { params: { task_id: String(id), limit: '500' } }).catch(() => null);
++    if (res && res.status() === 200) {
++      const list = (await res.json()) as TransferList;
++      for (const t of [...list.items].sort((a, b) => b.id - a.id)) await this.removeTransferForCleanup(t.id);
++    }
++    await this.deleteTask(id);
++  }
++
+   /** Поиск единиц оборудования по всем клиентам (transfers-core §6.8). */
+   async searchEquipment(query: { warehouse_id?: string; location_status?: string; q?: string; limit?: number } = {}): Promise<EquipmentSearchList> {
+     const params: Record<string, string> = {};
+@@ -552,6 +642,11 @@ export class AdminApi {
+     return { status: res.status(), body: await res.json() };
+   }
+ 
++  /** HTTP-статус GET заказа: 200 — на месте, 404 — удалён (проверки удаления заказа). */
++  async taskHttpStatus(id: number): Promise<number> {
++    return (await this.ctx.get(`/api/v1/tasks/${id}`)).status();
++  }
++
+   async deleteTask(id: number): Promise<import('./board-types').TaskDeleteResponse> {
+     const res = await this.ctx.delete(`/api/v1/tasks/${id}`, { headers: await this.headers() });
+     expect(res.status(), `удаление заказа ${id}: ${await res.text()}`).toBe(200);
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 71d70a5..9f61f83 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -86,6 +86,9 @@ export type MoveTask = { column_id: string; prev_id?: number | null; next_id?: n
+ 
+ export type TaskMutationResponse = { task: Task; warnings: StockWarning[] };
+ export type TaskDeleteResponse = { warnings: StockWarning[] };
++/** 409 DELETE /api/v1/tasks/:id (transfers-revert §6.3): у заказа есть документы «Перемещение»
++ *  в requested / in_transit / received; transfer_ids — их номера по возрастанию. */
++export type ApiErrorTaskHasTransfers = { code: 'TASK_HAS_TRANSFERS'; message: string; details: { transfer_ids: number[] } };
+ 
+ export type ApiErrorSubtask = { id: string; service_name: string; status: 'new' | 'in_progress' | 'done' };
+ export type ApiErrorSubtasks = { code: 'SUBTASKS_NOT_DONE'; message: string; details: { subtasks: ApiErrorSubtask[] } };
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index 1f9d510..7c1b522 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -105,10 +105,16 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+ 
+       adminApi.createTask = origCreateTask;
+       adminApi.createColumn = origCreateColumn;
++      // Заказ с документами «Перемещение» (части transfers-partners / transfers-sales) простым
++      // DELETE не удаляется — 409 TASK_HAS_TRANSFERS; раньше этот 409 глотался, и заказы
++      // копились в БД (BD-013, EW-004 падали на «грязной» базе). purgeTask сначала убирает
++      // документы заказа (отмена проведения → отмена → удаление), потом сам заказ. 404 —
++      // тест удалил заказ сам; всё остальное (включая 409) — неожиданно и идёт в console.warn.
+       for (const id of createdTasks) {
+-        await adminApi.deleteTask(id).catch((e) => {
++        await adminApi.purgeTask(id).catch((e) => {
+           const msg = e instanceof Error ? e.message : String(e);
+-          if (!/40[49]/.test(msg)) console.warn(`_boardCleanup: не удалось удалить заказ #${id}: ${msg}`);
++          const notFound = /TASK_NOT_FOUND/.test(msg) || /Received:\s*404/.test(msg.replace(/\x1b\[[0-9;]*m/g, ''));
++          if (!notFound) console.warn(`_boardCleanup: не удалось удалить заказ #${id}: ${msg}`);
+         });
+       }
+       for (const id of createdColumns) {
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 3152878..6f343b4 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -355,6 +355,18 @@ export class OrderCardPage {
+     await this.attachmentInput.setInputFiles(file);
+   }
+ 
++  /** Ссылки на мешающие документы в отказе удаления заказа (409 TASK_HAS_TRANSFERS). */
++  get errorTransferLinks(): Locator {
++    return this.error.getByTestId('task-error-transfer-link');
++  }
++
++  /** «Удалить» заказ → диалог подтверждения открыт (текст — ui-dialog-text). */
++  async openDeleteTask(): Promise<Locator> {
++    await this.deleteBtn.click();
++    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
++    return this.page.getByTestId('ui-dialog-text');
++  }
++
+   async confirmDeleteTask() {
+     await this.deleteBtn.click();
+     await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
+diff --git a/e2e/pages/TransfersPage.ts b/e2e/pages/TransfersPage.ts
+index 2226bba..7e57f18 100644
+--- a/e2e/pages/TransfersPage.ts
++++ b/e2e/pages/TransfersPage.ts
+@@ -79,6 +79,20 @@ export class TransfersPage {
+   readonly receiveRows: Locator;
+   readonly receiveConfirm: Locator;
+   readonly dropdown: Locator;
++  /** «Отменить проведение» (admin, «Получено») и «Удалить» (admin, «Заявка» / «Отменён») —
++   *  transfers-revert §8.1. */
++  readonly unreceiveBtn: Locator;
++  readonly deleteBtn: Locator;
++  /** Диалог «Отменить проведение»: обязательная причина, ошибка под полем, мешающий документ. */
++  readonly unreceiveModal: Locator;
++  readonly unreceiveTitle: Locator;
++  readonly unreceiveReason: Locator;
++  readonly unreceiveReasonError: Locator;
++  readonly unreceiveError: Locator;
++  readonly unreceiveBlockedLink: Locator;
++  readonly unreceiveConfirm: Locator;
++  /** Строка сведений «Проведение отменено: кто, когда — причина». */
++  readonly cardUnreceived: Locator;
+ 
+   constructor(readonly page: Page) {
+     this.root = page.getByTestId('st-root');
+@@ -139,6 +153,42 @@ export class TransfersPage {
+     this.receiveRows = page.getByTestId('st-receive-row');
+     this.receiveConfirm = page.getByTestId('st-receive-confirm');
+     this.dropdown = page.getByTestId('combobox-dropdown');
++    this.unreceiveBtn = page.getByTestId('st-unreceive');
++    this.deleteBtn = page.getByTestId('st-delete');
++    this.unreceiveModal = page.getByTestId('st-unreceive-modal');
++    this.unreceiveTitle = page.getByTestId('st-unreceive-title');
++    this.unreceiveReason = page.getByTestId('st-unreceive-reason');
++    this.unreceiveReasonError = page.getByTestId('st-unreceive-reason-error');
++    this.unreceiveError = page.getByTestId('st-unreceive-error');
++    this.unreceiveBlockedLink = page.getByTestId('st-unreceive-blocked-link');
++    this.unreceiveConfirm = page.getByTestId('st-unreceive-confirm');
++    this.cardUnreceived = page.getByTestId('st-card-unreceived');
++  }
++
++  /** Значок «↩» в строке списка: документ возвращён откатом в «В пути». */
++  rowUnreceived(id: number): Locator {
++    return this.row(id).getByTestId('st-row-unreceived');
++  }
++
++  /** «Отменить проведение» → диалог с причиной (открыт и ждёт ввода). */
++  async openUnreceive(id: number) {
++    await this.unreceiveBtn.click();
++    await expect(this.unreceiveModal).toBeVisible();
++    await expect(this.unreceiveTitle).toHaveText(`Отменить проведение перемещения #${id}?`);
++  }
++
++  /** Причина + подтверждение в открытом диалоге «Отменить проведение». */
++  async submitUnreceive(reason: string) {
++    await this.unreceiveReason.fill(reason);
++    await this.unreceiveConfirm.click();
++  }
++
++  /** «Удалить» → диалог подтверждения (текст проверяется) → подтвердить либо отказаться. */
++  async deleteDocument(id: number, confirm = true) {
++    await this.deleteBtn.click();
++    await expect(this.uiDialog.getByTestId('ui-dialog-text')).toHaveText(`Удалить перемещение #${id}? Восстановить будет нельзя`);
++    await this.uiDialog.getByTestId(confirm ? 'ui-dialog-ok' : 'ui-dialog-cancel').click();
++    await expect(this.uiDialog).toHaveCount(0);
+   }
+ 
+   async goto(id?: number) {
+diff --git a/e2e/tests/transfers-partners.spec.ts b/e2e/tests/transfers-partners.spec.ts
+index 2ba7085..c16ab74 100644
+--- a/e2e/tests/transfers-partners.spec.ts
++++ b/e2e/tests/transfers-partners.spec.ts
+@@ -13,8 +13,8 @@ import { TZ_ALMATY, TZ_BROWSER, TZ_FIXTURE, TZ_MOSCOW, pinFixtureMoment } from '
+ // Права исполнителя (TS-034) — TR-007 в transfers.spec.ts; хвост TS-036 («Склад приёма»
+ // убран) — EW-001 / EW-005 в equipment-warehouses.spec.ts. Общая dev-БД (§TD-6.2): свои
+ // клиенты, оборудование, заказы, товары и поставщики через uniq()+adminApi, склады — сид
+-// «Алматы» / «Москва». Заказ с документами не удаляется (DS-012) — _boardCleanup его
+-// оставляет (409 — ожидаемо, до части transfers-revert).
++// «Алматы» / «Москва». Заказы с документами убирает _boardCleanup
++// (purgeTask: отмена проведения → отмена → удаление документов, затем заказ; transfers-revert).
+ test.use({ colorScheme: 'light' });
+ 
+ const THEMES = ['light', 'dark'] as const;
+diff --git a/e2e/tests/transfers-revert.spec.ts b/e2e/tests/transfers-revert.spec.ts
+new file mode 100644
+index 0000000..48cdee0
+--- /dev/null
++++ b/e2e/tests/transfers-revert.spec.ts
+@@ -0,0 +1,327 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { TransfersPage } from '../pages/TransfersPage';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import type { AdminApi } from '../fixtures/auth';
++import { contrastOf } from '../fixtures/contrast';
++
++// Отмена проведения и удаление документа «Перемещение» (docs/features/transfers-revert/
++// draft-spec.md §8.1, §8.2): «Отменить проведение» с причиной и повторная приёмка (TS-033),
++// запрет удаления заказа с документами (TS-037), удаление документа (TS-038). Общая dev-БД
++// (§TD-6.2): свои клиенты, оборудование, заказы, товары и поставщики через uniq()+adminApi,
++// склады — сид «Алматы» / «Москва». Заказы вместе с документами убирает _boardCleanup
++// (purgeTask).
++test.use({ colorScheme: 'light' });
++
++const THEMES = ['light', 'dark'] as const;
++
++type Uniq = (s: string) => string;
++
++/** Клиент + заказ + count единиц оборудования в заказе — все «у клиента». */
++async function orderWithUnits(adminApi: AdminApi, uniq: Uniq, tag: string, count: number, assigneeId?: string) {
++  const almaty = await adminApi.warehouseByName('Алматы');
++  const moscow = await adminApi.warehouseByName('Москва');
++  const client = await adminApi.createClient({ company_name: uniq(`${tag} клиент`), phones: [{ phone: '9990000601', note: '' }] });
++  const type = await adminApi.createEquipmentType({ name: uniq(`${tag} тип`) });
++  const columns = (await adminApi.listColumns()).items;
++  const task = await adminApi.createTask({
++    title: uniq(`${tag} заказ`), client_id: client.id, column_id: columnByName(columns, 'Новые').id, ...(assigneeId ? { assignee_id: assigneeId } : {}),
++  });
++  const units = [];
++  for (let i = 0; i < count; i++) {
++    const eq = await adminApi.createEquipment(client.id, {
++      type_id: type.id, brand: `Brand${tag}`, model: uniq(`${tag} модель ${i}`), serial: uniq(`sn-${tag}-${i}`),
++    });
++    await adminApi.addTaskEquipment(task.id, eq.id);
++    units.push(eq);
++  }
++  return { almaty, moscow, client, task, units };
++}
++
++async function newProduct(adminApi: AdminApi, uniq: Uniq, label: string, stock: number) {
++  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${label} категория`) });
++  return adminApi.createProduct({ category_id: cat.id, name: uniq(`${label} товар`), stock }); // остаток — на «Алматы»
++}
++
++async function pairStock(adminApi: AdminApi, productName: string, warehouseId: string): Promise<number> {
++  const list = await adminApi.getStock({ q: productName, scope: 'all' });
++  const cell = list.items[0]?.by_warehouse.find((c) => c.warehouse_id === warehouseId);
++  return Number(cell?.stock ?? NaN);
++}
++
++test.describe('TR: перемещения — отмена проведения и удаление', () => {
++  test('TR-022 (TS-033): «Отменить проведение» прихода от поставщика — пустая причина → «Укажите причину»; с причиной → «В пути», строка «Проведение отменено: …», остаток откатился; повторная приёмка с другим фактом — остаток по новому факту, строка об откате осталась', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const product = await newProduct(adminApi, uniq, 'TR-022', 3);
++    const supplier = await adminApi.createSupplier({ name: uniq('TR-022 поставщик') });
++    const doc = await adminApi.createTransfer({
++      direction: 'supplier_to_warehouse', to_warehouse_id: almaty.id, supplier_id: supplier.id, send: true,
++      items: [{ kind: 'product', product_id: product.id, qty_sent: 10 }],
++    });
++    const line = doc.items[0];
++    await adminApi.transferAction(doc.id, 'receive', { items: [{ id: line.id, qty_received: 10 }] });
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(13);
++
++    const tr = new TransfersPage(page);
++    await tr.goto(doc.id);
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.unreceiveBtn).toBeVisible();
++    await expect(tr.unreceiveBtn).toHaveText('Отменить проведение');
++    await expect(tr.cardUnreceived).toHaveCount(0); // отката ещё не было
++    await expect(tr.deleteBtn).toHaveCount(0); // у «Получено» кнопки «Удалить» нет (TS-038)
++
++    // негатив: причина обязательна — ошибка под полем, диалог открыт, документ не изменён.
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/transfers/${doc.id}/unreceive`) && status === 400);
++    await tr.openUnreceive(doc.id);
++    await tr.submitUnreceive('   ');
++    await expect(tr.unreceiveReasonError).toHaveText('Укажите причину');
++    await expect(tr.unreceiveModal).toBeVisible();
++    expect((await adminApi.getTransfer(doc.id)).status).toBe('received');
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(13);
++
++    // причина указана: документ «В пути», сведения об откате, остаток откатился.
++    const reason = uniq('TR-022 приняли без пересчёта');
++    await tr.submitUnreceive(`  ${reason}  `);
++    await expect(tr.unreceiveModal).toBeHidden();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.toast.filter({ hasText: 'Проведение отменено' })).toBeVisible();
++    await expect(tr.cardUnreceived).toContainText('Проведение отменено: Админ Прогона');
++    await expect(tr.cardUnreceived).toContainText(reason);
++    await expect(tr.rowUnreceived(doc.id)).toBeVisible();
++    await expect(tr.rowUnreceived(doc.id)).toHaveAttribute('title', 'Проведение отменено');
++    await expect(tr.unreceiveBtn).toHaveCount(0); // «В пути»: откатывать нечего
++    await expect(tr.receive).toBeVisible();
++    await expect(tr.warnings).toHaveCount(0); // остаток 3 — не минус и не ниже минимума
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(3);
++    const back = await adminApi.getTransfer(doc.id);
++    expect(back).toMatchObject({ status: 'in_transit', unreceive_reason: reason });
++    expect(back.unreceived_at).not.toBeNull();
++    expect(back.items[0].qty_received).toBeNull();
++
++    // повторная приёмка с другим фактом: остаток — по новому факту, строка об откате осталась.
++    await tr.receive.click();
++    await expect(tr.receiveModal).toBeVisible();
++    await tr.receiveQty(line.id).fill('7');
++    await tr.receiveConfirm.click();
++    await expect(tr.receiveModal).toBeHidden();
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.viewItem('product', product.id).getByTestId('st-view-received')).toHaveText('7');
++    await expect(tr.cardUnreceived).toContainText(reason);
++    await expect(tr.rowUnreceived(doc.id)).toHaveCount(0); // значок — только пока документ «В пути»
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(10);
++    expect((await adminApi.getTransfer(doc.id)).unreceive_reason).toBe(reason);
++  });
++
++  test('TR-023 (TS-033): единицу увёз более поздний документ — в диалоге «Сначала отмените проведение перемещения #N» со ссылкой, документ не изменён; диалог при 375×812 без горизонтальной прокрутки, читаем в светлой и тёмной теме', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const { almaty, moscow, task, units } = await orderWithUnits(adminApi, uniq, 'TR023', 1);
++    const unit = units[0];
++    await adminApi.receiveFromClient(task.id, almaty.id, [unit.id]); // единица на «Алматы»
++    const move = async (from: string, to: string) => {
++      const d = await adminApi.createTransfer({ from_warehouse_id: from, to_warehouse_id: to, send: true, items: [{ kind: 'equipment', equipment_id: unit.id }] });
++      return adminApi.transferAction(d.id, 'receive');
++    };
++    const first = await move(almaty.id, moscow.id); // привёз единицу в Москву
++    const later = await move(moscow.id, almaty.id); // более поздний документ увёз её обратно
++
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/transfers/${first.id}/unreceive`) && status === 409);
++    await page.setViewportSize({ width: 375, height: 812 });
++    const tr = new TransfersPage(page);
++    for (const theme of THEMES) {
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      const where = `${theme} 375×812`;
++      await tr.goto(first.id);
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      await expect(tr.cardStatus).toHaveText('Получено');
++      await tr.unreceiveBtn.scrollIntoViewIfNeeded();
++      expect(await contrastOf(tr.unreceiveBtn), `документ ${where}: «Отменить проведение»`).toBeGreaterThanOrEqual(3);
++
++      await tr.openUnreceive(first.id);
++      await tr.expectNoHorizontalScroll();
++      expect(await contrastOf(tr.unreceiveTitle), `диалог ${where}: заголовок`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.unreceiveConfirm), `диалог ${where}: кнопка`).toBeGreaterThanOrEqual(3);
++
++      // откат — в обратном порядке: мешающий документ назван ссылкой, диалог остаётся открыт.
++      await tr.submitUnreceive('проверка порядка');
++      await expect(tr.unreceiveError).toHaveText(`Сначала отмените проведение перемещения #${later.id}`);
++      await expect(tr.unreceiveBlockedLink).toHaveText(`#${later.id}`);
++      await expect(tr.unreceiveBlockedLink).toHaveAttribute('href', `/transfers?id=${later.id}`);
++      await expect(tr.unreceiveModal).toBeVisible();
++      await tr.expectNoHorizontalScroll();
++      expect(await contrastOf(tr.unreceiveBlockedLink), `диалог ${where}: ссылка на мешающий документ`).toBeGreaterThanOrEqual(3);
++    }
++    const same = await adminApi.getTransfer(first.id);
++    expect(same).toMatchObject({ status: 'received', unreceived_at: null, unreceive_reason: '' });
++
++    // ссылка ведёт на мешающий документ; после его отката первый документ откатывается.
++    await tr.unreceiveBlockedLink.click();
++    await expect(tr.cardTitle).toHaveText(`Перемещение #${later.id}`);
++    await tr.openUnreceive(later.id);
++    await tr.submitUnreceive('сначала поздний');
++    await expect(tr.unreceiveModal).toBeHidden();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.cardUnreceived).toContainText('сначала поздний');
++    await tr.expectNoHorizontalScroll();
++    expect(await contrastOf(tr.cardUnreceived), 'документ dark 375×812: строка об откате').toBeGreaterThanOrEqual(3);
++    await adminApi.transferAction(later.id, 'cancel'); // единица снова в Москве
++    await adminApi.unreceiveTransfer(first.id, 'теперь можно');
++    expect((await adminApi.getTransfer(first.id)).status).toBe('in_transit');
++  });
++
++  test('TR-024 (TS-037): удаление заказа с проведённым документом — сообщение «Сначала отмените перемещения: #N» со ссылкой, заказ на месте; после отката и отмены документа заказ удаляется вместе с отменёнными документами', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const { almaty, client, task, units } = await orderWithUnits(adminApi, uniq, 'TR024', 2);
++    const received = await adminApi.receiveFromClient(task.id, almaty.id, [units[0].id]);
++    const cancelled = await adminApi.createTransfer({
++      direction: 'client_to_warehouse', to_warehouse_id: almaty.id, task_id: task.id, items: [{ kind: 'equipment', equipment_id: units[1].id }],
++    });
++    await adminApi.transferAction(cancelled.id, 'cancel');
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    const tr = new TransfersPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.transferRows).toHaveCount(2);
++
++    // диалог подтверждения предупреждает об отменённых документах; отказ — 409 со ссылкой.
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 409);
++    const dialogText = await card.openDeleteTask();
++    await expect(dialogText).toContainText(`Удалить заказ #${task.id}?`);
++    await expect(dialogText).toContainText(`Отменённые перемещения (#${cancelled.id}) будут удалены вместе с заказом`);
++    await card.confirmUiDialog();
++    await expect(card.error).toHaveText(`Сначала отмените перемещения: #${received.id}`);
++    await expect(card.errorTransferLinks).toHaveCount(1); // отменённый документ не мешает
++    await expect(card.errorTransferLinks).toHaveText(`#${received.id}`);
++    await expect(card.errorTransferLinks).toHaveAttribute('href', `/transfers?id=${received.id}`);
++    await expect(card.modal).toBeVisible();
++    expect(await adminApi.taskHttpStatus(task.id), 'заказ на месте').toBe(200);
++    expect((await adminApi.getTransfer(received.id)).status).toBe('received');
++    expect((await adminApi.listTransfers({ task_id: task.id })).total).toBe(2);
++
++    // после отката и отмены документа заказ удаляется; отменённые документы уходят с ним.
++    await adminApi.unreceiveTransfer(received.id, 'удаляем заказ');
++    await adminApi.transferAction(received.id, 'cancel');
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    const text = await card.openDeleteTask();
++    await expect(text).toContainText(`Отменённые перемещения (#${received.id}, #${cancelled.id}) будут удалены вместе с заказом`);
++    await card.confirmUiDialog();
++    await expect(card.modal).toBeHidden();
++    expect(await adminApi.taskHttpStatus(task.id), 'заказ удалён').toBe(404);
++    expect((await adminApi.listTransfers({ task_id: task.id })).total).toBe(0);
++
++    await tr.goto();
++    await expect(tr.list).toBeVisible();
++    await expect(tr.row(received.id)).toHaveCount(0);
++    await expect(tr.row(cancelled.id)).toHaveCount(0);
++  });
++
++  test('TR-025 (TS-038): «Удалить» у заявки — подтверждение, строка исчезла, тост «Удалено», единица снова свободна; у «В пути» и «Получено» кнопки нет; у «Отменён» — есть; красная кнопка читаема в обеих темах', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, moscow, task, units } = await orderWithUnits(adminApi, uniq, 'TR025', 1);
++    const unit = units[0];
++    await adminApi.receiveFromClient(task.id, almaty.id, [unit.id]); // единица на «Алматы»
++    const product = await newProduct(adminApi, uniq, 'TR-025', 5);
++    const request = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id,
++      items: [{ kind: 'equipment', equipment_id: unit.id }, { kind: 'product', product_id: product.id, qty_sent: 2 }],
++    });
++    const cancelled = await adminApi.createTransfer({ from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'product', product_id: product.id, qty_sent: 1 }] });
++    await adminApi.transferAction(cancelled.id, 'cancel');
++
++    const tr = new TransfersPage(page);
++    for (const theme of THEMES) {
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      await tr.goto(request.id);
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      await expect(tr.cardStatus).toHaveText('Заявка');
++      await expect(tr.deleteBtn).toBeVisible();
++      await expect(tr.deleteBtn).toHaveText('Удалить');
++      expect(await contrastOf(tr.deleteBtn), `заявка ${theme}: красная «Удалить»`).toBeGreaterThanOrEqual(3);
++    }
++    await expect(tr.unreceiveBtn).toHaveCount(0);
++
++    // отказ в диалоге — документ на месте; подтверждение — документ удалён.
++    await tr.deleteDocument(request.id, false);
++    await expect(tr.cardTitle).toHaveText(`Перемещение #${request.id}`);
++    await expect(tr.row(request.id)).toHaveCount(1);
++    await tr.deleteDocument(request.id);
++    await expect(tr.toast.filter({ hasText: 'Удалено' })).toBeVisible();
++    await expect(tr.placeholder).toBeVisible();
++    await expect(tr.row(request.id)).toHaveCount(0);
++    await expect(page).toHaveURL(/\/transfers$/);
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(5); // заявка остаток не двигала
++
++    // единица заявки свободна — встаёт в новый документ (UI: «+ Оборудование» находит её).
++    await tr.newDocument('warehouse_to_warehouse');
++    await tr.choose(tr.from, 'Алматы');
++    await tr.choose(tr.to, 'Москва');
++    await tr.addEquipmentRow(unit.serial, unit.id);
++    await tr.send.click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    const moving = await tr.currentId();
++
++    // негатив: у «В пути» и «Получено» кнопки «Удалить» нет.
++    await expect(tr.deleteBtn).toHaveCount(0);
++    await adminApi.transferAction(moving, 'receive');
++    await tr.goto(moving);
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.deleteBtn).toHaveCount(0);
++    await expect(tr.unreceiveBtn).toBeVisible();
++
++    // «Отменён» — удаляется.
++    await tr.goto(cancelled.id);
++    await expect(tr.cardStatus).toHaveText('Отменён');
++    await expect(tr.deleteBtn).toBeVisible();
++    await tr.deleteDocument(cancelled.id);
++    await expect(tr.toast.filter({ hasText: 'Удалено' })).toBeVisible();
++    await expect(tr.row(cancelled.id)).toHaveCount(0);
++  });
++
++  test('TR-026 (TS-033, TS-038): исполнитель не видит «Отменить проведение» и «Удалить» у документов с клиентом, сведения об откате видит', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++  }) => {
++    const exec = await makeUser({ login: uniq('tr026-exec'), name: uniq('TR-026 Исполнитель') });
++    const { almaty, task, units } = await orderWithUnits(adminApi, uniq, 'TR026', 2, exec.id);
++    const received = await adminApi.receiveFromClient(task.id, almaty.id, [units[0].id]);
++    await adminApi.unreceiveTransfer(received.id, 'TR-026 откат администратором');
++    await adminApi.transferAction(received.id, 'receive');
++    const request = await adminApi.createTransfer({
++      direction: 'client_to_warehouse', to_warehouse_id: almaty.id, task_id: task.id, items: [{ kind: 'equipment', equipment_id: units[1].id }],
++    });
++
++    await loginAs(page, exec.login, exec.password);
++    const tr = new TransfersPage(page);
++    await tr.goto(received.id);
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.unreceiveBtn).toHaveCount(0);
++    await expect(tr.deleteBtn).toHaveCount(0);
++    await expect(tr.cardUnreceived).toContainText('TR-026 откат администратором');
++
++    await tr.goto(request.id);
++    await expect(tr.cardStatus).toHaveText('Заявка');
++    await expect(tr.cancel).toBeVisible(); // свои действия исполнителю доступны
++    await expect(tr.deleteBtn).toHaveCount(0);
++  });
++});
+diff --git a/e2e/tests/transfers-sales.spec.ts b/e2e/tests/transfers-sales.spec.ts
+index 58ce06d..d624d07 100644
+--- a/e2e/tests/transfers-sales.spec.ts
++++ b/e2e/tests/transfers-sales.spec.ts
+@@ -9,8 +9,8 @@ import { contrastOf } from '../fixtures/contrast';
+ // Накладная клиенту — товар с ценой в документе «возврат клиенту», сумма накладной и итог
+ // заказа (docs/features/transfers-sales/draft-spec.md §8.1, §8.2; TS-030). Общая dev-БД
+ // (§TD-6.2): свои клиенты, оборудование, заказы, услуги и товары через uniq()+adminApi, склады
+-// — сид «Алматы» / «Москва». Заказ с документами не удаляется (DS-012) — _boardCleanup его
+-// оставляет (409 — ожидаемо, до части transfers-revert).
++// — сид «Алматы» / «Москва». Заказы с документами убирает _boardCleanup
++// (purgeTask: отмена проведения → отмена → удаление документов, затем заказ; transfers-revert).
+ test.use({ colorScheme: 'light' });
+ 
+ const THEMES = ['light', 'dark'] as const;
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 1b20f1a..5b6c88b 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -1357,6 +1357,24 @@
+     el.classList.remove('d-none');
+   }
+ 
++  // showTransfersError — отказ удаления заказа (409 TASK_HAS_TRANSFERS, transfers-revert
++  // DS-025): «Сначала отмените перемещения: #12, #14», номера — ссылками на документы. Как и
++  // прочие ошибки карточки — в шапке; не скрывается, пока карточка не перечитана.
++  function showTransfersError(ids) {
++    var el = $('#task-error');
++    el.textContent = 'Сначала отмените перемещения: ';
++    ids.forEach(function (n, i) {
++      if (i) el.appendChild(document.createTextNode(', '));
++      var a = document.createElement('a');
++      a.href = '/transfers?id=' + encodeURIComponent(n);
++      a.className = 'alert-link';
++      a.setAttribute('data-testid', 'task-error-transfer-link');
++      a.textContent = '#' + n;
++      el.appendChild(a);
++    });
++    el.classList.remove('d-none');
++  }
++
+   function bindStatic() {
+     // headerDirty (MEDIUM-2): любая правка шапки — «грязная» до следующего успешного
+     // loadCard (после «Сохранить» или полной перезагрузки карточки). Слушатели вешаются
+@@ -1419,13 +1437,20 @@
+     $('#task-delete-btn').addEventListener('click', function () {
+       if (!taskId) return;
+       var id = taskId;
+-      KT.uiConfirm('Удалить заказ #' + id + '? Товары вернутся на склад.').then(function (ok) {
++      // отменённые документы заказа удаляются вместе с ним (transfers-revert DS-050)
++      var cancelled = ((card && card.transfers) || []).filter(function (t) { return t.status === 'cancelled'; })
++        .map(function (t) { return t.id; }).sort(function (a, b) { return a - b; })
++        .map(function (n) { return '#' + n; });
++      var extra = cancelled.length ? '\nОтменённые перемещения (' + cancelled.join(', ') + ') будут удалены вместе с заказом.' : '';
++      KT.uiConfirm('Удалить заказ #' + id + '? Товары вернутся на склад.' + extra).then(function (ok) {
+         if (!ok) return;
+         KT.api.del('/api/v1/tasks/' + id).then(function (resp) {
+           close();
+           host.onChanged();
+           if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
+         }).catch(function (err) {
++          var ids = err && err.code === 'TASK_HAS_TRANSFERS' && err.details && err.details.transfer_ids;
++          if (ids && ids.length) { showTransfersError(ids); return; }
+           showHeaderError((err && err.message) || 'Не удалось удалить заказ');
+         });
+       });
+diff --git a/web/ssr/_shared/js/transfers.js b/web/ssr/_shared/js/transfers.js
+index e4ac018..9a9c60e 100644
+--- a/web/ssr/_shared/js/transfers.js
++++ b/web/ssr/_shared/js/transfers.js
+@@ -110,6 +110,12 @@
+     not_allowed: 'Цена указывается только у товара в накладной клиенту'
+   };
+   var ROW_CODE_TEXT = { duplicate: 'уже есть в другой строке', archived: 'товар в архиве', not_found: 'не найдено' };
++  // причина отмены проведения (transfers-revert §8.1)
++  var UNRECEIVE_TEXT = {
++    required: 'Укажите причину',
++    too_long: 'Причина — не более 500 символов',
++    invalid_text: 'Недопустимые символы'
++  };
+   var RECEIVE_TEXT = {
+     exceeds_sent: 'Факт больше отправленного',
+     negative: 'Факт не может быть отрицательным',
+@@ -140,10 +146,12 @@
+     current: null, // документ | {new: true}
+     items: [], // строки редактора (модель; количество читается из DOM)
+     warnings: [],
++    warningsAtDestination: false, // предупреждения отмены проведения — по складу назначения
+     taskError: '',
+     busy: false
+   };
+   var receiveModal = null;
++  var unreceiveModal = null;
+   var searchTimer = null;
+   var searchSeq = 0;
+   var taskTimer = null;
+@@ -379,7 +387,10 @@
+         ' data-testid="st-row" data-id="' + esc(t.id) + '" data-direction="' + esc(t.direction) + '"' + (active ? ' aria-current="true"' : '') + '>' +
+         '<div class="d-flex justify-content-between align-items-center gap-2">' +
+         '<span class="fw-semibold text-break" data-testid="st-row-route">#' + esc(t.id) + ' · ' + esc(routeText(t)) + '</span>' +
+-        '<span class="d-flex flex-wrap justify-content-end gap-1">' + directionBadge(t) + badge(t.status) + '</span></div>' +
++        '<span class="d-flex flex-wrap justify-content-end align-items-center gap-1">' + directionBadge(t) + badge(t.status) +
++        // документ, возвращённый откатом в «В пути» (transfers-revert §8.1 п.3)
++        (t.status === 'in_transit' && t.unreceived_at ? '<span data-testid="st-row-unreceived" title="Проведение отменено" aria-label="Проведение отменено">↩</span>' : '') +
++        '</span></div>' +
+         (party ? '<div class="small text-break" data-testid="st-row-party">' + esc(party) + '</div>' : '') +
+         // сумма накладной — справа под маршрутом, только у «возврата клиенту» с товарами (§8.1 п.1)
+         (dirOf(t).priced && Number(t.amount) > 0 ? '<div class="small fw-semibold text-end" data-testid="st-row-amount">' + esc(money(t.amount)) + '</div>' : '') +
+@@ -509,7 +520,7 @@
+   // 5.3 (bg-subtle / text-emphasis / border-subtle) — они свои у светлой и тёмной темы.
+   function warningsHTML() {
+     if (!state.warnings.length) return '';
+-    return '<div class="alert alert-warning bg-warning-subtle text-warning-emphasis border-warning-subtle" data-testid="st-warnings"><div class="fw-semibold mb-1">Остатки на складе отправления:</div><ul class="mb-0">' +
++    return '<div class="alert alert-warning bg-warning-subtle text-warning-emphasis border-warning-subtle" data-testid="st-warnings"><div class="fw-semibold mb-1">' + (state.warningsAtDestination ? 'Остатки на складе назначения:' : 'Остатки на складе отправления:') + '</div><ul class="mb-0">' +
+       state.warnings.map(function (w) {
+         return '<li>' + esc(w.name) + ' (' + esc(w.warehouse_name) + '): ' + esc(num(w.stock)) +
+           (w.kind === 'negative' ? ' — отрицательный остаток' : ' — на минимуме или ниже (' + esc(num(w.min_stock)) + ')') + '</li>';
+@@ -530,6 +541,11 @@
+     if (t.sent_at) meta.push('Отправлен: ' + esc(t.sent_by_name || '') + ', ' + esc(fmtDateTime(t.sent_at)));
+     if (t.received_at) meta.push('Получен: ' + esc(t.received_by_name || '') + ', ' + esc(fmtDateTime(t.received_at)));
+     if (t.cancelled_at) meta.push('Отменён: ' + esc(t.cancelled_by_name || '') + ', ' + esc(fmtDateTime(t.cancelled_at)));
++    // последняя отмена проведения — остаётся и после повторной приёмки (transfers-revert DS-044)
++    if (t.unreceived_at) {
++      meta.push('<span class="text-break" data-testid="st-card-unreceived">Проведение отменено: ' + esc(t.unreceived_by_name || '') + ', ' +
++        esc(fmtDateTime(t.unreceived_at)) + ' — ' + esc(t.unreceive_reason || '') + '</span>');
++    }
+     return '<div class="small text-body-secondary mt-3" data-testid="st-card-meta">' + meta.join('<br>') + '</div>';
+   }
+ 
+@@ -616,6 +632,7 @@
+     html += '</div>' +
+       '<div class="d-flex flex-wrap justify-content-end gap-2">' +
+       (t.new ? '' : '<button type="button" class="btn btn-outline-secondary me-auto" data-testid="st-cancel" data-act="cancel">Отменить</button>') +
++      (t.new ? '' : deleteButtonHTML()) +
+       '<button type="button" class="btn btn-outline-primary" data-testid="st-save" data-act="save">Сохранить</button>';
+     if (t.new && t.direction === 'client_to_warehouse') {
+       // клиент принёс сам: создать, отправить и принять одним действием (DS-013)
+@@ -648,9 +665,22 @@
+         '<button type="button" class="btn btn-primary" data-testid="st-receive" data-act="receive">Принять</button>' +
+         '</div>';
+     }
++    // transfers-revert §8.1: «Отменить проведение» (Получено) и «Удалить» (Отменён) — только admin
++    if (state.isAdmin && t.status === 'received') {
++      html += '<div class="d-flex flex-wrap justify-content-end gap-2">' +
++        '<button type="button" class="btn btn-outline-secondary" data-testid="st-unreceive" data-act="unreceive">Отменить проведение</button></div>';
++    }
++    if (state.isAdmin && t.status === 'cancelled') {
++      html += '<div class="d-flex flex-wrap justify-content-end gap-2">' + deleteButtonHTML() + '</div>';
++    }
+     return html;
+   }
+ 
++  // deleteButtonHTML — «Удалить» (только admin; «Заявка» и «Отменён», transfers-revert DS-025).
++  function deleteButtonHTML() {
++    return state.isAdmin ? '<button type="button" class="btn btn-danger" data-testid="st-delete" data-act="delete">Удалить</button>' : '';
++  }
++
+   function renderCard() {
+     var t = state.current;
+     $('#st-placeholder').classList.toggle('d-none', !!t);
+@@ -1132,8 +1162,9 @@
+     return body;
+   }
+ 
+-  function after(t, okText) {
++  function after(t, okText, atDestination) {
+     state.warnings = t.warnings && t.warnings.length ? t.warnings : [];
++    state.warningsAtDestination = !!atDestination;
+     setCurrent(t);
+     setUrl(t.id);
+     if (okText) toast(okText, false);
+@@ -1227,6 +1258,99 @@
+     });
+   }
+ 
++  // ---------- удаление и отмена проведения (transfers-revert §8.1) ----------
++  // doDelete — «Удалить» (admin; «Заявка» / «Отменён»): документ закрывается, строка уходит из
++  // списка. 404 / 409 — тост и перечитывание (handleError).
++  function doDelete() {
++    var t = state.current;
++    return KT.uiDialog({
++      title: 'Удаление перемещения', text: 'Удалить перемещение #' + t.id + '? Восстановить будет нельзя',
++      ok: 'Удалить', cancel: 'Отмена', danger: true
++    }).then(function (ok) {
++      if (!ok) return;
++      clearErrors();
++      setBusy(true);
++      return KT.api.del(API + '/' + t.id + '?version=' + encodeURIComponent(t.version)).then(function () {
++        // карточка закрывается — её кнопки разблокировать уже не нужно
++        state.busy = false;
++        state.warnings = [];
++        setCurrent(null);
++        setUrl(null);
++        renderCard();
++        toast('Удалено', false);
++        if (KT.refreshNavBadge) KT.refreshNavBadge();
++        return reloadList();
++      }, function (err) { setBusy(false); handleError(err); });
++    });
++  }
++
++  function unreceiveError(id, html) {
++    var el = $(id);
++    el.innerHTML = html || '';
++    el.classList.toggle('d-none', !html);
++    if (id === '#st-unreceive-reason-error') $('#st-unreceive-reason').classList.toggle('is-invalid', !!html);
++  }
++
++  // openUnreceive — диалог «Отменить проведение» с обязательной причиной.
++  function openUnreceive() {
++    var t = state.current;
++    $('#st-unreceive-title').textContent = 'Отменить проведение перемещения #' + t.id + '?';
++    $('#st-unreceive-reason').value = '';
++    unreceiveError('#st-unreceive-reason-error', '');
++    unreceiveError('#st-unreceive-error', '');
++    $('#st-unreceive-confirm').disabled = false;
++    if (!unreceiveModal) unreceiveModal = new bootstrap.Modal($('#st-unreceive-modal'));
++    unreceiveModal.show();
++  }
++
++  function bindUnreceive() {
++    var form = $('#st-unreceive-form');
++    if (!form) return;
++    var sending = false;
++    $('#st-unreceive-modal').addEventListener('shown.bs.modal', function () { $('#st-unreceive-reason').focus(); });
++    form.addEventListener('submit', function (e) {
++      e.preventDefault();
++      if (sending) return;
++      var t = state.current;
++      unreceiveError('#st-unreceive-reason-error', '');
++      unreceiveError('#st-unreceive-error', '');
++      sending = true;
++      $('#st-unreceive-confirm').disabled = true;
++      KT.api.post(API + '/' + t.id + '/unreceive', { version: t.version, reason: $('#st-unreceive-reason').value })
++        .then(function (r) {
++          unreceiveModal.hide();
++          return after(r, 'Проведение отменено', true);
++        })
++        .catch(function (err) {
++          var details = (err && err.details) || {};
++          if (err && err.status === 400 && err.fields && err.fields.length) {
++            var other = [];
++            err.fields.forEach(function (f) {
++              if (f.name === 'reason') unreceiveError('#st-unreceive-reason-error', esc(UNRECEIVE_TEXT[f.message] || f.message));
++              else other.push('Обновите страницу');
++            });
++            if (other.length) unreceiveError('#st-unreceive-error', esc(other.join('; ')));
++            return;
++          }
++          if (err && err.code === 'TRANSFER_UNRECEIVE_BLOCKED') {
++            // мешающий документ — ссылкой: откат идёт в обратном порядке (DS-023)
++            var n = details.transfer_id;
++            var link = n ? '<a href="/transfers?id=' + encodeURIComponent(n) + '" data-testid="st-unreceive-blocked-link">#' + esc(n) + '</a>' : '';
++            var msg = esc(err.message || '');
++            unreceiveError('#st-unreceive-error', n ? msg.replace('#' + esc(n), link) : msg);
++            return;
++          }
++          // 403, 404, 409 (версия, статус), сеть — тост; документ перечитывается
++          unreceiveModal.hide();
++          handleError(err);
++        })
++        .then(function () {
++          sending = false;
++          $('#st-unreceive-confirm').disabled = false;
++        });
++    });
++  }
++
+   // ---------- приёмка ----------
+   // receiveClientDoc — документ с клиентом: факт не вводится, подтверждение — диалог без полей.
+   function receiveClientDoc() {
+@@ -1464,6 +1588,8 @@
+         case 'receive-now': doReceiveNow(); break;
+         case 'cancel': doCancel(); break;
+         case 'receive': openReceive(); break;
++        case 'unreceive': openUnreceive(); break;
++        case 'delete': doDelete(); break;
+       }
+     });
+     card.addEventListener('change', function (e) {
+@@ -1505,6 +1631,7 @@
+       if (!e.target.closest('[data-testid="st-add-equipment"]')) hideEquipmentResults();
+     });
+     bindReceive();
++    bindUnreceive();
+   }
+ 
+   // ---------- инициализация ----------
+diff --git a/web/ssr/transfers/templates/pages/list.html b/web/ssr/transfers/templates/pages/list.html
+index f1f093c..d65ee91 100644
+--- a/web/ssr/transfers/templates/pages/list.html
++++ b/web/ssr/transfers/templates/pages/list.html
+@@ -107,6 +107,30 @@
+     </form>
+   </div>
+ </div>
++
++<!-- Диалог «Отменить проведение» (transfers-revert §8.1): обязательная причина; ошибки причины —
++     под полем, мешающий документ (откат в обратном порядке) — над кнопками, ссылкой. -->
++<div class="modal fade" id="st-unreceive-modal" tabindex="-1" aria-hidden="true" data-testid="st-unreceive-modal">
++  <div class="modal-dialog modal-dialog-centered">
++    <form class="modal-content" id="st-unreceive-form" novalidate>
++      <div class="modal-header">
++        <h2 class="modal-title fs-5 text-break" id="st-unreceive-title" data-testid="st-unreceive-title">Отменить проведение перемещения?</h2>
++        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++      </div>
++      <div class="modal-body">
++        <p class="text-body-secondary small">Остатки и местоположение оборудования будут возвращены в состояние «в пути».</p>
++        <label class="form-label" for="st-unreceive-reason">Причина</label>
++        <textarea class="form-control" id="st-unreceive-reason" data-testid="st-unreceive-reason" rows="3"></textarea>
++        <div class="text-danger small d-none" id="st-unreceive-reason-error" data-testid="st-unreceive-reason-error"></div>
++        <div class="alert alert-danger d-none mt-3 mb-0 text-break" id="st-unreceive-error" data-testid="st-unreceive-error"></div>
++      </div>
++      <div class="modal-footer">
++        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
++        <button type="submit" class="btn btn-primary" id="st-unreceive-confirm" data-testid="st-unreceive-confirm">Отменить проведение</button>
++      </div>
++    </form>
++  </div>
++</div>
+ {{ end }}
+ 
+ {{ define "scripts" }}

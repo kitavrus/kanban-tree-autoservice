@@ -1,0 +1,1308 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 1e6ce61..e19c1fd 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -172,6 +172,8 @@ export type TransferItem = {
+   product_name: string | null;
+   unit: string | null;
+   equipment_id: string | null;
++  /** Единица строки мягко удалена — бейдж «удалён» (soft-delete-clients §6.5); false у товара. */
++  equipment_is_deleted: boolean;
+   equipment_name: string | null;
+   equipment_serial: string | null;
+   equipment_client_name: string | null;
+@@ -196,6 +198,8 @@ export type Transfer = {
+   task_is_deleted: boolean;
+   client_id: string | null;
+   client_name: string | null;
++  /** Клиент документа мягко удалён — бейдж «удалён» (soft-delete-clients §6.5). */
++  client_is_deleted: boolean;
+   supplier_id: string | null;
+   supplier_name: string | null;
+   status: TransferStatus;
+@@ -225,6 +229,7 @@ export type TransferSummary = {
+   task_is_deleted: boolean;
+   client_id: string | null;
+   client_name: string | null;
++  client_is_deleted: boolean;
+   supplier_id: string | null;
+   supplier_name: string | null;
+   status: TransferStatus;
+@@ -662,11 +667,14 @@ export class AdminApi {
+ 
+   // ---- мягкое удаление (soft-delete-core §6.1–§6.4; типы — board-types.ts, §TD-6.2) ----
+ 
+-  /** Адрес ресурса вида kind: заказы (часть 1), документы перемещения (часть 2), колонки (часть 3). */
++  /** Адрес ресурса вида kind: заказы (часть 1), документы перемещения (часть 2), колонки
++   *  (часть 3), клиенты и единицы оборудования (часть 4). */
+   private softDeletePath(kind: import('./board-types').DeletedKind, id: number | string): string {
+     if (kind === 'tasks') return `/api/v1/tasks/${id}`;
+     if (kind === 'transfers') return `/api/v1/transfers/${id}`;
+     if (kind === 'columns') return `/api/v1/columns/${id}`;
++    if (kind === 'clients') return `/api/v1/clients/${id}`;
++    if (kind === 'equipment') return `/api/v1/equipment/${id}`;
+     throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);
+   }
+ 
+@@ -674,8 +682,13 @@ export class AdminApi {
+    *  перемещения в теле ещё и актуальный version (DS-028). */
+   async softDelete(kind: 'transfers', id: number | string, reason?: string): Promise<TransferDeleteResponse>;
+   async softDelete(kind: 'columns', id: number | string, reason?: string): Promise<import('./board-types').ColumnDeleteResponse>;
++  async softDelete(kind: 'clients', id: number | string, reason?: string): Promise<import('./board-types').ClientDeleteResponse>;
++  async softDelete(kind: 'equipment', id: number | string, reason?: string): Promise<import('./board-types').EquipmentDeleteResponse>;
+   async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason?: string): Promise<import('./board-types').TaskDeleteResponse>;
+-  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<import('./board-types').TaskDeleteResponse | TransferDeleteResponse | import('./board-types').ColumnDeleteResponse> {
++  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<
++    | import('./board-types').TaskDeleteResponse | TransferDeleteResponse | import('./board-types').ColumnDeleteResponse
++    | import('./board-types').ClientDeleteResponse | import('./board-types').EquipmentDeleteResponse
++  > {
+     if (kind === 'transfers') return this.deleteTransfer(Number(id), reason);
+     const data: import('./board-types').DeleteBody = { reason };
+     const res = await this.ctx.delete(this.softDeletePath(kind, id), { data, headers: await this.headers() });
+@@ -690,6 +703,51 @@ export class AdminApi {
+     return { status: res.status(), body: await res.json() };
+   }
+ 
++  /** Восстановление клиента (вместе с единицами, ушедшими с ним): POST /api/v1/clients/:id/restore
++   *  (soft-delete-clients §6.2). Статус не проверяется — повтор ждёт 409. */
++  async restoreClient(id: string): Promise<{ status: number; body: import('./board-types').ClientRestoreResponse | import('./board-types').ClientRestoreError }> {
++    const res = await this.ctx.post(`/api/v1/clients/${id}/restore`, { headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /** Восстановление единицы: POST /api/v1/equipment/:id/restore (§6.4); клиент единицы в
++   *  удалённых → 409 CLIENT_DELETED. Статус не проверяется. */
++  async restoreEquipment(id: string): Promise<{ status: number; body: import('./board-types').EquipmentRestoreResponse | import('./board-types').ClientRestoreError }> {
++    const res = await this.ctx.post(`/api/v1/equipment/${id}/restore`, { headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /**
++   * ФИЗИЧЕСКАЯ уборка записи вида kind — служебный адрес DELETE /api/v1/test/purge/:kind/:id
++   * (soft-delete DS-027; стенд — с TEST_PURGE_ENABLED=true). Общий помощник уборки тестовых
++   * данных (TS-F9): клиенты и единицы оборудования удаляются мягко и без него копились бы в
++   * разделе «Удалённые». Работает и для действующей, и для мягко удалённой записи. Возвращает
++   * HTTP-статус: 200 — убрано; 404 — записи уже нет; 409 — запись используется (на клиента либо
++   * единицу ссылаются заказы или строки документов — сначала убрать их, напр. purgeTask).
++   */
++  async purge(kind: import('./board-types').PurgeKind, id: number | string): Promise<number> {
++    const res = await this.ctx.delete(`/api/v1/test/purge/${kind}/${id}`, { headers: await this.headers() });
++    const status = res.status();
++    if (status === 404) {
++      const body = (await res.json().catch(() => null)) as { code?: string; message?: string } | null;
++      if (!(body?.code === 'NOT_FOUND' && body.message === 'Не найдено')) {
++        throw new Error(`purge ${kind} ${id}: служебная уборка выключена — запустите стенд с TEST_PURGE_ENABLED=true`);
++      }
++    }
++    return status;
++  }
++
++  /** Уборка клиента теста вместе с его единицами: сначала заказы клиента (purgeTask — с их
++   *  документами), затем сам клиент. Ошибки уборки не роняют тест — пишутся в лог. */
++  async purgeClient(id: string, taskIds: number[] = []): Promise<void> {
++    for (const taskId of taskIds) await this.purgeTask(taskId).catch(() => undefined);
++    const status = await this.purge('clients', id).catch((e) => {
++      console.warn(`purgeClient ${id}: ${e instanceof Error ? e.message : String(e)}`);
++      return 0;
++    });
++    if (status === 409) console.warn(`purgeClient ${id}: запись используется — остались заказы либо документы клиента`);
++  }
++
+   /** Список удалённого одного вида: GET /api/v1/deleted?kind=… */
+   async listDeleted(kind: import('./board-types').DeletedKind, filters: import('./board-types').DeletedListQuery = {}): Promise<import('./board-types').DeletedListResponse> {
+     const params: Record<string, string> = { kind };
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 10339a3..4aa60b7 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -39,6 +39,8 @@ export type TaskCard = {
+   column_id: string;
+   client_id: string;
+   client_name: string;
++  /** Клиент заказа мягко удалён — бейдж «удалён» (soft-delete-clients §6.5). */
++  client_is_deleted: boolean;
+   title: string;
+   assignee_id: string | null;
+   assignee_name: string | null;
+@@ -99,6 +101,21 @@ export type ColumnDeleteResponse = { id: string; deleted_at: string };
+ export type ColumnRestoreResponse = { id: string; position: number };
+ /** Отказы восстановления колонки (§6.2). */
+ export type ColumnRestoreError = { code: 'NOT_DELETED' | 'COLUMN_NOT_FOUND' | 'FORBIDDEN'; message: string };
++/** 200 DELETE /api/v1/clients/:id (clients.ClientDeleteResponse, soft-delete-clients §6.1). */
++export type ClientDeleteResponse = { id: string; deleted_at: string; equipment_deleted: number };
++/** 200 POST /api/v1/clients/:id/restore (clients.ClientRestoreResponse, §6.2). */
++export type ClientRestoreResponse = { id: string; equipment_restored: number };
++/** 200 DELETE /api/v1/equipment/:id (clients.EquipmentDeleteResponse, §6.3). */
++export type EquipmentDeleteResponse = { id: string; deleted_at: string };
++/** 200 POST /api/v1/equipment/:id/restore (clients.EquipmentRestoreResponse, §6.4). */
++export type EquipmentRestoreResponse = { id: string };
++/** Отказы удаления и восстановления клиента и единицы (§6.1–§6.4). */
++export type ClientRestoreError = {
++  code: 'NOT_DELETED' | 'CLIENT_DELETED' | 'CLIENT_NOT_FOUND' | 'EQUIPMENT_NOT_FOUND' | 'FORBIDDEN';
++  message: string;
++};
++/** Виды служебной уборки, подключённые на стенде (части 1–4 мастер-спеки soft-delete). */
++export type PurgeKind = 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment';
+ /** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
+ export type PurgeResponse = { id: string };
+ 
+@@ -188,6 +205,8 @@ export type EquipmentHistory = { task_id: number; title: string; created_at: str
+ 
+ export type CardEquipment = {
+   equipment_id: string;
++  /** Единица мягко удалена — бейдж «удалён» в блоке «Оборудование» (soft-delete-clients §6.5). */
++  is_deleted: boolean;
+   type_name: string;
+   brand: string;
+   model: string;
+diff --git a/e2e/pages/ClientsPage.ts b/e2e/pages/ClientsPage.ts
+index 40f1a60..309401c 100644
+--- a/e2e/pages/ClientsPage.ts
++++ b/e2e/pages/ClientsPage.ts
+@@ -103,10 +103,26 @@ export class ClientsPage {
+     if (p.note !== undefined) await this.phoneNote(index).fill(p.note);
+   }
+ 
+-  /** Подтверждает удаление через KT.uiConfirm (делегированный submit-обработчик формы). */
+-  async confirmDelete() {
++  // Общее окно «Удаление» с причиной (soft-delete-clients §8.1; KT.uiDeleteDialog).
++  get deleteDialog(): Locator { return this.page.locator('[data-testid="ui-dialog"][data-dialog-kind="delete"]'); }
++  get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
++  get deleteDialogText(): Locator { return this.deleteDialog.getByTestId('ui-dialog-text'); }
++  get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
++  get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
++  get deleteDialogOk(): Locator { return this.deleteDialog.getByTestId('ui-dialog-ok'); }
++  get deleteDialogCancel(): Locator { return this.deleteDialog.getByTestId('ui-dialog-cancel'); }
++  get toast(): Locator { return this.page.getByTestId('toast'); }
++
++  /** «Удалить» → окно «Удаление» открыто (форма клиента не отправлена). */
++  async openDelete() {
+     await this.deleteButton.click();
+-    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
+-    await this.page.getByTestId('ui-dialog-ok').click();
++    await expect(this.deleteDialog).toBeVisible();
++  }
++
++  /** Мягкое удаление клиента: «Удалить» → причина в окне → «Удалить» (форма уходит обычным POST). */
++  async confirmDelete(reason = 'e2e: создан по ошибке') {
++    await this.openDelete();
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
+   }
+ }
+diff --git a/e2e/pages/DeletedPage.ts b/e2e/pages/DeletedPage.ts
+index 0cdb2b7..809e844 100644
+--- a/e2e/pages/DeletedPage.ts
++++ b/e2e/pages/DeletedPage.ts
+@@ -89,6 +89,8 @@ export class DeletedPage {
+ 
+   rowTitle(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-title'); }
+   rowSubtitle(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-subtitle'); }
++  /** Бейдж «вместе с клиентом» у единицы, ушедшей в удалённые с клиентом (soft-delete-clients §8.2). */
++  rowWith(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-with'); }
+   rowReason(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-reason'); }
+   rowBy(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-by'); }
+   rowAt(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-at'); }
+diff --git a/e2e/pages/EquipmentPage.ts b/e2e/pages/EquipmentPage.ts
+index f9a8a2e..ab4e65a 100644
+--- a/e2e/pages/EquipmentPage.ts
++++ b/e2e/pages/EquipmentPage.ts
+@@ -87,10 +87,26 @@ export class EquipmentPage {
+     if (s.value !== undefined) await this.specValue(index).fill(s.value);
+   }
+ 
+-  /** Подтверждает удаление через KT.uiConfirm (делегированный submit-обработчик формы). */
+-  async confirmDelete() {
++  // Общее окно «Удаление» с причиной (soft-delete-clients §8.1; KT.uiDeleteDialog).
++  get deleteDialog(): Locator { return this.page.locator('[data-testid="ui-dialog"][data-dialog-kind="delete"]'); }
++  get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
++  get deleteDialogText(): Locator { return this.deleteDialog.getByTestId('ui-dialog-text'); }
++  get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
++  get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
++  get deleteDialogOk(): Locator { return this.deleteDialog.getByTestId('ui-dialog-ok'); }
++  get deleteDialogCancel(): Locator { return this.deleteDialog.getByTestId('ui-dialog-cancel'); }
++  get toast(): Locator { return this.page.getByTestId('toast'); }
++
++  /** «Удалить» → окно «Удаление» открыто (форма единицы не отправлена). */
++  async openDelete() {
+     await this.deleteButton.click();
+-    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
+-    await this.page.getByTestId('ui-dialog-ok').click();
++    await expect(this.deleteDialog).toBeVisible();
++  }
++
++  /** Мягкое удаление единицы: «Удалить» → причина в окне → «Удалить» (форма уходит обычным POST). */
++  async confirmDelete(reason = 'e2e: создан по ошибке') {
++    await this.openDelete();
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
+   }
+ }
+diff --git a/e2e/tests/board-guards.spec.ts b/e2e/tests/board-guards.spec.ts
+index 47ff554..28a990c 100644
+--- a/e2e/tests/board-guards.spec.ts
++++ b/e2e/tests/board-guards.spec.ts
+@@ -3,30 +3,40 @@ import { ClientsPage } from '../pages/ClientsPage';
+ import { EquipmentPage } from '../pages/EquipmentPage';
+ import { CatalogPage } from '../pages/CatalogPage';
+ 
+-// Фаза 8 (D26): E2E-гарды поверх backend-гардов фазы 01 — удаление клиента/оборудования/
+-// товара/услуги, на которые ссылается заказ, отклоняется (409), сущность остаётся на месте,
+-// форма показывает понятное сообщение вместо голого JSON (эталон CT-005 catalog.spec.ts —
+-// там уже проверен PRODUCT_IN_USE через комплект услуги; здесь — через реальный заказ,
+-// design-errors.md §Codes 01-15 #07/#08/#09/#15).
++// Фаза 8 (D26): E2E-гарды поверх backend-гардов — удаление товара/услуги, на которые ссылается
++// заказ, отклоняется (409), сущность остаётся на месте, форма показывает понятное сообщение
++// вместо голого JSON (эталон CT-005 catalog.spec.ts).
++// Клиент и оборудование (soft-delete-clients DS-014, DS-041, TS-F4): заказы и документы их
++// больше не удерживают — удаление мягкое (SDCL-001, soft-delete-clients.spec.ts); отказ остался
++// один — оборудование не у клиента (на нашем складе, в пути либо в незавершённом перемещении).
+ test.use({ colorScheme: 'light' });
+ 
+-test.describe('BD: нельзя удалить клиента с заказами (AC-017)', () => {
+-  test('BD-017: удаление клиента с заказом — сообщение, клиент остаётся', async ({ adminPage: page, adminApi, uniq, allowHttpErrors }) => {
+-    const company = uniq('BD-017 клиент с заказом');
++test.describe('BD: нельзя удалить клиента, пока его оборудование на складе (DS-041)', () => {
++  test('BD-017 (TS-053): удаление клиента с оборудованием на нашем складе — «Оборудование клиента на складе или в пути — сначала верните его клиенту», клиент остаётся', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const company = uniq('BD-017 клиент с оборудованием на складе');
+     const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990001111', note: '' }] });
++    const type = await adminApi.createEquipmentType({ name: uniq('BD-017 тип') });
++    const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq('BD-017 модель') });
+     const columns = (await adminApi.listColumns()).items;
+-    await adminApi.createTask({ title: uniq('BD-017 заказ'), client_id: client.id, column_id: columns[0].id });
++    const task = await adminApi.createTask({ title: uniq('BD-017 заказ'), client_id: client.id, column_id: columns[0].id });
++    const warehouse = await adminApi.defaultWarehouse();
++    await adminApi.addTaskEquipmentAt(task.id, equipment.id, warehouse.id); // принята на склад документом
+ 
+     allowHttpErrors((url, status) => url.endsWith(`/clients/${client.id}/delete`) && status === 409);
+ 
+     const clients = new ClientsPage(page);
+     await clients.goto(`?q=${company}`);
+     await clients.open(company);
+-    await clients.confirmDelete();
++    await clients.confirmDelete(uniq('BD-017 попытка'));
+ 
+-    // карточка перерисована с сообщением (POST не редиректит на список — форма остаётся
++    // карточка перерисована с красным блоком (POST не редиректит на список — форма остаётся
+     // с данными клиента, не голый JSON из FiberErrorHandler).
+-    await expect(clients.formError).toContainText('заказы');
++    await expect(clients.formError).toHaveText('Оборудование клиента на складе или в пути — сначала верните его клиенту');
+     await expect(clients.companyName).toHaveValue(company);
+ 
+     // клиент по-прежнему присутствует в списке.
+@@ -35,13 +45,12 @@ test.describe('BD: нельзя удалить клиента с заказам
+   });
+ });
+ 
+-test.describe('BD: нельзя удалить оборудование, бывшее в заказе (AC-018)', () => {
+-  test('BD-018: удаление оборудования из заказа — сообщение, оборудование остаётся', async ({
++test.describe('BD: нельзя удалить оборудование, пока оно на складе (DS-041)', () => {
++  test('BD-018 (TS-053): удаление единицы на нашем складе — «Оборудование на складе или в пути — сначала верните его клиенту», оборудование остаётся', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+     allowHttpErrors,
+-    insertTaskEquipment,
+   }) => {
+     const company = uniq('BD-018 клиент оборудования');
+     const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990002222', note: '' }] });
+@@ -49,16 +58,17 @@ test.describe('BD: нельзя удалить оборудование, быв
+     const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq('BD-018 модель') });
+     const columns = (await adminApi.listColumns()).items;
+     const task = await adminApi.createTask({ title: uniq('BD-018 заказ'), client_id: client.id, column_id: columns[0].id });
+-    await insertTaskEquipment(task.id, equipment.id);
++    const warehouse = await adminApi.defaultWarehouse();
++    await adminApi.addTaskEquipmentAt(task.id, equipment.id, warehouse.id); // принята на склад документом
+ 
+     allowHttpErrors((url, status) => url.endsWith(`/equipment/${equipment.id}/delete`) && status === 409);
+ 
+     const eq = new EquipmentPage(page);
+     await eq.gotoEdit(equipment.id);
+-    await eq.confirmDelete();
++    await eq.confirmDelete(uniq('BD-018 попытка'));
+ 
+-    // оборудование остаётся на карточке — форма показывает сообщение.
+-    await expect(eq.formError).toContainText('заказе');
++    // оборудование остаётся на карточке — форма показывает красный блок.
++    await expect(eq.formError).toHaveText('Оборудование на складе или в пути — сначала верните его клиенту');
+ 
+     // оборудование по-прежнему присутствует у клиента.
+     const clients = new ClientsPage(page);
+diff --git a/e2e/tests/clients.spec.ts b/e2e/tests/clients.spec.ts
+index 39e5251..ba1729f 100644
+--- a/e2e/tests/clients.spec.ts
++++ b/e2e/tests/clients.spec.ts
+@@ -207,17 +207,38 @@ test.describe('CL: список, поиск, правка, удаление', ()
+     await expect(clients.row(company)).toContainText('Новый Представитель');
+   });
+ 
+-  test('CL-008: удаление клиента — подтверждение через диалог, PRG на список', async ({ adminPage: page, adminApi, uniq }) => {
++  test('CL-008 (TS-043): удаление клиента — окно «Удаление» с причиной, PRG на список и тост; негатив: без причины клиент не удаляется — «Укажите причину удаления»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
+     const company = uniq('Удаляемый Клиент');
+-    await adminApi.createClient({ company_name: company, phones: [{ phone: '1234567890', note: '' }] });
+-    const clients = new ClientsPage(page);
+-    await clients.goto(`?q=${company}`);
+-    await clients.open(company);
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '1234567890', note: '' }] });
++    // отказ по причине — серверная форма возвращается с 422 (soft-delete-clients §8.1).
++    allowHttpErrors((url, status) => url.endsWith(`/clients/${client.id}/delete`) && status === 422);
++    try {
++      const clients = new ClientsPage(page);
++      await clients.goto(`?q=${company}`);
++      await clients.open(company);
+ 
+-    await clients.confirmDelete();
+-    await expect(page).toHaveURL(/\/clients\?flash=deleted$/);
+-    await expect(clients.flash).toHaveText('Клиент удалён');
+-    await expect(clients.row(company)).toHaveCount(0);
++      // негатив: пустая причина — форма открывается снова с окном и текстом под полем.
++      await clients.openDelete();
++      await expect(clients.deleteDialogTitle).toHaveText(`Удалить «${company}»?`);
++      await clients.deleteDialogOk.click();
++      await expect(clients.deleteReasonError).toHaveText('Укажите причину удаления');
++      await expect(clients.deleteDialog).toBeVisible();
++      expect((await adminApi.getClient(client.id)).id, 'клиент не удалён').toBe(client.id);
++
++      await clients.deleteReason.fill(uniq('CL-008 создан по ошибке'));
++      await clients.deleteDialogOk.click();
++      await expect(page).toHaveURL(/\/clients\?flash=deleted&n=0$/);
++      await expect(clients.toast).toHaveText('Удалено вместе с оборудованием: 0. Восстановить можно в разделе «Удалённые»');
++      await expect(clients.row(company)).toHaveCount(0);
++      expect((await adminApi.listDeleted('clients', { q: company })).total).toBe(1);
++    } finally {
++      await adminApi.purgeClient(client.id); // TS-F9: мягко удалённый клиент не копится в «Удалённых»
++    }
+   });
+ });
+ 
+diff --git a/e2e/tests/equipment.spec.ts b/e2e/tests/equipment.spec.ts
+index b0dc9bb..4dc4b0a 100644
+--- a/e2e/tests/equipment.spec.ts
++++ b/e2e/tests/equipment.spec.ts
+@@ -174,22 +174,39 @@ test.describe('EQ: правка, шаблон характеристик, сво
+ });
+ 
+ test.describe('EQ: удаление, архивный тип', () => {
+-  test('EQ-006: удаление единицы оборудования — подтверждение через диалог, PRG на карточку клиента', async ({
++  test('EQ-006 (TS-043): удаление единицы оборудования — окно «Удаление» с причиной, PRG на карточку клиента и тост; негатив: без причины единица не удаляется', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
++    allowHttpErrors,
+   }) => {
+     const company = uniq('Удаление Оборудование');
+     const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000006', note: '' }] });
+     const type = await adminApi.createEquipmentType({ name: uniq('Тип Удаления') });
+     const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Удаляемая модель' });
+-
+-    const eq = new EquipmentPage(page);
+-    await eq.gotoEdit(equipment.id);
+-    await eq.confirmDelete();
+-
+-    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_deleted$`));
+-    await expect(page.getByTestId('equipment-empty')).toBeVisible();
++    allowHttpErrors((url, status) => url.endsWith(`/equipment/${equipment.id}/delete`) && status === 422);
++    try {
++      const eq = new EquipmentPage(page);
++      await eq.gotoEdit(equipment.id);
++
++      // негатив: пустая причина — форма единицы открывается снова с окном и текстом под полем.
++      await eq.openDelete();
++      await expect(eq.deleteDialogTitle).toHaveText('Удалить «Удаляемая модель»?');
++      await expect(eq.deleteDialogText).toHaveText('Единицу можно восстановить в разделе «Удалённые»');
++      await eq.deleteDialogOk.click();
++      await expect(eq.deleteReasonError).toHaveText('Укажите причину удаления');
++      await expect(eq.deleteDialog).toBeVisible();
++      expect((await adminApi.getClient(client.id)).equipment_count, 'единица не удалена').toBe(1);
++
++      await eq.deleteReason.fill(uniq('EQ-006 списана'));
++      await eq.deleteDialogOk.click();
++      await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_deleted$`));
++      await expect(eq.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
++      await expect(page.getByTestId('equipment-empty')).toBeVisible();
++      expect((await adminApi.getClient(client.id)).equipment_count, 'счётчик — только действующие единицы').toBe(0);
++    } finally {
++      await adminApi.purgeClient(client.id); // TS-F9: клиент уходит вместе с удалённой единицей
++    }
+   });
+ 
+   test('EQ-007: архивный тип недоступен для новой единицы, но сохраняется у существующей (ADR-004)', async ({
+diff --git a/e2e/tests/soft-delete-clients.spec.ts b/e2e/tests/soft-delete-clients.spec.ts
+new file mode 100644
+index 0000000..8f2b2b1
+--- /dev/null
++++ b/e2e/tests/soft-delete-clients.spec.ts
+@@ -0,0 +1,205 @@
++import { test, expect } from '../fixtures/board';
++import { BoardPage } from '../pages/BoardPage';
++import { ClientsPage } from '../pages/ClientsPage';
++import { DeletedPage } from '../pages/DeletedPage';
++import { EquipmentPage } from '../pages/EquipmentPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++
++// Мягкое удаление — клиенты и оборудование клиентов (docs/features/soft-delete-clients/
++// draft-spec.md §8.1–§8.3, §11): клиент с заказом и оборудованием удаляется с причиной, в заказе
++// остаются бейджи «удалён», вкладки «Клиенты» и «Оборудование» раздела «Удалённые»,
++// восстановление клиента возвращает всё (TS-043). Отказы «оборудование не у клиента» —
++// BD-017 / BD-018 (board-guards.spec.ts); окно «Удаление» без причины — CL-008, EQ-006.
++// Адаптив и темы раздела «Удалённые» и окна удаления — SD-007 / SD-008 (soft-delete-core.spec.ts).
++// Общая dev-БД (§TD-6.2): свои клиенты, единицы и заказы через uniq()+adminApi. Уборка (TS-F9):
++// заказы — _boardCleanup (purgeTask), клиенты с единицами — adminApi.purgeClient служебным
++// адресом purge (стенд с TEST_PURGE_ENABLED=true).
++test.use({ colorScheme: 'light' });
++
++const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
++
++test.describe('SDCL: мягкое удаление клиентов и оборудования', () => {
++  test('SDCL-001 (TS-043): клиент с заказом и двумя единицами удаляется с причиной → список без клиента, тост «Удалено вместе с оборудованием: 2…»; на доске и в карточке заказа бейдж «удалён» у клиента и обеих единиц; в «Удалённых» вкладка «Клиенты» — строка клиента, вкладка «Оборудование» — единицы с бейджем «вместе с клиентом»; «Восстановить» клиента возвращает всё, бейджи исчезают; негатив: «Восстановить» у единицы удалённого клиента → «Сначала восстановите клиента», строка остаётся', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const company = uniq('SDCL-001 клиент');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990004301', note: '' }] });
++    const type = await adminApi.createEquipmentType({ name: uniq('SDCL-001 тип') });
++    const first = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Raycus', model: uniq('SDCL-001 первая') });
++    const second = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Raycus', model: uniq('SDCL-001 вторая') });
++    const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
++    const task = await adminApi.createTask({ title: uniq('SDCL-001 заказ'), client_id: client.id, column_id: column.id });
++    await adminApi.addTaskEquipment(task.id, first.id);
++    await adminApi.addTaskEquipment(task.id, second.id);
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/equipment/${first.id}/restore`) && status === 409);
++
++    try {
++      // §8.1: форма клиента → окно «Удаление» с пояснением и числом единиц.
++      const clients = new ClientsPage(page);
++      await clients.goto(`?q=${encodeURIComponent(company)}`);
++      await expect(clients.equipmentCount(company)).toHaveText('2');
++      await clients.open(company);
++      await clients.openDelete();
++      await expect(clients.deleteDialogTitle).toHaveText(`Удалить «${company}»?`);
++      await expect(clients.deleteDialogText).toHaveText(
++        'Оборудование клиента (2 ед.) будет удалено вместе с ним. Заказы клиента останутся на доске с пометкой «удалён». Удалить можно, только когда всё оборудование у клиента',
++      );
++      const reason = uniq('SDCL-001 клиент закрылся');
++      await clients.deleteReason.fill(reason);
++      await clients.deleteDialogOk.click();
++      await expect(page).toHaveURL(/\/clients\?flash=deleted&n=2$/);
++      await expect(clients.toast).toHaveText('Удалено вместе с оборудованием: 2. Восстановить можно в разделе «Удалённые»');
++      await clients.goto(`?q=${encodeURIComponent(company)}`);
++      await expect(clients.row(company)).toHaveCount(0);
++      await expect(clients.empty).toBeVisible();
++
++      // §8.3: заказ остаётся на доске — бейдж «удалён» у клиента на карточке доски.
++      const board = new BoardPage(page);
++      await board.goto(`?client_id=${client.id}`);
++      await expect(board.card(task.id)).toBeVisible();
++      await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveText('удалён');
++
++      // карточка заказа: бейдж у клиента и у обеих единиц блока «Оборудование».
++      await board.openTaskEdit(task.id);
++      const card = new OrderCardPage(page);
++      await card.waitOpen();
++      await expect(page.getByTestId('task-client-deleted')).toBeVisible();
++      await expect(page.getByTestId('task-client-deleted')).toHaveText('удалён');
++      for (const unit of [first, second]) {
++        await expect(card.equipmentRow(unit.id).getByTestId('card-equipment-deleted')).toHaveText('удалён');
++      }
++      // удалённому клиенту оборудование не добавить, истории удалённых единиц нет (DS-026):
++      // вместо выбора — пояснение, кнопок «История работ» у удалённых единиц нет.
++      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveText('Клиент заказа удалён — добавить оборудование нельзя');
++      await expect(page.getByTestId('card-equipment-add')).toHaveCount(0);
++      await expect(page.getByTestId('card-equipment-new')).toHaveCount(0);
++      await expect(page.getByTestId('card-equipment-history-toggle')).toHaveCount(0);
++      const apiCard = await adminApi.getCard(task.id);
++      expect(apiCard.task.client_is_deleted).toBe(true);
++      expect(apiCard.equipment.map((e) => e.is_deleted)).toEqual([true, true]);
++
++      // §8.2: «Удалённые» → вкладка «Клиенты».
++      const del = new DeletedPage(page);
++      await del.goto(`kind=clients&q=${encodeURIComponent(company)}`);
++      await expect(del.tab('clients')).toHaveClass(/active/);
++      await expect(del.tab('clients')).toContainText('Клиенты');
++      await expect(del.tab('equipment')).toContainText('Оборудование');
++      await expect(del.rows).toHaveCount(1);
++      await expect(del.rowTitle(client.id)).toHaveText(company);
++      await expect(del.rowSubtitle(client.id)).toHaveCount(0);
++      await expect(del.rowReason(client.id)).toHaveText(reason);
++      await expect(del.rowBy(client.id)).toHaveText('Админ Прогона');
++      await expect(del.rowAt(client.id)).toHaveText(DATE_TIME);
++      const summary = await adminApi.deletedSummary();
++      await expect(del.tabCount('clients')).toHaveText(String(summary.counts.clients));
++      await expect(del.tabCount('equipment')).toHaveText(String(summary.counts.equipment));
++
++      // вкладка «Оборудование»: обе единицы с бейджем «вместе с клиентом» и причиной клиента.
++      await del.tab('equipment').click();
++      await expect(del.tab('equipment')).toHaveClass(/active/);
++      await expect(del.rows).toHaveCount(2);
++      for (const unit of [first, second]) {
++        await expect(del.rowTitle(unit.id)).toHaveText(`${type.name} Raycus ${unit.model}`);
++        await expect(del.rowSubtitle(unit.id)).toHaveText(company);
++        await expect(del.rowWith(unit.id)).toHaveText('вместе с клиентом');
++        await expect(del.rowReason(unit.id)).toHaveText(reason);
++      }
++
++      // негатив: единицу удалённого клиента отдельно не восстановить — тост, строка остаётся.
++      await del.restoreBtn(first.id).click();
++      await expect(del.dialogText).toHaveText(`Восстановить «${type.name} Raycus ${first.model}»?`);
++      await del.dialogOk.click();
++      await expect(del.toastError).toHaveText('Сначала восстановите клиента');
++      await expect(del.row(first.id)).toBeVisible();
++      expect((await adminApi.listDeleted('equipment', { q: company })).total, 'единицы остались в удалённых').toBe(2);
++
++      // восстановление клиента возвращает его и обе единицы.
++      await del.tab('clients').click();
++      await expect(del.row(client.id)).toBeVisible();
++      await del.restoreBtn(client.id).click();
++      await expect(del.dialogText).toHaveText(`Восстановить «${company}» вместе с оборудованием?`);
++      await del.dialogOk.click();
++      await expect(del.toast).toHaveText('Восстановлено вместе с оборудованием: 2');
++      await expect(del.row(client.id)).toHaveCount(0);
++      await expect(del.tabCount('clients')).toHaveText(String(summary.counts.clients - 1));
++      await expect(del.tabCount('equipment')).toHaveText(String(summary.counts.equipment - 2));
++      expect((await adminApi.listDeleted('equipment', { q: company })).total).toBe(0);
++      expect((await adminApi.getClient(client.id)).equipment_count).toBe(2);
++
++      // бейджи исчезли: доска и карточка заказа.
++      await board.goto(`?client_id=${client.id}`);
++      await expect(board.card(task.id)).toBeVisible();
++      await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveCount(0);
++      await board.openTaskEdit(task.id);
++      await card.waitOpen();
++      await expect(card.equipmentRow(first.id)).toBeVisible();
++      await expect(page.getByTestId('task-client-deleted')).toBeHidden();
++      await expect(page.getByTestId('card-equipment-deleted')).toHaveCount(0);
++      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveCount(0);
++      await expect(page.getByTestId('card-equipment-new')).toBeVisible();
++    } finally {
++      await adminApi.purgeClient(client.id, [task.id]);
++    }
++  });
++
++  test('SDCL-002 (TS-043): единица заказа удаляется отдельно с причиной → карточка клиента без единицы, тост; в карточке заказа бейдж «удалён» только у неё; в «Удалённых» вкладка «Оборудование» — «тип марка модель», клиент, без бейджа «вместе с клиентом»; «Восстановить» → тост «Восстановлено», единица снова у клиента; негатив: клиент при этом не удалён и бейджа у клиента нет', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const company = uniq('SDCL-002 клиент');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990004302', note: '' }] });
++    const type = await adminApi.createEquipmentType({ name: uniq('SDCL-002 тип') });
++    const gone = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Qilin', model: uniq('SDCL-002 списана') });
++    const kept = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Qilin', model: uniq('SDCL-002 остаётся') });
++    const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
++    const task = await adminApi.createTask({ title: uniq('SDCL-002 заказ'), client_id: client.id, column_id: column.id });
++    await adminApi.addTaskEquipment(task.id, gone.id);
++    await adminApi.addTaskEquipment(task.id, kept.id);
++
++    try {
++      // §8.1: форма единицы → окно «Удаление»; единица в заказе удалению не мешает (DS-014).
++      const eq = new EquipmentPage(page);
++      await eq.gotoEdit(gone.id);
++      const reason = uniq('SDCL-002 списана клиентом');
++      await eq.confirmDelete(reason);
++      await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_deleted$`));
++      await expect(eq.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
++      await expect(page.getByTestId('equipment-table')).toContainText(kept.model);
++      await expect(page.getByTestId('equipment-table')).not.toContainText(gone.model);
++
++      // §8.3: в карточке заказа бейдж только у удалённой единицы; клиент — без бейджа.
++      const board = new BoardPage(page);
++      await board.goto(`?client_id=${client.id}`);
++      await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveCount(0);
++      await board.openTaskEdit(task.id);
++      const card = new OrderCardPage(page);
++      await card.waitOpen();
++      await expect(card.equipmentRow(gone.id).getByTestId('card-equipment-deleted')).toHaveText('удалён');
++      await expect(card.equipmentRow(kept.id)).toBeVisible();
++      await expect(card.equipmentRow(kept.id).getByTestId('card-equipment-deleted')).toHaveCount(0);
++      await expect(page.getByTestId('task-client-deleted')).toBeHidden();
++
++      // §8.2: вкладка «Оборудование» — без бейджа «вместе с клиентом».
++      const del = new DeletedPage(page);
++      await del.goto(`kind=equipment&q=${encodeURIComponent(gone.model)}`);
++      await expect(del.rows).toHaveCount(1);
++      await expect(del.rowTitle(gone.id)).toHaveText(`${type.name} Qilin ${gone.model}`);
++      await expect(del.rowSubtitle(gone.id)).toHaveText(company);
++      await expect(del.rowWith(gone.id)).toHaveCount(0);
++      await expect(del.rowReason(gone.id)).toHaveText(reason);
++      await expect(del.rowAt(gone.id)).toHaveText(DATE_TIME);
++
++      await del.restore(gone.id);
++      await expect(del.toast).toHaveText('Восстановлено');
++      await expect(del.row(gone.id)).toHaveCount(0);
++      await expect(del.empty).toBeVisible();
++      expect((await adminApi.getClient(client.id)).equipment_count, 'единица снова у клиента').toBe(2);
++    } finally {
++      await adminApi.purgeClient(client.id, [task.id]);
++    }
++  });
++});
+diff --git a/e2e/tests/transfers-partners.spec.ts b/e2e/tests/transfers-partners.spec.ts
+index c16ab74..41c0b15 100644
+--- a/e2e/tests/transfers-partners.spec.ts
++++ b/e2e/tests/transfers-partners.spec.ts
+@@ -373,6 +373,57 @@ test.describe('TR: перемещения — клиент и поставщик
+     await expect(page.getByTestId('st-view-supplier')).toHaveText(supplier.name);
+   });
+ 
++  test('TR-028 (TS-032): приход от поставщика — «Куда» и товар, выбранные ДО прихода списка поставщиков, сохраняются: форма не перерисовывается, после ответа обновляется только список «Поставщик»; негатив: до ответа поставщика в списке нет', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const product = await newProduct(adminApi, uniq, 'TR-028', 3);
++    const supplier = await adminApi.createSupplier({ name: uniq('TR-028 поставщик') });
++
++    // ответ списка активных поставщиков формы задерживается, пока тест не отпустит его.
++    let release!: () => void;
++    const gate = new Promise<void>((resolve) => { release = resolve; });
++    let held = 0;
++    await page.route('**/api/v1/suppliers?is_active=true*', async (route) => {
++      held += 1;
++      await gate;
++      await route.continue();
++    });
++
++    const tr = new TransfersPage(page);
++    await tr.goto();
++    await tr.newDocument('supplier_to_warehouse');
++    await expect.poll(() => held, { message: 'форма запросила активных поставщиков' }).toBe(1);
++
++    // пользователь заполняет форму, пока поставщики ещё не пришли.
++    await tr.choose(tr.to, 'Алматы');
++    await tr.addProductRow(product.name, product.id, 10);
++    // негатив: списка поставщиков ещё нет — в «Поставщик» только пустой пункт.
++    await expect(page.locator('#st-supplier option', { hasText: supplier.name })).toHaveCount(0);
++
++    const loaded = page.waitForResponse((r) => r.url().includes('/api/v1/suppliers?is_active=true') && r.status() === 200);
++    release();
++    await loaded;
++
++    // после ответа: поставщик появился в списке, а введённое не сброшено.
++    await tr.choose(tr.supplier, supplier.name);
++    await expect(tr.supplier).toContainText(supplier.name);
++    await expect(tr.to).toContainText('Алматы');
++    await expect(tr.itemRow('product', product.id)).toBeVisible();
++    await expect(tr.itemQty(product.id)).toHaveValue('10');
++
++    // форма сохраняется со всеми тремя значениями.
++    await tr.save.click();
++    await expect(tr.cardStatus).toHaveText('Заявка');
++    const id = await tr.currentId();
++    const saved = await adminApi.getTransfer(id);
++    const almaty = await adminApi.warehouseByName('Алматы');
++    expect(saved).toMatchObject({ direction: 'supplier_to_warehouse', status: 'requested', supplier_id: supplier.id, to_warehouse_id: almaty.id });
++    expect(saved.items.map((i) => i.product_id)).toEqual([product.id]);
++    await adminApi.removeTransferForCleanup(id);
++  });
++
+   test('TR-015 (TS-039): фильтры списка — статус + направление + период, поставщик, заказ; «Сбросить» возвращает всё; «по» раньше «с» → «Некорректный период»', async ({
+     adminPage: page,
+     adminApi,
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index 845b22c..046a2d6 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -304,9 +304,16 @@
+   // ---------- фильтры ----------
+   function fillFilterOptions() {
+     var clientSel = $('#filter-client');
+-    clientSel.innerHTML = '<option value="">Все клиенты</option>' + state.clients.map(function (c) {
+-      return '<option value="' + esc(c.id) + '">' + esc(c.company_name) + '</option>';
+-    }).join('');
++    // клиент фильтра в удалённых (state.filterClient) — отдельным пунктом с пометкой, только
++    // пока фильтр стоит на нём (soft-delete-clients §8.3)
++    var fc = state.filterClient && state.filterClient.id === state.filters.client_id ? state.filterClient : null;
++    // клиента восстановили и он снова в справочнике — отдельный пункт не нужен
++    if (fc && state.clients.some(function (c) { return c.id === fc.id; })) fc = state.filterClient = null;
++    clientSel.innerHTML = '<option value="">Все клиенты</option>' +
++      (fc ? '<option value="' + esc(fc.id) + '">' + esc(fc.company_name) + ' (удалён)</option>' : '') +
++      state.clients.map(function (c) {
++        return '<option value="' + esc(c.id) + '">' + esc(c.company_name) + '</option>';
++      }).join('');
+     wireClientCombobox(clientSel);
+ 
+     var catSel = $('#filter-category');
+@@ -427,7 +434,10 @@
+       '  </div>' +
+       // warehouses DS-009: бейдж «в пути» — у заказа есть оборудование in_transit.
+       (t.has_in_transit ? '<div class="mb-1"><span class="badge text-bg-warning" data-testid="task-card-in-transit">🚚 в пути</span></div>' : '') +
+-      '  <div class="task-card-client">🏢 <span class="name">' + esc(t.client_name) + '</span><span class="pay ' + (t.is_paid ? 'pay-yes' : 'pay-no') + '">' + (t.is_paid ? '✓ Оплачен' : 'Не оплачен') + '</span></div>' +
++      '  <div class="task-card-client">🏢 <span class="name">' + esc(t.client_name) + '</span>' +
++      // клиент заказа мягко удалён (soft-delete-clients §8.3 п.1) — серый бейдж справа от имени
++      (t.client_is_deleted ? '<span class="badge text-bg-secondary ms-1" data-testid="task-card-client-deleted">удалён</span>' : '') +
++      '<span class="pay ' + (t.is_paid ? 'pay-yes' : 'pay-no') + '">' + (t.is_paid ? '✓ Оплачен' : 'Не оплачен') + '</span></div>' +
+       // executor-payouts D68: метка — есть выполненные услуги с исполнителем без выплаты.
+       (t.executor_unpaid_done > 0 ? '<div class="mb-1"><span class="badge text-bg-info" data-testid="task-card-executor-unpaid" title="Выполненные услуги, за которые исполнителю ещё не выплачено">💸 к выплате: ' + esc(t.executor_unpaid_done) + '</span></div>' : '') +
+       (t.subtasks_total ? '<div class="small text-body-secondary mb-1">☑ ' + t.subtasks_done + '/' + t.subtasks_total + (late ? ' · <span class="text-danger">⚠ ' + late + '</span>' : '') + '</div>' : '') +
+@@ -756,19 +766,42 @@
+   // остаётся невыбранным (select.value не находит option), и PUT/POST уходит с пустым
+   // client_id → 400 VALIDATION. Подгружаем недостающего клиента отдельным запросом и
+   // добавляем в список перед тем, как выставлять .value.
++  //
++  // soft-delete-clients §8.3, DS-026: клиент фильтра может быть мягко удалён — для справочника
++  // (GET /api/v1/clients/:id) его не существует (404), а его заказы остаются на доске. Поэтому
++  // клиент сначала ищется среди заказов (GET /api/v1/tasks?client_id=…&limit=1 — имя и признак
++  // client_is_deleted приходят в строке заказа): удалённый попадает только в фильтр
++  // (state.filterClient, пункт «… (удалён)»), в выбор клиента нового заказа — нет; действующий
++  // добавляется в state.clients. К справочнику идём, только если заказов у клиента нет.
+   function ensureClientOption(clientId) {
+     if (!clientId) return Promise.resolve();
+     var known = state.clients.some(function (c) { return c.id === clientId; });
+-    if (known) return Promise.resolve();
+-    return KT.api.get('/api/v1/clients/' + clientId, reqOpts()).then(function (c) {
+-      state.clients = [c].concat(state.clients);
+-    }).catch(function () { /* клиент мог быть удалён — оставляем список как есть */ });
++    if (known || (state.filterClient && state.filterClient.id === clientId)) return Promise.resolve();
++    return KT.api.get('/api/v1/tasks?client_id=' + encodeURIComponent(clientId) + '&limit=1', reqOpts()).then(function (r) {
++      var t = (r.items || [])[0];
++      if (t && t.client_is_deleted) {
++        state.filterClient = { id: clientId, company_name: t.client_name };
++        return;
++      }
++      if (t) {
++        state.clients = [{ id: clientId, company_name: t.client_name }].concat(state.clients);
++        return;
++      }
++      return KT.api.get('/api/v1/clients/' + clientId, reqOpts()).then(function (c) {
++        state.clients = [c].concat(state.clients);
++      });
++    }).catch(function () { /* клиента нет — оставляем список как есть */ });
+   }
+ 
++  // openTaskForm — клиент открываемого заказа известен из самой строки доски (client_name,
++  // client_is_deleted), запрос справочника не нужен: действующий, не попавший в первую страницу
++  // state.clients, добавляется из строки; удалённого в список выбора не добавляем — карточка
++  // (KT.taskCard) сама покажет его отдельным пунктом с бейджем «удалён».
+   function openTaskForm(task, defaultColumnId) {
+-    ensureClientOption(task ? task.client_id : null).then(function () {
+-      KT.taskCard.open(task ? task.id : null, defaultColumnId);
+-    });
++    if (task && !task.client_is_deleted && !state.clients.some(function (c) { return c.id === task.client_id; })) {
++      state.clients = [{ id: task.client_id, company_name: task.client_name }].concat(state.clients);
++    }
++    KT.taskCard.open(task ? task.id : null, defaultColumnId);
+   }
+ 
+   // ---------- deep-link /?task=N (ADR-104) ----------
+diff --git a/web/ssr/_shared/js/deleted.js b/web/ssr/_shared/js/deleted.js
+index f118ce2..446bbef 100644
+--- a/web/ssr/_shared/js/deleted.js
++++ b/web/ssr/_shared/js/deleted.js
+@@ -42,9 +42,28 @@
+       restoreUrl: function (id) { return '/api/v1/columns/' + encodeURIComponent(id) + '/restore'; },
+       notFound: 'Колонка не найдена',
+       restored: 'Восстановлено. Колонка — в конце доски'
++    },
++    {
++      // часть 4 (soft-delete-clients §8.2): клиенты. Клиент возвращается вместе с единицами,
++      // ушедшими с ним, — об этом вопрос подтверждения и тост с их числом.
++      kind: 'clients', label: 'Клиенты', countKey: 'clients',
++      restoreUrl: function (id) { return '/api/v1/clients/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Клиент не найден',
++      confirmText: function (it) { return 'Восстановить «' + it.title + '» вместе с оборудованием?'; },
++      restored: function (resp) { return 'Восстановлено вместе с оборудованием: ' + (resp && resp.equipment_restored || 0); }
++    },
++    {
++      // часть 4: единицы оборудования. Отказ 409 CLIENT_DELETED «Сначала восстановите клиента» —
++      // тост с текстом сервера, строка остаётся.
++      kind: 'equipment', label: 'Оборудование', countKey: 'equipment',
++      restoreUrl: function (id) { return '/api/v1/equipment/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Оборудование не найдено'
+     }
+   ];
+ 
++  // Подписи бейджа «удалено вместе с …» по значению deleted_with строки (DS-015).
++  var DELETED_WITH = { client: 'вместе с клиентом' };
++
+   function $(sel, root) { return (root || document).querySelector(sel); }
+   function el(tag, cls, text) {
+     var n = document.createElement(tag);
+@@ -187,10 +206,18 @@
+       tr.setAttribute('data-id', it.id);
+ 
+       var what = el('td');
+-      var title = el('div', 'fw-medium', it.title);
++      var title = el('div', 'fw-medium');
+       title.style.overflowWrap = 'anywhere';
+-      title.setAttribute('data-testid', 'deleted-row-title');
++      var titleText = el('span', null, it.title);
++      titleText.setAttribute('data-testid', 'deleted-row-title');
++      title.append(titleText);
+       what.append(title);
++      // единица ушла вместе с клиентом (DS-015) — серый бейдж справа от названия
++      if (it.deleted_with && DELETED_WITH[it.deleted_with]) {
++        var withBadge = el('span', 'badge text-bg-secondary ms-2', DELETED_WITH[it.deleted_with]);
++        withBadge.setAttribute('data-testid', 'deleted-row-with');
++        title.append(withBadge);
++      }
+       if (it.subtitle) {
+         var sub = el('div', 'small text-body-secondary', it.subtitle);
+         sub.style.overflowWrap = 'anywhere';
+@@ -300,11 +327,12 @@
+   }
+ 
+   function restore(tab, it, btn) {
+-    KT.uiDialog({ title: 'Восстановление', text: 'Восстановить «' + it.title + '»?', ok: 'Восстановить' }).then(function (ok) {
++    var question = tab.confirmText ? tab.confirmText(it) : 'Восстановить «' + it.title + '»?';
++    KT.uiDialog({ title: 'Восстановление', text: question, ok: 'Восстановить' }).then(function (ok) {
+       if (!ok) return;
+       btn.disabled = true;
+       KT.api.post(tab.restoreUrl(it.id)).then(function (resp) {
+-        KT.uiToast(tab.restored || 'Восстановлено');
++        KT.uiToast(typeof tab.restored === 'function' ? tab.restored(resp) : (tab.restored || 'Восстановлено'));
+         showWarnings(tab, it, resp);
+         dropRow();
+       }).catch(function (err) {
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 4f04ac4..60d54d7 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -238,6 +238,7 @@
+     fillHeaderOptions(data);
+     $('#task-title').value = '';
+     $('#task-client').value = '';
++    clientMarks(false);
+     $('#task-column').value = defaultColumnId || (data.columns[0] && data.columns[0].id) || '';
+     $('#task-assignee').value = '';
+     $('#task-due').value = '';
+@@ -280,6 +281,39 @@
+     }).join('');
+   }
+ 
++  // deletedBadge — серый бейдж «удалён» (soft-delete-clients §8.3, UI-конвенции DS-033).
++  function deletedBadge(testid) {
++    return ' <span class="badge text-bg-secondary" data-testid="' + testid + '">удалён</span>';
++  }
++
++  // clientMarks — пометки у поля «Клиент»: бейдж «удалён» (клиент заказа в удалённых) и сброс
++  // ошибки под полем.
++  function clientMarks(deleted) {
++    var b = $('#task-client-deleted');
++    if (b) b.classList.toggle('d-none', !deleted);
++    var e = $('#task-client-error');
++    if (e) { e.textContent = ''; e.classList.add('d-none'); }
++  }
++
++  function showClientError(text) {
++    var e = $('#task-client-error');
++    if (!e) { showHeaderError(text); return; }
++    e.textContent = text;
++    e.classList.remove('d-none');
++  }
++
++  // ensureClientOption — клиент заказа мягко удалён: в списке выбора (GET /api/v1/clients) его
++  // нет, но у действующего заказа он остаётся — отдельным пунктом, чтобы шапка сохранялась без
++  // смены клиента (soft-delete-clients §8.3 п.3).
++  function ensureClientOption(t) {
++    var sel = $('#task-client');
++    if ([].some.call(sel.options, function (o) { return o.value === t.client_id; })) return;
++    var o = document.createElement('option');
++    o.value = t.client_id;
++    o.textContent = t.client_name;
++    sel.appendChild(o);
++  }
++
+   function renderLockedSections() {
+     $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить оборудование</p>';
+     $('#card-subtasks').innerHTML = '<p class="text-body-secondary small" data-testid="card-subtasks-locked">Сохраните заказ, чтобы добавить услуги</p>';
+@@ -302,6 +336,8 @@
+     // либо новой карточки, либо успешного «Сохранить»), поля шапки не трогаем вовсе.
+     if (!headerDirty) {
+       fillHeaderOptions(data);
++      ensureClientOption(t);
++      clientMarks(!!t.client_is_deleted);
+       if (document.activeElement !== $('#task-title')) $('#task-title').value = t.title;
+       if (document.activeElement !== $('#task-client')) $('#task-client').value = t.client_id;
+       if (document.activeElement !== $('#task-column')) $('#task-column').value = t.column_id;
+@@ -386,8 +422,16 @@
+   // (не после, отдельным запросом внутри wireEquipment): иначе окно между вставкой пустого
+   // select в DOM и приходом ответа даёт combobox.js открыть список без опций (гонка,
+   // combobox.js не перерисовывает уже открытый список при появлении новых <option>).
++  //
++  // Клиент заказа мягко удалён (soft-delete-clients §8.3, DS-026): его справочник оборудования
++  // для обычных адресов не существует (404), а действующих единиц у него нет — запрос не
++  // выполняется, блок рисуется только по данным карточки.
+   function renderEquipment() {
+     var clientId = card.task.client_id;
++    if (card.task.client_is_deleted) {
++      renderEquipmentWith([]);
++      return;
++    }
+     if (clientEquipmentCache && clientEquipmentCache.clientId === clientId) {
+       renderEquipmentWith(clientEquipmentCache.items);
+       return;
+@@ -403,10 +447,15 @@
+     if (!container) return; // модалка уже закрыта раньше ответа сети
+     var already = {}; card.equipment.forEach(function (e) { already[e.equipment_id] = true; });
+     var addOptions = clientEquipment.filter(function (e) { return !already[e.id]; });
++    // клиент заказа удалён — добавлять ему оборудование нельзя (POST /clients/:id/equipment → 404,
++    // DS-026): вместо выбора и формы новой единицы — пояснение.
++    var adding = card.task.client_is_deleted
++      ? '<p class="text-body-secondary small mb-0" data-testid="card-equipment-client-deleted">Клиент заказа удалён — добавить оборудование нельзя</p>'
++      : equipmentAddHtml(addOptions) +
++        (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новое оборудование</button>');
+     var html = '<div>' +
+       card.equipment.map(equipmentRowHtml).join('') +
+-      equipmentAddHtml(addOptions) +
+-      (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новое оборудование</button>') +
++      adding +
+       '</div>';
+     rerenderPreserveFocus(container, html);
+     wireEquipment(container);
+@@ -421,7 +470,9 @@
+       '<div class="card mb-2" data-testid="card-equipment-row" data-row-key="' + key + '" data-equipment-id="' + esc(eq.equipment_id) + '">' +
+       '  <div class="card-body py-2">' +
+       '    <div class="d-flex justify-content-between align-items-start gap-2">' +
+-      '      <div class="card-eq-title"><strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') + '</div>' +
++      '      <div class="card-eq-title"><strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') +
++      // единица мягко удалена (soft-delete-clients §8.3 п.3) — в заказе остаётся с бейджем
++      (eq.is_deleted ? deletedBadge('card-equipment-deleted') : '') + '</div>' +
+       // DS-026: единицу в незавершённом документе «Перемещение» убрать нельзя — кнопки нет
+       // (API тоже отвечает 409 EQUIPMENT_IN_TRANSFER).
+       (eq.active_transfer_id != null ? '' :
+@@ -435,7 +486,8 @@
+       '        <input class="form-control form-control-sm" data-field="condition" data-row-key="' + key + '" data-testid="card-equipment-condition" maxlength="1000" value="' + esc(eq.condition) + '"></div>' +
+       '    </div>' +
+       (history ? '<div class="mt-1">' + history + '</div>' : '') +
+-      equipmentHistoryHtml(eq.equipment_id) +
++      // история удалённой единицы для обычных адресов не существует (404, DS-026) — без кнопки
++      (eq.is_deleted ? '' : equipmentHistoryHtml(eq.equipment_id)) +
+       '  </div>' +
+       '</div>';
+   }
+@@ -674,6 +726,14 @@
+           if (!applyCard(resp.card, ticket)) return;
+           host.onChanged();
+         }).catch(function (err) {
++          // единицу удалили, пока карточка открыта (soft-delete-clients §8.3): ошибка в шапке
++          var gone = err && err.status === 400 && (err.fields || []).some(function (f) { return f.name === 'equipment_id' && f.message === 'not_found'; });
++          if (gone) {
++            clientEquipmentCache = null;
++            showHeaderError('Оборудование не найдено');
++            renderEquipment();
++            return;
++          }
+           KT.uiAlert((err && err.message) || 'Не удалось добавить оборудование', 'Ошибка');
+         });
+       });
+@@ -772,7 +832,13 @@
+   function subtaskRowHtml(sub) {
+     var key = reqKeySubtask(sub.id);
+     var payoutId = 'card-subtask-executor-paid-' + sub.id;
+-    var equipmentOptions = '<option value="">Без оборудования</option>' + card.equipment.map(function (e) {
++    // мягко удалённую единицу услуге заново не назначить (soft-delete-clients §8.3 п.5): в
++    // списке она остаётся, только если уже назначена этой услуге, — с бейджем у подписи поля.
++    var subEquipment = card.equipment.filter(function (e) { return e.equipment_id === sub.equipment_id; })[0];
++    var subEquipmentDeleted = !!(subEquipment && subEquipment.is_deleted);
++    var equipmentOptions = '<option value="">Без оборудования</option>' + card.equipment.filter(function (e) {
++      return !e.is_deleted || e.equipment_id === sub.equipment_id;
++    }).map(function (e) {
+       return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + '</option>';
+     }).join('');
+     var assigneeOptions = '<option value="">Не назначен</option>' + host.getData().assignees.map(function (a) {
+@@ -797,7 +863,7 @@
+       '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Цена (пусто — по факту)</label>' +
+       '        <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + key + '" data-testid="card-subtask-price" value="' + (sub.price == null ? '' : esc(sub.price)) + '">' +
+       '        <div class="invalid-feedback d-block d-none small" data-testid="card-subtask-warning"></div></div>' +
+-      '      <div class="col-12"><label class="form-label small mb-0">Оборудование</label>' +
++      '      <div class="col-12"><label class="form-label small mb-0">Оборудование' + (subEquipmentDeleted ? deletedBadge('card-subtask-equipment-deleted') : '') + '</label>' +
+       '        <select class="form-select form-select-sm" data-field="equipment_id" data-row-key="' + key + '" data-testid="card-subtask-equipment">' + equipmentOptions + '</select></div>' +
+       // executor-payouts D62–D66: выплата исполнителю — отметка, сумма (отдельная от цены) и
+       // дата отметки. Отметить можно только при назначенном исполнителе; уже стоящую
+@@ -1404,6 +1470,8 @@
+       saving = true;
+       $('#task-save-btn').disabled = true;
+       $('#task-error').classList.add('d-none');
++      var clientErr = $('#task-client-error');
++      if (clientErr) { clientErr.textContent = ''; clientErr.classList.add('d-none'); }
+ 
+       var payload = headerPayload();
+       var req;
+@@ -1439,7 +1507,11 @@
+           }
+         }
+         if (err && err.fields && err.fields.length) {
+-          showHeaderError(err.fields.map(function (f) { return f.message; }).join('; '));
++          // клиента удалили, пока форма открыта (soft-delete-clients §8.3) — текст под полем
++          var clientGone = err.fields.some(function (f) { return f.name === 'client_id' && f.message === 'not_found'; });
++          if (clientGone) showClientError('Клиент не найден');
++          var rest = err.fields.filter(function (f) { return !(f.name === 'client_id' && f.message === 'not_found'); });
++          if (rest.length) showHeaderError(rest.map(function (f) { return f.message; }).join('; '));
+           return;
+         }
+         showHeaderError((err && err.message) || 'Не удалось сохранить заказ');
+diff --git a/web/ssr/_shared/js/transfers.js b/web/ssr/_shared/js/transfers.js
+index b848624..5effd2f 100644
+--- a/web/ssr/_shared/js/transfers.js
++++ b/web/ssr/_shared/js/transfers.js
+@@ -375,6 +375,12 @@
+     return '';
+   }
+ 
++  // deletedBadge — серый бейдж «удалён» у клиента документа и у строки-единицы
++  // (soft-delete-clients §8.3 п.4, UI-конвенции DS-033).
++  function deletedBadge(testid) {
++    return '<span class="badge text-bg-secondary" data-testid="' + testid + '">удалён</span>';
++  }
++
+   function directionBadge(t) {
+     return '<span class="badge text-bg-light border" data-testid="st-row-direction" data-direction="' + esc(t.direction) + '">' + esc(dirOf(t).label) + '</span>';
+   }
+@@ -395,6 +401,7 @@
+         '</span></div>' +
+         (party ? '<div class="small text-break" data-testid="st-row-party">' + esc(party) +
+           // документ мягко удалённого заказа (soft-delete-transfers §8.1 п.1)
++          (t.client_is_deleted ? ' ' + deletedBadge('st-row-client-deleted') : '') +
+           (t.task_is_deleted ? ' ' + taskDeletedBadge('st-row-task-deleted') : '') + '</div>' : '') +
+         // сумма накладной — справа под маршрутом, только у «возврата клиенту» с товарами (§8.1 п.1)
+         (dirOf(t).priced && Number(t.amount) > 0 ? '<div class="small fw-semibold text-end" data-testid="st-row-amount">' + esc(money(t.amount)) + '</div>' : '') +
+@@ -435,6 +442,19 @@
+     }).join('');
+   }
+ 
++  // refreshSupplierOptions — список активных поставщиков пришёл после отрисовки формы: меняются
++  // ТОЛЬКО опции «Поставщик» (уже сделанный выбор сохраняется). Вся карточка не перерисовывается:
++  // иначе пересоздавались бы «Куда», «+ Товар» и строки — введённое пользователем до прихода
++  // ответа терялось, а выбор из уже открытого списка уходил в отсоединённый select.
++  function refreshSupplierOptions() {
++    var sel = $('#st-supplier');
++    if (!sel) return;
++    var chosen = sel.value || (state.current && state.current.supplier_id) || '';
++    sel.innerHTML = supplierOptions(chosen);
++    sel.value = chosen;
++    if (sel._cbSync) sel._cbSync();
++  }
++
+   function productOptions() {
+     var used = {};
+     state.items.forEach(function (it) { if (it.kind === 'product') used[it.product_id] = true; });
+@@ -454,7 +474,8 @@
+       var sub = [];
+       if (it.equipment_serial) sub.push('S/N ' + esc(it.equipment_serial));
+       if (it.equipment_client_name) sub.push(esc(it.equipment_client_name));
+-      return '<div data-testid="st-item-name">' + esc(it.equipment_name) + '</div>' +
++      return '<div data-testid="st-item-name">' + esc(it.equipment_name) +
++        (it.equipment_is_deleted ? ' ' + deletedBadge('st-item-equipment-deleted') : '') + '</div>' +
+         (sub.length ? '<div class="small text-body-secondary">' + sub.join(' · ') + '</div>' : '');
+     }
+     return '<div data-testid="st-item-name">' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</div>';
+@@ -587,7 +608,8 @@
+       : '<a href="/?task=' + encodeURIComponent(t.task_id) + '" data-testid="st-task-link">Заказ #' + esc(t.task_id) + '</a>';
+     return head +
+       (t.task_title ? ' «' + esc(t.task_title) + '»' : '') +
+-      (t.client_name ? ' · <span data-testid="st-task-client">' + esc(t.client_name) + '</span>' : '');
++      (t.client_name ? ' · <span data-testid="st-task-client">' + esc(t.client_name) + '</span>' +
++        (t.client_is_deleted ? ' ' + deletedBadge('st-task-client-deleted') : '') : '');
+   }
+ 
+   // taskFieldHTML — поле «Заказ» (документы с клиентом): у нового документа — номер, под ним
+@@ -850,6 +872,8 @@
+     var added = {};
+     state.items.forEach(function (it) { if (it.kind === 'equipment') added[it.equipment_id] = true; });
+     var list = c.equipment || [];
++    // мягко удалённые единицы заказа в выборе не предлагаются (soft-delete-clients §8.3 п.5)
++    list = list.filter(function (eq) { return !eq.is_deleted; });
+     box.innerHTML = list.length ? list.map(function (eq) {
+       var busy = unitBusy(eq);
+       var off = state.busy || busy || added[eq.equipment_id] || !unitAtSource(eq);
+@@ -1516,15 +1540,24 @@
+     var t = { new: true, direction: direction, from_warehouse_id: '', to_warehouse_id: '', supplier_id: '', task_id: opts.taskId || '', note: '', items: [] };
+     setCurrent(t);
+     setUrl(null);
+-    var p = DIR[direction].task && t.task_id ? loadTaskCard(t.task_id, !!opts.prefill)
++    var withTask = !!(DIR[direction].task && t.task_id);
++    var p = withTask ? loadTaskCard(t.task_id, !!opts.prefill)
+       : (DIR[direction].supplier ? loadActiveSuppliers() : Promise.resolve());
+-    if (!DIR[direction].task || !t.task_id) { state.taskCard = null; state.taskLoading = false; }
++    if (!withTask) { state.taskCard = null; state.taskLoading = false; }
+     renderCard();
+     renderList();
+     return p.then(function () {
+       if (state.current !== t) return;
+-      renderCard();
+-      taskFieldMessage(state.taskError || '');
++      // Форма уже нарисована и доступна пользователю. Повторная полная отрисовка нужна только
++      // документу заказа (карточка заказа приносит оборудование и предвыбор). Приходу от
++      // поставщика догружается лишь список поставщиков — обновляются только его опции, поля и
++      // строки, которые пользователь успел заполнить, не трогаются.
++      if (withTask) {
++        renderCard();
++        taskFieldMessage(state.taskError || '');
++        return;
++      }
++      if (DIR[direction].supplier) refreshSupplierOptions();
+     });
+   }
+ 
+diff --git a/web/ssr/_shared/js/ui-dialog.js b/web/ssr/_shared/js/ui-dialog.js
+index a399554..3de4b4a 100644
+--- a/web/ssr/_shared/js/ui-dialog.js
++++ b/web/ssr/_shared/js/ui-dialog.js
+@@ -111,7 +111,10 @@
+          → {error: ApiError}   — отказ, после которого окно закрывается (404, 403, прочее).
+      Окно остаётся открытым: 400 по полю reason — красный текст под полем; 409 — красный блок
+      над кнопками с текстом сервера; потеря связи — onOffline() (тост), причина сохраняется.
+-     Пустая причина на клиенте не проверяется — проверяет сервер. */
++     Пустая причина на клиенте не проверяется — проверяет сервер.
++     opts.reason / opts.reasonError — начальный текст причины и ошибка под полем: серверная
++     форма удаления (form[data-delete-dialog], ниже) открывается заново с отказом по причине
++     (soft-delete-clients §8.1). */
+   var REASON_MAX = 500;
+   var REASON_ERRORS = {
+     required: 'Укажите причину удаления',
+@@ -225,6 +228,14 @@
+           modal.hide();
+         });
+       });
++      if (opts.reason) {
++        ta.value = opts.reason;
++        counter.textContent = Array.from(ta.value).length + ' / ' + REASON_MAX;
++      }
++      if (opts.reasonError) {
++        fieldErr.textContent = opts.reasonError;
++        ta.classList.add('is-invalid');
++      }
+       root.addEventListener('shown.bs.modal', function () { ta.focus(); });
+       root.addEventListener('hidden.bs.modal', function () { modal.dispose(); root.remove(); resolve(outcome); });
+       if (KT.closeCombobox) KT.closeCombobox();
+@@ -258,6 +269,43 @@
+   KT.uiConfirm = function (text, ok) { return uiDialog({ title: 'Подтверждение', text: text, ok: ok || 'Удалить', danger: true }); };
+   KT.uiAlert = function (text, title) { return uiDialog({ title: title || 'Нельзя', text: text, cancel: null }); };
+ 
++  /* Серверная форма мягкого удаления (soft-delete-clients §8.1, DS-032):
++       form[data-delete-dialog] с data-delete-title / data-delete-text и скрытым полем reason.
++     Сабмит перехватывается — открывается общее окно «Удаление»; причина из окна подставляется
++     в скрытое поле, форма уходит обычным POST (PRG), кнопка окна остаётся заблокированной до
++     перехода. data-delete-error — сервер вернул форму с отказом по причине: окно открывается
++     сразу, с прежней причиной и текстом под полем. */
++  function openDeleteForm(form) {
++    var field = form.querySelector('input[name="reason"]');
++    if (!field) return;
++    uiDeleteDialog({
++      title: form.getAttribute('data-delete-title') || 'Удаление',
++      text: form.getAttribute('data-delete-text') || '',
++      reason: field.value,
++      reasonError: form.getAttribute('data-delete-error') || '',
++      submit: function (reason) {
++        field.value = reason;
++        form.dataset.confirmed = '1';
++        HTMLFormElement.prototype.submit.call(form);
++        return new Promise(function () {}); // страница уходит на PRG-переход
++      }
++    });
++  }
++  function openFailedDeleteForms() {
++    Array.prototype.forEach.call(document.querySelectorAll('form[data-delete-dialog][data-delete-error]'), openDeleteForm);
++  }
++  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', openFailedDeleteForms);
++  else openFailedDeleteForms();
++
++  /* Тост после PRG-перехода: элемент [data-kt-toast] с текстом (серверные формы). */
++  function showPageToasts() {
++    Array.prototype.forEach.call(document.querySelectorAll('[data-kt-toast]'), function (n) {
++      uiToast(n.getAttribute('data-kt-toast'), false);
++    });
++  }
++  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', showPageToasts);
++  else showPageToasts();
++
+   /* Делегированный submit-обработчик форм (ADR-103, Tech Spec «Двойной submit»):
+        form[data-confirm="текст"] — сабмит перехватывается, показывается KT.uiConfirm;
+        подтвердили → реальный сабмит через HTMLFormElement.prototype.submit (минуя
+@@ -269,6 +317,12 @@
+     var form = e.target;
+     if (!(form instanceof HTMLFormElement)) return;
+ 
++    if (form.matches('[data-delete-dialog]') && !form.dataset.confirmed) {
++      e.preventDefault();
++      openDeleteForm(form);
++      return;
++    }
++
+     if (form.matches('[data-confirm]') && !form.dataset.confirmed) {
+       e.preventDefault();
+       KT.uiConfirm(form.getAttribute('data-confirm')).then(function (ok) {
+diff --git a/web/ssr/board/templates/pages/board.html b/web/ssr/board/templates/pages/board.html
+index ddc65fe..b83fbaf 100644
+--- a/web/ssr/board/templates/pages/board.html
++++ b/web/ssr/board/templates/pages/board.html
+@@ -68,10 +68,11 @@
+             <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
+           </div>
+           <div class="col-md-6">
+-            <label class="form-label" for="task-client">Клиент *</label>
++            <label class="form-label" for="task-client">Клиент * <span class="badge text-bg-secondary d-none" id="task-client-deleted" data-testid="task-client-deleted">удалён</span></label>
+             <select class="form-select" id="task-client" data-testid="task-client" required>
+               <option value="">Выберите клиента</option>
+             </select>
++            <div class="text-danger small d-none" id="task-client-error" data-testid="task-client-error"></div>
+           </div>
+           <div class="col-md-4">
+             <label class="form-label" for="task-column">Колонка *</label>
+diff --git a/web/ssr/clients/templates/pages/equipment-form.html b/web/ssr/clients/templates/pages/equipment-form.html
+index 7d443e8..2f9f8a1 100644
+--- a/web/ssr/clients/templates/pages/equipment-form.html
++++ b/web/ssr/clients/templates/pages/equipment-form.html
+@@ -78,8 +78,12 @@
+   </div>
+ </form>
+ {{ if not .IsNew }}
+-<form method="post" action="/equipment/{{ .ID }}/delete" class="mt-3" data-testid="equipment-delete-form" data-confirm="Удалить оборудование «{{ .Model }}»? Отменить нельзя.">
++<form method="post" action="/equipment/{{ .ID }}/delete" class="mt-3" data-testid="equipment-delete-form" data-delete-dialog
++      data-delete-title="Удалить «{{ .Model }}»?"
++      data-delete-text="Единицу можно восстановить в разделе «Удалённые»"
++      {{ if .DeleteError }}data-delete-error="{{ .DeleteError }}"{{ end }}>
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <input type="hidden" name="reason" value="{{ .DeleteReason }}">
+   <button type="submit" class="btn btn-link text-danger p-0" data-testid="equipment-delete">Удалить</button>
+ </form>
+ {{ end }}
+diff --git a/web/ssr/clients/templates/pages/form.html b/web/ssr/clients/templates/pages/form.html
+index a2d52cb..d0a1271 100644
+--- a/web/ssr/clients/templates/pages/form.html
++++ b/web/ssr/clients/templates/pages/form.html
+@@ -1,5 +1,6 @@
+ {{ define "content" }}
+ {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
+ <form class="card mw-760" method="post" action="{{ if .IsNew }}/clients{{ else }}/clients/{{ .ID }}{{ end }}" data-testid="client-form" data-once novalidate>
+   <div class="card-body">
+     <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+@@ -102,8 +103,12 @@
+     {{ end }}
+   </div>
+ </div>
+-<form method="post" action="/clients/{{ .ID }}/delete" class="mt-3" data-testid="client-delete-form" data-confirm="Удалить клиента «{{ .CompanyName }}»? Единиц оборудования: {{ .EquipmentCount }}. Отменить нельзя.">
++<form method="post" action="/clients/{{ .ID }}/delete" class="mt-3" data-testid="client-delete-form" data-delete-dialog
++      data-delete-title="Удалить «{{ .CompanyName }}»?"
++      data-delete-text="Оборудование клиента ({{ .EquipmentCount }} ед.) будет удалено вместе с ним. Заказы клиента останутся на доске с пометкой «удалён». Удалить можно, только когда всё оборудование у клиента"
++      {{ if .DeleteError }}data-delete-error="{{ .DeleteError }}"{{ end }}>
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <input type="hidden" name="reason" value="{{ .DeleteReason }}">
+   <button type="submit" class="btn btn-link text-danger p-0" data-testid="client-delete">Удалить</button>
+ </form>
+ {{ end }}
+diff --git a/web/ssr/clients/templates/pages/list.html b/web/ssr/clients/templates/pages/list.html
+index 4c314ea..044b90f 100644
+--- a/web/ssr/clients/templates/pages/list.html
++++ b/web/ssr/clients/templates/pages/list.html
+@@ -1,6 +1,7 @@
+ {{ define "actions" }}<a href="/clients/new" class="btn btn-primary" data-testid="client-add">+ Клиент</a>{{ end }}
+ {{ define "content" }}
+ {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
+ <form class="d-flex flex-wrap gap-2 mb-3" method="get" action="/clients" data-testid="clients-filters">
+   <input class="form-control" style="max-width:320px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск: компания, представитель, телефон" aria-label="Поиск" data-testid="filter-q">
+   <button class="btn btn-outline-secondary" type="submit">Найти</button>

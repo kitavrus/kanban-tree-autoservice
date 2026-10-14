@@ -1,0 +1,22 @@
+{"type": "handoff", "kind": "passport", "path": "0-setup/passport.md", "bytes": 15813, "ts": "2026-10-08T20:05:38+05:00"}
+{"type": "stage_start", "stage": "light-exec", "ts": "2026-10-08T20:05:38+05:00"}
+{"type": "stage_end", "stage": "light-exec", "status": "ok", "ts": "2026-10-08T20:52:58+05:00"}
+{"type": "stage_start", "stage": "light-judge", "ts": "2026-10-08T20:52:58+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 34620, "checkers": {"pass": 8, "fail": 1, "skip": 1}, "patches_bytes": 317936, "ts": "2026-10-08T20:52:59+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "FAIL", "total_s": 0.6, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.1}, {"name": "e2e_drift", "s": 0.0}], "ts": "2026-10-08T20:52:59+05:00"}
+{"type": "event_start", "stage": "light-judge", "label": "gates", "kind": "other", "ts": "2026-10-08T20:52:59+05:00"}
+{"type": "event_end", "stage": "light-judge", "label": "gates", "status": "ok", "ts": "2026-10-08T21:05:11+05:00"}
+{"type": "event_start", "stage": "light-judge", "label": "rejudge", "kind": "other", "ts": "2026-10-08T21:10:06+05:00"}
+{"type": "event_end", "stage": "light-judge", "label": "rejudge", "status": "ok", "ts": "2026-10-08T21:21:07+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-10-08T21:22:18+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 34707, "checkers": {"pass": 8, "fail": 1, "skip": 1}, "patches_bytes": 327192, "ts": "2026-10-08T21:22:19+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "FAIL", "total_s": 0.5, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}, {"name": "e2e_drift", "s": 0.0}], "ts": "2026-10-08T21:22:19+05:00"}
+{"type": "stage_end", "stage": "light-judge", "status": "ok", "ts": "2026-10-08T21:22:19+05:00"}
+{"type": "stage_start", "stage": "light-review", "ts": "2026-10-08T21:22:19+05:00"}
+{"type": "event_start", "stage": "light-review", "label": "rejudge", "kind": "other", "ts": "2026-10-08T21:35:51+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 34785, "checkers": {"pass": 8, "fail": 1, "skip": 1}, "patches_bytes": 355415, "ts": "2026-10-08T21:35:51+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "FAIL", "total_s": 0.5, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}, {"name": "e2e_drift", "s": 0.0}], "ts": "2026-10-08T21:35:51+05:00"}
+{"type": "event_end", "stage": "light-review", "label": "rejudge", "status": "ok", "ts": "2026-10-08T21:43:55+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-10-08T21:45:08+05:00"}
+{"type": "stage_end", "stage": "light-review", "status": "ok", "ts": "2026-10-08T21:46:26+05:00"}
+{"type": "tool", "tool": "review_verdict_check", "status": "PASS", "total_s": 0, "steps": [{"name": "verdict:APPROVED", "s": 0}], "ts": "2026-10-08T21:46:52+05:00"}

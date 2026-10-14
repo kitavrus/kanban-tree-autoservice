@@ -1,0 +1,1554 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 0e63ae0..d2f7136 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -438,6 +438,10 @@ export class AdminApi {
+       due_date?: string | null;
+       price?: number | string | null;
+       equipment_id?: string | null;
++      // executor-payouts (D65): нет поля → значение не меняется (и флаг, и сумма);
++      // executor_payout: null — очистить сумму.
++      is_executor_paid?: boolean;
++      executor_payout?: number | string | null;
+     },
+   ): Promise<import('./board-types').OrderCardMutationResponse> {
+     const res = await this.ctx.put(`/api/v1/subtasks/${id}`, {
+@@ -448,6 +452,42 @@ export class AdminApi {
+     return res.json();
+   }
+ 
++  // ---- executor payouts (internal/features/executorpayouts, D69/D70) ----
++
++  async listExecutorPayouts(params: { assignee?: string; status?: 'all' | 'paid' | 'unpaid'; only_done?: boolean } = {}): Promise<import('./board-types').PayoutListResponse> {
++    const q = new URLSearchParams({ assignee: params.assignee ?? 'all', limit: '1000' });
++    if (params.status) q.set('status', params.status);
++    if (params.only_done) q.set('only_done', 'true');
++    const res = await this.ctx.get(`/api/v1/executor-payouts?${q}`);
++    expect(res.status(), `список выплат: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async executorPayoutsSummary(assignee: string): Promise<import('./board-types').PayoutSummaryResponse> {
++    const res = await this.ctx.get(`/api/v1/executor-payouts/summary?assignee=${encodeURIComponent(assignee)}`);
++    expect(res.status(), `итоги выплат: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  /** D72: правка только суммы выплаты услуги из отчёта (null — очистить). */
++  async updateExecutorPayout(subtaskId: string, payout: number | null): Promise<import('./board-types').PayoutItem> {
++    const res = await this.ctx.put(`/api/v1/executor-payouts/${subtaskId}`, {
++      data: { executor_payout: payout },
++      headers: await this.headers(),
++    });
++    expect(res.status(), `сумма выплаты услуги ${subtaskId}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async markExecutorPayouts(subtaskIds: string[], paid: boolean): Promise<import('./board-types').PayoutMarkResponse> {
++    const res = await this.ctx.post('/api/v1/executor-payouts/mark', {
++      data: { subtask_ids: subtaskIds, is_executor_paid: paid },
++      headers: await this.headers(),
++    });
++    expect(res.status(), `отметка выплат: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
+   async createSubtaskProduct(
+     subtaskId: string,
+     p: { product_id: string; qty: number; warehouse_id?: string },
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 3640f5a..fd90992 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -55,6 +55,8 @@ export type TaskCard = {
+   column_total: number;
+   // warehouses DS-009: у заказа есть оборудование в пути (бейдж «в пути» на доске).
+   has_in_transit: boolean;
++  // executor-payouts D68: услуг done с исполнителем без выплаты (метка «к выплате: N»).
++  executor_unpaid_done: number;
+ };
+ 
+ export type Task = TaskCard & {
+@@ -206,10 +208,41 @@ export type CardSubtask = {
+   equipment_id: string | null;
+   position: number;
+   total: number | string;
++  // executor-payouts D62–D65: выплата исполнителю (сумма — отдельная от price).
++  is_executor_paid: boolean;
++  executor_paid_at: string | null;
++  executor_payout: number | string | null;
+   products: CardSubtaskProduct[];
+   logs: CardSubtaskLog[];
+ };
+ 
++// Wire-типы отчёта «Выплаты» (internal/features/executorpayouts/dto.go, §TD-6.2).
++export type PayoutItem = {
++  subtask_id: string;
++  task_id: number;
++  task_title: string;
++  client_name: string;
++  service_name: string;
++  status: 'new' | 'in_progress' | 'done';
++  assignee_id: string;
++  assignee_name: string;
++  price: number | string | null;
++  executor_payout: number | string | null;
++  is_executor_paid: boolean;
++  executor_paid_at: string | null;
++};
++export type PayoutListResponse = { items: PayoutItem[]; total: number; limit: number; offset: number };
++export type PayoutSummaryItem = {
++  assignee_id: string;
++  assignee_name: string;
++  unpaid_count: number;
++  paid_count: number;
++  to_pay: number | string;
++  paid: number | string;
++};
++export type PayoutSummaryResponse = { items: PayoutSummaryItem[]; total: number; limit: number; offset: number };
++export type PayoutMarkResponse = { updated: number };
++
+ export type CardStock = {
+   product_id: string;
+   warehouse_id: string;
+diff --git a/e2e/fixtures/board.ts b/e2e/fixtures/board.ts
+index 859f3e5..b32ba33 100644
+--- a/e2e/fixtures/board.ts
++++ b/e2e/fixtures/board.ts
+@@ -76,6 +76,7 @@ export const test = base.extend<BoardFixtures>({
+         due_date: sub.due_date,
+         price: sub.price,
+         equipment_id: sub.equipment_id,
++        // is_executor_paid / executor_payout не шлём: нет поля → сервер их не меняет (D65).
+       });
+     });
+   },
+diff --git a/e2e/pages/BoardPage.ts b/e2e/pages/BoardPage.ts
+index b7f5fce..fdec363 100644
+--- a/e2e/pages/BoardPage.ts
++++ b/e2e/pages/BoardPage.ts
+@@ -132,6 +132,16 @@ export class BoardPage {
+     return this.card(id).getByTestId('task-card-in-transit');
+   }
+ 
++  /** Метка «к выплате: N» на карточке доски (executor-payouts D68). */
++  executorUnpaidBadge(id: number | string): Locator {
++    return this.card(id).getByTestId('task-card-executor-unpaid');
++  }
++
++  /** Фильтр «Выплата исполнителю» (executor-payouts D67; комбобокс — testid на кнопке). */
++  get filterExecutorPaid(): Locator {
++    return this.page.getByTestId('filter-executor-paid');
++  }
++
+   card(id: number | string): Locator {
+     return this.page.getByTestId(`task-card-${id}`);
+   }
+diff --git a/e2e/pages/ExecutorPayoutsPage.ts b/e2e/pages/ExecutorPayoutsPage.ts
+new file mode 100644
+index 0000000..7b736e3
+--- /dev/null
++++ b/e2e/pages/ExecutorPayoutsPage.ts
+@@ -0,0 +1,104 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана-отчёта «Выплаты» «/executor-payouts» (executor-payouts D69/D70,
++// js/executor-payouts.js). Селекты фильтров превращаются js/combobox.js в комбобоксы:
++// testid уходит на видимую кнопку, выбор — клик по кнопке и по `.cb-opt` в
++// `combobox-dropdown` (эталон — StockTransfersPage).
++export class ExecutorPayoutsPage {
++  readonly root: Locator;
++  readonly filterAssignee: Locator;
++  readonly filterStatus: Locator;
++  readonly filterOnlyDone: Locator;
++  readonly selectedCount: Locator;
++  readonly markPaid: Locator;
++  readonly markUnpaid: Locator;
++  readonly error: Locator;
++  /** Подсказка «нечего менять» (выбраны только услуги, уже стоящие в нужном состоянии). */
++  readonly info: Locator;
++  readonly totalToPay: Locator;
++  readonly totalPaid: Locator;
++  readonly groups: Locator;
++  readonly rows: Locator;
++  readonly empty: Locator;
++  readonly dropdown: Locator;
++
++  constructor(readonly page: Page) {
++    this.root = page.getByTestId('ep-root');
++    this.filterAssignee = page.getByTestId('ep-filter-assignee');
++    this.filterStatus = page.getByTestId('ep-filter-status');
++    this.filterOnlyDone = page.getByTestId('ep-filter-only-done');
++    this.selectedCount = page.getByTestId('ep-selected-count');
++    this.markPaid = page.getByTestId('ep-mark-paid');
++    this.markUnpaid = page.getByTestId('ep-mark-unpaid');
++    this.error = page.getByTestId('ep-error');
++    this.info = page.getByTestId('ep-info');
++    this.totalToPay = page.getByTestId('ep-total-to-pay');
++    this.totalPaid = page.getByTestId('ep-total-paid');
++    this.groups = page.getByTestId('ep-group');
++    this.rows = page.getByTestId('ep-row');
++    this.empty = page.getByTestId('ep-empty');
++    this.dropdown = page.getByTestId('combobox-dropdown');
++  }
++
++  /** query — без «?», напр. `assignee=<uuid>&status=unpaid`. Ждёт конца первой загрузки. */
++  async goto(query = '') {
++    const loaded = this.page.waitForResponse((r) => r.url().includes('/api/v1/executor-payouts/summary') && r.status() === 200);
++    await this.page.goto(query ? `/executor-payouts?${query}` : '/executor-payouts');
++    await expect(this.root).toBeVisible();
++    await loaded;
++  }
++
++  /** Выбор опции по ТОЧНОМУ тексту: «Выплачено» — подстрока «Не выплачено» (hasText
++   *  строкой нечувствителен к регистру и выбрал бы первую из них). */
++  async choose(button: Locator, label: string) {
++    await button.click();
++    await expect(this.dropdown).toBeVisible();
++    const exact = new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`);
++    await this.dropdown.locator('.cb-opt', { hasText: exact }).first().click();
++  }
++
++  group(assigneeId: string): Locator {
++    return this.page.locator(`[data-testid="ep-group"][data-assignee-id="${assigneeId}"]`);
++  }
++
++  groupName(assigneeId: string): Locator {
++    return this.group(assigneeId).getByTestId('ep-group-name');
++  }
++
++  groupToPay(assigneeId: string): Locator {
++    return this.group(assigneeId).getByTestId('ep-group-to-pay');
++  }
++
++  groupPaid(assigneeId: string): Locator {
++    return this.group(assigneeId).getByTestId('ep-group-paid');
++  }
++
++  groupCheck(assigneeId: string): Locator {
++    return this.group(assigneeId).getByTestId('ep-group-check');
++  }
++
++  groupRows(assigneeId: string): Locator {
++    return this.group(assigneeId).getByTestId('ep-row');
++  }
++
++  row(subtaskId: string): Locator {
++    return this.page.locator(`[data-testid="ep-row"][data-subtask-id="${subtaskId}"]`);
++  }
++
++  rowCheck(subtaskId: string): Locator {
++    return this.row(subtaskId).getByTestId('ep-row-check');
++  }
++
++  rowPaid(subtaskId: string): Locator {
++    return this.row(subtaskId).getByTestId('ep-row-paid');
++  }
++
++  rowPayout(subtaskId: string): Locator {
++    return this.row(subtaskId).getByTestId('ep-row-payout');
++  }
++
++  /** Инлайн-поле суммы выплаты строки (D72): сохранение по Enter/blur, пусто — «не задана». */
++  rowPayoutInput(subtaskId: string): Locator {
++    return this.row(subtaskId).getByTestId('ep-row-payout-input');
++  }
++}
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 5296e24..805c825 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -161,6 +161,23 @@ export class OrderCardPage {
+     return this.subtaskRow(subtaskId).getByTestId('card-subtask-price');
+   }
+ 
++  /** executor-payouts D62–D66: отметка «Выплачено исполнителю», дата отметки, сумма выплаты. */
++  subtaskExecutorPaid(subtaskId: string): Locator {
++    return this.subtaskRow(subtaskId).getByTestId('card-subtask-executor-paid');
++  }
++
++  subtaskExecutorPaidAt(subtaskId: string): Locator {
++    return this.subtaskRow(subtaskId).getByTestId('card-subtask-executor-paid-at');
++  }
++
++  subtaskExecutorPayout(subtaskId: string): Locator {
++    return this.subtaskRow(subtaskId).getByTestId('card-subtask-executor-payout');
++  }
++
++  subtaskPayoutWarning(subtaskId: string): Locator {
++    return this.subtaskRow(subtaskId).getByTestId('card-subtask-payout-warning');
++  }
++
+   subtaskEquipment(subtaskId: string): Locator {
+     return this.subtaskRow(subtaskId).getByTestId('card-subtask-equipment');
+   }
+diff --git a/e2e/tests/executor-payouts.spec.ts b/e2e/tests/executor-payouts.spec.ts
+new file mode 100644
+index 0000000..0aa03f8
+--- /dev/null
++++ b/e2e/tests/executor-payouts.spec.ts
+@@ -0,0 +1,639 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { ExecutorPayoutsPage } from '../pages/ExecutorPayoutsPage';
++import { ShellPage } from '../pages/ShellPage';
++import type { AdminApi } from '../fixtures/auth';
++
++// Выплаты исполнителям (docs/plan.md D62–D71; сценарии TS-021…TS-023 —
++// docs/features/executor-payouts/0-setup/light-progress.md): отметка/сумма/дата в карточке
++// заказа, фильтр и метка доски, экран-отчёт «Выплаты» с массовой отметкой. Общая dev-БД
++// (§TD-6.2): свои клиент/услуга/исполнители через uniq()+adminApi; отчёт и доска всегда
++// сужаются до своих данных (assignee=<id> / client_id=<id>).
++test.use({ colorScheme: 'light' });
++
++type Ctx = { adminApi: AdminApi; uniq: (s: string) => string };
++
++async function setup({ adminApi, uniq }: Ctx, label: string) {
++  const client = await adminApi.createClient({ company_name: uniq(`EP клиент ${label}`), phones: [{ phone: '9990000200', note: '' }] });
++  const columns = (await adminApi.listColumns()).items;
++  const cat = await adminApi.createCategory({ kind: 'service', name: uniq(`EP услуги ${label}`) });
++  const service = await adminApi.createService({ category_id: cat.id, name: uniq(`EP услуга ${label}`), price: 1000 });
++  const task = await adminApi.createTask({ title: uniq(`EP заказ ${label}`), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++  return { client, columns, service, task };
++}
++
++async function subtaskOf(adminApi: AdminApi, taskId: number, subtaskId: string) {
++  const card = await adminApi.getCard(taskId);
++  const sub = card.subtasks.find((s) => s.id === subtaskId);
++  if (!sub) throw new Error(`услуга ${subtaskId} не найдена в заказе ${taskId}`);
++  return sub;
++}
++
++test.describe('EP: выплата исполнителю в карточке заказа', () => {
++  test('EP-001 (TS-021): отметка «Выплачено исполнителю» + сумма + дата; без исполнителя отметка недоступна; смена исполнителя у выплаченной — отказ', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    insertSubtask,
++    allowHttpErrors,
++  }) => {
++    const exec = await makeUser({ login: uniq('ep001'), name: uniq('Исполнитель EP-001') });
++    const { client, service, task } = await setup({ adminApi, uniq }, 'EP-001');
++    // Статус и цена — явным PUT: фикстура insertSubtask({status}) шлёт строку без price
++    // (полная замена → цена сбрасывается в «по факту»), а тесту нужна цена 1000.
++    const subId = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(subId, { status: 'done', price: 1000 });
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.subtaskPrice(subId)).toHaveValue('1000');
++
++    // без исполнителя отметить выплату нельзя; сумму задать можно (не зависит от флага).
++    await expect(card.subtaskExecutorPaid(subId)).toBeDisabled();
++    await expect(card.subtaskExecutorPaid(subId)).not.toBeChecked();
++    await expect(card.subtaskExecutorPaidAt(subId)).toHaveText('');
++    await card.subtaskExecutorPayout(subId).fill('1500.5');
++    await card.subtaskExecutorPayout(subId).press('Tab');
++    await expect.poll(async () => Number((await subtaskOf(adminApi, task.id, subId)).executor_payout)).toBe(1500.5);
++    await expect(card.subtaskExecutorPayout(subId)).toHaveValue('1500.5');
++    expect((await subtaskOf(adminApi, task.id, subId)).is_executor_paid).toBe(false);
++
++    // невалидная сумма — подсказка у поля, значение откатывается, на сервер не уходит.
++    await card.subtaskExecutorPayout(subId).fill('-5');
++    await card.subtaskExecutorPayout(subId).press('Tab');
++    await expect(card.subtaskPayoutWarning(subId)).toBeVisible();
++    await expect(card.subtaskExecutorPayout(subId)).toHaveValue('1500.5');
++    await card.subtaskExecutorPayout(subId).fill('1.234');
++    await card.subtaskExecutorPayout(subId).press('Tab');
++    await expect(card.subtaskPayoutWarning(subId)).toBeVisible();
++    expect(Number((await subtaskOf(adminApi, task.id, subId)).executor_payout)).toBe(1500.5);
++
++    // назначили исполнителя — отметка доступна.
++    await card.chooseCombobox(card.subtaskAssignee(subId), exec.name);
++    await expect(card.subtaskExecutorPaid(subId)).toBeEnabled();
++    await card.subtaskExecutorPaid(subId).click();
++    await expect(card.subtaskExecutorPaid(subId)).toBeChecked();
++    await expect(card.subtaskExecutorPaidAt(subId)).toHaveText(/\d{2}\.\d{2}\.\d{4}/);
++    await expect.poll(async () => (await subtaskOf(adminApi, task.id, subId)).is_executor_paid).toBe(true);
++    const paid = await subtaskOf(adminApi, task.id, subId);
++    expect(paid.executor_paid_at).not.toBeNull();
++    expect(Number(paid.executor_payout)).toBe(1500.5);
++    expect(Number(paid.price)).toBe(1000); // цена для клиента — отдельное поле
++
++    // сумму можно править и после отметки — дата отметки не меняется.
++    await card.subtaskExecutorPayout(subId).fill('1700');
++    await card.subtaskExecutorPayout(subId).press('Tab');
++    await expect.poll(async () => Number((await subtaskOf(adminApi, task.id, subId)).executor_payout)).toBe(1700);
++    expect((await subtaskOf(adminApi, task.id, subId)).executor_paid_at).toBe(paid.executor_paid_at);
++
++    // обратная сторона: правка цены и статуса в карточке (PUT — полная замена строки) не
++    // стирает ни сумму выплаты, ни отметку, ни её дату; цена при правках выплаты тоже цела.
++    await card.subtaskPrice(subId).fill('1200');
++    await card.subtaskPrice(subId).press('Tab');
++    await expect.poll(async () => Number((await subtaskOf(adminApi, task.id, subId)).price)).toBe(1200);
++    await card.chooseCombobox(card.subtaskStatus(subId), 'В работе');
++    await expect.poll(async () => (await subtaskOf(adminApi, task.id, subId)).status).toBe('in_progress');
++    const edited = await subtaskOf(adminApi, task.id, subId);
++    expect(Number(edited.price)).toBe(1200);
++    expect(Number(edited.executor_payout)).toBe(1700);
++    expect(edited.is_executor_paid).toBe(true);
++    expect(edited.executor_paid_at).toBe(paid.executor_paid_at);
++    expect(edited.assignee_id).toBe(exec.id);
++    await expect(card.subtaskExecutorPaid(subId)).toBeChecked();
++    await expect(card.subtaskExecutorPayout(subId)).toHaveValue('1700');
++
++    // снять исполнителя у выплаченной услуги нельзя — 409, карточка откатывается.
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/subtasks/${subId}`) && status === 409);
++    await card.chooseCombobox(card.subtaskAssignee(subId), 'Не назначен');
++    await expect(page.getByTestId('ui-dialog-text')).toContainText('сначала снимите отметку');
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(card.subtaskAssignee(subId)).toContainText(exec.name);
++    await expect(card.subtaskExecutorPaid(subId)).toBeChecked();
++    expect((await subtaskOf(adminApi, task.id, subId)).assignee_id).toBe(exec.id);
++
++    // сняли отметку — дата исчезла, исполнителя снова можно снять.
++    await card.subtaskExecutorPaid(subId).click();
++    await expect(card.subtaskExecutorPaid(subId)).not.toBeChecked();
++    await expect(card.subtaskExecutorPaidAt(subId)).toHaveText('');
++    await expect.poll(async () => (await subtaskOf(adminApi, task.id, subId)).executor_paid_at).toBeNull();
++    await card.chooseCombobox(card.subtaskAssignee(subId), 'Не назначен');
++    await expect(card.subtaskExecutorPaid(subId)).toBeDisabled();
++    await expect.poll(async () => (await subtaskOf(adminApi, task.id, subId)).assignee_id).toBeNull();
++
++    // состояние переживает перезагрузку страницы.
++    await page.reload();
++    await card.waitOpen();
++    await expect(card.subtaskExecutorPayout(subId)).toHaveValue('1700');
++    await expect(card.subtaskExecutorPaid(subId)).not.toBeChecked();
++  });
++
++  test('EP-002 (TS-021, TS-002): исполнитель сам отмечает выплату в карточке', async ({ page, adminApi, uniq, makeUser, loginAs, insertSubtask }) => {
++    const login = uniq('ep002');
++    const exec = await makeUser({ login, name: uniq('Исполнитель EP-002') });
++    const { client, service, task } = await setup({ adminApi, uniq }, 'EP-002');
++    const subId = await insertSubtask({ taskId: task.id, serviceId: service.id, status: 'done' });
++    await adminApi.updateSubtask(subId, { status: 'done', assignee_id: exec.id, price: 1000 });
++
++    await loginAs(page, login, exec.password);
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++
++    await card.subtaskExecutorPayout(subId).fill('800');
++    await card.subtaskExecutorPayout(subId).press('Tab');
++    await expect.poll(async () => Number((await subtaskOf(adminApi, task.id, subId)).executor_payout)).toBe(800);
++    await card.subtaskExecutorPaid(subId).click();
++    await expect(card.subtaskExecutorPaid(subId)).toBeChecked();
++    await expect.poll(async () => (await subtaskOf(adminApi, task.id, subId)).is_executor_paid).toBe(true);
++  });
++});
++
++test.describe('EP: карточка не затирает отметку, поставленную из отчёта', () => {
++  test('EP-008 (TS-025): карточка открыта → отметка/сумма меняются из отчёта → правка другого поля в карточке их не откатывает', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    insertSubtask,
++  }) => {
++    const exec = await makeUser({ login: uniq('ep008'), name: uniq('Исполнитель EP-008') });
++    const { client, service, task } = await setup({ adminApi, uniq }, 'EP-008');
++    const subId = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(subId, { status: 'done', assignee_id: exec.id, price: 1000, executor_payout: 300 });
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.subtaskExecutorPaid(subId)).not.toBeChecked();
++    await expect(card.subtaskExecutorPayout(subId)).toHaveValue('300');
++
++    // другой пользователь отмечает выплату в отчёте — открытая карточка об этом не знает.
++    await adminApi.markExecutorPayouts([subId], true);
++    const marked = await subtaskOf(adminApi, task.id, subId);
++    expect(marked.is_executor_paid).toBe(true);
++
++    // правка цены из устаревшей карточки: отметка, дата и сумма целы; карточка после
++    // ответа сервера показывает актуальную отметку.
++    await card.subtaskPrice(subId).fill('1100');
++    await card.subtaskPrice(subId).press('Tab');
++    await expect.poll(async () => Number((await subtaskOf(adminApi, task.id, subId)).price)).toBe(1100);
++    const afterPrice = await subtaskOf(adminApi, task.id, subId);
++    expect(afterPrice.is_executor_paid).toBe(true);
++    expect(afterPrice.executor_paid_at).toBe(marked.executor_paid_at);
++    expect(Number(afterPrice.executor_payout)).toBe(300);
++    await expect(card.subtaskExecutorPaid(subId)).toBeChecked();
++
++    // зеркально: отметку сняли, сумму поменяли в другом месте — правка статуса в карточке
++    // не возвращает ни отметку, ни старую сумму.
++    await adminApi.markExecutorPayouts([subId], false);
++    await adminApi.updateSubtask(subId, { status: 'done', assignee_id: exec.id, price: 1100, executor_payout: 450 });
++    await card.chooseCombobox(card.subtaskStatus(subId), 'В работе');
++    await expect.poll(async () => (await subtaskOf(adminApi, task.id, subId)).status).toBe('in_progress');
++    const afterStatus = await subtaskOf(adminApi, task.id, subId);
++    expect(afterStatus.is_executor_paid).toBe(false);
++    expect(afterStatus.executor_paid_at).toBeNull();
++    expect(Number(afterStatus.executor_payout)).toBe(450);
++    await expect(card.subtaskExecutorPaid(subId)).not.toBeChecked();
++    await expect(card.subtaskExecutorPayout(subId)).toHaveValue('450');
++  });
++});
++
++test.describe('EP: доска — фильтр и метка выплаты исполнителю', () => {
++  test('EP-003 (TS-022): фильтр «Выплата исполнителю» все / выплачено / не выплачено и метка «к выплате» на карточке', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    insertSubtask,
++  }) => {
++    const exec = await makeUser({ login: uniq('ep003'), name: uniq('Исполнитель EP-003') });
++    const { client, columns, service, task: unpaidTask } = await setup({ adminApi, uniq }, 'EP-003');
++    const colId = columnByName(columns, 'Новые').id;
++    const paidTask = await adminApi.createTask({ title: uniq('EP-003 выплаченный'), client_id: client.id, column_id: colId });
++    const plainTask = await adminApi.createTask({ title: uniq('EP-003 без исполнителя'), client_id: client.id, column_id: colId });
++
++    // unpaidTask: две выполненные услуги с исполнителем без выплаты + одна в работе.
++    for (const status of ['done', 'done', 'in_progress'] as const) {
++      const id = await insertSubtask({ taskId: unpaidTask.id, serviceId: service.id });
++      await adminApi.updateSubtask(id, { status, assignee_id: exec.id });
++    }
++    // paidTask: услуга с исполнителем выплачена.
++    const paidSub = await insertSubtask({ taskId: paidTask.id, serviceId: service.id });
++    await adminApi.updateSubtask(paidSub, { status: 'done', assignee_id: exec.id, is_executor_paid: true, executor_payout: 500 });
++    // plainTask: услуга без исполнителя — ни «выплачено», ни «не выплачено».
++    await insertSubtask({ taskId: plainTask.id, serviceId: service.id, status: 'done' });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await expect(board.card(unpaidTask.id)).toBeVisible();
++    await expect(board.card(paidTask.id)).toBeVisible();
++    await expect(board.card(plainTask.id)).toBeVisible();
++
++    // метка: только выполненные услуги с исполнителем без выплаты.
++    await expect(board.executorUnpaidBadge(unpaidTask.id)).toHaveText('💸 к выплате: 2');
++    await expect(board.executorUnpaidBadge(paidTask.id)).toHaveCount(0);
++    await expect(board.executorUnpaidBadge(plainTask.id)).toHaveCount(0);
++
++    await board.chooseCombobox(board.filterExecutorPaid, 'Исполнителю не выплачено');
++    await expect(page).toHaveURL(/executor_paid=unpaid/);
++    await expect(board.card(unpaidTask.id)).toBeVisible();
++    await expect(board.card(paidTask.id)).toHaveCount(0);
++    await expect(board.card(plainTask.id)).toHaveCount(0);
++
++    await board.chooseCombobox(board.filterExecutorPaid, 'Исполнителю выплачено');
++    await expect(page).toHaveURL(/executor_paid=paid/);
++    await expect(board.card(paidTask.id)).toBeVisible();
++    await expect(board.card(unpaidTask.id)).toHaveCount(0);
++    await expect(board.card(plainTask.id)).toHaveCount(0);
++
++    // фильтр живёт в адресе: перезагрузка сохраняет выбор и выдачу.
++    await page.reload();
++    await expect(board.card(paidTask.id)).toBeVisible();
++    await expect(board.card(unpaidTask.id)).toHaveCount(0);
++    await expect(board.filterExecutorPaid).toContainText('Исполнителю выплачено');
++
++    await board.chooseCombobox(board.filterExecutorPaid, 'Выплата исполнителю: все');
++    await expect(page).not.toHaveURL(/executor_paid=/);
++    await expect(board.card(unpaidTask.id)).toBeVisible();
++    await expect(board.card(paidTask.id)).toBeVisible();
++    await expect(board.card(plainTask.id)).toBeVisible();
++
++    // «Сбросить» снимает и этот фильтр.
++    await board.chooseCombobox(board.filterExecutorPaid, 'Исполнителю не выплачено');
++    await expect(board.card(paidTask.id)).toHaveCount(0);
++    await board.filterReset.click();
++    await expect(page).not.toHaveURL(/executor_paid=/);
++    await expect(board.filterExecutorPaid).toContainText('Выплата исполнителю: все');
++
++    // мусор в адресе — не ошибка, фильтр «все».
++    await board.goto(`?client_id=${client.id}&executor_paid=zzz`);
++    await expect(board.card(unpaidTask.id)).toBeVisible();
++    await expect(board.card(paidTask.id)).toBeVisible();
++
++    // отметили выплату — метка уменьшилась, затем исчезла.
++    const card = await adminApi.getCard(unpaidTask.id);
++    const done = card.subtasks.filter((s) => s.status === 'done').map((s) => s.id);
++    await adminApi.markExecutorPayouts([done[0]], true);
++    await board.goto(`?client_id=${client.id}`);
++    await expect(board.executorUnpaidBadge(unpaidTask.id)).toHaveText('💸 к выплате: 1');
++    await adminApi.markExecutorPayouts([done[1]], true);
++    await board.goto(`?client_id=${client.id}`);
++    await expect(board.executorUnpaidBadge(unpaidTask.id)).toHaveCount(0);
++  });
++});
++
++test.describe('EP: экран-отчёт «Выплаты»', () => {
++  test('EP-004 (TS-023): пункт навигации, группа исполнителя, итоги, фильтры, массовая отметка и снятие', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    insertSubtask,
++  }) => {
++    const execA = await makeUser({ login: uniq('ep004a'), name: uniq('Исполнитель EP-004 A') });
++    const execB = await makeUser({ login: uniq('ep004b'), name: uniq('Исполнитель EP-004 B') });
++    const { service, task } = await setup({ adminApi, uniq }, 'EP-004');
++
++    const doneSub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(doneSub, { status: 'done', assignee_id: execA.id, price: 1000, executor_payout: 100 });
++    const newSub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(newSub, { status: 'new', assignee_id: execA.id, price: null, executor_payout: 50.5 });
++    const noPayoutSub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(noPayoutSub, { status: 'done', assignee_id: execA.id, price: 300 });
++    const otherSub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(otherSub, { status: 'done', assignee_id: execB.id, executor_payout: 70, is_executor_paid: true });
++    const orphanSub = await insertSubtask({ taskId: task.id, serviceId: service.id, status: 'done' }); // без исполнителя
++
++    // пункт навигации.
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await shell.navLink('Выплаты').click();
++    await expect(page).toHaveURL(/\/executor-payouts$/);
++    const ep = new ExecutorPayoutsPage(page);
++    await expect(ep.root).toBeVisible();
++    await expect(ep.filterAssignee).toContainText('Все исполнители'); // admin — по умолчанию все
++
++    // группа исполнителя A: строки, поля, итоги.
++    await ep.goto(`assignee=${execA.id}`);
++    await expect(ep.groups).toHaveCount(1);
++    await expect(ep.groupName(execA.id)).toHaveText(execA.name);
++    await expect(ep.groupRows(execA.id)).toHaveCount(3);
++    await expect(ep.row(orphanSub)).toHaveCount(0);
++    await expect(ep.row(otherSub)).toHaveCount(0);
++    await expect(ep.row(doneSub).getByTestId('ep-row-task')).toHaveText(`#${task.id}`);
++    await expect(ep.row(doneSub).getByTestId('ep-row-service')).toHaveText(service.name);
++    await expect(ep.row(doneSub).getByTestId('ep-row-status')).toHaveText('Выполнена');
++    await expect(ep.row(doneSub).getByTestId('ep-row-price')).toHaveText('1000.00');
++    await expect(ep.rowPayoutInput(doneSub)).toHaveValue('100.00');
++    await expect(ep.rowPaid(doneSub)).toContainText('Не выплачено');
++    await expect(ep.row(newSub).getByTestId('ep-row-status')).toHaveText('Новая');
++    await expect(ep.row(newSub).getByTestId('ep-row-price')).toHaveText('по факту');
++    await expect(ep.rowPayoutInput(noPayoutSub)).toHaveValue(''); // сумма не задана
++    await expect(ep.groupToPay(execA.id)).toHaveText('150.50'); // 100 + 50.5 + 0 (сумма не задана)
++    await expect(ep.groupPaid(execA.id)).toHaveText('0.00');
++    await expect(ep.totalToPay).toHaveText('150.50');
++    await expect(ep.totalPaid).toHaveText('0.00');
++
++    // без выбора кнопки массовой отметки неактивны.
++    await expect(ep.markPaid).toBeDisabled();
++    await expect(ep.markUnpaid).toBeDisabled();
++    await expect(ep.selectedCount).toHaveText('Выбрано: 0');
++
++    // отметить одну строку выплаченной.
++    await ep.rowCheck(doneSub).check();
++    await expect(ep.selectedCount).toHaveText('Выбрано: 1');
++    await expect(ep.markPaid).toBeEnabled();
++    await ep.markPaid.click();
++    await expect(ep.rowPaid(doneSub)).toContainText('Выплачено');
++    await expect(ep.row(doneSub).getByTestId('ep-row-paid-at')).toHaveText(/\d{2}\.\d{2}\.\d{4}/);
++    await expect(ep.groupToPay(execA.id)).toHaveText('50.50');
++    await expect(ep.groupPaid(execA.id)).toHaveText('100.00');
++    await expect(ep.selectedCount).toHaveText('Выбрано: 0');
++    expect((await subtaskOf(adminApi, task.id, doneSub)).is_executor_paid).toBe(true);
++    expect((await subtaskOf(adminApi, task.id, newSub)).is_executor_paid).toBe(false);
++
++    // выбрана только уже выплаченная услуга — запрос не уходит, подсказка, выбор сброшен.
++    await ep.rowCheck(doneSub).check();
++    await ep.markPaid.click();
++    await expect(ep.info).toContainText('уже отмечены выплаченными');
++    await expect(ep.selectedCount).toHaveText('Выбрано: 0');
++    await expect(ep.error).toBeHidden();
++    await expect(ep.rowPaid(doneSub)).toContainText('Выплачено');
++
++    // фильтр «Только выполненные».
++    await ep.filterOnlyDone.check();
++    await expect(page).toHaveURL(/only_done=true/);
++    await expect(ep.groupRows(execA.id)).toHaveCount(2);
++    await expect(ep.row(newSub)).toHaveCount(0);
++    await expect(ep.groupToPay(execA.id)).toHaveText('0.00');
++
++    // + статус «Не выплачено».
++    await ep.choose(ep.filterStatus, 'Не выплачено');
++    await expect(page).toHaveURL(/status=unpaid/);
++    await expect(ep.groupRows(execA.id)).toHaveCount(1);
++    await expect(ep.row(noPayoutSub)).toBeVisible();
++    await expect(ep.groupPaid(execA.id)).toHaveText('0.00');
++
++    // статус «Выплачено».
++    await ep.choose(ep.filterStatus, 'Выплачено');
++    await expect(ep.groupRows(execA.id)).toHaveCount(1);
++    await expect(ep.row(doneSub)).toBeVisible();
++
++    // фильтры живут в адресе — перезагрузка сохраняет выбор.
++    await page.reload();
++    await expect(ep.filterOnlyDone).toBeChecked();
++    await expect(ep.filterStatus).toContainText('Выплачено');
++    await expect(ep.row(doneSub)).toBeVisible();
++
++    // сбросили фильтры; чекбокс группы выбирает все строки → «Снять отметку».
++    await ep.filterOnlyDone.uncheck();
++    await ep.choose(ep.filterStatus, 'Выплата: все');
++    await expect(ep.groupRows(execA.id)).toHaveCount(3);
++    await ep.groupCheck(execA.id).check();
++    await expect(ep.selectedCount).toHaveText('Выбрано: 3');
++    await ep.markPaid.click();
++    await expect(ep.groupToPay(execA.id)).toHaveText('0.00');
++    await expect(ep.groupPaid(execA.id)).toHaveText('150.50');
++    await ep.groupCheck(execA.id).check();
++    await ep.markUnpaid.click();
++    await expect(ep.groupToPay(execA.id)).toHaveText('150.50');
++    await expect(ep.groupPaid(execA.id)).toHaveText('0.00');
++    for (const id of [doneSub, newSub, noPayoutSub]) {
++      const s = await subtaskOf(adminApi, task.id, id);
++      expect(s.is_executor_paid).toBe(false);
++      expect(s.executor_paid_at).toBeNull();
++    }
++
++    // выбор исполнителя в фильтре: B — своя группа и свои итоги; пустая выдача — заглушка.
++    await ep.choose(ep.filterAssignee, execB.name);
++    await expect(page).toHaveURL(new RegExp(`assignee=${execB.id}`));
++    await expect(ep.groups).toHaveCount(1);
++    await expect(ep.groupPaid(execB.id)).toHaveText('70.00');
++    await expect(ep.groupToPay(execB.id)).toHaveText('0.00');
++    await expect(ep.empty).toBeHidden();
++    await ep.choose(ep.filterStatus, 'Не выплачено');
++    await expect(ep.groups).toHaveCount(0);
++    await expect(ep.empty).toBeVisible();
++
++    // ссылка строки ведёт в карточку заказа на доске.
++    await ep.goto(`assignee=${execA.id}`);
++    await ep.row(doneSub).getByTestId('ep-row-task').click();
++    await expect(page).toHaveURL(new RegExp(`[?&]task=${task.id}\\b`));
++    await new OrderCardPage(page).waitOpen();
++  });
++
++  test('EP-005 (TS-023, TS-012): исполнитель видит по умолчанию «мои», может переключиться на всех и отметить выплату', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    insertSubtask,
++  }) => {
++    const login = uniq('ep005me');
++    const me = await makeUser({ login, name: uniq('Исполнитель EP-005 Я') });
++    const other = await makeUser({ login: uniq('ep005other'), name: uniq('Исполнитель EP-005 Другой') });
++    const { service, task } = await setup({ adminApi, uniq }, 'EP-005');
++    const mine = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(mine, { status: 'done', assignee_id: me.id, executor_payout: 250 });
++    const foreign = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(foreign, { status: 'done', assignee_id: other.id, executor_payout: 90 });
++
++    await loginAs(page, login, me.password);
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await expect(shell.navLink('Выплаты')).toBeVisible(); // пункт виден и исполнителю
++
++    const ep = new ExecutorPayoutsPage(page);
++    await ep.goto();
++    await expect(ep.filterAssignee).toContainText('Мои');
++    await expect(ep.groups).toHaveCount(1);
++    await expect(ep.groupName(me.id)).toHaveText(me.name);
++    await expect(ep.row(mine)).toBeVisible();
++    await expect(ep.row(foreign)).toHaveCount(0);
++    await expect(ep.totalToPay).toHaveText('250.00');
++
++    // исполнитель отмечает свою услугу выплаченной.
++    await ep.rowCheck(mine).check();
++    await ep.markPaid.click();
++    await expect(ep.rowPaid(mine)).toContainText('Выплачено');
++    await expect(ep.groupPaid(me.id)).toHaveText('250.00');
++    expect((await subtaskOf(adminApi, task.id, mine)).is_executor_paid).toBe(true);
++
++    // переключение на «Все исполнители» — видны и чужие услуги.
++    await ep.choose(ep.filterAssignee, 'Все исполнители');
++    await expect(page).toHaveURL(/assignee=all/);
++    await expect(ep.group(other.id)).toBeVisible();
++    await expect(ep.row(foreign)).toBeVisible();
++    await expect(ep.group(me.id)).toBeVisible();
++  });
++
++  test('EP-006 (TS-023, TS-015): массовая отметка атомарна — услуга лишилась исполнителя → ошибка, ничего не отмечено', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    insertSubtask,
++    allowHttpErrors,
++  }) => {
++    const exec = await makeUser({ login: uniq('ep006'), name: uniq('Исполнитель EP-006') });
++    const { service, task } = await setup({ adminApi, uniq }, 'EP-006');
++    const keep = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(keep, { status: 'done', assignee_id: exec.id, executor_payout: 40 });
++    const lost = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(lost, { status: 'done', assignee_id: exec.id, executor_payout: 60 });
++
++    const ep = new ExecutorPayoutsPage(page);
++    await ep.goto(`assignee=${exec.id}`);
++    await ep.groupCheck(exec.id).check();
++    await expect(ep.selectedCount).toHaveText('Выбрано: 2');
++
++    // пока список открыт, у одной услуги сняли исполнителя (другая вкладка/пользователь).
++    await adminApi.updateSubtask(lost, { status: 'done', assignee_id: null, executor_payout: 60 });
++
++    allowHttpErrors((url, status) => url.endsWith('/api/v1/executor-payouts/mark') && status === 400);
++    await ep.markPaid.click();
++    await expect(ep.error).toBeVisible();
++    await expect(ep.error).toContainText('у услуги нет исполнителя');
++    await expect(ep.error).toContainText('Ничего не изменено');
++
++    // ни одна услуга не отмечена; список перечитан — услуга без исполнителя исчезла.
++    expect((await subtaskOf(adminApi, task.id, keep)).is_executor_paid).toBe(false);
++    expect((await subtaskOf(adminApi, task.id, lost)).is_executor_paid).toBe(false);
++    await expect(ep.row(lost)).toHaveCount(0);
++    await expect(ep.rowPaid(keep)).toContainText('Не выплачено');
++    await expect(ep.groupToPay(exec.id)).toHaveText('40.00');
++
++    // повтор с актуальным списком проходит.
++    await ep.rowCheck(keep).check();
++    await ep.markPaid.click();
++    await expect(ep.rowPaid(keep)).toContainText('Выплачено');
++    await expect(ep.error).toBeHidden();
++  });
++
++  test('EP-009 (TS-033): сумма выплаты правится прямо в отчёте — сохраняется, итоги пересчитаны, очистка поля → null, выбор и отметка не сбрасываются', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    insertSubtask,
++  }) => {
++    const exec = await makeUser({ login: uniq('ep009'), name: uniq('Исполнитель EP-009') });
++    const { service, task } = await setup({ adminApi, uniq }, 'EP-009');
++    const unpaidSub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(unpaidSub, { status: 'done', assignee_id: exec.id, price: 1000, executor_payout: 100 });
++    const paidSub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(paidSub, { status: 'done', assignee_id: exec.id, price: 700, is_executor_paid: true });
++    const paidBefore = await subtaskOf(adminApi, task.id, paidSub);
++
++    const ep = new ExecutorPayoutsPage(page);
++    await ep.goto(`assignee=${exec.id}`);
++    await expect(ep.rowPayoutInput(unpaidSub)).toHaveValue('100.00');
++    await expect(ep.rowPayoutInput(paidSub)).toHaveValue('');
++    await expect(ep.groupToPay(exec.id)).toHaveText('100.00');
++    await expect(ep.groupPaid(exec.id)).toHaveText('0.00');
++
++    // выбор чекбокса переживает правку суммы.
++    await ep.rowCheck(paidSub).check();
++    await expect(ep.selectedCount).toHaveText('Выбрано: 1');
++
++    // Enter сохраняет: значение, итоги группы и общие пересчитаны; отметка не появилась.
++    await ep.rowPayoutInput(unpaidSub).fill('250.5');
++    await ep.rowPayoutInput(unpaidSub).press('Enter');
++    await expect(ep.groupToPay(exec.id)).toHaveText('250.50');
++    await expect(ep.totalToPay).toHaveText('250.50');
++    await expect(ep.rowPayoutInput(unpaidSub)).toHaveValue('250.50');
++    await expect(ep.rowPaid(unpaidSub)).toContainText('Не выплачено');
++    const afterUnpaid = await subtaskOf(adminApi, task.id, unpaidSub);
++    expect(Number(afterUnpaid.executor_payout)).toBe(250.5);
++    expect(afterUnpaid.is_executor_paid).toBe(false);
++    expect(Number(afterUnpaid.price)).toBe(1000); // цена для клиента не тронута
++    await expect(ep.selectedCount).toHaveText('Выбрано: 1');
++    await expect(ep.rowCheck(paidSub)).toBeChecked();
++    await expect(page).toHaveURL(new RegExp(`assignee=${exec.id}`)); // фильтр не сброшен
++
++    // уход из поля (blur) тоже сохраняет; у выплаченной услуги отметка и дата целы.
++    await ep.rowPayoutInput(paidSub).fill('80');
++    await ep.rowPayoutInput(paidSub).press('Tab');
++    await expect(ep.groupPaid(exec.id)).toHaveText('80.00');
++    await expect(ep.totalPaid).toHaveText('80.00');
++    await expect(ep.rowPayoutInput(paidSub)).toHaveValue('80.00');
++    const afterPaid = await subtaskOf(adminApi, task.id, paidSub);
++    expect(Number(afterPaid.executor_payout)).toBe(80);
++    expect(afterPaid.is_executor_paid).toBe(true);
++    expect(afterPaid.executor_paid_at).toBe(paidBefore.executor_paid_at);
++    expect(Number(afterPaid.price)).toBe(700);
++
++    // невалидная сумма — сообщение, значение откатилось, на сервер не ушло.
++    await ep.rowPayoutInput(paidSub).fill('-5');
++    await ep.rowPayoutInput(paidSub).press('Enter');
++    await expect(ep.error).toBeVisible();
++    await expect(ep.error).toContainText('Сумма выплаты не сохранена');
++    await expect(ep.rowPayoutInput(paidSub)).toHaveValue('80.00');
++    await ep.rowPayoutInput(paidSub).fill('1.234');
++    await ep.rowPayoutInput(paidSub).press('Enter');
++    await expect(ep.rowPayoutInput(paidSub)).toHaveValue('80.00');
++    expect(Number((await subtaskOf(adminApi, task.id, paidSub)).executor_payout)).toBe(80);
++
++    // очистка поля → сумма не задана (null), в итогах — 0; сообщение об ошибке ушло.
++    await ep.rowPayoutInput(unpaidSub).fill('');
++    await ep.rowPayoutInput(unpaidSub).press('Enter');
++    await expect(ep.groupToPay(exec.id)).toHaveText('0.00');
++    await expect(ep.rowPayoutInput(unpaidSub)).toHaveValue('');
++    await expect(ep.error).toBeHidden();
++    await expect.poll(async () => (await subtaskOf(adminApi, task.id, unpaidSub)).executor_payout).toBeNull();
++
++    // значение переживает перезагрузку страницы.
++    await ep.rowPayoutInput(unpaidSub).fill('12.34');
++    await ep.rowPayoutInput(unpaidSub).press('Enter');
++    await expect(ep.groupToPay(exec.id)).toHaveText('12.34');
++    await ep.goto(`assignee=${exec.id}`);
++    await expect(ep.rowPayoutInput(unpaidSub)).toHaveValue('12.34');
++    await expect(ep.rowPayoutInput(paidSub)).toHaveValue('80.00');
++    await expect(ep.groupToPay(exec.id)).toHaveText('12.34');
++    await expect(ep.groupPaid(exec.id)).toHaveText('80.00');
++
++    // массовая отметка после правки сумм работает с актуальными строками.
++    await ep.rowCheck(unpaidSub).check();
++    await ep.markPaid.click();
++    await expect(ep.groupPaid(exec.id)).toHaveText('92.34');
++    await expect(ep.groupToPay(exec.id)).toHaveText('0.00');
++  });
++
++  test('EP-010 (TS-033, TS-002): исполнитель правит сумму выплаты в отчёте', async ({ page, adminApi, uniq, makeUser, loginAs, insertSubtask }) => {
++    const login = uniq('ep010');
++    const me = await makeUser({ login, name: uniq('Исполнитель EP-010') });
++    const { service, task } = await setup({ adminApi, uniq }, 'EP-010');
++    const sub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(sub, { status: 'done', assignee_id: me.id });
++
++    await loginAs(page, login, me.password);
++    const ep = new ExecutorPayoutsPage(page);
++    await ep.goto();
++    await ep.rowPayoutInput(sub).fill('333');
++    await ep.rowPayoutInput(sub).press('Enter');
++    await expect(ep.groupToPay(me.id)).toHaveText('333.00');
++    expect(Number((await subtaskOf(adminApi, task.id, sub)).executor_payout)).toBe(333);
++  });
++
++  test('EP-007 (TS-023): экран не скроллится вбок на узком вьюпорте', async ({ adminPage: page, adminApi, uniq, makeUser, insertSubtask }) => {
++    const exec = await makeUser({ login: uniq('ep007'), name: uniq('Исполнитель EP-007') });
++    const { service, task } = await setup({ adminApi, uniq }, 'EP-007');
++    const sub = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.updateSubtask(sub, { status: 'done', assignee_id: exec.id, executor_payout: 10 });
++
++    await page.setViewportSize({ width: 375, height: 700 });
++    const ep = new ExecutorPayoutsPage(page);
++    await ep.goto(`assignee=${exec.id}`);
++    await expect(ep.row(sub)).toBeVisible();
++    await expect
++      .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth))
++      .toBeLessThanOrEqual(0);
++  });
++});
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index 8a63501..dfe8b1f 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -103,6 +103,8 @@
+       q: p.get('q') || '',
+       category_id: p.get('category_id') || '',
+       paid: p.get('paid') || 'all',
++      // неизвестное значение из адреса → «все» (сервер на мусор ответил бы 400).
++      executor_paid: ({ paid: 'paid', unpaid: 'unpaid' })[p.get('executor_paid')] || 'all',
+       assignee: p.get('assignee') || assigneeDefault(),
+       due: p.get('due') || 'all',
+       warehouse_id: p.get('warehouse_id') || ''
+@@ -115,6 +117,7 @@
+     if (f.q) p.set('q', f.q);
+     if (f.category_id) p.set('category_id', f.category_id);
+     if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
++    if (f.executor_paid && f.executor_paid !== 'all') p.set('executor_paid', f.executor_paid);
+     if (f.assignee && f.assignee !== assigneeDefault()) p.set('assignee', f.assignee);
+     if (f.due && f.due !== 'all') p.set('due', f.due);
+     if (f.warehouse_id) p.set('warehouse_id', f.warehouse_id);
+@@ -128,6 +131,8 @@
+     if (f.q) p.set('q', f.q);
+     if (f.category_id) p.set('category_id', f.category_id);
+     if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
++    // executor-payouts D67: фильтр «Выплата исполнителю» (по услугам заказа с исполнителем).
++    if (f.executor_paid && f.executor_paid !== 'all') p.set('executor_paid', f.executor_paid);
+     p.set('assignee', f.assignee || assigneeDefault());
+     if (f.due && f.due !== 'all') p.set('due', f.due);
+     // warehouses DS-009: фильтр «Склад» (оборудование на складе/едет на склад X).
+@@ -321,6 +326,7 @@
+     $('#filter-q').value = f.q;
+     $('#filter-category').value = f.category_id;
+     $('#filter-paid').value = f.paid;
++    $('#filter-executor-paid').value = f.executor_paid;
+     $('#filter-assignee').value = f.assignee;
+     $('#filter-due').value = f.due;
+     // DS-009: опции склада рендерит сервер; неизвестный id из URL → «Все склады».
+@@ -330,7 +336,7 @@
+     // Все 5 select-фильтров превращены в комбобоксы (js/combobox.js) — после программной
+     // смены .value видимая кнопка не обновляется сама, нужен ручной _cbSync() на каждом
+     // (баг фазы 06: filter-paid/filter-due не синхронизировались после reload — BD-013).
+-    ['#filter-client', '#filter-category', '#filter-paid', '#filter-assignee', '#filter-due', '#filter-warehouse'].forEach(function (sel) {
++    ['#filter-client', '#filter-category', '#filter-paid', '#filter-executor-paid', '#filter-assignee', '#filter-due', '#filter-warehouse'].forEach(function (sel) {
+       var el = $(sel);
+       if (el && el._cbSync) el._cbSync();
+     });
+@@ -347,6 +353,7 @@
+     onChange('#filter-client', 'client_id');
+     onChange('#filter-category', 'category_id');
+     onChange('#filter-paid', 'paid');
++    onChange('#filter-executor-paid', 'executor_paid');
+     onChange('#filter-assignee', 'assignee');
+     onChange('#filter-due', 'due');
+     onChange('#filter-warehouse', 'warehouse_id');
+@@ -363,7 +370,7 @@
+     });
+ 
+     $('#filter-reset').addEventListener('click', function () {
+-      state.filters = { client_id: '', q: '', category_id: '', paid: 'all', assignee: assigneeDefault(), due: 'all', warehouse_id: '' };
++      state.filters = { client_id: '', q: '', category_id: '', paid: 'all', executor_paid: 'all', assignee: assigneeDefault(), due: 'all', warehouse_id: '' };
+       applyFiltersToForm();
+       pushFiltersToUrl();
+       reloadAndRender();
+@@ -420,6 +427,8 @@
+       // warehouses DS-009: бейдж «в пути» — у заказа есть оборудование in_transit.
+       (t.has_in_transit ? '<div class="mb-1"><span class="badge text-bg-warning" data-testid="task-card-in-transit">🚚 в пути</span></div>' : '') +
+       '  <div class="task-card-client">🏢 <span class="name">' + esc(t.client_name) + '</span><span class="pay ' + (t.is_paid ? 'pay-yes' : 'pay-no') + '">' + (t.is_paid ? '✓ Оплачен' : 'Не оплачен') + '</span></div>' +
++      // executor-payouts D68: метка — есть выполненные услуги с исполнителем без выплаты.
++      (t.executor_unpaid_done > 0 ? '<div class="mb-1"><span class="badge text-bg-info" data-testid="task-card-executor-unpaid" title="Выполненные услуги, за которые исполнителю ещё не выплачено">💸 к выплате: ' + esc(t.executor_unpaid_done) + '</span></div>' : '') +
+       (t.subtasks_total ? '<div class="small text-body-secondary mb-1">☑ ' + t.subtasks_done + '/' + t.subtasks_total + (late ? ' · <span class="text-danger">⚠ ' + late + '</span>' : '') + '</div>' : '') +
+       // total_amount показываем, только если >0 (AC-013) — заказ без услуг/цен не засоряет
+       // карточку нулём; last_log — последняя запись журнала ЛЮБОЙ услуги заказа (AC-012),
+diff --git a/web/ssr/_shared/js/executor-payouts.js b/web/ssr/_shared/js/executor-payouts.js
+new file mode 100644
+index 0000000..1261901
+--- /dev/null
++++ b/web/ssr/_shared/js/executor-payouts.js
+@@ -0,0 +1,410 @@
++/* KT.executorPayouts — экран-отчёт «Выплаты» «/executor-payouts» (executor-payouts D62–D70)
++   поверх JSON API /api/v1/executor-payouts.
++
++   Группы «исполнитель → его услуги» (заказ #, услуга, статус, цена, сумма выплаты,
++   выплачено/дата); итоги по исполнителю «к выплате / выплачено» приходят с сервера
++   (/summary — те же фильтры, без постраничности списка). Фильтры — исполнитель (по
++   умолчанию: admin — все, executor — «мои»), статус выплаты, «только выполненные»; они
++   живут в адресе страницы. Массовая отметка — чекбоксы строк/групп + «Отметить
++   выплаченными» / «Снять отметку» (POST /mark, атомарно на сервере).
++   Сумма выплаты правится инлайн-полем строки (PUT /executor-payouts/:id — меняет только
++   сумму): сохранение по blur/Enter, если значение изменилось; после успеха итоги
++   перезапрашиваются, выбор чекбоксов и фильтры не сбрасываются.
++   Суммы складываются в копейках, весь текст — через esc(). */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++  function cents(v) { var n = Number(v); return isFinite(n) ? Math.round(n * 100) : 0; }
++  function fmtCents(c) { return (c / 100).toFixed(2); }
++  function money(v) { return fmtCents(cents(v)); }
++
++  var PAGE = 500;       // размер страницы списка
++  var MARK_MAX = 500;   // предел subtask_ids одного POST /mark (сервер: markMax)
++  var MAX_ITEMS = 5000; // предел строк на экране — дальше просим сузить фильтры
++
++  var STATUS = {
++    'new': { label: 'Новая', cls: 'text-bg-secondary' },
++    in_progress: { label: 'В работе', cls: 'text-bg-primary' },
++    done: { label: 'Выполнена', cls: 'text-bg-success' }
++  };
++  var PAYOUT_TEXT = {
++    required: 'сумма не передана',
++    invalid: 'недопустимое значение',
++    invalid_format: 'введите число',
++    negative: 'сумма не может быть отрицательной',
++    too_precise: 'не больше 2 знаков после запятой',
++    too_large: 'слишком большая сумма'
++  };
++  var FIELD_TEXT = {
++    required: 'не выбрано ни одной услуги',
++    invalid: 'недопустимое значение',
++    too_many: 'за один раз можно отметить не более 500 услуг',
++    duplicate: 'услуга выбрана дважды',
++    not_found: 'услуга уже удалена',
++    no_assignee: 'у услуги нет исполнителя'
++  };
++
++  var state = {
++    isAdmin: false,
++    filters: { assignee: 'all', status: 'all', only_done: false },
++    assignees: [],
++    items: [],
++    total: 0,
++    summary: [],
++    selected: {}, // subtask_id → true
++    busy: false
++  };
++
++  function assigneeDefault() { return state.isAdmin ? 'all' : 'me'; }
++
++  // ---------- фильтры ↔ адрес ----------
++  function parseFilters() {
++    var p = new URLSearchParams(window.location.search);
++    return {
++      assignee: p.get('assignee') || assigneeDefault(),
++      status: p.get('status') || 'all',
++      only_done: p.get('only_done') === 'true'
++    };
++  }
++  function pushFiltersToUrl() {
++    var f = state.filters;
++    var p = new URLSearchParams();
++    if (f.assignee && f.assignee !== assigneeDefault()) p.set('assignee', f.assignee);
++    if (f.status && f.status !== 'all') p.set('status', f.status);
++    if (f.only_done) p.set('only_done', 'true');
++    var s = p.toString();
++    window.history.replaceState(null, '', window.location.pathname + (s ? '?' + s : ''));
++  }
++  function apiQuery() {
++    var f = state.filters;
++    var p = new URLSearchParams();
++    p.set('assignee', f.assignee || assigneeDefault());
++    if (f.status && f.status !== 'all') p.set('status', f.status);
++    if (f.only_done) p.set('only_done', 'true');
++    return p;
++  }
++
++  // ---------- загрузка ----------
++  function loadAssignees() {
++    return KT.api.get('/api/v1/assignees?limit=1000').then(function (r) {
++      state.assignees = r.items || [];
++      var sel = $('#ep-filter-assignee');
++      sel.innerHTML = '<option value="all">Все исполнители</option><option value="me">Мои</option>' +
++        state.assignees.map(function (a) { return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>'; }).join('');
++    });
++  }
++
++  function loadItems(offset, acc) {
++    var p = apiQuery();
++    p.set('limit', String(PAGE));
++    p.set('offset', String(offset));
++    return KT.api.get('/api/v1/executor-payouts?' + p.toString()).then(function (r) {
++      var items = acc.concat(r.items || []);
++      state.total = r.total || 0;
++      if ((r.items || []).length > 0 && items.length < state.total && items.length < MAX_ITEMS) return loadItems(items.length, items);
++      return items;
++    });
++  }
++
++  function load() {
++    var p = apiQuery();
++    p.set('limit', '1000');
++    return Promise.all([
++      loadItems(0, []),
++      KT.api.get('/api/v1/executor-payouts/summary?' + p.toString())
++    ]).then(function (r) {
++      state.items = r[0];
++      state.summary = r[1].items || [];
++      // выбор переживает перезагрузку только для строк, которые всё ещё на экране
++      var known = {};
++      state.items.forEach(function (it) { known[it.subtask_id] = true; });
++      Object.keys(state.selected).forEach(function (id) { if (!known[id]) delete state.selected[id]; });
++      render();
++    });
++  }
++
++  function reload() {
++    showError('');
++    return load().catch(function (err) {
++      $('#ep-groups').innerHTML = '';
++      showError('Не удалось загрузить выплаты' + (err && err.message ? ': ' + err.message : ''));
++    });
++  }
++
++  // ---------- отрисовка ----------
++  function fmtDateTime(s) {
++    if (!s) return '';
++    var d = new Date(s);
++    return isNaN(d) ? '' : d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
++  }
++
++  function showError(msg) {
++    var el = $('#ep-error');
++    el.textContent = msg || '';
++    el.classList.toggle('d-none', !msg);
++  }
++
++  function showInfo(msg) {
++    var el = $('#ep-info');
++    el.textContent = msg || '';
++    el.classList.toggle('d-none', !msg);
++  }
++
++  // payoutValue — значение поля суммы строки: '' — сумма не задана.
++  function payoutValue(it) { return it.executor_payout == null ? '' : money(it.executor_payout); }
++
++  function rowHTML(it) {
++    var st = STATUS[it.status] || { label: it.status, cls: 'text-bg-secondary' };
++    return '<tr data-testid="ep-row" data-subtask-id="' + esc(it.subtask_id) + '" data-paid="' + (it.is_executor_paid ? 'true' : 'false') + '">' +
++      '<td style="width:36px"><input type="checkbox" class="form-check-input" data-testid="ep-row-check" data-subtask-id="' + esc(it.subtask_id) + '"' +
++        (state.selected[it.subtask_id] ? ' checked' : '') + ' aria-label="Выбрать услугу"></td>' +
++      '<td><a href="/?task=' + encodeURIComponent(it.task_id) + '" data-testid="ep-row-task">#' + esc(it.task_id) + '</a> ' +
++        '<span class="text-body-secondary small">' + esc(it.task_title) + ' · ' + esc(it.client_name) + '</span></td>' +
++      '<td data-testid="ep-row-service">' + esc(it.service_name) + '</td>' +
++      '<td><span class="badge ' + st.cls + '" data-testid="ep-row-status" data-status="' + esc(it.status) + '">' + esc(st.label) + '</span></td>' +
++      '<td class="text-end" data-testid="ep-row-price">' + (it.price == null ? '<span class="text-body-secondary">по факту</span>' : money(it.price)) + '</td>' +
++      // D72: сумма выплаты правится прямо здесь (blur/Enter); пусто — «не задана».
++      '<td class="text-end" data-testid="ep-row-payout"><input type="number" min="0" step="0.01" inputmode="decimal"' +
++        ' class="form-control form-control-sm text-end ms-auto" style="width:110px" data-testid="ep-row-payout-input"' +
++        ' data-subtask-id="' + esc(it.subtask_id) + '" value="' + esc(payoutValue(it)) + '" placeholder="—" aria-label="Сумма выплаты исполнителю"></td>' +
++      '<td data-testid="ep-row-paid">' + (it.is_executor_paid
++        ? '<span class="badge text-bg-success">Выплачено</span> <span class="small text-body-secondary" data-testid="ep-row-paid-at">' + esc(fmtDateTime(it.executor_paid_at)) + '</span>'
++        : '<span class="badge text-bg-warning">Не выплачено</span>') + '</td>' +
++      '</tr>';
++  }
++
++  function groupHTML(g) {
++    var rows = state.items.filter(function (it) { return it.assignee_id === g.assignee_id; });
++    var allSelected = rows.length > 0 && rows.every(function (it) { return state.selected[it.subtask_id]; });
++    return '<div class="card mb-3" data-testid="ep-group" data-assignee-id="' + esc(g.assignee_id) + '">' +
++      '<div class="card-header d-flex flex-wrap align-items-center gap-3">' +
++        '<div class="form-check mb-0"><input type="checkbox" class="form-check-input" data-testid="ep-group-check" data-assignee-id="' + esc(g.assignee_id) + '"' +
++          (allSelected ? ' checked' : '') + (rows.length ? '' : ' disabled') + ' aria-label="Выбрать все услуги исполнителя"></div>' +
++        '<strong data-testid="ep-group-name">' + esc(g.assignee_name) + '</strong>' +
++        '<span class="ms-auto small">К выплате: <strong data-testid="ep-group-to-pay">' + money(g.to_pay) + '</strong>' +
++          ' <span class="text-body-secondary">(' + esc(g.unpaid_count) + ')</span></span>' +
++        '<span class="small">Выплачено: <strong data-testid="ep-group-paid">' + money(g.paid) + '</strong>' +
++          ' <span class="text-body-secondary">(' + esc(g.paid_count) + ')</span></span>' +
++      '</div>' +
++      '<div class="table-responsive"><table class="table table-sm align-middle mb-0">' +
++        '<thead><tr><th></th><th>Заказ</th><th>Услуга</th><th>Статус</th><th class="text-end">Цена</th><th class="text-end">Выплата</th><th>Выплачено</th></tr></thead>' +
++        '<tbody>' + rows.map(rowHTML).join('') + '</tbody>' +
++      '</table></div>' +
++      '</div>';
++  }
++
++  function render() {
++    $('#ep-groups').innerHTML = state.summary.map(groupHTML).join('');
++    $('#ep-empty').classList.toggle('d-none', state.summary.length > 0);
++
++    var toPay = 0, paid = 0;
++    state.summary.forEach(function (g) { toPay += cents(g.to_pay); paid += cents(g.paid); });
++    $('#ep-total-to-pay').textContent = fmtCents(toPay);
++    $('#ep-total-paid').textContent = fmtCents(paid);
++
++    var shown = $('#ep-shown');
++    var cut = state.items.length < state.total;
++    shown.textContent = cut ? 'Показано ' + state.items.length + ' из ' + state.total + ' услуг — сузьте фильтры, чтобы увидеть остальные.' : '';
++    shown.classList.toggle('d-none', !cut);
++    renderSelection();
++  }
++
++  function selectedIds() { return Object.keys(state.selected); }
++
++  function renderSelection() {
++    var n = selectedIds().length;
++    $('#ep-selected-count').textContent = 'Выбрано: ' + n;
++    $('#ep-mark-paid').disabled = state.busy || n === 0;
++    $('#ep-mark-unpaid').disabled = state.busy || n === 0;
++  }
++
++  // ---------- массовая отметка ----------
++  function errorText(err) {
++    if (err && err.fields && err.fields.length) {
++      var kinds = {};
++      err.fields.forEach(function (f) { kinds[FIELD_TEXT[f.message] || f.message] = true; });
++      return 'Отметка не сохранена: ' + Object.keys(kinds).join('; ') + '. Ничего не изменено — обновите список и повторите.';
++    }
++    return 'Отметка не сохранена' + (err && err.message ? ': ' + err.message : '');
++  }
++
++  // В запрос идут только выбранные услуги, чья отметка отличается от целевой: уже
++  // выплаченные при «Отметить» (и невыплаченные при «Снять») сервер и так не тронул бы, а
++  // в лимит одного запроса (MARK_MAX) они бы упёрлись — на экране до MAX_ITEMS строк.
++  // Больше лимита — понятное сообщение; на части запрос не режется (отметка атомарна, D70).
++  function mark(paid) {
++    if (state.busy || !selectedIds().length) return;
++    var ids = state.items.filter(function (it) {
++      return state.selected[it.subtask_id] && !!it.is_executor_paid !== paid;
++    }).map(function (it) { return it.subtask_id; });
++    if (!ids.length) {
++      state.selected = {};
++      render();
++      showError('');
++      showInfo(paid ? 'Все выбранные услуги уже отмечены выплаченными.' : 'У выбранных услуг отметки о выплате нет.');
++      return;
++    }
++    if (ids.length > MARK_MAX) {
++      showInfo('');
++      showError('За один раз можно ' + (paid ? 'отметить' : 'снять отметку у') + ' не более ' + MARK_MAX + ' услуг, а к изменению выбрано ' + ids.length +
++        '. Выберите меньше услуг или сузьте фильтры — ничего не изменено.');
++      return;
++    }
++    showInfo('');
++    state.busy = true;
++    renderSelection();
++    showError('');
++    KT.api.post('/api/v1/executor-payouts/mark', { subtask_ids: ids, is_executor_paid: paid }).then(function () {
++      state.selected = {};
++      return load();
++    }).catch(function (err) {
++      showError(errorText(err));
++      return load().catch(function () { /* ошибка отметки уже показана */ });
++    }).then(function () {
++      state.busy = false;
++      renderSelection();
++    });
++  }
++
++  // ---------- правка суммы выплаты в строке (D72) ----------
++  function itemById(id) { return state.items.filter(function (it) { return it.subtask_id === id; })[0]; }
++
++  function loadSummary() {
++    var p = apiQuery();
++    p.set('limit', '1000');
++    return KT.api.get('/api/v1/executor-payouts/summary?' + p.toString()).then(function (r) {
++      state.summary = r.items || [];
++    });
++  }
++
++  function payoutErrorText(err) {
++    if (err && err.fields && err.fields.length) {
++      return 'Сумма выплаты не сохранена: ' + err.fields.map(function (f) { return PAYOUT_TEXT[f.message] || f.message; }).join('; ') + '.';
++    }
++    return 'Сумма выплаты не сохранена' + (err && err.message ? ': ' + err.message : '') + '.';
++  }
++
++  // savePayout — blur/Enter поля суммы. Пусто → null; не число/отрицательное/больше 2
++  // знаков → сообщение и откат; значение не изменилось → запрос не уходит.
++  function savePayout(input) {
++    var it = itemById(input.dataset.subtaskId);
++    if (!it || input.disabled) return;
++    var raw = input.value.trim();
++    var value = null;
++    if (raw === '') {
++      if (input.validity && input.validity.badInput) { // в number-поле набран не-числовой текст
++        showError('Сумма выплаты не сохранена: введите число.');
++        input.value = payoutValue(it);
++        return;
++      }
++    } else {
++      var n = Number(raw);
++      if (!isFinite(n) || n < 0 || !/^\d+(\.\d{1,2})?$/.test(raw)) {
++        showError('Сумма выплаты не сохранена: нужно число не меньше 0 и не больше 2 знаков после запятой.');
++        input.value = payoutValue(it);
++        return;
++      }
++      value = n;
++    }
++    var current = it.executor_payout == null ? null : cents(it.executor_payout);
++    if ((value == null ? null : cents(value)) === current) {
++      input.value = payoutValue(it); // привести вид («100» → «100.00»), без запроса
++      return;
++    }
++    showError('');
++    showInfo('');
++    input.disabled = true;
++    KT.api.put('/api/v1/executor-payouts/' + encodeURIComponent(it.subtask_id), { executor_payout: value }).then(function (updated) {
++      var idx = state.items.indexOf(it);
++      if (idx >= 0) state.items[idx] = updated;
++      // итоги — с сервера (те же фильтры); при сбое перезапроса покажем хотя бы строку.
++      return loadSummary().catch(function () { /* итоги обновятся при следующей загрузке */ }).then(render);
++    }).catch(function (err) {
++      showError(payoutErrorText(err));
++      if (err && err.status === 404) return load().catch(function () { /* ошибка уже показана */ }); // строки больше нет в отчёте
++      input.disabled = false;
++      input.value = payoutValue(it);
++    });
++  }
++
++  // ---------- события ----------
++  function applyFiltersToForm() {
++    var f = state.filters;
++    var aSel = $('#ep-filter-assignee');
++    aSel.value = f.assignee;
++    if (aSel.value !== f.assignee) { aSel.value = assigneeDefault(); f.assignee = assigneeDefault(); }
++    var sSel = $('#ep-filter-status');
++    sSel.value = f.status;
++    if (sSel.value !== f.status) { sSel.value = 'all'; f.status = 'all'; }
++    $('#ep-filter-only-done').checked = !!f.only_done;
++    [aSel, sSel].forEach(function (el) { if (el._cbSync) el._cbSync(); });
++  }
++
++  function bind() {
++    function onFilter() {
++      state.selected = {};
++      showInfo('');
++      pushFiltersToUrl();
++      reload();
++    }
++    $('#ep-filter-assignee').addEventListener('change', function (e) { state.filters.assignee = e.target.value; onFilter(); });
++    $('#ep-filter-status').addEventListener('change', function (e) { state.filters.status = e.target.value; onFilter(); });
++    $('#ep-filter-only-done').addEventListener('change', function (e) { state.filters.only_done = e.target.checked; onFilter(); });
++
++    $('#ep-groups').addEventListener('keydown', function (e) {
++      if (e.key !== 'Enter') return;
++      var inp = e.target.closest('[data-testid="ep-row-payout-input"]');
++      if (inp) { e.preventDefault(); inp.blur(); } // blur → change → savePayout
++    });
++    $('#ep-groups').addEventListener('change', function (e) {
++      var payout = e.target.closest('[data-testid="ep-row-payout-input"]');
++      if (payout) { savePayout(payout); return; }
++      var row = e.target.closest('[data-testid="ep-row-check"]');
++      if (row) {
++        if (row.checked) state.selected[row.dataset.subtaskId] = true; else delete state.selected[row.dataset.subtaskId];
++        var group = row.closest('[data-testid="ep-group"]');
++        var boxes = $$('[data-testid="ep-row-check"]', group);
++        $('[data-testid="ep-group-check"]', group).checked = boxes.length > 0 && boxes.every(function (b) { return b.checked; });
++        renderSelection();
++        return;
++      }
++      var grp = e.target.closest('[data-testid="ep-group-check"]');
++      if (grp) {
++        $$('[data-testid="ep-row-check"]', grp.closest('[data-testid="ep-group"]')).forEach(function (b) {
++          b.checked = grp.checked;
++          if (grp.checked) state.selected[b.dataset.subtaskId] = true; else delete state.selected[b.dataset.subtaskId];
++        });
++        renderSelection();
++      }
++    });
++
++    $('#ep-mark-paid').addEventListener('click', function () { mark(true); });
++    $('#ep-mark-unpaid').addEventListener('click', function () { mark(false); });
++  }
++
++  // ---------- инициализация ----------
++  function init() {
++    var root = $('#ep');
++    if (!root) return;
++    state.isAdmin = root.dataset.isAdmin === 'true';
++    state.filters = parseFilters();
++    bind();
++    loadAssignees()
++      .catch(function () { /* фильтр останется с «Все»/«Мои» */ })
++      .then(function () {
++        applyFiltersToForm();
++        return reload();
++      });
++  }
++
++  KT.executorPayouts = { init: init };
++  document.addEventListener('DOMContentLoaded', init);
++})();
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 9abe7c8..d1e449d 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -793,6 +793,7 @@
+ 
+   function subtaskRowHtml(sub) {
+     var key = reqKeySubtask(sub.id);
++    var payoutId = 'card-subtask-executor-paid-' + sub.id;
+     var equipmentOptions = '<option value="">Без оборудования</option>' + card.equipment.map(function (e) {
+       return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + '</option>';
+     }).join('');
+@@ -820,6 +821,19 @@
+       '        <div class="invalid-feedback d-block d-none small" data-testid="card-subtask-warning"></div></div>' +
+       '      <div class="col-12"><label class="form-label small mb-0">Оборудование</label>' +
+       '        <select class="form-select form-select-sm" data-field="equipment_id" data-row-key="' + key + '" data-testid="card-subtask-equipment">' + equipmentOptions + '</select></div>' +
++      // executor-payouts D62–D66: выплата исполнителю — отметка, сумма (отдельная от цены) и
++      // дата отметки. Отметить можно только при назначенном исполнителе; уже стоящую
++      // отметку снять можно всегда (в т.ч. если сотрудника удалили).
++      '      <div class="col-12 col-md-6 d-flex align-items-end" data-testid="card-subtask-payout">' +
++      '        <div class="form-check mb-1">' +
++      '          <input type="checkbox" class="form-check-input" id="' + esc(payoutId) + '" data-field="is_executor_paid" data-row-key="' + key + '" data-testid="card-subtask-executor-paid"' +
++                 (sub.is_executor_paid ? ' checked' : '') + (!sub.assignee_id && !sub.is_executor_paid ? ' disabled title="Сначала назначьте исполнителя"' : '') + '>' +
++      '          <label class="form-check-label small" for="' + esc(payoutId) + '">Выплачено исполнителю</label>' +
++      '          <span class="small text-body-secondary ms-1" data-testid="card-subtask-executor-paid-at">' + (sub.is_executor_paid && sub.executor_paid_at ? esc(fmtDateTime(sub.executor_paid_at)) : '') + '</span>' +
++      '        </div></div>' +
++      '      <div class="col-12 col-md-6"><label class="form-label small mb-0">Сумма выплаты исполнителю</label>' +
++      '        <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="executor_payout" data-row-key="' + key + '" data-testid="card-subtask-executor-payout" value="' + (sub.executor_payout == null ? '' : esc(sub.executor_payout)) + '">' +
++      '        <div class="invalid-feedback d-block d-none small" data-testid="card-subtask-payout-warning"></div></div>' +
+       '    </div>' +
+       '    <div class="mt-2">' + subtaskProductsHtml(sub) + '</div>' +
+       '    <div class="mt-2">' + subtaskLogsHtml(sub) + '</div>' +
+@@ -921,9 +935,37 @@
+             input.classList.remove('is-invalid');
+             if (priceWarn) priceWarn.classList.add('d-none');
+           }
++          // executor-payouts: отметка выплаты — булево из чекбокса; сумма выплаты
++          // валидируется как цена (пусто — «не задана»).
++          if (field === 'is_executor_paid') value = input.checked;
++          if (field === 'executor_payout') {
++            var payoutWarn = row.querySelector('[data-testid="card-subtask-payout-warning"]');
++            var rawPayout = input.value.trim().replace(',', '.');
++            if (rawPayout === '') {
++              value = null;
++            } else {
++              var pn = Number(rawPayout);
++              if (!isFinite(pn) || pn < 0 || !/^\d+(\.\d{1,2})?$/.test(rawPayout)) {
++                input.classList.add('is-invalid');
++                if (payoutWarn) { payoutWarn.textContent = 'Сумма выплаты — число ≥ 0, не больше 2 знаков после запятой'; payoutWarn.classList.remove('d-none'); }
++                var s1 = currentSubtask(subId);
++                input.value = (s1 && s1.executor_payout != null) ? s1.executor_payout : '';
++                return;
++              }
++              value = pn;
++            }
++            input.classList.remove('is-invalid');
++            if (payoutWarn) payoutWarn.classList.add('d-none');
++          }
+           var patch = {}; patch[field] = value;
+           enqueueRow(reqKeySubtask(subId), patch, function (source) {
+             var s = currentSubtask(subId, source) || {};
++            // База тела — только поля полной замены. is_executor_paid / executor_payout в базу
++            // НЕ входят (code review HIGH-1): у них есть второй писатель — отчёт «Выплаты»
++            // (POST /executor-payouts/mark), а карточка сервер не опрашивает. Устаревший
++            // снимок, отправленный вместе с правкой срока/статуса/цены, молча снял бы чужую
++            // отметку (или вернул снятую). Эти поля уходят только через patch — когда
++            // пользователь правит именно их; сервер поле, которого нет в теле, не трогает.
+             return { status: s.status, assignee_id: s.assignee_id, due_date: s.due_date, price: s.price == null ? null : num(s.price), equipment_id: s.equipment_id };
+           }, function (body) {
+             return KT.api.put('/api/v1/subtasks/' + subId, body);
+diff --git a/web/ssr/board/templates/pages/board.html b/web/ssr/board/templates/pages/board.html
+index e9d2fc5..71c6c82 100644
+--- a/web/ssr/board/templates/pages/board.html
++++ b/web/ssr/board/templates/pages/board.html
+@@ -20,6 +20,12 @@
+     <option value="paid">Оплачен</option>
+     <option value="unpaid">Не оплачен</option>
+   </select>
++  <select class="form-select form-select-sm" id="filter-executor-paid" data-testid="filter-executor-paid" style="max-width:230px"
++          aria-label="Выплата исполнителю">
++    <option value="all">Выплата исполнителю: все</option>
++    <option value="paid">Исполнителю выплачено</option>
++    <option value="unpaid">Исполнителю не выплачено</option>
++  </select>
+   <select class="form-select form-select-sm" id="filter-assignee" data-testid="filter-assignee" style="max-width:200px">
+     <option value="all">Все исполнители</option>
+     <option value="me">Мои</option>
+diff --git a/web/ssr/executorpayouts/templates/pages/list.html b/web/ssr/executorpayouts/templates/pages/list.html
+new file mode 100644
+index 0000000..9d5cc40
+--- /dev/null
++++ b/web/ssr/executorpayouts/templates/pages/list.html
+@@ -0,0 +1,43 @@
++{{ define "content" }}
++<div id="ep" data-testid="ep-root" data-is-admin="{{ if .IsAdmin }}true{{ else }}false{{ end }}">
++  <div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="ep-filters">
++    <select class="form-select form-select-sm" id="ep-filter-assignee" data-testid="ep-filter-assignee" style="max-width:220px" aria-label="Исполнитель">
++      <option value="all">Все исполнители</option>
++      <option value="me">Мои</option>
++    </select>
++    <select class="form-select form-select-sm" id="ep-filter-status" data-testid="ep-filter-status" style="max-width:190px" aria-label="Статус выплаты">
++      <option value="all">Выплата: все</option>
++      <option value="unpaid">Не выплачено</option>
++      <option value="paid">Выплачено</option>
++    </select>
++    <div class="form-check mb-0">
++      <input type="checkbox" class="form-check-input" id="ep-filter-only-done" data-testid="ep-filter-only-done">
++      <label class="form-check-label small" for="ep-filter-only-done">Только выполненные</label>
++    </div>
++    <div class="ms-auto d-flex flex-wrap align-items-center gap-2">
++      <span class="small text-body-secondary" id="ep-selected-count" data-testid="ep-selected-count">Выбрано: 0</span>
++      <button type="button" class="btn btn-primary btn-sm" id="ep-mark-paid" data-testid="ep-mark-paid" disabled>Отметить выплаченными</button>
++      <button type="button" class="btn btn-outline-secondary btn-sm" id="ep-mark-unpaid" data-testid="ep-mark-unpaid" disabled>Снять отметку</button>
++    </div>
++  </div>
++
++  <div class="alert alert-danger d-none" id="ep-error" data-testid="ep-error" role="alert"></div>
++  <div class="alert alert-secondary d-none" id="ep-info" data-testid="ep-info" role="status"></div>
++
++  <div class="card mb-3">
++    <div class="card-body py-2 d-flex flex-wrap gap-4">
++      <div>К выплате: <strong id="ep-total-to-pay" data-testid="ep-total-to-pay">0.00</strong></div>
++      <div>Выплачено: <strong id="ep-total-paid" data-testid="ep-total-paid">0.00</strong></div>
++    </div>
++  </div>
++
++  <div id="ep-groups" data-testid="ep-groups"></div>
++  <div class="empty-state d-none" id="ep-empty" data-testid="ep-empty">Услуг с исполнителем по выбранным фильтрам нет.</div>
++  <p class="text-body-secondary small d-none mt-2" id="ep-shown" data-testid="ep-shown"></p>
++  <p class="text-body-secondary small mt-2">В отчёт попадают услуги заказов с назначенным исполнителем. «К выплате» и «Выплачено» — суммы выплат исполнителю (не цена для клиента); услуга без указанной суммы считается как 0. Сумма выплаты правится прямо в строке (поле «Выплата»: сохраняется по Enter или при уходе из поля, пустое — «не задана») либо в карточке заказа.</p>
++</div>
++{{ end }}
++
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/executor-payouts.js"></script>
++{{ end }}

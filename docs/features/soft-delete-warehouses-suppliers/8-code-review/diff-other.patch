@@ -1,0 +1,1386 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 7ecb2b2..2fcd14d 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -196,8 +196,12 @@ export type Transfer = {
+   direction: TransferDirection;
+   from_warehouse_id: string | null;
+   from_warehouse_name: string | null;
++  /** Склад отправления мягко удалён — бейдж «удалён» (soft-delete-warehouses-suppliers §6.5); false, если склада нет. */
++  from_warehouse_is_deleted: boolean;
+   to_warehouse_id: string | null;
+   to_warehouse_name: string | null;
++  /** Склад назначения мягко удалён; false, если склада нет. */
++  to_warehouse_is_deleted: boolean;
+   task_id: number | null;
+   task_title: string | null;
+   /** Заказ документа мягко удалён — бейдж «заказ удалён» (soft-delete-transfers §6.3); false, если заказа нет. */
+@@ -208,6 +212,8 @@ export type Transfer = {
+   client_is_deleted: boolean;
+   supplier_id: string | null;
+   supplier_name: string | null;
++  /** Поставщик документа мягко удалён — бейдж «удалён»; false, если поставщика нет. */
++  supplier_is_deleted: boolean;
+   status: TransferStatus;
+   note: string;
+   /** Последняя отмена проведения (transfers-revert §6.1): кто, когда, причина; у документа
+@@ -229,8 +235,10 @@ export type TransferSummary = {
+   direction: TransferDirection;
+   from_warehouse_id: string | null;
+   from_warehouse_name: string | null;
++  from_warehouse_is_deleted: boolean;
+   to_warehouse_id: string | null;
+   to_warehouse_name: string | null;
++  to_warehouse_is_deleted: boolean;
+   task_id: number | null;
+   task_is_deleted: boolean;
+   client_id: string | null;
+@@ -238,6 +246,7 @@ export type TransferSummary = {
+   client_is_deleted: boolean;
+   supplier_id: string | null;
+   supplier_name: string | null;
++  supplier_is_deleted: boolean;
+   status: TransferStatus;
+   note: string;
+   items_count: number;
+@@ -684,7 +693,8 @@ export class AdminApi {
+   // ---- мягкое удаление (soft-delete-core §6.1–§6.4; типы — board-types.ts, §TD-6.2) ----
+ 
+   /** Адрес ресурса вида kind: заказы (часть 1), документы перемещения (часть 2), колонки
+-   *  (часть 3), клиенты и единицы оборудования (часть 4), каталог и типы оборудования (часть 5). */
++   *  (часть 3), клиенты и единицы оборудования (часть 4), каталог и типы оборудования (часть 5),
++   *  склады и поставщики (часть 6). */
+   private softDeletePath(kind: import('./board-types').DeletedKind, id: number | string): string {
+     if (kind === 'tasks') return `/api/v1/tasks/${id}`;
+     if (kind === 'transfers') return `/api/v1/transfers/${id}`;
+@@ -692,6 +702,8 @@ export class AdminApi {
+     if (kind === 'clients') return `/api/v1/clients/${id}`;
+     // часть 5 (soft-delete-catalog): товары, услуги, категории каталога и типы оборудования.
+     if (kind === 'products' || kind === 'services' || kind === 'catalog-categories' || kind === 'equipment-types') return `/api/v1/${kind}/${id}`;
++    // часть 6 (soft-delete-warehouses-suppliers): склады и поставщики.
++    if (kind === 'warehouses' || kind === 'suppliers') return `/api/v1/${kind}/${id}`;
+     throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);
+   }
+ 
+@@ -702,11 +714,12 @@ export class AdminApi {
+   async softDelete(kind: 'clients', id: number | string, reason?: string): Promise<import('./board-types').ClientDeleteResponse>;
+   async softDelete(kind: 'equipment', id: number | string, reason?: string): Promise<import('./board-types').EquipmentDeleteResponse>;
+   async softDelete(kind: import('./board-types').CatalogKind, id: number | string, reason?: string): Promise<import('./board-types').CatalogDeleteResponse>;
++  async softDelete(kind: import('./board-types').PartnerKind, id: number | string, reason?: string): Promise<import('./board-types').PartnerDeleteResponse>;
+   async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason?: string): Promise<import('./board-types').TaskDeleteResponse>;
+   async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<
+     | import('./board-types').TaskDeleteResponse | TransferDeleteResponse | import('./board-types').ColumnDeleteResponse
+     | import('./board-types').ClientDeleteResponse | import('./board-types').EquipmentDeleteResponse
+-    | import('./board-types').CatalogDeleteResponse
++    | import('./board-types').CatalogDeleteResponse | import('./board-types').PartnerDeleteResponse
+   > {
+     if (kind === 'transfers') return this.deleteTransfer(Number(id), reason);
+     const data: import('./board-types').DeleteBody = { reason };
+@@ -746,6 +759,26 @@ export class AdminApi {
+     return { status: res.status(), body: await res.json() };
+   }
+ 
++  /** Восстановление склада либо поставщика: POST /api/v1/{warehouses|suppliers}/:id/restore
++   *  (soft-delete-warehouses-suppliers §6.2, §6.4). Статус не проверяется — ждут и 409 NAME_TAKEN. */
++  async restorePartner(kind: import('./board-types').PartnerKind, id: string): Promise<{
++    status: number;
++    body: import('./board-types').PartnerRestoreResponse | import('./board-types').PartnerError;
++  }> {
++    const res = await this.ctx.post(`${this.softDeletePath(kind, id)}/restore`, { headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /** Попытка мягкого удаления склада либо поставщика без проверки статуса (ждут 409 WAREHOUSE_IN_USE). */
++  async tryDeletePartner(kind: import('./board-types').PartnerKind, id: string, reason = 'e2e: создан по ошибке'): Promise<{
++    status: number;
++    body: import('./board-types').PartnerDeleteResponse | import('./board-types').PartnerError;
++  }> {
++    const data: import('./board-types').DeleteBody = { reason };
++    const res = await this.ctx.delete(this.softDeletePath(kind, id), { data, headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
+   /** Попытка мягкого удаления записи каталога без проверки статуса (ждут 409 PRODUCT_HAS_STOCK). */
+   async tryDeleteCatalog(kind: import('./board-types').CatalogKind, id: string, reason = 'e2e: создан по ошибке'): Promise<{
+     status: number;
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 3439e16..c054508 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -128,8 +128,22 @@ export type CatalogError = {
+     | 'CATEGORY_NOT_FOUND' | 'EQUIPMENT_TYPE_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
+   message: string;
+ };
+-/** Виды служебной уборки, подключённые на стенде (части 1–5 мастер-спеки soft-delete). */
+-export type PurgeKind = 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment' | CatalogKind;
++/** Виды «склад» и «поставщик» (часть 6, soft-delete-warehouses-suppliers). */
++export type PartnerKind = 'warehouses' | 'suppliers';
++/** 200 DELETE /api/v1/{warehouses|suppliers}/:id (warehouses.DeleteResponse / suppliers.DeleteResponse,
++ *  soft-delete-warehouses-suppliers §6.1, §6.3). */
++export type PartnerDeleteResponse = { id: string; deleted_at: string };
++/** 200 POST /api/v1/{warehouses|suppliers}/:id/restore (§6.2, §6.4). */
++export type PartnerRestoreResponse = { id: string };
++/** Отказы удаления и восстановления склада и поставщика (§6.1–§6.4). */
++export type PartnerError = {
++  code:
++    | 'NOT_DELETED' | 'NAME_TAKEN' | 'WAREHOUSE_IN_USE' | 'WAREHOUSE_LAST_ACTIVE' | 'WAREHOUSE_NOT_FOUND'
++    | 'SUPPLIER_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
++  message: string;
++};
++/** Виды служебной уборки, подключённые на стенде (части 1–6 мастер-спеки soft-delete). */
++export type PurgeKind = 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment' | CatalogKind | PartnerKind;
+ /** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
+ export type PurgeResponse = { id: string };
+ 
+@@ -182,6 +196,9 @@ export type StockRow = {
+   product_id: string;
+   /** Товар удалён из каталога, но на складе числится его остаток (soft-delete-catalog DS-042). */
+   is_deleted: boolean;
++  /** Товар в архиве (не удалён), но на удалённом складе числится его остаток — бейдж «в архиве»
++   *  (board.StockRow, fix-loop 1 части 6 soft-delete-warehouses-suppliers). */
++  is_archived: boolean;
+   name: string;
+   unit: string;
+   box: string;
+@@ -197,7 +214,9 @@ export type StockRow = {
+ };
+ 
+ export type StockListResponse = {
+-  warehouses: Array<{ id: string; name: string }>;
++  /** Склады отчёта: активные и — с ненулевым остатком — архивные (is_archived) и мягко удалённые
++   *  (is_deleted) (board.StockWarehouse, soft-delete-warehouses-suppliers §6.5, DS-049). */
++  warehouses: Array<{ id: string; name: string; is_archived: boolean; is_deleted: boolean }>;
+   items: StockRow[];
+   total: number;
+   limit: number;
+@@ -337,7 +356,9 @@ export type OrderCardResponse = {
+   subtasks: CardSubtask[];
+   stock: CardStock[];
+   /** warehouses DS-005: склады select'а строки товара (активные + архивные, на которые ссылаются строки). */
+-  warehouses: Array<{ id: string; name: string; is_active: boolean }>;
++  /** is_deleted — склад мягко удалён: есть в карточке, только если на него ссылаются строки заказа
++   *  (board.CardWarehouse, soft-delete-warehouses-suppliers §6.5). */
++  warehouses: Array<{ id: string; name: string; is_active: boolean; is_deleted: boolean }>;
+   /** Фаза 7 (D21): вложения заказа, порядок загрузки. */
+   attachments: CardAttachment[];
+   /** transfers-partners §6.8: документы «Перемещение» заказа, новые сверху (всегда массив). */
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index 3038492..381cfce 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -22,6 +22,10 @@ type Fixtures = {
+    *  созданные через adminApi ловятся автоматически; запись, созданную тестом через экран,
+    *  тест регистрирует сам — `catalogCleanup(kind, id)`. */
+   catalogCleanup: (kind: import('./board-types').CatalogKind, id: string) => void;
++  /** autouse-уборка складов и поставщиков (soft-delete-warehouses-suppliers TS-F11): созданные
++   *  через adminApi ловятся автоматически; запись, созданную тестом через экран, тест
++   *  регистрирует сам — `partnersCleanup(kind, id)`. */
++  partnersCleanup: (kind: import('./board-types').PartnerKind, id: string) => void;
+ };
+ 
+ type WorkerFixtures = {
+@@ -99,8 +103,59 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+   // оборудования клиента, которого тест не убирает) — запись остаётся, такие отказы считаются и
+   // выводятся ОДНИМ итоговым предупреждением с числом и перечнем; любой другой статус и
+   // исключение (выключенная на стенде уборка) — отдельный console.warn с видом, id и статусом.
+-  catalogCleanup: [
++  // partnersCleanup (soft-delete-warehouses-suppliers TS-F11, DS-027): склады и поставщики,
++  // созданные тестом, раньше только архивировались и копились в справочниках, а теперь ещё и во
++  // вкладках «Склады» и «Поставщики» раздела «Удалённые». Убираются ФИЗИЧЕСКИ служебным адресом
++  // purge — и действующие, и мягко удалённые тестом. catalogCleanup зависит от этой фикстуры,
++  // поэтому она сворачивается ПОСЛЕДНЕЙ: заказы с документами (_boardCleanup) и товары с
++  // остатками (catalogCleanup) к этому моменту убраны. Статус уборки читается: 200 — убрано, 404 —
++  // записи уже нет; 409 «используется» (на склад либо поставщика ссылается документ без заказа,
++  // строка журнала склада, либо склад — последний активный) — запись остаётся, такие отказы
++  // выводятся ОДНИМ итоговым предупреждением с числом и перечнем; любой другой статус и
++  // исключение (выключенная на стенде уборка) — отдельный console.warn с видом, id и статусом.
++  // Записи, созданные тестом через экран, тест регистрирует сам: partnersCleanup(kind, id).
++  partnersCleanup: [
+     async ({ adminApi }, use) => {
++      type Kind = import('./board-types').PartnerKind;
++      const created: Array<{ kind: Kind; id: string }> = [];
++      const origWarehouse = adminApi.createWarehouse.bind(adminApi);
++      const origSupplier = adminApi.createSupplier.bind(adminApi);
++      adminApi.createWarehouse = (async (name) => {
++        const r = await origWarehouse(name);
++        created.push({ kind: 'warehouses', id: r.id });
++        return r;
++      }) as typeof adminApi.createWarehouse;
++      adminApi.createSupplier = (async (sup) => {
++        const r = await origSupplier(sup);
++        created.push({ kind: 'suppliers', id: r.id });
++        return r;
++      }) as typeof adminApi.createSupplier;
++
++      await use((kind, id) => { created.push({ kind, id }); });
++
++      adminApi.createWarehouse = origWarehouse;
++      adminApi.createSupplier = origSupplier;
++      const inUse: string[] = [];
++      for (const rec of created) {
++        try {
++          const status = await adminApi.purge(rec.kind, rec.id);
++          if (status === 409) inUse.push(`${rec.kind} ${rec.id}`);
++          else if (status !== 200 && status !== 404) console.warn(`partnersCleanup: уборка ${rec.kind} ${rec.id} — неожиданный статус ${status}`);
++        } catch (e) {
++          console.warn(`partnersCleanup: не удалось убрать ${rec.kind} ${rec.id}: ${e instanceof Error ? e.message : String(e)}`);
++        }
++      }
++      if (inUse.length > 0) {
++        console.warn(`partnersCleanup: не убрано записей — ${inUse.length} (409 «используется», остались ссылки): ${inUse.join(', ')}`);
++      }
++    },
++    { auto: true },
++  ],
++
++  catalogCleanup: [
++    // partnersCleanup в зависимостях — только ради порядка сворачивания (см. выше).
++    async ({ adminApi, partnersCleanup: _partnersLast }, use) => {
++      void _partnersLast;
+       type Kind = import('./board-types').CatalogKind;
+       const created: Array<{ kind: Kind; id: string }> = [];
+       const origCategory = adminApi.createCategory.bind(adminApi);
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index fc0ad14..809b265 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -163,6 +163,11 @@ export class OrderCardPage {
+     await this.saveBtn.click();
+   }
+ 
++  /** Бейдж «удалён» у склада строки товара услуги (soft-delete-warehouses-suppliers §8.3 п.3). */
++  productWarehouseDeleted(subtaskId: string): Locator {
++    return this.subtaskRow(subtaskId).getByTestId('card-product-warehouse-deleted');
++  }
++
+   subtaskRow(subtaskId: string): Locator {
+     return this.page.locator(`[data-testid="card-subtask-row"][data-subtask-id="${subtaskId}"]`);
+   }
+diff --git a/e2e/pages/StockPage.ts b/e2e/pages/StockPage.ts
+index 4136013..d28c7be 100644
+--- a/e2e/pages/StockPage.ts
++++ b/e2e/pages/StockPage.ts
+@@ -57,6 +57,11 @@ export class StockPage {
+     return this.row(productId).getByTestId('stock-row-deleted');
+   }
+ 
++  /** Бейдж «в архиве» у архивного товара, чей остаток числится на удалённом складе. */
++  rowArchived(productId: string): Locator {
++    return this.row(productId).getByTestId('stock-row-archived');
++  }
++
+   editBtn(productId: string): Locator {
+     return this.page.getByTestId(`stock-edit-${productId}`);
+   }
+@@ -75,6 +80,14 @@ export class StockPage {
+     await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
+   }
+ 
++  /** Заголовок колонки склада по названию (с бейджем «в архиве» / «удалён» у недействующих складов
++   *  с остатком — soft-delete-warehouses-suppliers §8.3 п.4). */
++  col(warehouseName: string): Locator {
++    return this.page.locator('[data-testid="stock-col-wh"]', { hasText: warehouseName });
++  }
++  colDeleted(warehouseName: string): Locator { return this.col(warehouseName).getByTestId('stock-col-wh-deleted'); }
++  colArchived(warehouseName: string): Locator { return this.col(warehouseName).getByTestId('stock-col-wh-archived'); }
++
+   /** Ячейка склада в строке товара (колонки складов). */
+   cell(productId: string, warehouseName: string): Locator {
+     return this.row(productId).locator(`[data-testid="stock-cell-wh"][data-warehouse="${warehouseName}"]`);
+diff --git a/e2e/pages/SuppliersPage.ts b/e2e/pages/SuppliersPage.ts
+index 2ac5c47..db930ae 100644
+--- a/e2e/pages/SuppliersPage.ts
++++ b/e2e/pages/SuppliersPage.ts
+@@ -26,6 +26,15 @@ export class SuppliersPage {
+   readonly toggleActive: Locator;
+   readonly cancel: Locator;
+   readonly archivedNote: Locator;
++  /** «Удалить» внизу формы поставщика слева (soft-delete-warehouses-suppliers §8.1). */
++  readonly delete: Locator;
++  // окно «Удаление»
++  readonly deleteDialog: Locator;
++  readonly deleteDialogTitle: Locator;
++  readonly deleteDialogText: Locator;
++  readonly deleteReason: Locator;
++  readonly deleteReasonError: Locator;
++  readonly deleteDialogOk: Locator;
+   // тосты
+   readonly toast: Locator;
+   readonly toastError: Locator;
+@@ -50,6 +59,13 @@ export class SuppliersPage {
+     this.toggleActive = page.getByTestId('supplier-toggle-active');
+     this.cancel = page.getByTestId('supplier-cancel');
+     this.archivedNote = page.getByTestId('supplier-archived-note');
++    this.delete = page.getByTestId('supplier-delete');
++    this.deleteDialog = page.locator('[data-testid="ui-dialog"][data-dialog-kind="delete"]');
++    this.deleteDialogTitle = page.getByTestId('delete-dialog-title');
++    this.deleteDialogText = this.deleteDialog.getByTestId('ui-dialog-text');
++    this.deleteReason = page.getByTestId('delete-reason');
++    this.deleteReasonError = page.getByTestId('delete-reason-error');
++    this.deleteDialogOk = this.deleteDialog.getByTestId('ui-dialog-ok');
+     this.toast = page.getByTestId('toast');
+     this.toastError = page.getByTestId('toast-error');
+   }
+@@ -103,6 +119,19 @@ export class SuppliersPage {
+     await this.archivedToggle.setChecked(on);
+   }
+ 
++  /** «Удалить» в форме → окно «Удаление» открыто. */
++  async openDelete() {
++    await this.delete.click();
++    await expect(this.deleteDialog).toBeVisible();
++  }
++
++  /** «Удалить» в форме → причина → «Удалить» в окне. */
++  async confirmDelete(reason = 'e2e: создан по ошибке') {
++    await this.openDelete();
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
++  }
++
+   async expectSaved() {
+     await expect(this.toast.last()).toHaveText('Сохранено');
+     await expect(this.form).toBeHidden();
+diff --git a/e2e/pages/TransfersPage.ts b/e2e/pages/TransfersPage.ts
+index 701f56b..d17d99e 100644
+--- a/e2e/pages/TransfersPage.ts
++++ b/e2e/pages/TransfersPage.ts
+@@ -218,6 +218,16 @@ export class TransfersPage {
+     await expect(this.uiDialog).toHaveCount(0);
+   }
+ 
++  /** Бейджи «удалён» у склада и поставщика документа — в строке списка и в карточке документа
++   *  (soft-delete-warehouses-suppliers §8.3 п.1). */
++  rowSupplierDeleted(id: number): Locator { return this.row(id).getByTestId('st-row-supplier-deleted'); }
++  rowToDeleted(id: number): Locator { return this.row(id).getByTestId('st-row-to-deleted'); }
++  rowFromDeleted(id: number): Locator { return this.row(id).getByTestId('st-row-from-deleted'); }
++  get viewSupplier(): Locator { return this.page.getByTestId('st-view-supplier'); }
++  get viewSupplierDeleted(): Locator { return this.page.getByTestId('st-view-supplier-deleted'); }
++  get viewTo(): Locator { return this.page.getByTestId('st-view-to'); }
++  get viewToDeleted(): Locator { return this.page.getByTestId('st-view-to-deleted'); }
++
+   /** Бейдж «заказ удалён» в строке списка и в шапке документа (soft-delete-transfers §8.1). */
+   rowTaskDeleted(id: number): Locator { return this.row(id).getByTestId('st-row-task-deleted'); }
+   get taskDeletedBadge(): Locator { return this.page.getByTestId('st-task-deleted'); }
+diff --git a/e2e/pages/WarehousesPage.ts b/e2e/pages/WarehousesPage.ts
+new file mode 100644
+index 0000000..b8e08b9
+--- /dev/null
++++ b/e2e/pages/WarehousesPage.ts
+@@ -0,0 +1,64 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана «Склады» «/warehouses» (warehouses DS-001; soft-delete-warehouses-suppliers §8.1):
++// серверная страница — список с формой добавления, в строке «В архив» / «Вернуть» и «Удалить»
++// (общее окно «Удаление» с обязательной причиной, серверная форма form[data-delete-dialog]).
++// Разметка — web/ssr/warehouses/templates/pages/list.html.
++export class WarehousesPage {
++  readonly table: Locator;
++  readonly newName: Locator;
++  readonly add: Locator;
++  readonly flash: Locator;
++  readonly listError: Locator;
++  readonly toast: Locator;
++  // окно «Удаление»
++  readonly deleteDialog: Locator;
++  readonly deleteDialogTitle: Locator;
++  readonly deleteDialogText: Locator;
++  readonly deleteReason: Locator;
++  readonly deleteReasonError: Locator;
++  readonly deleteDialogOk: Locator;
++
++  constructor(readonly page: Page) {
++    this.table = page.getByTestId('warehouses-table');
++    this.newName = page.getByTestId('warehouse-new-name');
++    this.add = page.getByTestId('warehouse-add');
++    this.flash = page.getByTestId('flash');
++    this.listError = page.getByTestId('list-error');
++    this.toast = page.getByTestId('toast');
++    this.deleteDialog = page.locator('[data-testid="ui-dialog"][data-dialog-kind="delete"]');
++    this.deleteDialogTitle = page.getByTestId('delete-dialog-title');
++    this.deleteDialogText = this.deleteDialog.getByTestId('ui-dialog-text');
++    this.deleteReason = page.getByTestId('delete-reason');
++    this.deleteReasonError = page.getByTestId('delete-reason-error');
++    this.deleteDialogOk = this.deleteDialog.getByTestId('ui-dialog-ok');
++  }
++
++  /** Открыть список; archived — с архивными складами. */
++  async goto(archived = false) {
++    await this.page.goto(`/warehouses${archived ? '?archived=1' : ''}`);
++    await expect(this.newName).toBeVisible();
++  }
++
++  /** Строка склада по точному названию. */
++  row(name: string): Locator {
++    return this.page.locator(`[data-testid="warehouse-row"][data-name="${name}"]`);
++  }
++
++  toggleActive(name: string): Locator { return this.row(name).getByTestId('warehouse-toggle-active'); }
++  deleteBtn(name: string): Locator { return this.row(name).getByTestId('warehouse-delete'); }
++  archivedBadge(name: string): Locator { return this.row(name).getByTestId('warehouse-archived-badge'); }
++
++  /** «Удалить» в строке склада → окно «Удаление» открыто. */
++  async openDelete(name: string) {
++    await this.deleteBtn(name).click();
++    await expect(this.deleteDialog).toBeVisible();
++  }
++
++  /** «Удалить» в строке → причина → «Удалить» в окне (серверная форма уходит PRG-переходом). */
++  async delete(name: string, reason = 'e2e: создан по ошибке') {
++    await this.openDelete(name);
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
++  }
++}
+diff --git a/e2e/tests/soft-delete-warehouses-suppliers.spec.ts b/e2e/tests/soft-delete-warehouses-suppliers.spec.ts
+new file mode 100644
+index 0000000..a030826
+--- /dev/null
++++ b/e2e/tests/soft-delete-warehouses-suppliers.spec.ts
+@@ -0,0 +1,287 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { BoardPage } from '../pages/BoardPage';
++import { DeletedPage } from '../pages/DeletedPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { StockPage } from '../pages/StockPage';
++import { SuppliersPage } from '../pages/SuppliersPage';
++import { TransfersPage } from '../pages/TransfersPage';
++import { WarehousesPage } from '../pages/WarehousesPage';
++
++// Мягкое удаление — склады и поставщики
++// (docs/features/soft-delete-warehouses-suppliers/draft-spec.md §8.1–§8.3, §11): кнопка «Удалить»
++// рядом с «В архив», удаление с причиной, вкладки «Склады» и «Поставщики» раздела «Удалённые»,
++// восстановление (TS-045); бейджи «удалён» у поставщика в документах перемещения; остаток на
++// удалённом складе в отчёте «Остатки» и в карточке заказа (TS-055, TS-065). Адаптив и темы
++// раздела «Удалённые» и окна удаления — SD-007 / SD-008 (soft-delete-core.spec.ts).
++// Общая dev-БД (§TD-6.2): свои записи через uniq()+adminApi. Уборка (TS-F11): склады и поставщики
++// — autouse partnersCleanup (служебный адрес purge, стенд с TEST_PURGE_ENABLED=true), товары —
++// catalogCleanup, заказы — _boardCleanup.
++test.use({ colorScheme: 'light' });
++
++const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
++const TOAST_DELETED = 'Удалено. Восстановить можно в разделе «Удалённые»';
++const WAREHOUSE_DELETE_TEXT =
++  'Удалить можно только пустой склад: без товара, оборудования и незавершённых перемещений. Чтобы только скрыть склад из выбора, используйте «В архив»';
++const SUPPLIER_DELETE_TEXT = 'Документы поставщика останутся с пометкой «удалён». Поставщика можно восстановить в разделе «Удалённые»';
++
++test.describe('SDWS: мягкое удаление складов и поставщиков', () => {
++  test('SDWS-001 (TS-045): склад — «Удалить» рядом с «В архив»; без причины — «Укажите причину удаления»; пустой склад удаляется → тост, строки нет; «Удалённые» → «Склады»: причина, кто, когда; название удалённого свободно, «Восстановить» при занятом названии → «Название занято — переименуйте действующую запись»; после переименования — «Восстановлено»; архивный склад возвращается в архив; негатив: склад с товаром — «На складе есть товар — сначала переместите или спишите остаток»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const name = uniq('SDWS-001 склад');
++    const empty = await adminApi.createWarehouse(name);
++    const busyName = uniq('SDWS-001 склад с товаром');
++    const busy = await adminApi.createWarehouse(busyName);
++    const archivedName = uniq('SDWS-001 архивный склад');
++    const archived = await adminApi.createWarehouse(archivedName);
++    await adminApi.updateWarehouse(archived.id, { name: archivedName, is_active: false });
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('SDWS-001 категория') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('SDWS-001 товар'), stock: 0 });
++    await adminApi.adjustStock(product.id, 2, busy.id);
++    // отказ по причине — серверная форма перерисовывает список с 422 (ожидаемо).
++    allowHttpErrors((url, status) => url.endsWith(`/warehouses/${empty.id}/delete`) && status === 422);
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/warehouses/${empty.id}/restore`) && status === 409);
++
++    // ---- §8.1: «Удалить» в строке склада рядом с «В архив» ----
++    const wh = new WarehousesPage(page);
++    await wh.goto();
++    await expect(wh.toggleActive(name)).toHaveText('В архив');
++    await expect(wh.deleteBtn(name)).toHaveText('Удалить');
++    await wh.openDelete(name);
++    await expect(wh.deleteDialogTitle).toHaveText(`Удалить «${name}»?`);
++    await expect(wh.deleteDialogText).toHaveText(WAREHOUSE_DELETE_TEXT);
++
++    // без причины: окно показано снова, под полем — текст; склад не удалён.
++    await wh.deleteDialogOk.click();
++    await expect(wh.deleteReasonError).toHaveText('Укажите причину удаления');
++    await expect(wh.deleteDialogTitle).toHaveText(`Удалить «${name}»?`);
++    expect((await adminApi.warehouseByName(name)).id, 'склад на месте').toBe(empty.id);
++
++    const reason = uniq('SDWS-001 создан по ошибке');
++    await wh.deleteReason.fill(reason);
++    await wh.deleteDialogOk.click();
++    await expect(page).toHaveURL(/\/warehouses\?flash=deleted$/);
++    await expect(wh.toast).toHaveText(TOAST_DELETED);
++    await expect(wh.row(name)).toHaveCount(0);
++    await wh.goto(true);
++    await expect(wh.row(name), 'удалённого склада нет и среди архивных').toHaveCount(0);
++
++    // ---- негатив: склад с товаром не удаляется — красный блок над списком ----
++    await wh.goto();
++    await wh.delete(busyName, uniq('SDWS-001 закрыт'));
++    await expect(page).toHaveURL(/\/warehouses\?error=delete_stock$/);
++    await expect(wh.listError).toHaveText('На складе есть товар — сначала переместите или спишите остаток');
++    await expect(wh.row(busyName)).toBeVisible();
++    expect((await adminApi.listDeleted('warehouses', { q: busyName })).total, 'склад с товаром не удалён').toBe(0);
++
++    // ---- название удалённого склада свободно: новый с тем же названием создаётся ----
++    await wh.newName.fill(name);
++    await wh.add.click();
++    await expect(wh.flash).toHaveText('Склад добавлен');
++    const twin = await adminApi.warehouseByName(name);
++    expect(twin.id, 'новый склад с названием удалённого').not.toBe(empty.id);
++
++    // ---- §8.2: «Удалённые» → «Склады» ----
++    const del = new DeletedPage(page);
++    await del.goto(`kind=warehouses&q=${encodeURIComponent(name)}`);
++    await expect(del.tab('warehouses')).toHaveClass(/active/);
++    await expect(del.tab('warehouses')).toContainText('Склады');
++    await expect(del.tab('suppliers')).toContainText('Поставщики');
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.rowTitle(empty.id)).toHaveText(name);
++    await expect(del.rowArchived(empty.id)).toHaveCount(0);
++    await expect(del.rowReason(empty.id)).toHaveText(reason);
++    await expect(del.rowBy(empty.id)).toHaveText('Админ Прогона');
++    await expect(del.rowAt(empty.id)).toHaveText(DATE_TIME);
++    const summary = await adminApi.deletedSummary();
++    await expect(del.tabCount('warehouses')).toHaveText(String(summary.counts.warehouses));
++
++    // восстановление при занятом названии — тост, строка остаётся.
++    await del.restoreBtn(empty.id).click();
++    await expect(del.dialogText).toHaveText(`Восстановить «${name}»?`);
++    await del.dialogOk.click();
++    await expect(del.toastError).toHaveText('Название занято — переименуйте действующую запись');
++    await expect(del.row(empty.id)).toBeVisible();
++
++    // действующий склад переименован — удалённый восстанавливается.
++    await adminApi.updateWarehouse(twin.id, { name: uniq('SDWS-001 склад новый'), is_active: true });
++    await del.restore(empty.id);
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.row(empty.id)).toHaveCount(0);
++    await expect(del.tabCount('warehouses')).toHaveText(String(summary.counts.warehouses - 1));
++    await wh.goto();
++    await expect(wh.row(name)).toBeVisible();
++    await expect(wh.toggleActive(name)).toHaveText('В архив');
++
++    // ---- архив и удаление независимы: архивный склад возвращается в архив ----
++    await wh.goto(true);
++    await expect(wh.archivedBadge(archivedName)).toHaveText('в архиве');
++    await wh.delete(archivedName, uniq('SDWS-001 закрыт'));
++    await expect(page).toHaveURL(/\/warehouses\?archived=1&flash=deleted$/);
++    await expect(wh.toast).toHaveText(TOAST_DELETED);
++    await expect(wh.row(archivedName)).toHaveCount(0);
++    await del.goto(`kind=warehouses&q=${encodeURIComponent(archivedName)}`);
++    await expect(del.rowArchived(archived.id)).toHaveText('в архиве');
++    await del.restoreBtn(archived.id).click();
++    await expect(del.dialogText).toHaveText(`Восстановить «${archivedName}»? Запись вернётся в архив`);
++    await del.dialogOk.click();
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.empty).toBeVisible();
++    expect((await adminApi.warehouseByName(archivedName)).is_active, 'склад вернулся в архив').toBe(false);
++
++    // уборка: остаток на складе с товаром списан (иначе склад не убрать), склад-двойник — purge.
++    await adminApi.adjustStock(product.id, 0, busy.id);
++    expect(await adminApi.purge('warehouses', twin.id), 'уборка склада-двойника').toBe(200);
++  });
++
++  test('SDWS-002 (TS-045): поставщик с документом — «Удалить» в форме; без причины — «Укажите причину удаления»; с причиной → тост, поставщика нет в списке; в документе и в списке перемещений — бейдж «удалён»; «Удалённые» → «Поставщики»: контактное лицо, причина, кто, когда; «Восстановить» → «Восстановлено», бейдж в документе исчез', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const name = uniq('SDWS-002 поставщик');
++    const supplier = await adminApi.createSupplier({ name, contact_name: 'Иван Петров' });
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('SDWS-002 категория') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('SDWS-002 товар'), stock: 0 });
++    const doc = await adminApi.createTransfer({
++      direction: 'supplier_to_warehouse', to_warehouse_id: almaty.id, supplier_id: supplier.id, send: true,
++      items: [{ kind: 'product', product_id: product.id, qty_sent: 2 }],
++    });
++    expect(doc.supplier_is_deleted, 'до удаления пометки нет').toBe(false);
++    // пустая причина — 400 по полю, окно остаётся (ожидаемо).
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/suppliers/${supplier.id}`) && status === 400);
++
++    try {
++      // ---- §8.1: «Удалить» внизу формы поставщика ----
++      const sup = new SuppliersPage(page);
++      await sup.goto();
++      await sup.searchFor(name);
++      await sup.openRow(name);
++      await expect(sup.delete).toHaveText('Удалить');
++      await sup.openDelete();
++      await expect(sup.deleteDialogTitle).toHaveText(`Удалить «${name}»?`);
++      await expect(sup.deleteDialogText).toHaveText(SUPPLIER_DELETE_TEXT);
++      await sup.deleteDialogOk.click();
++      await expect(sup.deleteReasonError).toHaveText('Укажите причину удаления');
++      await expect(sup.deleteDialog).toBeVisible();
++
++      const reason = uniq('SDWS-002 не работаем');
++      await sup.deleteReason.fill(reason);
++      await sup.deleteDialogOk.click();
++      await expect(sup.toast.last()).toHaveText(TOAST_DELETED);
++      await expect(sup.form).toBeHidden();
++      await expect(sup.row(name)).toHaveCount(0);
++      await sup.showArchived(true);
++      await expect(sup.row(name), 'удалённого поставщика нет и среди архивных').toHaveCount(0);
++
++      // ---- §8.3: документ удалённого поставщика — бейдж «удалён» в списке и в документе ----
++      const tr = new TransfersPage(page);
++      await tr.goto(doc.id);
++      await expect(tr.viewSupplier).toContainText(name);
++      await expect(tr.viewSupplierDeleted).toHaveText('удалён');
++      await expect(tr.rowSupplierDeleted(doc.id)).toHaveText('удалён');
++      expect((await adminApi.getTransfer(doc.id)).supplier_is_deleted).toBe(true);
++
++      // ---- §8.2: «Удалённые» → «Поставщики» ----
++      const del = new DeletedPage(page);
++      await del.goto(`kind=suppliers&q=${encodeURIComponent(name)}`);
++      await expect(del.tab('suppliers')).toHaveClass(/active/);
++      await expect(del.rows).toHaveCount(1);
++      await expect(del.rowTitle(supplier.id)).toHaveText(name);
++      await expect(del.rowSubtitle(supplier.id)).toHaveText('Иван Петров');
++      await expect(del.rowReason(supplier.id)).toHaveText(reason);
++      await expect(del.rowBy(supplier.id)).toHaveText('Админ Прогона');
++      await expect(del.rowAt(supplier.id)).toHaveText(DATE_TIME);
++      const summary = await adminApi.deletedSummary();
++      await expect(del.tabCount('suppliers')).toHaveText(String(summary.counts.suppliers));
++
++      await del.restoreBtn(supplier.id).click();
++      await expect(del.dialogText).toHaveText(`Восстановить «${name}»?`);
++      await del.dialogOk.click();
++      await expect(del.toast).toHaveText('Восстановлено');
++      await expect(del.row(supplier.id)).toHaveCount(0);
++      await expect(del.tabCount('suppliers')).toHaveText(String(summary.counts.suppliers - 1));
++
++      // поставщик снова в списке, бейдж в документе исчез.
++      await sup.goto();
++      await sup.searchFor(name);
++      await expect(sup.row(name)).toBeVisible();
++      await tr.goto(doc.id);
++      await expect(tr.viewSupplier).toContainText(name);
++      await expect(tr.viewSupplierDeleted).toHaveCount(0);
++      await expect(tr.rowSupplierDeleted(doc.id)).toHaveCount(0);
++    } finally {
++      // уборка: документ без заказа держит поставщика от служебной уборки — отменить и убрать.
++      await adminApi.transferAction(doc.id, 'cancel');
++      expect(await adminApi.purgeTransfer(doc.id), 'уборка документа').toBe(200);
++    }
++  });
++
++  test('SDWS-003 (TS-055, TS-065): остаток на удалённом складе — в «Остатках» колонка склада с бейджем «удалён», в карточке заказа у склада строки бейдж «удалён»; корректировка с увеличением → «Склад удалён — остаток на нём можно только списать»; списание до нуля → колонка склада исчезает', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++    allowHttpErrors,
++  }) => {
++    const whName = uniq('SDWS-003 склад');
++    const wh = await adminApi.createWarehouse(whName);
++    const client = await adminApi.createClient({ company_name: uniq('SDWS-003 клиент'), phones: [{ phone: '9990000063', note: '' }] });
++    const columns = (await adminApi.listColumns()).items;
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('SDWS-003 категория товаров') });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('SDWS-003 категория услуг') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('SDWS-003 товар'), stock: 10, min_stock: 0 });
++    await adminApi.adjustStock(product.id, 3, wh.id);
++    const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('SDWS-003 услуга'), price: null, products: [] });
++    // заказ в списывающей колонке забирает со склада весь товар — склад пуст и удаляется.
++    const task = await adminApi.createTask({ title: uniq('SDWS-003 заказ'), client_id: client.id, column_id: columnByName(columns, 'В работе').id });
++    const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id });
++    await adminApi.createSubtaskProduct(subtaskId, { product_id: product.id, qty: 3, warehouse_id: wh.id });
++    await adminApi.softDelete('warehouses', wh.id, uniq('SDWS-003 склад закрыт'));
++    expect((await adminApi.getStock({ scope: 'all', q: product.name })).warehouses.map((w) => w.id), 'пустого удалённого склада в отчёте нет').not.toContain(wh.id);
++    // заказ уходит из списывающей колонки — товар возвращается на удалённый склад.
++    expect((await adminApi.moveTask(task.id, { column_id: columnByName(columns, 'Новые').id })).status).toBe(200);
++    // увеличение остатка на удалённом складе — 409 под полем окна (ожидаемо).
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/stock/${product.id}`) && status === 409);
++
++    // ---- «Остатки»: колонка удалённого склада с бейджем ----
++    const stock = new StockPage(page);
++    await stock.goto();
++    await stock.q.fill(product.name);
++    await expect(stock.row(product.id), 'товар с остатком на удалённом складе виден и в режиме «рисковые»').toBeVisible();
++    await expect(stock.colDeleted(whName)).toHaveText('удалён');
++    await expect(stock.cell(product.id, whName)).toHaveText('3');
++    await expect(stock.cell(product.id, 'Алматы')).toHaveText('10');
++    await expect(stock.row(product.id).getByTestId('stock-cell-total')).toContainText('13');
++    await expect(stock.rowDeleted(product.id), 'сам товар действует').toHaveCount(0);
++
++    // ---- карточка заказа: бейдж «удалён» у склада строки ----
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++    await expect(card.productWarehouseDeleted(subtaskId)).toHaveText('удалён');
++    expect((await adminApi.getCard(task.id)).warehouses.find((w) => w.id === wh.id)?.is_deleted).toBe(true);
++
++    // ---- корректировка на удалённом складе — только списание ----
++    await stock.goto();
++    await stock.q.fill(product.name);
++    await stock.openEdit(product.id);
++    await stock.modalWarehouse.click();
++    await stock.dropdown.locator('.cb-opt', { hasText: whName }).first().click();
++    await expect(stock.value).toHaveValue('3');
++    await stock.submitValue(5);
++    await expect(stock.error).toHaveText('Склад удалён — остаток на нём можно только списать');
++    await expect(stock.form).toBeVisible();
++    await stock.submitValue(0);
++    await expect(stock.form).toBeHidden();
++    await expect(stock.col(whName), 'после списания до нуля колонка удалённого склада исчезла').toHaveCount(0);
++    await expect.poll(async () => (await adminApi.getStock({ scope: 'all', q: product.name })).warehouses.map((w) => w.id)).not.toContain(wh.id);
++  });
++});
+diff --git a/e2e/tests/suppliers.spec.ts b/e2e/tests/suppliers.spec.ts
+index 1b4d166..50e78ff 100644
+--- a/e2e/tests/suppliers.spec.ts
++++ b/e2e/tests/suppliers.spec.ts
+@@ -1,14 +1,17 @@
+ import { test, expect } from '../fixtures/test';
+ import { ShellPage } from '../pages/ShellPage';
+ import { SuppliersPage } from '../pages/SuppliersPage';
++import { DeletedPage } from '../pages/DeletedPage';
+ import { loginContext, type AdminApi, type NewSupplier, type Supplier } from '../fixtures/auth';
+ import type { Page } from '@playwright/test';
+ 
+ // Справочник «Поставщики» (docs/features/suppliers/draft-spec.md §8.1, DS-007/DS-043) —
+ // TS-035: admin заводит, правит, архивирует и возвращает поставщика; дубль названия — под
+ // полем; executor — без пункта меню и с 403; вьюпорт 375×812 без горизонтальной прокрутки.
+-// Общая dev-БД (§TD-6.2): свои поставщики через uniq(); удаления у поставщика нет, поэтому
+-// созданные тестом записи в конце отправляются в архив (не засоряют список по умолчанию).
++// Общая dev-БД (§TD-6.2): свои поставщики через uniq(). Уборка (soft-delete-warehouses-suppliers
++// TS-F11): созданные тестом записи убираются ФИЗИЧЕСКИ служебным адресом purge — purgeAll по
++// префиксу (в том числе заведённые через экран) и autouse partnersCleanup (созданные через
++// adminApi и мягко удалённые тестом); раньше они только архивировались и копились.
+ test.use({ colorScheme: 'light' });
+ 
+ const THEMES = ['light', 'dark'] as const;
+@@ -17,17 +20,14 @@ function csrfToken(page: Page): Promise<string> {
+   return page.locator('meta[name="csrf-token"]').getAttribute('content').then((v) => v ?? '');
+ }
+ 
+-async function archiveAll(adminApi: AdminApi, prefix: string) {
+-  const list = await adminApi.listSuppliers({ q: prefix, isActive: true });
++/** Уборка поставщиков теста по префиксу названия — действующих и архивных (удалённые в список не
++ *  входят: их тест регистрирует в partnersCleanup). Статус уборки читается: 200 — убрано, 404 —
++ *  записи уже нет; 409 «используется» и любой другой статус — console.warn, молча не глотается. */
++async function purgeAll(adminApi: AdminApi, prefix: string) {
++  const list = await adminApi.listSuppliers({ q: prefix });
+   for (const s of list.items) {
+-    await adminApi.updateSupplier(s.id, {
+-      name: s.name,
+-      contact_name: s.contact_name,
+-      phone: s.phone,
+-      address: s.address,
+-      note: s.note,
+-      is_active: false,
+-    });
++    const status = await adminApi.purge('suppliers', s.id);
++    if (status !== 200 && status !== 404) console.warn(`suppliers.spec: уборка поставщика ${s.id} «${s.name}» — статус ${status}`);
+   }
+ }
+ 
+@@ -38,10 +38,11 @@ async function expectNoPageOverflow(sup: SuppliersPage, where: string) {
+ }
+ 
+ test.describe('SUP: справочник «Поставщики»', () => {
+-  test('SUP-001 (TS-035): admin — меню «Поставщики», добавить, открыть, в архив, показать архивные, вернуть из архива', async ({
++  test('SUP-001 (TS-035, TS-045): admin — меню «Поставщики», добавить, открыть, в архив, показать архивные, вернуть из архива, удалить с причиной, восстановить из «Удалённых»', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
++    partnersCleanup,
+   }) => {
+     const prefix = uniq('sup-001');
+     const data: Required<NewSupplier> = {
+@@ -80,6 +81,7 @@ test.describe('SUP: справочник «Поставщики»', () => {
+       await expect(sup.archivedBadge(data.name)).toHaveCount(0);
+       const created = await adminApi.supplierByName(data.name);
+       expect(created).toMatchObject({ ...data, is_active: true } satisfies Partial<Supplier>);
++      partnersCleanup('suppliers', created.id); // заведён через экран; ниже — мягко удаляется
+ 
+       // открыть — форма с сохранёнными значениями, адрес ?id=<uuid>.
+       await sup.openRow(data.name);
+@@ -114,8 +116,31 @@ test.describe('SUP: справочник «Поставщики»', () => {
+       // после выключения toggle действующий поставщик остаётся в списке.
+       await sup.showArchived(false);
+       await expect(sup.row(data.name)).toBeVisible();
++
++      // «Удалить» с причиной (soft-delete-warehouses-suppliers §8.1): окно «Удаление», тост,
++      // поставщика нет в списке — и среди архивных.
++      await sup.openRow(data.name);
++      const reason = `${prefix} создан по ошибке`;
++      await sup.confirmDelete(reason);
++      await expect(sup.toast.last()).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
++      await expect(sup.form).toBeHidden();
++      await expect(sup.row(data.name)).toHaveCount(0);
++      await sup.showArchived(true);
++      await expect(sup.row(data.name)).toHaveCount(0);
++      expect((await adminApi.listSuppliers({ q: data.name })).total, 'удалённого поставщика список не отдаёт').toBe(0);
++
++      // «Удалённые» → «Поставщики» → «Восстановить»: поставщик вернулся действующим, поля не потеряны.
++      const del = new DeletedPage(page);
++      await del.goto(`kind=suppliers&q=${encodeURIComponent(data.name)}`);
++      await expect(del.rowTitle(created.id)).toHaveText(data.name);
++      await expect(del.rowSubtitle(created.id)).toHaveText(data.contact_name);
++      await expect(del.rowReason(created.id)).toHaveText(reason);
++      await del.restore(created.id);
++      await expect(del.toast).toHaveText('Восстановлено');
++      await expect(del.row(created.id)).toHaveCount(0);
++      expect(await adminApi.supplierByName(data.name)).toMatchObject({ ...data, id: created.id, is_active: true } satisfies Partial<Supplier>);
+     } finally {
+-      await archiveAll(adminApi, prefix);
++      await purgeAll(adminApi, prefix);
+     }
+   });
+ 
+@@ -200,7 +225,7 @@ test.describe('SUP: справочник «Поставщики»', () => {
+       await expect(sup.row(existing.name)).toBeVisible();
+       expect((await adminApi.listSuppliers({ q: `${prefix} не сохранится` })).total).toBe(0);
+     } finally {
+-      await archiveAll(adminApi, prefix);
++      await purgeAll(adminApi, prefix);
+     }
+   });
+ 
+@@ -332,7 +357,7 @@ test.describe('SUP: справочник «Поставщики»', () => {
+       await expect(sup.form).toBeHidden();
+       await expect(page).toHaveURL(/\/suppliers$/);
+     } finally {
+-      await archiveAll(adminApi, prefix);
++      await purgeAll(adminApi, prefix);
+     }
+   });
+ 
+@@ -385,7 +410,7 @@ test.describe('SUP: справочник «Поставщики»', () => {
+         await expectNoPageOverflow(sup, `${where}: пустой список`);
+       }
+     } finally {
+-      await archiveAll(adminApi, prefix);
++      await purgeAll(adminApi, prefix);
+     }
+   });
+ 
+@@ -436,7 +461,7 @@ test.describe('SUP: справочник «Поставщики»', () => {
+       await expect(first.row(s.name)).toContainText('Второй');
+     } finally {
+       await other.close();
+-      await archiveAll(adminApi, prefix);
++      await purgeAll(adminApi, prefix);
+     }
+   });
+ });
+diff --git a/e2e/tests/warehouses.spec.ts b/e2e/tests/warehouses.spec.ts
+index 75500ad..764257e 100644
+--- a/e2e/tests/warehouses.spec.ts
++++ b/e2e/tests/warehouses.spec.ts
+@@ -4,11 +4,14 @@ import { BoardPage } from '../pages/BoardPage';
+ import { OrderCardPage } from '../pages/OrderCardPage';
+ import { ShellPage } from '../pages/ShellPage';
+ import { CatalogPage } from '../pages/CatalogPage';
++import { DeletedPage } from '../pages/DeletedPage';
++import { WarehousesPage } from '../pages/WarehousesPage';
+ import type { AdminApi } from '../fixtures/auth';
+ 
+ // Склады — подфаза A (docs/features/warehouses/draft-spec.md DS-001…DS-005, TS-002, TS-003,
+ // TS-005, TS-007, TS-014). Общая dev-БД (§TD-6.2): свои товары/клиенты через uniq()+adminApi;
+-// созданные тестом склады в конце отправляются в архив (не мешают колонкам других спек).
++// созданные тестом склады убираются служебным адресом purge — autouse partnersCleanup
++// (soft-delete-warehouses-suppliers TS-F11; раньше они только архивировались и копились).
+ test.use({ colorScheme: 'light' });
+ 
+ function csrfToken(page: import('@playwright/test').Page): Promise<string> {
+@@ -22,11 +25,12 @@ async function pairStock(adminApi: AdminApi, productName: string, warehouseId: s
+ }
+ 
+ test.describe('WH: справочник складов', () => {
+-  test('WH-001 (TS-002): admin — пункт «Склады», добавить, дубль имени, переименовать, в архив', async ({
++  test('WH-001 (TS-002, TS-045): admin — пункт «Склады», добавить, дубль имени, переименовать, в архив, удалить с причиной, восстановить из «Удалённых»', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+     allowHttpErrors,
++    partnersCleanup,
+   }) => {
+     // дубль имени — форма перерисовывается с 422 (ожидаемо).
+     allowHttpErrors((url, status) => url.endsWith('/warehouses') && status === 422);
+@@ -74,6 +78,30 @@ test.describe('WH: справочник складов', () => {
+ 
+     const w = await adminApi.warehouseByName(renamed);
+     expect(w.is_active).toBe(false);
++    partnersCleanup('warehouses', w.id); // заведён через экран; ниже — мягко удаляется
++
++    // «Удалить» с причиной (soft-delete-warehouses-suppliers §8.1): кнопка — рядом с «Вернуть»,
++    // окно «Удаление», тост, склада нет в списке — и среди архивных.
++    const wh = new WarehousesPage(page);
++    await wh.goto(true);
++    await expect(wh.toggleActive(renamed)).toHaveText('Вернуть');
++    const reason = uniq('WH-001 создан по ошибке');
++    await wh.delete(renamed, reason);
++    await expect(page).toHaveURL(/\/warehouses\?archived=1&flash=deleted$/);
++    await expect(wh.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
++    await expect(wh.row(renamed)).toHaveCount(0);
++    expect((await adminApi.listWarehouses(true)).items.map((x) => x.id), 'удалённого склада список не отдаёт').not.toContain(w.id);
++
++    // «Удалённые» → «Склады» → «Восстановить»: склад вернулся в архив (признак архива прежний).
++    const del = new DeletedPage(page);
++    await del.goto(`kind=warehouses&q=${encodeURIComponent(renamed)}`);
++    await expect(del.rowTitle(w.id)).toHaveText(renamed);
++    await expect(del.rowArchived(w.id)).toHaveText('в архиве');
++    await expect(del.rowReason(w.id)).toHaveText(reason);
++    await del.restore(w.id);
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.row(w.id)).toHaveCount(0);
++    expect(await adminApi.warehouseByName(renamed)).toMatchObject({ id: w.id, is_active: false });
+   });
+ 
+   test('WH-002 (TS-014): executor не видит «Склады» — нет пункта меню, страница и API 403', async ({
+diff --git a/web/ssr/_shared/js/deleted.js b/web/ssr/_shared/js/deleted.js
+index 1b2685f..dcca040 100644
+--- a/web/ssr/_shared/js/deleted.js
++++ b/web/ssr/_shared/js/deleted.js
+@@ -35,6 +35,19 @@
+       notFound: 'Перемещение не найдено',
+       openLink: function (id) { return { href: '/transfers?id=' + encodeURIComponent(id), text: 'Открыть перемещение #' + id }; }
+     },
++    // часть 6 (soft-delete-warehouses-suppliers §8.2): склады и поставщики — перед вкладкой
++    // «Колонки». Запись возвращается с прежним признаком архива; отказ 409 NAME_TAKEN — тост с
++    // текстом сервера, строка остаётся. Своего экрана «Открыть» у удалённой записи нет.
++    {
++      kind: 'warehouses', label: 'Склады', countKey: 'warehouses',
++      restoreUrl: function (id) { return '/api/v1/warehouses/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Склад не найден', confirmText: archivedConfirm
++    },
++    {
++      kind: 'suppliers', label: 'Поставщики', countKey: 'suppliers',
++      restoreUrl: function (id) { return '/api/v1/suppliers/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Поставщик не найден', confirmText: archivedConfirm
++    },
+     {
+       // часть 3 (soft-delete-board-columns §8.2): колонки доски. Восстановленная колонка встаёт
+       // в конец доски — об этом тост; своего экрана у колонки нет (ссылки «Открыть» нет).
+diff --git a/web/ssr/_shared/js/stock.js b/web/ssr/_shared/js/stock.js
+index 55603a0..cecc4e4 100644
+--- a/web/ssr/_shared/js/stock.js
++++ b/web/ssr/_shared/js/stock.js
+@@ -72,13 +72,30 @@
+   }
+ 
+   // ---------- склады: фильтр + колонки ----------
++  // Склады отчёта: активные и — с ненулевым остатком — архивные (is_archived) и мягко удалённые
++  // (is_deleted) с серым бейджем в заголовке колонки (soft-delete-warehouses-suppliers §8.3 п.4,
++  // DS-042, DS-049).
++  function warehouseMark(w) {
++    return w.is_deleted ? 'удалён' : (w.is_archived ? 'в архиве' : '');
++  }
++  function warehouseLabel(w) {
++    var mark = warehouseMark(w);
++    return w.name + (mark ? ' (' + mark + ')' : '');
++  }
++
+   function setWarehouses(list) {
+-    var same = list.length === state.warehouses.length && list.every(function (w, i) { return w.id === state.warehouses[i].id && w.name === state.warehouses[i].name; });
++    var same = list.length === state.warehouses.length && list.every(function (w, i) {
++      var o = state.warehouses[i];
++      return w.id === o.id && w.name === o.name && !!w.is_archived === !!o.is_archived && !!w.is_deleted === !!o.is_deleted;
++    });
+     state.warehouses = list;
+     if (same) return;
++    // склад фильтра ушёл из отчёта (остаток на архивном/удалённом складе списан) — фильтр
++    // сбрасывается, иначе следующий запрос списка получил бы 400 warehouse_id: not_found
++    if (state.warehouseId && !list.some(function (w) { return w.id === state.warehouseId; })) state.warehouseId = '';
+     var sel = $('#stock-warehouse');
+     sel.innerHTML = '<option value="">Все склады</option>' + list.map(function (w) {
+-      return '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>';
++      return '<option value="' + esc(w.id) + '">' + esc(warehouseLabel(w)) + '</option>';
+     }).join('');
+     sel.value = state.warehouseId;
+     if (sel._cbSync) sel._cbSync(); // combobox.js: подпись кнопки — по выбранной опции
+@@ -89,11 +106,37 @@
+       th.setAttribute('data-wh-col', w.id);
+       th.setAttribute('data-testid', 'stock-col-wh');
+       th.textContent = w.name;
++      var mark = warehouseMark(w);
++      if (mark) {
++        var b = document.createElement('span');
++        b.className = 'badge text-bg-secondary ms-1';
++        b.setAttribute('data-testid', w.is_deleted ? 'stock-col-wh-deleted' : 'stock-col-wh-archived');
++        b.textContent = mark;
++        th.appendChild(b);
++      }
+       anchor.parentNode.insertBefore(th, anchor);
+     });
+     anchor.classList.add('d-none');
+   }
+ 
++  // Сброс фильтра «Склад», если на выбранном в нём недействующем (архивном либо удалённом) складе
++  // остаток только что списан до нуля (soft-delete-warehouses-suppliers §8.3: такой склад без
++  // остатка в отчёте и в фильтре не показывается).
++  function dropFilterIfWrittenOff(warehouseId, newStock) {
++    if (newStock !== 0 || state.warehouseId !== warehouseId) return;
++    var w = state.warehouses.filter(function (x) { return x.id === warehouseId; })[0];
++    if (!w || !(w.is_deleted || w.is_archived)) return;
++    dropFilter(warehouseId);
++  }
++  // Снять фильтр «Склад», если в нём выбран warehouseId.
++  function dropFilter(warehouseId) {
++    if (state.warehouseId !== warehouseId) return;
++    state.warehouseId = '';
++    var sel = $('#stock-warehouse');
++    sel.value = '';
++    if (sel._cbSync) sel._cbSync();
++  }
++
+   function cellState(c) {
+     if (Number(c.stock) < 0) return 'stock-out';
+     if (c.state === 'out') return 'stock-out';
+@@ -128,7 +171,9 @@
+       '<tr data-testid="stock-row-' + esc(r.product_id) + '">' +
+       // товар удалён из каталога, но на складе числится его остаток (soft-delete-catalog §8.3
+       // п.5, DS-042) — серый бейдж «удалён» справа от названия; корректировка работает как обычно
+-      '  <td><b>' + esc(r.name) + '</b>' + (r.is_deleted ? ' <span class="badge text-bg-secondary" data-testid="stock-row-deleted">удалён</span>' : '') + '</td>' +
++      '  <td><b>' + esc(r.name) + '</b>' + (r.is_deleted ? ' <span class="badge text-bg-secondary" data-testid="stock-row-deleted">удалён</span>' : '') +
++      // архивный товар с остатком на удалённом складе — серый бейдж «в архиве» (остаток только списывается)
++      (r.is_archived ? ' <span class="badge text-bg-secondary" data-testid="stock-row-archived">в архиве</span>' : '') + '</td>' +
+       '  <td class="d-none d-md-table-cell text-body-secondary small">' + esc(whereabouts) + '</td>' +
+       whCells +
+       '  <td class="' + stockCls + '" data-testid="stock-cell-total">' + esc(String(r.stock)) + ' ' + esc(r.unit) + (Number(r.stock) < 0 ? ' (долг)' : '') + '</td>' +
+@@ -202,13 +247,27 @@
+     state.editingProductId = productId;
+     $('#stock-modal-title').textContent = 'Остаток «' + row.name + '»';
+     var whSel = $('#stock-modal-warehouse');
+-    whSel.innerHTML = state.warehouses.map(function (w) {
+-      return '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>';
+-    }).join('');
+-    whSel.value = state.warehouseId || (state.warehouses[0] && state.warehouses[0].id) || '';
+     var cellOf = function (whId) {
+       return (row.by_warehouse || []).filter(function (c) { return c.warehouse_id === whId; })[0];
+     };
++    var hasStock = function (w) {
++      var c = cellOf(w.id);
++      return !!c && Number(c.stock) !== 0;
++    };
++    // Склады окна (DS-048, DS-049): у удалённого товара — только склады с его ненулевым остатком
++    // (активные, архивные, удалённые): остаток можно только списать. У действующего товара —
++    // активные склады, как раньше, плюс удалённые склады с его остатком (там тоже только списание).
++    var options = state.warehouses.filter(function (w) {
++      if (row.is_deleted) return hasStock(w);
++      // архивный товар в отчёте — только ради остатка на удалённом складе: списать можно лишь его
++      if (row.is_archived) return w.is_deleted && hasStock(w);
++      return (!w.is_archived && !w.is_deleted) || (w.is_deleted && hasStock(w));
++    });
++    whSel.innerHTML = options.map(function (w) {
++      return '<option value="' + esc(w.id) + '">' + esc(warehouseLabel(w)) + '</option>';
++    }).join('');
++    var preferred = options.some(function (w) { return w.id === state.warehouseId; }) ? state.warehouseId : '';
++    whSel.value = preferred || (options[0] && options[0].id) || '';
+     var syncValue = function () {
+       var c = cellOf(whSel.value);
+       $('#stock-value').value = c ? c.stock : 0;
+@@ -245,9 +304,14 @@
+       stockSaving = true;
+       $('#stock-save-btn').disabled = true;
+ 
+-      KT.api.put('/api/v1/stock/' + state.editingProductId, { stock: n, warehouse_id: $('#stock-modal-warehouse').value })
++      var editedWarehouseId = $('#stock-modal-warehouse').value;
++      KT.api.put('/api/v1/stock/' + state.editingProductId, { stock: n, warehouse_id: editedWarehouseId })
+         .then(function () {
+           stockModal.hide();
++          // остаток на архивном либо удалённом складе списан до нуля, а этот склад выбран в
++          // фильтре: склад мог уйти из отчёта, и запрос списка с ним получил бы 400
++          // warehouse_id: not_found — фильтр сбрасывается ДО перезагрузки
++          dropFilterIfWrittenOff(editedWarehouseId, n);
+           // строка могла выйти из scope=risky (перестала быть рисковой) или наоборот —
+           // проще перезагрузить и таблицу, и KPI, чем патчить локально.
+           return reloadAll();
+@@ -258,6 +322,15 @@
+         .catch(function (err) {
+           stockSaving = false;
+           $('#stock-save-btn').disabled = false;
++          // остаток на удалённом складе уже нулевой — склада для корректировки больше нет
++          // (soft-delete-warehouses-suppliers §8.3): тост, окно закрывается, отчёт перечитывается
++          if (err && err.fields && err.fields.some(function (f) { return f.name === 'warehouse_id' && f.message === 'not_found'; })) {
++            stockModal.hide();
++            KT.uiToast('Склад не найден', true);
++            dropFilter(editedWarehouseId); // склада в отчёте больше нет — и в фильтре тоже
++            reloadAll();
++            return;
++          }
+           if (err && err.fields && err.fields.length) {
+             showError(err.fields.map(function (f) { return f.message; }).join('; '));
+             return;
+diff --git a/web/ssr/_shared/js/suppliers.js b/web/ssr/_shared/js/suppliers.js
+index fa8f0f8..16c0b4e 100644
+--- a/web/ssr/_shared/js/suppliers.js
++++ b/web/ssr/_shared/js/suppliers.js
+@@ -146,7 +146,7 @@
+ 
+   function setBusy(busy) {
+     state.busy = busy;
+-    ['#sup-save', '#sup-toggle-active', '#sup-cancel'].forEach(function (sel) { $(sel).disabled = busy; });
++    ['#sup-save', '#sup-toggle-active', '#sup-cancel', '#sup-delete'].forEach(function (sel) { $(sel).disabled = busy; });
+   }
+ 
+   function openForm(supplier) {
+@@ -161,6 +161,7 @@
+     $('#sup-form-title').textContent = supplier ? 'Поставщик' : 'Новый поставщик';
+     var toggle = $('#sup-toggle-active');
+     toggle.classList.toggle('d-none', !supplier);
++    $('#sup-delete').classList.toggle('d-none', !supplier);
+     if (supplier) toggle.textContent = supplier.is_active ? 'В архив' : 'Вернуть из архива';
+     $('#sup-archived-note').classList.toggle('d-none', !supplier || supplier.is_active);
+     $('#sup-form-col').classList.remove('d-none');
+@@ -235,6 +236,36 @@
+     mutate(function () { return KT.api.put(API + '/' + encodeURIComponent(cur.id), body); });
+   }
+ 
++  // «Удалить» (soft-delete-warehouses-suppliers §8.1): общее окно «Удаление» с обязательной
++  // причиной; DELETE /api/v1/suppliers/:id {reason}. 400 по причине — под полем окна, окно
++  // остаётся; 404 — тост, форма закрывается, список перезапрашивается; 403 — тост «Нет доступа».
++  function removeSupplier() {
++    var cur = state.current;
++    if (!cur || state.busy) return;
++    KT.uiDeleteDialog({
++      title: 'Удалить «' + cur.name + '»?',
++      text: 'Документы поставщика останутся с пометкой «удалён». Поставщика можно восстановить в разделе «Удалённые»',
++      submit: function (reason) { return KT.api.delWith(API + '/' + encodeURIComponent(cur.id), { reason: reason }); },
++      onOffline: function () { toast('Нет связи с сервером', true); }
++    }).then(function (out) {
++      if (!out) return; // отмена
++      if (out.error) {
++        var err = out.error;
++        if (err.status === 404) {
++          toast('Поставщик не найден', true);
++          closeForm();
++          loadList();
++          return;
++        }
++        toast(err.status === 403 ? 'Нет доступа' : (err.message || 'Не удалось удалить поставщика'), true);
++        return;
++      }
++      closeForm();
++      toast('Удалено. Восстановить можно в разделе «Удалённые»', false);
++      loadList();
++    });
++  }
++
+   // Поиск поставщика по id в общем списке без фильтров (отдельного GET /:id у API нет, §6):
+   // страницы по LOOKUP_LIMIT листаются, пока запись не найдена и offset < total.
+   // fetchPage(offset) → Promise<{items,total}>; результат — запись либо null.
+@@ -292,6 +323,7 @@
+     $('#sup-empty-add').addEventListener('click', function () { openForm(null); });
+     $('#sup-cancel').addEventListener('click', closeForm);
+     $('#sup-toggle-active').addEventListener('click', toggleActive);
++    $('#sup-delete').addEventListener('click', removeSupplier);
+     $('#sup-form').addEventListener('submit', function (e) { e.preventDefault(); save(); });
+ 
+     $('#sup-tbody').addEventListener('click', function (e) {
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index f452de6..8c80e3a 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -139,12 +139,44 @@
+   // карточку; 400 с полями → показать текст у поля (card-warning), если у строки есть такой
+   // слот, иначе (409/403/прочее) — общий KT.uiAlert + перечитать карточку (откат к серверным
+   // значениям).
++  // fieldErrorText — текст ошибки поля строки: склад строки удалён, пока карточка открыта
++  // (soft-delete-warehouses-suppliers §8.3) — «Склад не найден»; прочие — код сервера, как раньше.
++  function fieldErrorText(f) {
++    return f.name === 'warehouse_id' && f.message === 'not_found' ? 'Склад не найден' : f.message;
++  }
++
++  // currentProductQty — количество строки товара по последнему состоянию сервера (key —
++  // reqKeyProduct); null — строки в карточке нет.
++  function currentProductQty(key) {
++    var id = String(key).replace(/^product:/, '');
++    var found = null;
++    ((card && card.subtasks) || []).forEach(function (sub) {
++      (sub.products || []).forEach(function (p) { if (p.id === id) found = p.qty; });
++    });
++    return found;
++  }
++
+   function onRowError(key, err) {
+     var code = err && err.code;
+     if (code === 'SUBTASK_NOT_FOUND' || code === 'SUBTASK_PRODUCT_NOT_FOUND' || code === 'SUBTASK_LOG_NOT_FOUND' || code === 'TASK_EQUIPMENT_NOT_FOUND') {
+       KT.uiAlert('Строка уже удалена', 'Не удалось сохранить').then(function () { loadCard(taskId); });
+       return;
+     }
++    // количество в строке, склад которой удалён, увеличить нельзя (409 WAREHOUSE_DELETED) — текст
++    // отказа у самой строки; значения откатываются к серверным без перерисовки по таймеру
++    if (code === 'WAREHOUSE_DELETED') {
++      var whRow = document.querySelector('[data-row-key="' + cssesc(key) + '"]');
++      var whTr = whRow && whRow.closest ? whRow.closest('[data-testid="card-product-row"]') : null;
++      var whWarn = whTr && whTr.querySelector('[data-testid="card-warning"]');
++      if (whWarn) {
++        whWarn.textContent = err.message || 'Склад строки удалён — выберите другой склад';
++        whWarn.classList.remove('d-none');
++        var qtyEl = whTr.querySelector('[data-field="qty"]');
++        var srv = currentProductQty(key);
++        if (qtyEl && srv != null) qtyEl.value = srv;
++        return;
++      }
++    }
+     if (err && err.status === 400 && err.fields && err.fields.length) {
+       var rowEl = document.querySelector('[data-row-key="' + cssesc(key) + '"]');
+       // key вида "subtask:X" — rowEl это ВСЯ карточка услуги (со вложенными товарами):
+@@ -153,14 +185,14 @@
+       var warnSelector = key.indexOf('subtask:') === 0 ? '[data-testid="card-subtask-warning"]' : '[data-testid="card-warning"]';
+       var warn = rowEl && rowEl.querySelector(warnSelector);
+       if (warn) {
+-        warn.textContent = err.fields.map(function (f) { return f.message; }).join('; ');
++        warn.textContent = err.fields.map(fieldErrorText).join('; ');
+         warn.classList.remove('d-none');
+         loadCard(taskId); // откат значений к последнему состоянию сервера
+         return;
+       }
+     }
+     if (err && err.fields && err.fields.length) {
+-      KT.uiAlert(err.fields.map(function (f) { return f.message; }).join('; '), 'Не удалось сохранить').then(function () { loadCard(taskId); });
++      KT.uiAlert(err.fields.map(fieldErrorText).join('; '), 'Не удалось сохранить').then(function () { loadCard(taskId); });
+       return;
+     }
+     KT.uiAlert((err && err.message) || 'Не удалось сохранить изменение', 'Ошибка').then(function () { loadCard(taskId); });
+@@ -902,9 +934,15 @@
+         '  <td style="max-width:100px"><input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + pkey + '" data-testid="card-product-price" value="' + (p.price == null ? '' : esc(p.price)) + '"></td>' +
+         '  <td style="min-width:110px"><select class="form-select form-select-sm" data-field="warehouse_id" data-row-key="' + pkey + '" data-testid="card-product-warehouse" aria-label="Склад">' +
+              (card.warehouses || []).map(function (w) {
+-               return '<option value="' + esc(w.id) + '"' + (w.id === p.warehouse_id ? ' selected' : '') + (!w.is_active && w.id !== p.warehouse_id ? ' disabled' : '') + '>' + esc(w.name) + (w.is_active ? '' : ' (архив)') + '</option>';
++               // мягко удалённый склад (soft-delete-warehouses-suppliers §8.3 п.3) — только как уже
++               // выбранный склад строки; в выбор для другой строки не попадает
++               var off = (w.is_deleted || !w.is_active) && w.id !== p.warehouse_id;
++               return '<option value="' + esc(w.id) + '"' + (w.id === p.warehouse_id ? ' selected' : '') + (off ? ' disabled' : '') + '>' + esc(w.name) + (w.is_deleted ? ' (удалён)' : (w.is_active ? '' : ' (архив)')) + '</option>';
+              }).join('') +
+-        '  </select></td>' +
++        '  </select>' +
++             ((card.warehouses || []).some(function (w) { return w.id === p.warehouse_id && w.is_deleted; })
++               ? ' <span class="badge text-bg-secondary" data-testid="card-product-warehouse-deleted">удалён</span>' : '') +
++        '</td>' +
+         '  <td class="small text-body-secondary" data-testid="card-product-hint">' + esc(stockHint(p.product_id, p.warehouse_id)) + '</td>' +
+         '  <td data-testid="card-subtask-product-total">' + money(p.line_total) + '</td>' +
+         '  <td><button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-product-delete" data-product-row-id="' + esc(p.id) + '">×</button></td>' +
+diff --git a/web/ssr/_shared/js/transfers.js b/web/ssr/_shared/js/transfers.js
+index 9ee4992..dbbe559 100644
+--- a/web/ssr/_shared/js/transfers.js
++++ b/web/ssr/_shared/js/transfers.js
+@@ -85,11 +85,13 @@
+   // Тексты ошибок полей (§6.2, §6.4, §6.6): по имени поля, затем по коду.
+   var WAREHOUSE_TEXT = {
+     same_warehouse: 'Склады должны различаться',
++    not_found: 'Склад не найден',
+     not_allowed: 'Этот склад не указывается для выбранного направления'
+   };
+   var TASK_TEXT = { not_allowed: 'Заказ указывается только для документов с клиентом' };
+   var SUPPLIER_TEXT = {
+     archived: 'Поставщик в архиве',
++    not_found: 'Поставщик не найден',
+     not_allowed: 'Поставщик указывается только для прихода от поставщика'
+   };
+   // Тексты строки по паре «поле: код» (§6.2) — приоритетнее общих ROW_TEXT.
+@@ -359,12 +361,14 @@
+     return '<span class="badge ' + s.cls + '" data-testid="st-status-badge" data-status="' + esc(status) + '">' + esc(s.label) + '</span>';
+   }
+ 
+-  // routeText — маршрут: «Клиент → Алматы», «Алматы → Клиент», «Алматы → Москва»,
+-  // «Поставщик → Алматы».
+-  function routeText(t) {
++  // routeHtml — маршрут строки списка: «Клиент → Алматы», «Алматы → Клиент», «Алматы → Москва»,
++  // «Поставщик → Алматы» — с серыми бейджами «удалён» у мягко удалённых складов
++  // (soft-delete-warehouses-suppliers §8.3 п.1): склад отправления / назначения.
++  function routeHtml(t) {
+     var d = dirOf(t);
+-    var from = d.from ? (t.from_warehouse_name || '') : (d.supplier ? 'Поставщик' : 'Клиент');
+-    var to = d.to ? (t.to_warehouse_name || '') : 'Клиент';
++    var from = d.from ? esc(t.from_warehouse_name || '') + (t.from_warehouse_is_deleted ? ' ' + deletedBadge('st-row-from-deleted') : '')
++      : (d.supplier ? 'Поставщик' : 'Клиент');
++    var to = d.to ? esc(t.to_warehouse_name || '') + (t.to_warehouse_is_deleted ? ' ' + deletedBadge('st-row-to-deleted') : '') : 'Клиент';
+     return from + ' → ' + to;
+   }
+ 
+@@ -395,7 +399,7 @@
+       return '<button type="button" class="list-group-item list-group-item-action' + (active ? ' active' : '') + '"' +
+         ' data-testid="st-row" data-id="' + esc(t.id) + '" data-direction="' + esc(t.direction) + '"' + (active ? ' aria-current="true"' : '') + '>' +
+         '<div class="d-flex justify-content-between align-items-center gap-2">' +
+-        '<span class="fw-semibold text-break" data-testid="st-row-route">#' + esc(t.id) + ' · ' + esc(routeText(t)) + '</span>' +
++        '<span class="fw-semibold text-break" data-testid="st-row-route">#' + esc(t.id) + ' · ' + routeHtml(t) + '</span>' +
+         '<span class="d-flex flex-wrap justify-content-end align-items-center gap-1">' + directionBadge(t) + badge(t.status) +
+         // документ, возвращённый откатом в «В пути» (transfers-revert §8.1 п.3)
+         (t.status === 'in_transit' && t.unreceived_at ? '<span data-testid="st-row-unreceived" title="Проведение отменено" aria-label="Проведение отменено">↩</span>' : '') +
+@@ -403,6 +407,8 @@
+         (party ? '<div class="small text-break" data-testid="st-row-party">' + esc(party) +
+           // документ мягко удалённого заказа (soft-delete-transfers §8.1 п.1)
+           (t.client_is_deleted ? ' ' + deletedBadge('st-row-client-deleted') : '') +
++          // поставщик документа мягко удалён (soft-delete-warehouses-suppliers §8.3 п.1)
++          (t.supplier_is_deleted ? ' ' + deletedBadge('st-row-supplier-deleted') : '') +
+           (t.task_is_deleted ? ' ' + taskDeletedBadge('st-row-task-deleted') : '') + '</div>' : '') +
+         // сумма накладной — справа под маршрутом, только у «возврата клиенту» с товарами (§8.1 п.1)
+         (dirOf(t).priced && Number(t.amount) > 0 ? '<div class="small fw-semibold text-end" data-testid="st-row-amount">' + esc(money(t.amount)) + '</div>' : '') +
+@@ -435,8 +441,10 @@
+   function supplierOptions(selected) {
+     var list = state.suppliers.slice();
+     if (selected && !list.some(function (sp) { return sp.id === selected; })) {
+-      // поставщик заявки ушёл в архив — показать его, чтобы не потерять значение (TS-020)
+-      list.push({ id: selected, name: ((state.current || {}).supplier_name || selected) + ' (архив)' });
++      // поставщик заявки ушёл в архив либо удалён — показать его, чтобы не потерять значение
++      // (TS-020; удалённый поставщик не мешает довести начатый документ, DS-047)
++      var curDoc = state.current || {};
++      list.push({ id: selected, name: (curDoc.supplier_name || selected) + (curDoc.supplier_is_deleted ? ' (удалён)' : ' (архив)') });
+     }
+     return '<option value="">— выберите поставщика —</option>' + list.map(function (sp) {
+       return '<option value="' + esc(sp.id) + '"' + (sp.id === selected ? ' selected' : '') + '>' + esc(sp.name) + '</option>';
+@@ -688,9 +696,12 @@
+     var showFact = t.status === 'received' && !d.task;
+     var html = directionHTML(t) + '<dl class="row mb-2">' +
+       (d.task ? '<dt class="col-sm-4">Заказ</dt><dd class="col-sm-8 text-break" data-testid="st-view-task">' + taskLinkHTML(t) + '</dd>' : '') +
+-      (d.supplier ? '<dt class="col-sm-4">Поставщик</dt><dd class="col-sm-8 text-break" data-testid="st-view-supplier">' + esc(t.supplier_name || '') + '</dd>' : '') +
+-      (d.from ? '<dt class="col-sm-4">Склад отправления</dt><dd class="col-sm-8" data-testid="st-view-from">' + esc(t.from_warehouse_name || '') + '</dd>' : '') +
+-      (d.to ? '<dt class="col-sm-4">Склад назначения</dt><dd class="col-sm-8" data-testid="st-view-to">' + esc(t.to_warehouse_name || '') + '</dd>' : '') +
++      (d.supplier ? '<dt class="col-sm-4">Поставщик</dt><dd class="col-sm-8 text-break" data-testid="st-view-supplier">' + esc(t.supplier_name || '') +
++        (t.supplier_is_deleted ? ' ' + deletedBadge('st-view-supplier-deleted') : '') + '</dd>' : '') +
++      (d.from ? '<dt class="col-sm-4">Склад отправления</dt><dd class="col-sm-8" data-testid="st-view-from">' + esc(t.from_warehouse_name || '') +
++        (t.from_warehouse_is_deleted ? ' ' + deletedBadge('st-view-from-deleted') : '') + '</dd>' : '') +
++      (d.to ? '<dt class="col-sm-4">Склад назначения</dt><dd class="col-sm-8" data-testid="st-view-to">' + esc(t.to_warehouse_name || '') +
++        (t.to_warehouse_is_deleted ? ' ' + deletedBadge('st-view-to-deleted') : '') + '</dd>' : '') +
+       (t.note ? '<dt class="col-sm-4">Примечание</dt><dd class="col-sm-8 text-break" data-testid="st-view-note">' + esc(t.note) + '</dd>' : '') +
+       '</dl>' +
+       '<div class="table-responsive"><table class="table table-sm align-middle" data-testid="st-items">' +
+diff --git a/web/ssr/suppliers/templates/pages/list.html b/web/ssr/suppliers/templates/pages/list.html
+index 504e6b4..4232f21 100644
+--- a/web/ssr/suppliers/templates/pages/list.html
++++ b/web/ssr/suppliers/templates/pages/list.html
+@@ -56,6 +56,7 @@
+           <div class="invalid-feedback" data-error-for="note" data-testid="error-note"></div>
+         </div>
+         <div class="d-flex flex-wrap justify-content-end gap-2">
++          <button type="button" class="btn btn-outline-secondary text-danger me-auto d-none" id="sup-delete" data-testid="supplier-delete">Удалить</button>
+           <button type="button" class="btn btn-outline-secondary" id="sup-cancel" data-testid="supplier-cancel">Отмена</button>
+           <button type="button" class="btn btn-outline-secondary d-none" id="sup-toggle-active" data-testid="supplier-toggle-active">В архив</button>
+           <button type="submit" class="btn btn-primary" id="sup-save" data-testid="supplier-save">Сохранить</button>
+diff --git a/web/ssr/warehouses/templates/pages/list.html b/web/ssr/warehouses/templates/pages/list.html
+index 5d5eb7b..4fd81ca 100644
+--- a/web/ssr/warehouses/templates/pages/list.html
++++ b/web/ssr/warehouses/templates/pages/list.html
+@@ -1,5 +1,6 @@
+ {{ define "content" }}
+ {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
+ {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="list-error">{{ .Error }}</div>{{ end }}
+ <form class="d-flex flex-wrap align-items-start gap-2 mb-3" method="post" action="/warehouses" data-testid="warehouse-create-form" novalidate>
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+@@ -33,6 +34,15 @@
+           {{ if $.Archived }}<input type="hidden" name="archived" value="1">{{ end }}
+           <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="warehouse-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
+         </form>
++        <form method="post" action="/warehouses/{{ .ID }}/delete" class="d-inline" data-testid="warehouse-delete-form" data-delete-dialog
++              data-delete-title="Удалить «{{ .Name }}»?"
++              data-delete-text="Удалить можно только пустой склад: без товара, оборудования и незавершённых перемещений. Чтобы только скрыть склад из выбора, используйте «В архив»"
++              {{ if eq $.Delete.ID .ID }}data-delete-error="{{ $.Delete.Error }}"{{ end }}>
++          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++          {{ if $.Archived }}<input type="hidden" name="archived" value="1">{{ end }}
++          <input type="hidden" name="reason" value="{{ if eq $.Delete.ID .ID }}{{ $.Delete.Reason }}{{ end }}">
++          <button type="submit" class="btn btn-sm btn-outline-secondary text-danger" data-testid="warehouse-delete">Удалить</button>
++        </form>
+       </td>
+     </tr>
+   {{ end }}
+@@ -42,5 +52,5 @@
+ {{ else }}
+ <div class="empty-state" data-testid="warehouses-empty">Складов нет.</div>
+ {{ end }}
+-<p class="text-body-secondary small mt-3">Остатки товаров ведутся по каждому складу. Архивный склад не предлагается в новых строках, его остатки сохраняются.</p>
++<p class="text-body-secondary small mt-3">Остатки товаров ведутся по каждому складу. Архивный склад не предлагается в новых строках, его остатки сохраняются. Удалить можно только пустой склад — его можно восстановить в разделе «Удалённые».</p>
+ {{ end }}

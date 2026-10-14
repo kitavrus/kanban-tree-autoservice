@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/contract_check.py --feature attachment-orphan-gc --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/jovial-babbage-3d79d4 --go internal/features/board
+(exit 0)
+
+contract attachment-orphan-gc: SKIP (нет /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/jovial-babbage-3d79d4/frontend/src/features/attachment-orphan-gc — frontend ещё не создан)

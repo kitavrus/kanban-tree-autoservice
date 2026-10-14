@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 430" width="680" height="430" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="430" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="423.5" lengthAdjust="spacingAndGlyphs">Сценарий: перевозка оборудования клиента между складами</text>
+<rect x="2" y="40" width="176" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="11.5" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="82.2" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<path d="M90,70 L90,405" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="212" y="40" width="176" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="11.5" fill="#334155" text-anchor="middle" font-weight="bold" textLength="164.5" lengthAdjust="spacingAndGlyphs">Экран «Перемещения» (§8.1)</text>
+<path d="M300,70 L300,405" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="452" y="40" width="176" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="11.5" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="50.6" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,405" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="259.9" lengthAdjust="spacingAndGlyphs">«Новое перемещение», склады, «+ Оборудование»</text>
+<path d="M300,126 L540,126" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="120" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="231.0" lengthAdjust="spacingAndGlyphs">GET /api/v1/equipment?warehouse_id=…&amp;q=…</text>
+<path d="M540,152 L300,152" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="146" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">200 {items,total,limit,offset}</text>
+<path d="M90,178 L300,178" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="172" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="63.5" lengthAdjust="spacingAndGlyphs">«Отправить»</text>
+<path d="M300,204 L540,204" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="198" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="254.1" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers {…, items, send:true}</text>
+<path d="M540,230 L300,230" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="224" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">201 {id:15, status:"in_transit"}</text>
+<path d="M90,256 L300,256" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="250" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="150.2" lengthAdjust="spacingAndGlyphs">«Принять» → модалка «Факт»</text>
+<path d="M300,282 L540,282" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="276" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="288.8" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/15/receive {version, items}</text>
+<path d="M540,308 L300,308" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="302" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="132.8" lengthAdjust="spacingAndGlyphs">200 {status:"received"}</text>
+<path d="M300,334 L90,334" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="195.0" y="328" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="213.7" lengthAdjust="spacingAndGlyphs">в карточке заказа: «на складе Москва»</text>
+<path d="M300,360 L540,360" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="354" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="219.5" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers (та же единица)</text>
+<path d="M540,386 L300,386" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="380" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="225.2" lengthAdjust="spacingAndGlyphs">409 EQUIPMENT_IN_TRANSFER {transfer_id}</text>
+<text x="340" y="420" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветка</text>
+</svg>

@@ -1,0 +1,19 @@
+{"type": "stage_start", "stage": "light-exec", "ts": "2026-09-27T16:27:48+05:00"}
+{"type": "stage_end", "stage": "light-exec", "status": "ok", "ts": "2026-09-27T17:01:13+05:00"}
+{"type": "stage_start", "stage": "light-judge", "ts": "2026-09-27T17:01:13+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 3664, "checkers": {"pass": 5, "fail": 0, "skip": 4}, "patches_bytes": 117638, "ts": "2026-09-27T17:01:44+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.3, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.0}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.0}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-27T17:01:44+05:00"}
+{"type": "event_start", "stage": "light-judge", "label": "integration-full", "kind": "other", "ts": "2026-09-27T17:01:54+05:00"}
+{"type": "event_end", "stage": "light-judge", "label": "integration-full", "status": "ok", "ts": "2026-09-27T17:02:44+05:00"}
+{"type": "event_start", "stage": "light-judge", "label": "e2e-run", "kind": "other", "ts": "2026-09-27T17:02:54+05:00"}
+{"type": "event_end", "stage": "light-judge", "label": "e2e-run", "status": "ok", "ts": "2026-09-27T17:06:02+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 4286, "checkers": {"pass": 9, "fail": 0, "skip": 0}, "patches_bytes": 118815, "ts": "2026-09-27T17:13:14+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.4, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.0}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-27T17:13:14+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-27T17:13:22+05:00"}
+{"type": "stage_end", "stage": "light-judge", "status": "ok", "ts": "2026-09-27T17:13:22+05:00"}
+{"type": "stage_start", "stage": "light-review", "ts": "2026-09-27T17:13:22+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 4582, "checkers": {"pass": 9, "fail": 0, "skip": 0}, "patches_bytes": 127448, "ts": "2026-09-27T17:29:01+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.4, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.0}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-27T17:29:01+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-27T17:29:08+05:00"}
+{"type": "stage_end", "stage": "light-review", "status": "ok", "ts": "2026-09-27T17:30:23+05:00"}
+{"type": "tool", "tool": "review_verdict_check", "status": "PASS", "total_s": 0, "steps": [{"name": "verdict:APPROVED", "s": 0}], "ts": "2026-09-27T17:30:46+05:00"}

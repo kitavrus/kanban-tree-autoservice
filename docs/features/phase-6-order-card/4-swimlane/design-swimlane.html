@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Swimlane: Карточка заказа (фаза 6)</title>
+    <style>
+        :root {
+            --color-gray: #6b7280;
+            --color-blue: #3b82f6;
+            --color-purple: #8b5cf6;
+            --color-teal: #14b8a6;
+            --color-amber: #f59e0b;
+            --bg-light: #f9fafb;
+            --border: #e5e7eb;
+            --text: #1f2937;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --color-gray: #d1d5db;
+                --color-blue: #60a5fa;
+                --color-purple: #a78bfa;
+                --color-teal: #2dd4bf;
+                --color-amber: #fbbf24;
+                --bg-light: #1f2937;
+                --border: #374151;
+                --text: #f3f4f6;
+            }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: white;
+            color: var(--text);
+            padding: 40px 20px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #111827;
+            }
+        }
+
+        .container { max-width: 1600px; margin: 0 auto; }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        .subtitle { color: var(--color-gray); font-size: 14px; margin-bottom: 24px; }
+
+        .goals {
+            background: var(--bg-light);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 32px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .swimlane-grid {
+            display: grid;
+            grid-template-columns: 160px repeat(5, 1fr);
+            gap: 0;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            background: white;
+            margin-bottom: 32px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .swimlane-grid {
+                background: #1f2937;
+            }
+        }
+
+        .lane-corner {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+        }
+
+        .phase-header {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .lane-name {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+        }
+
+        .lane-row-last .lane-name {
+            border-bottom: none;
+        }
+
+        .cell {
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-size: 12px;
+            line-height: 1.5;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            background: white;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .cell {
+                background: #111827;
+            }
+        }
+
+        .lane-row-last .cell {
+            border-bottom: none;
+        }
+
+        .cell-content {
+            padding: 8px;
+            border-radius: 4px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-weight: 500;
+            word-wrap: break-word;
+        }
+
+        .cell-gray { background: var(--color-gray); }
+        .cell-blue { background: var(--color-blue); }
+        .cell-purple { background: var(--color-purple); }
+        .cell-teal { background: var(--color-teal); }
+        .cell-amber { background: var(--color-amber); }
+        .cell-empty { background: transparent; }
+
+        .flows-section {
+            margin-top: 32px;
+            padding: 24px;
+            background: var(--bg-light);
+            border-radius: 6px;
+        }
+
+        .flows-section h2 { font-size: 16px; margin-bottom: 16px; }
+
+        .flow-item {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .flow-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .flow-title {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 8px;
+            color: var(--text);
+        }
+
+        .flow-meta {
+            font-size: 12px;
+            color: var(--color-gray);
+            margin-bottom: 8px;
+        }
+
+        .flow-section {
+            margin-bottom: 12px;
+        }
+
+        .flow-section-title {
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 4px;
+            color: var(--text);
+        }
+
+        .flow-items {
+            font-size: 12px;
+            line-height: 1.6;
+            padding-left: 16px;
+        }
+
+        .flow-items li {
+            margin-bottom: 4px;
+        }
+
+        svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .swimlane-wrapper {
+            position: relative;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Swimlane: Карточка заказа (фаза 6)</h1>
+        <p class="subtitle">Взаимодействие ролей при открытии, редактировании и печати карточки. Роль × 5 фаз работы.</p>
+
+        <div class="goals">
+            <strong>Цели:</strong> Пользователь работает с полной карточкой заказа: редактирует шапку (название, описание, клиента, ответственного, сроки, статус оплаты); управляет оборудованием; добавляет услуги и товары из каталога; журналирует работу; печатает акты приёма/выдачи. Система синхронизирует остатки склада при правке списывающей колонки (Reconcile).
+        </div>
+
+        <div class="swimlane-wrapper">
+            <div class="swimlane-grid">
+                <div class="lane-corner"></div>
+                <div class="phase-header">Открытие</div>
+                <div class="phase-header">Редактор шапки</div>
+                <div class="phase-header">Управление составом</div>
+                <div class="phase-header">Журнал работ</div>
+                <div class="phase-header">Печать</div>
+
+                <div class="lane-name">Браузер</div>
+                <div class="cell"><div class="cell-content cell-blue">?task=N<br/>Parse params</div></div>
+                <div class="cell"><div class="cell-content cell-blue">PUT header<br/>version check</div></div>
+                <div class="cell"><div class="cell-content cell-blue">POST/PUT/DEL строки<br/>очередь на строку (ADR-105)</div></div>
+                <div class="cell"><div class="cell-content cell-blue">POST/PUT/DEL<br/>logs</div></div>
+                <div class="cell"><div class="cell-content cell-blue">GET print/:kind<br/>render HTML</div></div>
+
+                <div class="lane-name">Сервер</div>
+                <div class="cell"><div class="cell-content cell-purple">GET /tasks/:id/card<br/>Card()</div></div>
+                <div class="cell"><div class="cell-content cell-purple">Validate version<br/>LockTask</div></div>
+                <div class="cell"><div class="cell-content cell-purple">Lock rows<br/>Reconcile</div></div>
+                <div class="cell"><div class="cell-content cell-purple">Owner check<br/>автор | admin</div></div>
+                <div class="cell"><div class="cell-content cell-purple">Card (print)<br/>PrintData()</div></div>
+
+                <div class="lane-name">PostgreSQL</div>
+                <div class="cell"><div class="cell-content cell-teal">SELECT tasks,<br/>subtasks,<br/>products</div></div>
+                <div class="cell"><div class="cell-content cell-teal">columns FOR SHARE → tasks FOR UPDATE<br/>version+1</div></div>
+                <div class="cell"><div class="cell-content cell-teal">subtasks/subtask_products<br/>+ products.stock, stock_movements</div></div>
+                <div class="cell"><div class="cell-content cell-teal">INSERT/UPDATE<br/>subtask_logs</div></div>
+                <div class="cell"><div class="cell-content cell-teal">Card Queries<br/>+ Print Header (client_phones)</div></div>
+
+                <div class="lane-name lane-row-last">HTTP/errors</div>
+                <div class="cell lane-row-last"><div class="cell-content cell-amber">404 TASK_NOT_FOUND</div></div>
+                <div class="cell lane-row-last"><div class="cell-content cell-amber">409 TASK_VERSION_CONFLICT<br/>403 PAID_ADMIN_ONLY</div></div>
+                <div class="cell lane-row-last"><div class="cell-content cell-amber">409 SUBTASK_FINAL_COLUMN<br/>409 TASK_EQUIPMENT_IN_USE</div></div>
+                <div class="cell lane-row-last"><div class="cell-content cell-amber">403 SUBTASK_LOG_FORBIDDEN<br/>404 SUBTASK_LOG_NOT_FOUND</div></div>
+                <div class="cell lane-row-last"><div class="cell-content cell-amber">404-страница (kind/заказ)<br/>no-store</div></div>
+            </div>
+        </div>
+
+        <div class="flows-section">
+            <h2>Потоки данных и ошибки</h2>
+
+            <div class="flow-item">
+                <div class="flow-title">1. Открытие карточки (AC-001)</div>
+                <div class="flow-meta">Deep-link ?task=N → GET /api/v1/tasks/:id/card</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Данные</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>Request:</strong> GET /api/v1/tasks/:id/card</li>
+                            <li><strong>Response:</strong> OrderCardResponse (7 подзапросов, без N+1)</li>
+                            <li><strong>Поля:</strong> task (TaskResponse: TaskCard + description_html, paid_at, created_at, updated_at; в т.ч. total_amount, last_log, version), column {id, name, is_final, consumes_stock}, equipment[] {equipment_id, type_name, brand, model, serial, completeness, condition, history[] {task_id, title, created_at}}, subtasks[] {…, products[], logs[] {…, can_edit}}, stock[] {product_id, stock, min_stock, task_reserved}</li>
+                            <li><strong>Ошибки:</strong> 404 TASK_NOT_FOUND, 401 UNAUTHORIZED</li>
+                            <li>См. полный список полей в design-go-layers.md</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">2. Сохранение шапки (AC-002, AC-003)</div>
+                <div class="flow-meta">PUT /api/v1/tasks/:id → обновление шапки заказа</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Данные</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>Request:</strong> TaskUpdateRequest (title, description, client_id, column_id, assignee_id, due_date, is_paid, version)</li>
+                            <li><strong>Response:</strong> 200 TaskMutationResponse {task, warnings} (as-is фазы 5, re-fetch-after-write) → клиент делает GET /api/v1/tasks/:id/card</li>
+                            <li><strong>Валидация:</strong> description ≤10000 символов, PUT без description не менять</li>
+                            <li><strong>Ошибки:</strong> 409 TASK_VERSION_CONFLICT, 409 TASK_EQUIPMENT_IN_USE (смена клиента), 403 PAID_ADMIN_ONLY</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Блокировки (ADR-100)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li>LockTargetColumn FOR SHARE → LockTask FOR UPDATE → version → paid-гард → ForeignInUse (409) / DeleteForeign → UPDATE tasks (version+1)</li>
+                            <li>withTx ретраит 40P01/40001 ×3 (errTaskMovedRetry — только row-мутации услуг/товаров)</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">3. Добавление оборудования (AC-004, AC-005)</div>
+                <div class="flow-meta">Два запроса: создать в clients, привязать к заказу (ADR-004)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Данные</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>1. POST /api/v1/clients/:id/equipment (as-is):</strong> EquipmentRequest (type_id, brand, model, sku, serial, specs, note) → 201 EquipmentResponse</li>
+                            <li><strong>2. POST /api/v1/tasks/:id/equipment:</strong> TaskEquipmentCreateRequest (equipment_id, completeness, condition)</li>
+                            <li><strong>Response:</strong> 201 {card: OrderCardResponse, warnings}; повтор той же единицы — 201 без изменений</li>
+                            <li><strong>Ошибки:</strong> 404 TASK_NOT_FOUND; 400 VALIDATION fields[equipment_id] (не найдено / оборудование другого клиента), fields[completeness|condition] ≤1000</li>
+                            <li><strong>PUT /api/v1/tasks/:id/equipment/:equipment_id:</strong> TaskEquipmentUpdateRequest (completeness, condition); 404 TASK_EQUIPMENT_NOT_FOUND</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">4. Управление услугами и товарами (AC-007, AC-008, AC-010, AC-014)</div>
+                <div class="flow-meta">POST/PUT/DELETE сервис-строк с синхронизацией склада (Reconcile)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Добавление услуги (AC-007)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>POST /api/v1/tasks/:id/subtasks:</strong> SubtaskCreateRequest (service_id) — price и комплект товаров копирует сервер</li>
+                            <li><strong>Response:</strong> 201 {card: OrderCardResponse, warnings}</li>
+                            <li><strong>Ошибки:</strong> 404 TASK_NOT_FOUND, 409 SUBTASK_FINAL_COLUMN, 400 fields[service_id] (не найдена / в архиве)</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Редактирование услуги и товаров (AC-008, AC-010, AC-014)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>PUT /api/v1/subtasks/:id:</strong> SubtaskUpdateRequest (status, assignee_id, due_date, price, equipment_id)</li>
+                            <li><strong>POST /api/v1/subtasks/:id/products:</strong> SubtaskProductCreateRequest (product_id, qty) — цена из products.price</li>
+                            <li><strong>PUT /api/v1/subtask-products/:id:</strong> SubtaskProductUpdateRequest (qty, price) — qty &gt;0 Scale 9/3, price null|≥0 Scale 10/2</li>
+                            <li><strong>Клиент (ADR-105):</strong> не более одного PUT на строку в полёте, тело — из последнего card + ожидающих правок</li>
+                            <li><strong>Response:</strong> 200 {card: OrderCardResponse, warnings}</li>
+                            <li><strong>Ошибки:</strong> 409 SUBTASK_FINAL_COLUMN (выход из done), 404 SUBTASK_NOT_FOUND/SUBTASK_PRODUCT_NOT_FOUND, 400 fields[status|assignee_id|due_date|price|equipment_id|product_id|qty]</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Удаление (AC-007, AC-010)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>DELETE /api/v1/subtasks/:id:</strong> каскадное удаление услуги + товары + логи</li>
+                            <li><strong>DELETE /api/v1/subtask-products/:id:</strong> удаление товара</li>
+                            <li><strong>Response:</strong> 200 {card: OrderCardResponse, warnings}</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Stock Reconcile (ADR-100)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li>StockEngine.Reconcile(task_id, column.consumes_stock) — при изменении состава товаров: create/delete услуги, create/update/delete товара; PUT /subtasks/:id — без Reconcile, но под теми же блокировками</li>
+                            <li>Возвращает warnings[] (negative, below_min) по товарам</li>
+                            <li>Блокировки: FOR SHARE columns → FOR UPDATE tasks → subtasks → subtask_products → products</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">5. Журнал работ (AC-012)</div>
+                <div class="flow-meta">POST /api/v1/subtasks/:id/logs, PUT/DELETE /api/v1/subtask-logs/:id</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Данные</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>POST /api/v1/subtasks/:id/logs:</strong> SubtaskLogRequest (text: 1..4000 символов)</li>
+                            <li><strong>PUT /api/v1/subtask-logs/:id:</strong> SubtaskLogRequest (text)</li>
+                            <li><strong>DELETE /api/v1/subtask-logs/:id:</strong> удаление записи</li>
+                            <li><strong>Response:</strong> 201/200 {card: OrderCardResponse, warnings}</li>
+                            <li><strong>Ошибки:</strong> 403 SUBTASK_LOG_FORBIDDEN (не автор, не admin), 404 SUBTASK_LOG_NOT_FOUND, 404 SUBTASK_NOT_FOUND (POST в удалённую услугу), 400 fields[text]</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Access Control (ADR-007)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li>user_id → ON DELETE RESTRICT (автор всегда отображается)</li>
+                            <li>Каждый может писать свою запись; редактировать только свою или admin</li>
+                            <li>last_log видна на карточке доски (LATERAL LIMIT 1)</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">6. Удаление оборудования (AC-004)</div>
+                <div class="flow-meta">DELETE /api/v1/tasks/:id/equipment/:equipment_id</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Данные и ограничения</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>DELETE:</strong> удаление единицы из заказа</li>
+                            <li><strong>Ошибки:</strong> 409 TASK_EQUIPMENT_IN_USE + details.subtasks[] (если выбрано в услугах)</li>
+                            <li><strong>Response:</strong> 200 {card: OrderCardResponse, warnings}</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">7. Печать актов (AC-015, AC-016)</div>
+                <div class="flow-meta">GET /tasks/:id/print/:kind → SSR HTML (intake, handover)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Печатные формы (ADR-102)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>GET /tasks/:id/print/intake:</strong> акт приёма оборудования</li>
+                            <li><strong>GET /tasks/:id/print/handover:</strong> акт выдачи (всё, что в приёме + все услуги со статусом и ценой (SD-009) + товары qty×цена + итог + оплата)</li>
+                            <li><strong>Response:</strong> 200 HTML (layout print, RequireSSR, no-store для кэша)</li>
+                            <li><strong>Реквизиты:</strong> из env FIRM_NAME, FIRM_ADDRESS, FIRM_PHONE (пустые → блок опускается)</li>
+                            <li><strong>Ошибки:</strong> 404-страница StatusPages.NotFound (нет заказа или kind ∉ {intake, handover}); без сессии — редирект на логин (RequireSSR)</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Итоги (ADR-005)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li>card.task.total_amount (SQL-агрегат, design-sql.md §Totals Expression); last_log — LATERAL LIMIT 1</li>
+                            <li>«По факту» (subtasks.price=NULL): цена работы не входит, товары услуги входят</li>
+                            <li>line_total = round(qty × coalesce(price,0), 2)</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">Ошибки и защита (Codes 16-22)</div>
+                <div class="flow-meta">Новые sentinel-коды фазы 6 (design-errors.md)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">404 ошибки</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>SUBTASK_NOT_FOUND (16):</strong> услуга не существует или удалена</li>
+                            <li><strong>SUBTASK_PRODUCT_NOT_FOUND (17):</strong> товар услуги не найден</li>
+                            <li><strong>SUBTASK_LOG_NOT_FOUND (18):</strong> запись журнала не найдена</li>
+                            <li><strong>TASK_EQUIPMENT_NOT_FOUND (19):</strong> оборудование не в заказе</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">409 ошибки (конфликты)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>TASK_EQUIPMENT_IN_USE (20):</strong> оборудование выбрано в услугах → details.subtasks[] (id, service_name, status)</li>
+                            <li><strong>SUBTASK_FINAL_COLUMN (21):</strong> финальная колонка запрещает добавлять услуги и выводить из done</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">403 ошибки (доступ)</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>SUBTASK_LOG_FORBIDDEN (22):</strong> только автор или admin могут менять запись журнала</li>
+                            <li><strong>PAID_ADMIN_ONLY (11, as-is):</strong> смена is_paid только админом</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">Версионирование и concurrency (ADR-002)</div>
+                <div class="flow-meta">Row-мутации НЕ инкрементируют tasks.version (LWW для строк)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Данные</div>
+                    <div class="flow-items">
+                        <ul>
+                            <li><strong>Мутации шапки:</strong> version check → инкремент → 409 TASK_VERSION_CONFLICT</li>
+                            <li><strong>Row-мутации (услуги, товары, оборудование, журнал):</strong> БЕЗ версии → LWW (последнее писание)</li>
+                            <li><strong>Строки имеют:</strong> subtasks.updated_at, subtask_logs.updated_at, subtask_products (нет updated_at, но есть position для порядка — ADR-103)</li>
+                            <li>Блокировки: услуги/товары — columns FOR SHARE → LockTask; оборудование — LockTask; журнал — без блокировки заказа; клиент — очередь PUT на строку (ADR-105)</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

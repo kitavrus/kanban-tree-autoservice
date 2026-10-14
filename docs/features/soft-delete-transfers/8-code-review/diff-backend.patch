@@ -1,0 +1,2771 @@
+diff --git a/internal/features/board/board_http_live_test.go b/internal/features/board/board_http_live_test.go
+index c99a8cd..19c30f7 100644
+--- a/internal/features/board/board_http_live_test.go
++++ b/internal/features/board/board_http_live_test.go
+@@ -921,8 +921,11 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_PurgeDisabledByDefault() {
+ 	t := s.newTask(c, s.columnID("Новые"))
+ 
+ 	for _, b := range []*testutil.Browser{s.admin, s.newExecutor("board-exec-purge")} {
+-		st, raw := b.Do(http.MethodDelete, "/api/v1/test/purge/tasks/"+itoa(t.ID), nil)
+-		s.Equal(http.StatusNotFound, st, string(raw))
++		// вид transfers (soft-delete-transfers TS-051, DS-038) — тот же адрес: без переменной его нет.
++		for _, path := range []string{"/api/v1/test/purge/tasks/" + itoa(t.ID), "/api/v1/test/purge/transfers/1"} {
++			st, raw := b.Do(http.MethodDelete, path, nil)
++			s.Equal(http.StatusNotFound, st, "%s: %s", path, raw)
++		}
+ 	}
+ 	st, _, raw := s.getTask(s.admin, t.ID)
+ 	s.Equal(http.StatusOK, st, "заказ жив: %s", raw)
+diff --git a/internal/features/board/card_repo.go b/internal/features/board/card_repo.go
+index c42693c..f4762fd 100644
+--- a/internal/features/board/card_repo.go
++++ b/internal/features/board/card_repo.go
+@@ -95,7 +95,8 @@ func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment
+ 	return out, rows.Err()
+ }
+ 
+-// Transfers — документы «Перемещение» заказа (transfers-partners DS-012), новые сверху.
++// Transfers — действующие документы «Перемещение» заказа (transfers-partners DS-012), новые
++// сверху; мягко удалённые не входят (soft-delete-transfers DS-026).
+ // Склад — назначения (приём от клиента) либо отправления (возврат клиенту).
+ func (r *CardRepo) Transfers(ctx context.Context, taskID int64) ([]CardTransfer, error) {
+ 	rows, err := r.pool.Query(ctx, `
+@@ -105,7 +106,7 @@ func (r *CardRepo) Transfers(ctx context.Context, taskID int64) ([]CardTransfer,
+ 		        FROM transfer_items i WHERE i.transfer_id = t.id AND i.kind = 'product')::text
+ 		FROM transfers t
+ 		LEFT JOIN warehouses w ON w.id = coalesce(t.to_warehouse_id, t.from_warehouse_id)
+-		WHERE t.task_id = $1 ORDER BY t.id DESC`, taskID)
++		WHERE t.task_id = $1 AND t.deleted_at IS NULL ORDER BY t.id DESC`, taskID)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/internal/features/board/order_card_revert_http_live_test.go b/internal/features/board/order_card_revert_http_live_test.go
+index 3d2b996..5d2cdfd 100644
+--- a/internal/features/board/order_card_revert_http_live_test.go
++++ b/internal/features/board/order_card_revert_http_live_test.go
+@@ -39,23 +39,16 @@ func (s *OrderCardLiveSuite) stockAt(productID, warehouseID string) string {
+ // deleteReason — тело мягкого удаления заказа (soft-delete-core DS-020: причина обязательна).
+ var deleteReason = map[string]any{"reason": "Создан по ошибке"}
+ 
+-// deleteTaskBlocked — DELETE заказа обязан вернуть 409 TASK_HAS_TRANSFERS с номерами ids.
+-func (s *OrderCardLiveSuite) deleteTaskBlocked(taskID int64, ctx string, ids ...int64) {
+-	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), deleteReason)
+-	s.Require().Equal(http.StatusConflict, st, "%s: %s", ctx, raw)
+-	var e transferErrDTO
+-	s.Require().NoError(json.Unmarshal(raw, &e), string(raw))
+-	s.Equal("TASK_HAS_TRANSFERS", e.Code, ctx)
+-	msg := "Сначала отмените перемещения: "
+-	for i, id := range ids {
+-		if i > 0 {
+-			msg += ", "
+-		}
+-		msg += fmt.Sprintf("#%d", id)
+-	}
+-	s.Equal(msg, e.Message, ctx)
+-	s.Require().NotNil(e.Details, string(raw))
+-	s.Equal(ids, e.Details.TransferIDs, "%s: номера по возрастанию", ctx)
++// deleteTransfer — мягкое удаление документа «Перемещение» (soft-delete-transfers §6.1):
++// причина и version — в теле.
++func (s *OrderCardLiveSuite) deleteTransfer(id int64, version int) (int, []byte) {
++	return s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d", id),
++		map[string]any{"reason": "Создан по ошибке", "version": version})
++}
++
++func (s *OrderCardLiveSuite) mustDeleteTransfer(id int64, version int) {
++	st, raw := s.deleteTransfer(id, version)
++	s.Require().Equal(http.StatusOK, st, string(raw))
+ }
+ 
+ // ---- TS-013 ----
+@@ -109,67 +102,79 @@ func (s *OrderCardLiveSuite) TestTS013_UnreceiveInvoiceOfPaidOrder() {
+ 	s.Equal("20.000", s.stockAt(goods, almaty), "товар вернулся на склад отправления")
+ }
+ 
+-// ---- TS-017 ----
+-
+-// TS-017: DELETE /api/v1/tasks/:id — документ заказа в requested / in_transit / received →
+-// 409 TASK_HAS_TRANSFERS с details.transfer_ids (номера по возрастанию, отменённые в список не
+-// входят); при отказе заказ, документы, остатки и оборудование не изменились (abuse case 5).
+-// Только отменённые документы → заказ удаляется МЯГКО (soft-delete-core DS-034, TS-048):
+-// отменённые документы с ним больше не удаляются — остаются в базе и ссылаются на удалённый
+-// заказ, движения остатков сохраняют transfer_id; после восстановления заказа документы на
+-// месте. Путь к удалению у полученного: откат → отмена. Негатив: заказ без документов
+-// удаляется как раньше (мягко).
+-func (s *OrderCardLiveSuite) TestTS017_DeleteTaskWithTransfers() {
++// ---- TS-014 (soft-delete-transfers; заменяет TS-017 transfers-revert и TS-048 части 1) ----
++
++// TS-014 (DS-006, DS-008): DELETE /api/v1/tasks/:id — заказ удаляется (мягко) с документами в
++// ЛЮБОМ статусе: заявка / в пути / получено / отменён → 200. Документы, их строки, остатки,
++// движения и местоположение единиц не изменились; документы остаются в «Перемещениях» с
++// task_is_deleted = true и в карточку восстановленного заказа возвращаются. Негатив: ответа
++// 409 TASK_HAS_TRANSFERS больше нет (отказ части 1 DS-034 снят).
++func (s *OrderCardLiveSuite) TestTS014_DeleteTaskWithTransfersAnyStatus() {
+ 	almaty := s.warehouseID("Алматы")
+ 	c := s.newClient("Клиент-Удаление-С-Перемещениями")
+ 	col := s.columnID("Новые")
+-	del := func(taskID int64) (int, []byte) {
+-		return s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), deleteReason)
++	// docState — документ (статус, версия, отметка удаления, число строк) и его единица.
++	docState := func(docID int64, eq string) string {
++		return s.revertScalar(`
++			SELECT d.status || '|' || d.version::text || '|' || (d.deleted_at IS NOT NULL)::text || '|' ||
++			       (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = d.id)::text || '|' ||
++			       e.location_status || '|' || coalesce(e.warehouse_id::text, '') || '|' || coalesce(e.active_transfer_id::text, '')
++			FROM transfers d, equipment e WHERE d.id = $1 AND e.id = $2`, docID, eq)
+ 	}
+ 
+-	// ---- по одному мешающему документу в каждом неотменённом статусе ----
+-	var receivedTask int64
+-	var receivedDoc transferDocDTO
+-	var receivedUnit string
+ 	for _, tc := range []struct {
+-		name  string
+-		flags map[string]any
++		name   string
++		flags  map[string]any
++		cancel bool
++		status string
+ 	}{
+-		{"заявка", nil},
+-		{"в пути", map[string]any{"send": true}},
+-		{"получено", map[string]any{"receive": true}},
++		{"заявка", nil, false, "requested"},
++		{"в пути", map[string]any{"send": true}, false, "in_transit"},
++		{"получено", map[string]any{"receive": true}, false, "received"},
++		{"отменён", nil, true, "cancelled"},
+ 	} {
+ 		taskID, _ := s.newTask(c, col)
+ 		eq := s.newEquipment(c)
+ 		s.addEq(taskID, eq, "")
+ 		doc := s.clientTransfer("client_to_warehouse", taskID, almaty, tc.flags, eq)
+-		s.deleteTaskBlocked(taskID, tc.name, doc.ID)
++		if tc.cancel {
++			doc = s.transferAction(doc, "cancel")
++		}
++		s.Require().Equal(tc.status, doc.Status, tc.name)
++		before := docState(doc.ID, eq)
+ 
+-		st, card, _ := s.getCard(s.admin, taskID)
+-		s.Require().Equal(http.StatusOK, st, "%s: заказ на месте", tc.name)
+-		s.Require().Len(card.Transfers, 1, tc.name)
+-		s.Equal(doc.ID, card.Transfers[0].ID)
+-		s.Equal(doc.Status, card.Transfers[0].Status, "%s: документ не изменён", tc.name)
+-		s.Len(card.Equipment, 1, "%s: оборудование заказа не тронуто", tc.name)
+-		if doc.Status == "received" {
+-			receivedTask, receivedDoc, receivedUnit = taskID, doc, eq
++		st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), deleteReason)
++		s.Require().Equal(http.StatusOK, st, "%s: %s", tc.name, raw)
++		s.NotContains(string(raw), "TASK_HAS_TRANSFERS", tc.name)
++		st, _, _ = s.getCard(s.admin, taskID)
++		s.Equal(http.StatusNotFound, st, "%s: заказ удалён", tc.name)
++		s.Equal(before, docState(doc.ID, eq), "%s: документ, строки и единица не изменились", tc.name)
++
++		// документ удалённого заказа остаётся в «Перемещениях» с пометкой «заказ удалён».
++		st, raw = s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/transfers/%d", doc.ID), nil)
++		s.Require().Equal(http.StatusOK, st, "%s: %s", tc.name, raw)
++		var got struct {
++			Status        string `json:"status"`
++			TaskID        *int64 `json:"task_id"`
++			TaskIsDeleted bool   `json:"task_is_deleted"`
+ 		}
++		s.Require().NoError(json.Unmarshal(raw, &got), string(raw))
++		s.Equal(tc.status, got.Status, tc.name)
++		s.Require().NotNil(got.TaskID, tc.name)
++		s.Equal(taskID, *got.TaskID, tc.name)
++		s.True(got.TaskIsDeleted, "%s: task_is_deleted", tc.name)
++
++		// восстановленный заказ видит свой документ в карточке.
++		st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/restore", taskID), nil)
++		s.Require().Equal(http.StatusOK, st, "%s: %s", tc.name, raw)
++		_, card, _ := s.getCard(s.admin, taskID)
++		s.Require().Len(card.Transfers, 1, tc.name)
++		s.Equal(doc.ID, card.Transfers[0].ID, tc.name)
++		s.Equal(tc.status, card.Transfers[0].Status, tc.name)
++		s.Equal(before, docState(doc.ID, eq), "%s: восстановление заказа документ не тронуло", tc.name)
+ 	}
+ 
+-	// полученный документ: откат → всё ещё мешает («В пути») → отмена → заказ удаляется.
+-	back := s.unreceiveTransfer(receivedDoc.ID, receivedDoc.Version)
+-	s.deleteTaskBlocked(receivedTask, "после отката — в пути", receivedDoc.ID)
+-	s.transferAction(transferDocDTO{ID: back.ID, Status: back.Status, Version: back.Version}, "cancel")
+-	st, raw := del(receivedTask)
+-	s.Require().Equal(http.StatusOK, st, string(raw))
+-	s.Equal("cancelled|true", s.revertScalar(`
+-		SELECT t.status || '|' || (k.deleted_at IS NOT NULL)::text FROM transfers t JOIN tasks k ON k.id = t.task_id WHERE t.id = $1`, receivedDoc.ID),
+-		"отменённый документ остался и ссылается на удалённый заказ (DS-034)")
+-	s.Equal("at_client|", s.revertScalar(`
+-		SELECT location_status || '|' || coalesce(active_transfer_id::text, '') FROM equipment WHERE id = $1`, receivedUnit),
+-		"единица осталась в справочнике: у клиента, свободна")
+-
+-	// ---- несколько документов: в ответе только неотменённые, по возрастанию ----
++	// ---- несколько документов и накладная с товаром: остатки и движения не меняются ----
+ 	taskID, _ := s.newTask(c, col)
+ 	units := []string{s.newEquipment(c), s.newEquipment(c), s.newEquipment(c)}
+ 	for _, u := range units {
+@@ -178,61 +183,36 @@ func (s *OrderCardLiveSuite) TestTS017_DeleteTaskWithTransfers() {
+ 	goods := s.newProduct("10", "50", "0")
+ 	d1 := s.clientTransfer("client_to_warehouse", taskID, almaty, nil, units[0])
+ 	d2 := s.transferAction(s.clientTransfer("client_to_warehouse", taskID, almaty, nil, units[1]), "cancel")
+-	d3 := s.clientTransfer("client_to_warehouse", taskID, almaty, map[string]any{"send": true}, units[2])
++	d3 := s.clientTransfer("client_to_warehouse", taskID, almaty, map[string]any{"receive": true}, units[2])
+ 	inv := s.invoice(taskID, true, [3]any{goods, 4, 10})
+ 	s.Equal("46.000", s.stockAt(goods, almaty))
+-	s.deleteTaskBlocked(taskID, "три мешающих и один отменённый", d1.ID, d3.ID, inv.ID)
+-
+-	// отказ ничего не изменил: документы, остаток, движения, оборудование.
+-	_, card, _ := s.getCard(s.admin, taskID)
+-	statuses := map[int64]string{}
+-	for _, t := range card.Transfers {
+-		statuses[t.ID] = t.Status
++	docIDs := []int64{d1.ID, d2.ID, d3.ID, inv.ID}
++	docs := func() string {
++		return s.revertScalar(`
++			SELECT string_agg(id::text || ':' || status || ':' || version::text || ':' || (deleted_at IS NOT NULL)::text, ',' ORDER BY id)
++			FROM transfers WHERE id = ANY($1)`, docIDs)
+ 	}
+-	s.Equal(map[int64]string{d1.ID: "requested", d2.ID: "cancelled", d3.ID: "in_transit", inv.ID: "in_transit"}, statuses)
+-	s.Len(card.Equipment, 3)
+-	s.Equal("46.000", s.stockAt(goods, almaty))
+-	s.Equal("1", s.revertScalar(`SELECT count(*)::text FROM stock_movements WHERE transfer_id = $1`, inv.ID))
++	eqs := func() string {
++		return s.revertScalar(`
++			SELECT string_agg(location_status || ':' || coalesce(warehouse_id::text, '') || ':' || coalesce(active_transfer_id::text, ''), ',' ORDER BY id)
++			FROM equipment WHERE id = ANY($1::uuid[])`, units)
++	}
++	docsBefore, eqsBefore := docs(), eqs()
++	movesBefore := s.revertScalar(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1`, goods)
+ 
+-	// все документы отменены → заказ удаляется мягко, документы остаются (DS-034).
+-	s.transferAction(d1, "cancel")
+-	s.transferAction(d3, "cancel")
+-	s.invoiceAction(inv, "cancel")
+-	s.Equal("50.000", s.stockAt(goods, almaty), "отмена накладной вернула товар")
+-	docIDs := []int64{d1.ID, d2.ID, d3.ID, inv.ID}
+-	s.Equal("4", s.revertScalar(`SELECT count(*)::text FROM transfers WHERE id = ANY($1)`, docIDs))
+-	st, raw = del(taskID)
++	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), deleteReason)
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+-	st, _, _ = s.getCard(s.admin, taskID)
+-	s.Equal(http.StatusNotFound, st, "заказ удалён")
+ 	s.Equal("t", s.revertScalar(`SELECT (deleted_at IS NOT NULL)::text FROM tasks WHERE id = $1`, taskID)[:1], "строка заказа помечена удалённой")
+-	s.Equal("4", s.revertScalar(`SELECT count(*)::text FROM transfers WHERE id = ANY($1) AND status = 'cancelled' AND task_id = $2`, docIDs, taskID),
+-		"отменённые документы остались у удалённого заказа")
++	s.Equal(docsBefore, docs(), "документы не изменились")
++	s.Equal(eqsBefore, eqs(), "местоположение и занятость единиц не изменились")
++	s.Equal("46.000", s.stockAt(goods, almaty), "остаток по накладной «в пути» не изменился")
++	s.Equal(movesBefore, s.revertScalar(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1`, goods), "движений не добавилось")
+ 	s.Equal("4", s.revertScalar(`SELECT count(DISTINCT transfer_id)::text FROM transfer_items WHERE transfer_id = ANY($1)`, docIDs))
+-	for _, id := range docIDs {
+-		st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/transfers/%d", id), nil)
+-		s.Equal(http.StatusOK, st, "документ удалённого заказа остаётся в перемещениях: %s", raw)
+-	}
+-	s.Equal("client_out:-4.000,transfer_return:4.000", s.revertScalar(`
+-		SELECT string_agg(reason || ':' || qty_delta::text, ',' ORDER BY reason) FROM stock_movements
+-		WHERE product_id = $1 AND transfer_id = $2`, goods, inv.ID), "движения остатков остались привязаны к документу")
+-	s.Equal("50.000", s.stockAt(goods, almaty), "удаление остаток не меняет")
+-	s.Equal("3", s.revertScalar(`
+-		SELECT count(*)::text FROM equipment WHERE id = ANY($1::uuid[]) AND location_status = 'at_client' AND active_transfer_id IS NULL`, units),
+-		"единицы остались в справочнике: у клиента, свободны")
+-
+-	// TS-048: после восстановления заказа отменённые документы на месте — в его карточке.
+-	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/restore", taskID), nil)
+-	s.Require().Equal(http.StatusOK, st, string(raw))
+-	st, card, _ = s.getCard(s.admin, taskID)
+-	s.Require().Equal(http.StatusOK, st)
+-	s.Len(card.Transfers, 4, "документы восстановленного заказа на месте")
+-	s.Len(card.Equipment, 3)
+ 
+ 	// негатив: заказ без документов удаляется как раньше.
+ 	free, _ := s.newTask(c, col)
+ 	s.addEq(free, s.newEquipment(c), "")
+-	st, raw = del(free)
++	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", free), deleteReason)
+ 	s.Equal(http.StatusOK, st, string(raw))
+ 	st, _, _ = s.getCard(s.admin, free)
+ 	s.Equal(http.StatusNotFound, st)
+@@ -241,9 +221,10 @@ func (s *OrderCardLiveSuite) TestTS017_DeleteTaskWithTransfers() {
+ // ---- TS-018 (хвост) ----
+ 
+ // TS-018 (transfers-revert): единица в заявке не убирается из заказа и не удаляется из
+-// справочника; после УДАЛЕНИЯ документа-заявки (DELETE /api/v1/transfers/:id) она свободна,
+-// убирается из заказа и — раз строк документов у неё больше нет — удаляется из справочника
+-// (после отмены без удаления строки документа остаются и держат единицу, DS-026).
++// справочника; после УДАЛЕНИЯ документа-заявки (DELETE /api/v1/transfers/:id) она свободна и
++// убирается из заказа. Удаление документа теперь мягкое (soft-delete-transfers DS-018): его
++// строки остаются и по-прежнему держат единицу в справочнике (409 EQUIPMENT_HAS_TRANSFERS,
++// transfers-core DS-026) — как и после отмены без удаления.
+ func (s *OrderCardLiveSuite) TestTS018_DeleteRequestFreesEquipment() {
+ 	almaty, moscow := s.warehouseID("Алматы"), s.warehouseID("Москва")
+ 	c := s.newClient("Клиент-Удаление-Заявки")
+@@ -263,8 +244,7 @@ func (s *OrderCardLiveSuite) TestTS018_DeleteRequestFreesEquipment() {
+ 	s.Require().Equal(http.StatusConflict, st, string(raw))
+ 	s.Equal("EQUIPMENT_HAS_TRANSFERS", s.errOf(raw).Code)
+ 
+-	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d?version=%d", doc.ID, doc.Version), nil)
+-	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.mustDeleteTransfer(doc.ID, doc.Version)
+ 	_, card, _ := s.getCard(s.admin, taskID)
+ 	e := s.cardEquipment(card, eq)
+ 	s.Nil(e.ActiveTransferID, "после удаления заявки единица свободна")
+@@ -275,8 +255,9 @@ func (s *OrderCardLiveSuite) TestTS018_DeleteRequestFreesEquipment() {
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 	s.Empty(m.Card.Equipment, "единица убрана из заказа")
+ 	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+eq, nil)
+-	s.Equal(http.StatusNoContent, st, "строк документов больше нет — единица удаляется из справочника: %s", raw)
+-	s.Equal("0", s.revertScalar(`SELECT count(*)::text FROM equipment WHERE id = $1`, eq))
++	s.Require().Equal(http.StatusConflict, st, "строки мягко удалённого документа остаются и держат единицу: %s", raw)
++	s.Equal("EQUIPMENT_HAS_TRANSFERS", s.errOf(raw).Code)
++	s.Equal("1", s.revertScalar(`SELECT count(*)::text FROM equipment WHERE id = $1`, eq))
+ }
+ 
+ // ---- D84: клиент заказа с документами перемещения не меняется ----
+@@ -286,8 +267,9 @@ func (s *OrderCardLiveSuite) TestTS018_DeleteRequestFreesEquipment() {
+ // получено / отменён), → 409 TASK_CLIENT_LOCKED_BY_TRANSFERS с details.transfer_ids (номера по
+ // возрастанию); заказ, его оборудование и документ не изменились (transfers.client_id — снимок
+ // клиента заказа). Негативы: тот же client_id (правка без смены клиента) проходит; после
+-// удаления единственного (отменённого) документа смена клиента проходит; заказ без документов
+-// меняет клиента как раньше.
++// (мягкого) удаления единственного (отменённого) документа смена клиента проходит — удалённые
++// документы смене не мешают (soft-delete-transfers DS-040); заказ без документов меняет
++// клиента как раньше.
+ func (s *OrderCardLiveSuite) TestTaskClientLockedByTransfers() {
+ 	almaty := s.warehouseID("Алматы")
+ 	c1 := s.newClient("Клиент-Замок-Клиента-Раз")
+@@ -370,9 +352,8 @@ func (s *OrderCardLiveSuite) TestTaskClientLockedByTransfers() {
+ 
+ 	// единственный (отменённый) документ удалён → смена клиента проходит, оборудование
+ 	// прежнего клиента убирается из заказа (прежняя логика), в справочнике остаётся.
+-	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d?version=%d", cancelledDoc.ID, cancelledDoc.Version), nil)
+-	s.Require().Equal(http.StatusOK, st, string(raw))
+-	st, raw = put(cancelledTask, c2, "Смена клиента")
++	s.mustDeleteTransfer(cancelledDoc.ID, cancelledDoc.Version)
++	st, raw := put(cancelledTask, c2, "Смена клиента")
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 	_, card, _ := s.getCard(s.admin, cancelledTask)
+ 	s.Equal(c2, card.Task.ClientID)
+@@ -399,11 +380,9 @@ func (s *OrderCardLiveSuite) TestTaskClientLockedByTransfers() {
+ 		s.Equal(ids, e.Details.TransferIDs, ctx)
+ 	}
+ 	multi("отменённый и заявка", d1.ID, d2.ID)
+-	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d?version=%d", d2.ID, d2.Version), nil)
+-	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.mustDeleteTransfer(d2.ID, d2.Version)
+ 	multi("остался отменённый", d1.ID)
+-	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d?version=%d", d1.ID, d1.Version), nil)
+-	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.mustDeleteTransfer(d1.ID, d1.Version)
+ 	st, raw = put(taskID, c2, "Смена клиента")
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 
+diff --git a/internal/features/board/soft_delete_transfers_http_live_test.go b/internal/features/board/soft_delete_transfers_http_live_test.go
+new file mode 100644
+index 0000000..ac20cda
+--- /dev/null
++++ b/internal/features/board/soft_delete_transfers_http_live_test.go
+@@ -0,0 +1,213 @@
++//go:build integration
++
++package board_test
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http"
++)
++
++// Мягкое удаление документов перемещения — сценарии со стороны заказа
++// (docs/features/soft-delete-transfers/draft-spec.md §11), методы OrderCardLiveSuite (§TD-8,
++// сьюта запущена с TEST_PURGE_ENABLED=true): TS-050 (смена клиента заказа при мягко удалённом
++// документе, DS-040), TS-051 (служебная уборка вида transfers и уборка заказа с мягко
++// удалённым документом, DS-038). TS-014 (удаление заказа с документами) —
++// order_card_revert_http_live_test.go; удаление и восстановление самого документа (TS-015…
++// TS-018, TS-033) — сьюта пакета transfers.
++
++// restoreTransfer — POST /api/v1/transfers/:id/restore от администратора.
++func (s *OrderCardLiveSuite) restoreTransfer(id int64) (int, []byte) {
++	return s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/restore", id), nil)
++}
++
++// transferRow — «статус|удалён» строки документа; пусто — строки нет.
++func (s *OrderCardLiveSuite) transferRow(id int64) string {
++	return s.revertScalar(`
++		SELECT coalesce((SELECT status || '|' || (deleted_at IS NOT NULL)::text FROM transfers WHERE id = $1), '')`, id)
++}
++
++func (s *OrderCardLiveSuite) unitBusy(eq string) string {
++	return s.revertScalar(`
++		SELECT location_status || '|' || coalesce(active_transfer_id::text, '') FROM equipment WHERE id = $1`, eq)
++}
++
++// ---- TS-050 ----
++
++// TS-050 (DS-040): мягко удалённый документ не мешает сменить клиента заказа — PUT
++// /api/v1/tasks/:id с другим client_id → 200; последующее восстановление документа → 409
++// TRANSFER_CLIENT_MISMATCH, документ остаётся удалённым, единица — свободной. Без смены
++// клиента документ восстанавливается и снова занимает единицу. Негатив: при действующем
++// документе смена клиента по-прежнему → 409 TASK_CLIENT_LOCKED_BY_TRANSFERS, в
++// details.transfer_ids — только действующие документы.
++func (s *OrderCardLiveSuite) TestTS050_ClientChangeWithSoftDeletedTransfer() {
++	almaty := s.warehouseID("Алматы")
++	c1 := s.newClient("Клиент-Смена-При-Удалённом-Раз")
++	c2 := s.newClient("Клиент-Смена-При-Удалённом-Два")
++	col := s.columnID("Новые")
++	put := func(taskID int64, clientID string) (int, []byte) {
++		version := s.revertScalar(`SELECT version::text FROM tasks WHERE id = $1`, taskID)
++		return s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
++			"title": "Смена клиента", "client_id": clientID, "column_id": col,
++			"assignee_id": nil, "due_date": nil, "is_paid": false, "version": json.Number(version),
++		})
++	}
++
++	taskID, _ := s.newTask(c1, col)
++	u1, u2 := s.newEquipment(c1), s.newEquipment(c1)
++	s.addEq(taskID, u1, "")
++	s.addEq(taskID, u2, "")
++	gone := s.clientTransfer("client_to_warehouse", taskID, almaty, nil, u1)
++	live := s.clientTransfer("client_to_warehouse", taskID, almaty, nil, u2)
++	s.mustDeleteTransfer(gone.ID, gone.Version)
++	s.Equal("at_client|", s.unitBusy(u1), "единица удалённой заявки свободна")
++
++	// негатив: действующий документ по-прежнему держит клиента; удалённый в список не входит.
++	st, raw := put(taskID, c2)
++	s.Require().Equal(http.StatusConflict, st, string(raw))
++	var e transferErrDTO
++	s.Require().NoError(json.Unmarshal(raw, &e), string(raw))
++	s.Equal("TASK_CLIENT_LOCKED_BY_TRANSFERS", e.Code)
++	s.Require().NotNil(e.Details, string(raw))
++	s.Equal([]int64{live.ID}, e.Details.TransferIDs, "только действующие документы")
++
++	// без смены клиента удалённый документ восстанавливается и снова занимает единицу.
++	st, raw = s.restoreTransfer(gone.ID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("requested|false", s.transferRow(gone.ID))
++	s.Equal(fmt.Sprintf("at_client|%d", gone.ID), s.unitBusy(u1))
++
++	// оба документа удалены → смена клиента проходит.
++	s.mustDeleteTransfer(gone.ID, gone.Version+2)
++	s.mustDeleteTransfer(live.ID, live.Version)
++	st, raw = put(taskID, c2)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	_, card, _ := s.getCard(s.admin, taskID)
++	s.Equal(c2, card.Task.ClientID, "клиент сменён")
++	s.Empty(card.Transfers, "удалённые документы в карточку не входят")
++
++	// восстановление документа с прежним клиентом → 409, документ остаётся удалённым.
++	for _, doc := range []transferDocDTO{gone, live} {
++		st, raw = s.restoreTransfer(doc.ID)
++		s.Require().Equal(http.StatusConflict, st, "#%d: %s", doc.ID, raw)
++		s.Equal("TRANSFER_CLIENT_MISMATCH", s.sdErr(raw).Code)
++		s.Equal("Клиент заказа изменён — восстановить перемещение нельзя", s.sdErr(raw).Message)
++		s.Equal("requested|true", s.transferRow(doc.ID), "документ остаётся удалённым")
++	}
++	s.Equal("at_client|", s.unitBusy(u1), "отказ единицу не занял")
++	s.Equal("at_client|", s.unitBusy(u2))
++	s.Equal(c1, s.revertScalar(`SELECT client_id::text FROM transfers WHERE id = $1`, gone.ID), "снимок клиента документа не меняется")
++}
++
++// ---- TS-051 ----
++
++// TS-051 (DS-038): служебная уборка DELETE /api/v1/test/purge/transfers/:id физически удаляет
++// документ в «Заявка» и «Отменён» — действующий и мягко удалённый (строки — каскадом, единица
++// заявки освобождается); документ «в пути» и «получено» → 409 TRANSFER_STATUS_CONFLICT, строка
++// на месте; нет документа / нечисловой номер → 404 NOT_FOUND. Уборка заказа с мягко удалённым
++// документом проходит — строки документа в базе нет. Негативы: исполнитель → 403; «без
++// TEST_PURGE_ENABLED адреса нет (404)» — BoardLiveSuite.
++func (s *OrderCardLiveSuite) TestTS051_PurgeTransfers() {
++	almaty := s.warehouseID("Алматы")
++	c := s.newClient("Клиент-Уборка-Документов")
++	col := s.columnID("Новые")
++	mk := func(flags map[string]any) (int64, string, transferDocDTO) {
++		taskID, _ := s.newTask(c, col)
++		eq := s.newEquipment(c)
++		s.addEq(taskID, eq, "")
++		return taskID, eq, s.clientTransfer("client_to_warehouse", taskID, almaty, flags, eq)
++	}
++	purgeDoc := func(id int64) (int, []byte) { return s.purge(s.admin, "transfers", fmt.Sprint(id)) }
++	gone := func(doc transferDocDTO, ctx string) {
++		st, raw := purgeDoc(doc.ID)
++		s.Require().Equal(http.StatusOK, st, "%s: %s", ctx, raw)
++		var out struct {
++			ID string `json:"id"`
++		}
++		s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++		s.Equal(fmt.Sprint(doc.ID), out.ID, ctx)
++		s.Equal("", s.transferRow(doc.ID), "%s: строки документа нет", ctx)
++		s.Equal("0", s.revertScalar(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1`, doc.ID), "%s: строки ушли каскадом", ctx)
++	}
++
++	// действующая заявка: единица освобождается.
++	_, eq, requested := mk(nil)
++	exec, _ := s.sdExecutor()
++	for _, target := range []string{fmt.Sprint(requested.ID), "999999999"} {
++		st, raw := s.purge(exec, "transfers", target)
++		s.Equal(http.StatusForbidden, st, string(raw))
++		s.Equal("Нет доступа", s.sdErr(raw).Message)
++	}
++	s.Equal(fmt.Sprintf("at_client|%d", requested.ID), s.unitBusy(eq))
++	gone(requested, "действующая заявка")
++	s.Equal("at_client|", s.unitBusy(eq), "единица заявки свободна")
++	st, raw := purgeDoc(requested.ID)
++	s.Equal(http.StatusNotFound, st, "повтор: %s", raw)
++	s.Equal("NOT_FOUND", s.sdErr(raw).Code)
++
++	// действующий отменённый.
++	_, _, doc := mk(nil)
++	gone(s.transferAction(doc, "cancel"), "действующий отменённый")
++
++	// мягко удалённые: заявка и отменённый.
++	_, _, doc = mk(nil)
++	s.mustDeleteTransfer(doc.ID, doc.Version)
++	gone(doc, "мягко удалённая заявка")
++	_, _, doc = mk(nil)
++	doc = s.transferAction(doc, "cancel")
++	s.mustDeleteTransfer(doc.ID, doc.Version)
++	gone(doc, "мягко удалённый отменённый")
++
++	// проведённые документы уборка не трогает.
++	for _, tc := range []struct {
++		flags       map[string]any
++		status, msg string
++	}{
++		{map[string]any{"send": true}, "in_transit", "Перемещение в пути — сначала отмените его"},
++		{map[string]any{"receive": true}, "received", "Перемещение получено — сначала отмените проведение, затем отмените"},
++	} {
++		_, _, doc = mk(tc.flags)
++		st, raw = purgeDoc(doc.ID)
++		s.Require().Equal(http.StatusConflict, st, "%s: %s", tc.status, raw)
++		s.Equal("TRANSFER_STATUS_CONFLICT", s.sdErr(raw).Code, tc.status)
++		s.Equal(tc.msg, s.sdErr(raw).Message, tc.status)
++		s.Equal(tc.status+"|false", s.transferRow(doc.ID), "%s: документ на месте", tc.status)
++	}
++
++	for _, id := range []string{"abc", "0", "-1", "999999999"} {
++		st, raw = s.purge(s.admin, "transfers", id)
++		s.Equal(http.StatusNotFound, st, "%s: %s", id, raw)
++		s.Equal("NOT_FOUND", s.sdErr(raw).Code)
++		s.Equal("Не найдено", s.sdErr(raw).Message)
++	}
++
++	// уборка заказа: мягко удалённая заявка уходит вместе с заказом (действующий заказ).
++	taskID, eq, doc := mk(nil)
++	s.mustDeleteTransfer(doc.ID, doc.Version)
++	st, raw = s.purge(s.admin, "tasks", fmt.Sprint(taskID))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("0", s.revertScalar(`SELECT count(*)::text FROM tasks WHERE id = $1`, taskID))
++	s.Equal("", s.transferRow(doc.ID), "мягко удалённый документ убран вместе с заказом")
++	s.Equal("1", s.revertScalar(`SELECT count(*)::text FROM equipment WHERE id = $1`, eq), "единица остаётся в справочнике")
++
++	// …и у мягко удалённого заказа; действующая заявка по-прежнему держит заказ от уборки.
++	taskID, eq, doc = mk(nil)
++	eq2 := s.newEquipment(c)
++	s.addEq(taskID, eq2, "")
++	keep := s.clientTransfer("client_to_warehouse", taskID, almaty, nil, eq2)
++	s.mustDeleteTransfer(doc.ID, doc.Version)
++	s.mustSoftDelete(taskID)
++	st, raw = s.purge(s.admin, "tasks", fmt.Sprint(taskID))
++	s.Require().Equal(http.StatusConflict, st, string(raw))
++	var e transferErrDTO
++	s.Require().NoError(json.Unmarshal(raw, &e), string(raw))
++	s.Equal("TASK_HAS_TRANSFERS", e.Code)
++	s.Require().NotNil(e.Details, string(raw))
++	s.Equal([]int64{keep.ID}, e.Details.TransferIDs, "мешает только действующий неотменённый документ")
++	s.Equal("requested|true", s.transferRow(doc.ID), "отказ ничего не удалил")
++	gone(keep, "заявка удалённого заказа")
++	st, raw = s.purge(s.admin, "tasks", fmt.Sprint(taskID))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("", s.transferRow(doc.ID))
++	s.Equal("at_client|", s.unitBusy(eq))
++}
+diff --git a/internal/features/board/stock_repo.go b/internal/features/board/stock_repo.go
+index 3f4106e..6ff45a2 100644
+--- a/internal/features/board/stock_repo.go
++++ b/internal/features/board/stock_repo.go
+@@ -54,7 +54,7 @@ transit AS (
+     SELECT i.product_id, sum(i.qty_sent) AS qty
+     FROM transfer_items i
+     JOIN transfers st ON st.id = i.transfer_id
+-    WHERE i.kind = 'product' AND st.status = 'in_transit'
++    WHERE i.kind = 'product' AND st.status = 'in_transit' AND st.deleted_at IS NULL
+       AND st.direction IN ('warehouse_to_warehouse', 'supplier_to_warehouse')
+       AND ($1::uuid IS NULL OR st.to_warehouse_id = $1::uuid)
+     GROUP BY i.product_id),
+diff --git a/internal/features/board/tasks_handler.go b/internal/features/board/tasks_handler.go
+index f753b14..6048f34 100644
+--- a/internal/features/board/tasks_handler.go
++++ b/internal/features/board/tasks_handler.go
+@@ -34,6 +34,8 @@ type taskService interface {
+ // PAID_ADMIN_ONLY — сервисная проверка, не роут-гард).
+ type TasksHandler struct {
+ 	svc taskService
++	// purgers — служебная уборка видов других пакетов (WithPurger); nil — только заказы.
++	purgers map[string]Purger
+ }
+ 
+ func NewTasksHandler(svc taskService) *TasksHandler { return &TasksHandler{svc: svc} }
+@@ -140,19 +142,39 @@ func (h *TasksHandler) Restore(c fiber.Ctx) error {
+ 	return c.JSON(resp)
+ }
+ 
+-// purgeKindTasks — единственный вид служебной уборки в части 1 (soft-delete-core §6.5).
++// purgeKindTasks — вид служебной уборки, которым владеет board (soft-delete-core §6.5).
+ const purgeKindTasks = "tasks"
+ 
++// Purger — физическая уборка записи одного вида по идентификатору из URL (служебный адрес
++// автотестов). Виды других пакетов подключаются WithPurger: board их не импортирует.
++type Purger func(ctx context.Context, id string) error
++
++// WithPurger — подключить уборку вида kind (часть 2 мастер-спеки soft-delete: transfers).
++func (h *TasksHandler) WithPurger(kind string, p Purger) *TasksHandler {
++	if h.purgers == nil {
++		h.purgers = map[string]Purger{}
++	}
++	h.purgers[kind] = p
++	return h
++}
++
+ // Purge — DELETE /api/v1/test/purge/:kind/:id (admin): служебная физическая уборка тестовых
+-// заказов автотестами. Роут регистрируется только при TEST_PURGE_ENABLED=true (DS-027).
+-// Вид не tasks → 404 NOT_FOUND.
++// данных автотестами. Роут регистрируется только при TEST_PURGE_ENABLED=true (DS-027).
++// Вид tasks — заказ; прочие виды — подключённые WithPurger (transfers, DS-038); неизвестный
++// вид → 404 NOT_FOUND.
+ func (h *TasksHandler) Purge(c fiber.Ctx) error {
+-	if c.Params("kind") != purgeKindTasks {
+-		return errPurgeNotFound()
+-	}
+ 	id := c.Params("id")
+-	if err := h.svc.Purge(c.Context(), currentActor(c), id); err != nil {
+-		return err
++	switch kind := c.Params("kind"); {
++	case kind == purgeKindTasks:
++		if err := h.svc.Purge(c.Context(), currentActor(c), id); err != nil {
++			return err
++		}
++	case h.purgers[kind] != nil:
++		if err := h.purgers[kind](c.Context(), id); err != nil {
++			return err
++		}
++	default:
++		return errPurgeNotFound()
+ 	}
+ 	return c.JSON(PurgeResponse{ID: id})
+ }
+diff --git a/internal/features/board/tasks_repo.go b/internal/features/board/tasks_repo.go
+index 984935a..608a965 100644
+--- a/internal/features/board/tasks_repo.go
++++ b/internal/features/board/tasks_repo.go
+@@ -116,7 +116,7 @@ const lastLogJoinSQL = `
+ const transfersAmountSQL = `
+ 	(SELECT round(coalesce(sum(round(si.price * si.qty_sent, 2)), 0), 2)
+ 	 FROM transfers st JOIN transfer_items si ON si.transfer_id = st.id
+-	 WHERE st.task_id = t.id AND st.direction = 'warehouse_to_client'
++	 WHERE st.task_id = t.id AND st.deleted_at IS NULL AND st.direction = 'warehouse_to_client'
+ 	   AND st.status IN ('in_transit', 'received') AND si.kind = 'product')`
+ 
+ // transfersAmountSelectSQL — transfersAmountSQL текстом (task.transfers_amount карточки).
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index 4eda2c8..24d8999 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -350,8 +350,10 @@ func (s *TaskService) Move(ctx context.Context, a Actor, idStr string, in TaskMo
+ 	return s.mutationResponse(ctx, a, id, reconcile)
+ }
+ 
+-// codeTaskHasTransfers — удаление заказа с неотменёнными документами «Перемещение»
+-// (transfers-revert DS-025): details.transfer_ids — номера мешающих документов по возрастанию.
++// codeTaskHasTransfers — служебная уборка заказа с неотменёнными действующими документами
++// «Перемещение» (soft-delete-core DS-036): details.transfer_ids — номера мешающих документов
++// по возрастанию. Продуктовое (мягкое) удаление заказа этот отказ больше не возвращает
++// (soft-delete-transfers DS-006).
+ const codeTaskHasTransfers = "TASK_HAS_TRANSFERS"
+ 
+ // errTaskHasTransfers — 409 TASK_HAS_TRANSFERS «Сначала отмените перемещения: #N, #M».
+@@ -369,18 +371,19 @@ func errTaskHasTransfers(ids []int64) error {
+ const codeTaskClientLockedByTransfers = "TASK_CLIENT_LOCKED_BY_TRANSFERS"
+ 
+ // clientLockedByTransfers — запрет смены клиента заказа с документами «Перемещение» (D84):
+-// есть хотя бы один документ заказа в ЛЮБОМ статусе (включая «Получено» и «Отменён») → 409
+-// TASK_CLIENT_LOCKED_BY_TRANSFERS с их номерами. transfers.client_id — снимок клиента заказа
+-// на момент создания документа; смена клиента заказа рассогласовала бы историю перемещений
+-// (документ клиента А у заказа клиента Б). Чтобы сменить клиента, документы нужно удалить
+-// (удаляется заявка либо отменённый документ).
++// есть хотя бы один ДЕЙСТВУЮЩИЙ документ заказа в любом статусе (включая «Получено» и
++// «Отменён») → 409 TASK_CLIENT_LOCKED_BY_TRANSFERS с их номерами. transfers.client_id — снимок
++// клиента заказа на момент создания документа; смена клиента заказа рассогласовала бы историю
++// перемещений (документ клиента А у заказа клиента Б). Мягко удалённые документы смене не
++// мешают (soft-delete-transfers DS-040): такой документ после смены клиента восстановить
++// нельзя (409 TRANSFER_CLIENT_MISMATCH, пакет transfers).
+ //
+-// Вызывается под блокировкой заказа (LockTask FOR UPDATE): создание документа заказа ждёт её
+-// (FOR KEY SHARE в transfers.checkRefs), новых документов до конца транзакции не появится.
+-// Строки transfers не блокируются — по той же причине, что и в deleteTaskTransfers (порядок
+-// блокировок пакета transfers: документ → заказ).
++// Вызывается под блокировкой заказа (LockTask FOR UPDATE): создание и восстановление документа
++// заказа ждут её (FOR KEY SHARE в пакете transfers), новых действующих документов до конца
++// транзакции не появится. Строки transfers не блокируются: порядок блокировок пакета
++// transfers — документ → заказ, обратный порядок здесь дал бы взаимную блокировку.
+ func clientLockedByTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error {
+-	rows, err := tx.Query(ctx, `SELECT id FROM transfers WHERE task_id = $1 ORDER BY id`, taskID)
++	rows, err := tx.Query(ctx, `SELECT id FROM transfers WHERE task_id = $1 AND deleted_at IS NULL ORDER BY id`, taskID)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -395,18 +398,21 @@ func clientLockedByTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error
+ 		"У заказа есть перемещения — сменить клиента нельзя").WithDetail("transfer_ids", ids)
+ }
+ 
+-// blockingTaskTransfers — неотменённые документы «Перемещение» заказа запрещают его удаление
+-// (transfers-revert DS-025; soft-delete-core DS-034 — отказ действует до части 2): есть
+-// документ в requested / in_transit / received → errTaskHasTransfers с их номерами.
++// deleteTaskTransfers — документы «Перемещение» ФИЗИЧЕСКИ удаляемого заказа (служебная
++// уборка, soft-delete-core DS-036, soft-delete-transfers DS-038): действующие неотменённые
++// (requested / in_transit / received) → errTaskHasTransfers, ничего не удалено; иначе
++// удаляются отменённые и все мягко удалённые документы заказа (строки — каскадом FK,
++// stock_movements.transfer_id → NULL: журнал остатков сохраняется; единицы мягко удалённой
++// заявки уже свободны). Мягкое удаление заказа документы не читает и не трогает (DS-006).
+ //
+-// Вызывается под блокировкой заказа (LockTask FOR UPDATE): создание документа заказа ждёт её
+-// (FOR KEY SHARE в transfers.checkRefs и FK), поэтому новых документов не появится, а
+-// «Отменён» терминален. Строки transfers при чтении НЕ блокируются (FOR UPDATE): порядок
+-// блокировок пакета transfers — документ → заказ, обратный порядок здесь дал бы взаимную
+-// блокировку с правкой заявки.
+-func blockingTaskTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error {
++// Вызывается под блокировкой заказа (LockTaskAny FOR UPDATE): создание документа заказа ждёт
++// её, «Отменён» терминален. Строки transfers при чтении НЕ блокируются (порядок блокировок
++// пакета transfers — документ → заказ). Документами владеет пакет transfers, но удаляет их
++// здесь board — тем же SQL-способом, каким он уже читает таблицу transfers (итог заказа):
++// импорт transfers → цикл пакетов не нужен. Страховка от гонки — FK transfers.task_id RESTRICT.
++func deleteTaskTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error {
+ 	rows, err := tx.Query(ctx, `
+-SELECT id FROM transfers WHERE task_id = $1 AND status <> 'cancelled' ORDER BY id`, taskID)
++SELECT id FROM transfers WHERE task_id = $1 AND status <> 'cancelled' AND deleted_at IS NULL ORDER BY id`, taskID)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -417,32 +423,16 @@ SELECT id FROM transfers WHERE task_id = $1 AND status <> 'cancelled' ORDER BY i
+ 	if len(blocking) > 0 {
+ 		return errTaskHasTransfers(blocking)
+ 	}
+-	return nil
+-}
+-
+-// deleteTaskTransfers — документы «Перемещение» ФИЗИЧЕСКИ удаляемого заказа (служебная
+-// уборка, soft-delete-core DS-036 — действующее поведение transfers-revert DS-050):
+-// неотменённые → errTaskHasTransfers, ничего не удалено; иначе отменённые документы удаляются
+-// (строки — каскадом FK, stock_movements.transfer_id → NULL: журнал остатков сохраняется).
+-// Мягкое удаление заказа документы не трогает (DS-034).
+-//
+-// Документами владеет пакет transfers, но удаляет их здесь board — тем же SQL-способом, каким
+-// он уже читает таблицу transfers (итог заказа): импорт transfers → цикл пакетов не нужен, а
+-// удаление отменённого документа не несёт логики (учёт он не затрагивает). Страховка от
+-// гонки — FK transfers.task_id RESTRICT.
+-func deleteTaskTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error {
+-	if err := blockingTaskTransfers(ctx, tx, taskID); err != nil {
+-		return err
+-	}
+-	_, err := tx.Exec(ctx, `DELETE FROM transfers WHERE task_id = $1 AND status = 'cancelled'`, taskID)
++	_, err = tx.Exec(ctx, `DELETE FROM transfers WHERE task_id = $1 AND (status = 'cancelled' OR deleted_at IS NOT NULL)`, taskID)
+ 	return err
+ }
+ 
+ // Delete — МЯГКОЕ удаление заказа (soft-delete-core §6.1): только admin (роут + повторная
+ // проверка роли в сервисе — первой, до поиска записи, DS-003), причина обязательна (DS-020).
+-// Одна транзакция под блокировкой заказа: неотменённые документы → 409 (DS-034; отменённые
+-// остаются у удалённого заказа) → StockEngine.Reconcile(false) возвращает все товары заказа
+-// на склад (DS-004) → отметка «кто, когда, почему». Строка, части заказа и файлы вложений
++// Одна транзакция под блокировкой заказа: StockEngine.Reconcile(false) возвращает все товары
++// заказа на склад (DS-004) → отметка «кто, когда, почему». Документы «Перемещение» заказа не
++// читаются и не меняются — заказ удаляется с документами в любом статусе, они остаются в
++// «Перемещениях» с пометкой «заказ удалён» (soft-delete-transfers DS-006, DS-007). Строка, части заказа и файлы вложений
+ // остаются (DS-013). Заказ уже удалён либо не существует → 404 (DS-024).
+ func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string, in softdelete.DeleteRequest) (*TaskDeleteResponse, error) {
+ 	if !a.IsAdmin {
+@@ -463,9 +453,6 @@ func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string, in soft
+ 		if _, err := s.repo.LockTask(ctx, tx, id); err != nil {
+ 			return taskLockError(err)
+ 		}
+-		if err := blockingTaskTransfers(ctx, tx, id); err != nil {
+-			return err
+-		}
+ 		res, err := s.engine.Reconcile(ctx, tx, id, false, a.ID)
+ 		if err != nil {
+ 			return err
+@@ -595,7 +582,8 @@ func firstNonFinal(cols []restoreColumn) *restoreColumn {
+ 
+ // Purge — служебная ФИЗИЧЕСКАЯ уборка заказа автотестами (soft-delete-core §6.5, DS-027,
+ // DS-036): прежнее безвозвратное удаление заказа, работает и для действующего, и для мягко
+-// удалённого. Неотменённые документы → 409, отменённые удаляются; товары возвращаются на склад
++// удалённого. Действующие неотменённые документы → 409, отменённые и мягко удалённые удаляются
++// (DS-038); товары возвращаются на склад
+ // (у удалённого заказа уже возвращены — Reconcile ничего не двигает); строка tasks удаляется
+ // (части — каскадом FK); файлы вложений — с диска после commit. Заказа нет → errNotFound
+ // наружу как 404 NOT_FOUND (сервис уборки не раскрывает вид записи).
+diff --git a/internal/features/clients/history.go b/internal/features/clients/history.go
+index 53ac50c..a042c21 100644
+--- a/internal/features/clients/history.go
++++ b/internal/features/clients/history.go
+@@ -135,7 +135,7 @@ func (r *Repo) EquipmentTransfers(ctx context.Context, equipmentID string) ([]Hi
+ 		JOIN transfers t        ON t.id = i.transfer_id
+ 		LEFT JOIN warehouses fw ON fw.id = t.from_warehouse_id
+ 		LEFT JOIN warehouses tw ON tw.id = t.to_warehouse_id
+-		WHERE i.equipment_id = $1::uuid
++		WHERE i.equipment_id = $1::uuid AND t.deleted_at IS NULL
+ 		ORDER BY t.id DESC`, equipmentID)
+ 	if err != nil {
+ 		return nil, err
+diff --git a/internal/features/softdelete/softdelete_http_live_test.go b/internal/features/softdelete/softdelete_http_live_test.go
+index 419de04..53e9e0b 100644
+--- a/internal/features/softdelete/softdelete_http_live_test.go
++++ b/internal/features/softdelete/softdelete_http_live_test.go
+@@ -281,7 +281,7 @@ func (s *SoftDeleteLiveSuite) TestTS009_ListFiltersEnvelopeOrder() {
+ 
+ 	// виды, чья часть мастер-спеки не смержена, — пустой список без ошибки.
+ 	for _, k := range softdelete.Kinds {
+-		if k == softdelete.KindTasks {
++		if k == softdelete.KindTasks || k == softdelete.KindTransfers { // части 1 и 2 смержены
+ 			continue
+ 		}
+ 		l := s.mustList("kind", string(k))
+@@ -290,6 +290,103 @@ func (s *SoftDeleteLiveSuite) TestTS009_ListFiltersEnvelopeOrder() {
+ 	}
+ }
+ 
++// ---- TS-009: вид transfers (часть 2, soft-delete-transfers §6.3, §8.2) ----
++
++// newTransfer — заявка «склад → склад» Алматы → Москва с одной товарной строкой, созданная b
++// через API документов того же сервера (товар — SQL-фикстура).
++func (s *SoftDeleteLiveSuite) newTransfer(b *testutil.Browser, mark string) (int64, int) {
++	ctx := context.Background()
++	var almaty, moscow, cat, product string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id::text FROM warehouses WHERE name = 'Алматы'`).Scan(&almaty))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id::text FROM warehouses WHERE name = 'Москва'`).Scan(&moscow))
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO catalog_categories (kind, name) VALUES ('product', $1) RETURNING id::text`, "SD "+uuid.NewString()).Scan(&cat))
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO products (category_id, name) VALUES ($1, $2) RETURNING id::text`, cat, "Товар "+mark).Scan(&product))
++	st, raw := b.Do(http.MethodPost, "/api/v1/transfers", map[string]any{
++		"direction": "warehouse_to_warehouse", "from_warehouse_id": almaty, "to_warehouse_id": moscow,
++		"items": []map[string]any{{"kind": "product", "product_id": product, "qty_sent": 1}},
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var doc struct {
++		ID      int64 `json:"id"`
++		Version int   `json:"version"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &doc), string(raw))
++	return doc.ID, doc.Version
++}
++
++// TS-009 (DS-011, soft-delete-transfers §6.3): вид transfers отдаёт удалённые документы —
++// title «Перемещение #N», subtitle «направление · статус», is_archived = false, deleted_with =
++// null; сортировка — deleted_at по убыванию; поиск по причине и номеру («#N»), фильтр «кто
++// удалил»; counts.transfers = total списка. Восстановленный документ из списка уходит.
++// Негатив: действующий документ в список не входит; исполнитель → 403.
++func (s *SoftDeleteLiveSuite) TestTS009_TransfersKind() {
++	mark := "sdtr" + uuid.NewString()[:8]
++	other, otherID := s.user("sd-tr-"+mark, "Второй Удаляющий", "admin")
++	del := func(b *testutil.Browser, id int64, version int, reason string) {
++		st, raw := b.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d", id), map[string]any{"reason": reason, "version": version})
++		s.Require().Equal(http.StatusOK, st, string(raw))
++	}
++
++	reqID, reqVer := s.newTransfer(s.admin, mark)
++	del(s.admin, reqID, reqVer, "Заявка "+mark)
++	cncID, cncVer := s.newTransfer(s.admin, mark)
++	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/cancel", cncID), map[string]any{"version": cncVer})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	del(other, cncID, cncVer+1, "Отменённый "+mark)
++	liveID, _ := s.newTransfer(s.admin, mark) // действующий — в список не входит
++	req, cnc := fmt.Sprint(reqID), fmt.Sprint(cncID)
++
++	l := s.mustList("kind", "transfers", "q", mark)
++	s.Equal(2, l.Total)
++	s.Equal([]string{cnc, req}, ids(l), "новые удаления сверху")
++	s.NotContains(ids(s.mustList("kind", "transfers", "limit", "200")), fmt.Sprint(liveID))
++	top := l.Items[0]
++	s.Equal("transfers", top.Kind)
++	s.Equal("Перемещение #"+cnc, top.Title)
++	s.Equal("Склад → склад · Отменён", top.Subtitle)
++	s.Equal("Отменённый "+mark, top.DeleteReason)
++	s.Equal(otherID, top.DeletedBy.ID)
++	s.Equal("Второй Удаляющий", top.DeletedBy.Name)
++	s.False(top.IsArchived)
++	s.Nil(top.DeletedWith)
++	s.WithinDuration(time.Now(), top.DeletedAt, time.Minute)
++	s.Equal("Перемещение #"+req, l.Items[1].Title)
++	s.Equal("Склад → склад · Заявка", l.Items[1].Subtitle)
++
++	// фильтры сочетаются по «И»: номер, причина без учёта регистра, кто удалил.
++	s.Equal([]string{req}, ids(s.mustList("kind", "transfers", "q", "#"+req)))
++	s.Equal([]string{req}, ids(s.mustList("kind", "transfers", "q", strings.ToUpper("заявка "+mark))))
++	s.Equal([]string{cnc}, ids(s.mustList("kind", "transfers", "q", mark, "deleted_by", otherID)))
++	s.Empty(ids(s.mustList("kind", "transfers", "q", "#"+req, "deleted_by", otherID)))
++	// пагинация в конверте.
++	page := s.mustList("kind", "transfers", "q", mark, "limit", "1", "offset", "1")
++	s.Equal([]string{req}, ids(page))
++	s.Equal(2, page.Total)
++	s.Equal(1, page.Limit)
++	s.Equal(1, page.Offset)
++
++	// счётчик вкладки = total списка; восстановление уменьшает оба.
++	count := func() int {
++		st, raw := s.admin.Do(http.MethodGet, api+"/summary", nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var out summaryDTO
++		s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++		return out.Counts["transfers"]
++	}
++	before := count()
++	s.Equal(s.mustList("kind", "transfers", "limit", "1").Total, before)
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/transfers/"+req+"/restore", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(before-1, count())
++	s.Equal([]string{cnc}, ids(s.mustList("kind", "transfers", "q", mark)))
++
++	exec, _ := s.user("sd-tr-exec-"+mark, "Исполнитель", "executor")
++	st, _, raw = s.list(exec, "kind", "transfers")
++	s.Equal(http.StatusForbidden, st, string(raw))
++}
++
+ // ---- TS-010 ----
+ 
+ // TS-010 (DS-025): заказ удалён 2026-10-06T23:30:00Z — это 6 октября для пользователя с
+@@ -352,7 +449,7 @@ func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
+ 		s.True(ok, "нет счётчика %s", k.CountKey())
+ 		s.Equal(s.mustList("kind", string(k), "limit", "1").Total, n, "счётчик %s = total списка", k)
+ 	}
+-	for _, key := range []string{"transfers", "columns", "clients", "equipment", "products", "services",
++	for _, key := range []string{"columns", "clients", "equipment", "products", "services",
+ 		"catalog_categories", "equipment_types", "warehouses", "suppliers"} {
+ 		s.Equal(0, sum.Counts[key], key)
+ 	}
+diff --git a/internal/features/softdelete/transfers_source.go b/internal/features/softdelete/transfers_source.go
+new file mode 100644
+index 0000000..5a11faa
+--- /dev/null
++++ b/internal/features/softdelete/transfers_source.go
+@@ -0,0 +1,108 @@
++package softdelete
++
++import (
++	"context"
++	"strconv"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++// TransfersSource — удалённые документы перемещения (вкладка «Перемещения», часть 2
++// soft-delete-transfers). Читает таблицу transfers напрямую: softdelete — reader, отметку
++// удаления пишет пакет transfers.
++type TransfersSource struct {
++	pool *pgxpool.Pool
++}
++
++func NewTransfersSource(pool *pgxpool.Pool) *TransfersSource { return &TransfersSource{pool: pool} }
++
++// transferDirectionLabels / transferStatusLabels — подписи направления и статуса документа в
++// подзаголовке строки («Склад → склад · Заявка»): те же, что на экране «Перемещения»
++// (web/ssr/_shared/js/transfers.js). Удалён может быть только документ в «Заявка» / «Отменён».
++var (
++	transferDirectionLabels = map[string]string{
++		"client_to_warehouse":    "Приём от клиента",
++		"warehouse_to_client":    "Возврат клиенту",
++		"warehouse_to_warehouse": "Склад → склад",
++		"supplier_to_warehouse":  "Приход от поставщика",
++	}
++	transferStatusLabels = map[string]string{
++		"requested": "Заявка",
++		"cancelled": "Отменён",
++	}
++)
++
++// TransferSubtitle — подзаголовок строки удалённого документа: «направление · статус»;
++// неизвестное значение отдаётся как есть.
++func TransferSubtitle(direction, status string) string {
++	d, ok := transferDirectionLabels[direction]
++	if !ok {
++		d = direction
++	}
++	s, ok := transferStatusLabels[status]
++	if !ok {
++		s = status
++	}
++	return d + " · " + s
++}
++
++// transfersWhereSQL — фильтр вкладки «Перемещения»: $1 — строка поиска (причина; уже
++// экранирована), $2 — номер документа из строки поиска, $3/$4 — период [с; по), $5 — кто
++// удалил. Частичный индекс transfers_deleted_at_idx покрывает условие и сортировку.
++const transfersWhereSQL = `
++FROM transfers t
++JOIN users u ON u.id = t.deleted_by
++WHERE t.deleted_at IS NOT NULL
++  AND ($1::text IS NULL OR t.delete_reason ILIKE '%' || $1 || '%' ESCAPE '\'
++       OR t.id = $2::bigint)
++  AND ($3::timestamptz IS NULL OR t.deleted_at >= $3)
++  AND ($4::timestamptz IS NULL OR t.deleted_at < $4)
++  AND ($5::uuid IS NULL OR t.deleted_by = $5)`
++
++func (s *TransfersSource) List(ctx context.Context, f Filter) ([]Item, int, error) {
++	var q, by any
++	if f.Q != "" {
++		q = f.Q
++	}
++	if f.DeletedBy != "" {
++		by = f.DeletedBy
++	}
++	args := []any{q, f.QNumber, f.DeletedFrom, f.DeletedTo, by}
++
++	var total int
++	if err := s.pool.QueryRow(ctx, `SELECT count(*)`+transfersWhereSQL, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++
++	rows, err := s.pool.Query(ctx, `
++SELECT t.id, t.direction, t.status, t.deleted_at, u.id::text, coalesce(nullif(u.name, ''), u.login), t.delete_reason`+
++		transfersWhereSQL+`
++ORDER BY t.deleted_at DESC, t.id
++LIMIT $6 OFFSET $7`, append(args, f.Limit, f.Offset)...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++
++	out := []Item{}
++	for rows.Next() {
++		var id int64
++		var direction, status string
++		it := Item{Kind: string(KindTransfers)}
++		if err := rows.Scan(&id, &direction, &status, &it.DeletedAt, &it.DeletedBy.ID, &it.DeletedBy.Name, &it.DeleteReason); err != nil {
++			return nil, 0, err
++		}
++		it.ID = strconv.FormatInt(id, 10)
++		it.Title = "Перемещение #" + it.ID
++		it.Subtitle = TransferSubtitle(direction, status)
++		it.DeletedAt = it.DeletedAt.UTC()
++		out = append(out, it)
++	}
++	return out, total, rows.Err()
++}
++
++func (s *TransfersSource) Count(ctx context.Context) (int, error) {
++	var n int
++	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM transfers WHERE deleted_at IS NOT NULL`).Scan(&n)
++	return n, err
++}
+diff --git a/internal/features/softdelete/transfers_source_test.go b/internal/features/softdelete/transfers_source_test.go
+new file mode 100644
+index 0000000..6902bae
+--- /dev/null
++++ b/internal/features/softdelete/transfers_source_test.go
+@@ -0,0 +1,28 @@
++package softdelete
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++)
++
++// soft-delete-transfers §6.3, §8.2: подзаголовок строки удалённого документа — «направление ·
++// статус» подписями экрана «Перемещения»; неизвестное значение отдаётся как есть.
++func TestTransferSubtitle(t *testing.T) {
++	for _, tc := range []struct{ direction, status, want string }{
++		{"warehouse_to_warehouse", "requested", "Склад → склад · Заявка"},
++		{"client_to_warehouse", "cancelled", "Приём от клиента · Отменён"},
++		{"warehouse_to_client", "requested", "Возврат клиенту · Заявка"},
++		{"supplier_to_warehouse", "cancelled", "Приход от поставщика · Отменён"},
++		{"unknown_direction", "in_transit", "unknown_direction · in_transit"},
++	} {
++		assert.Equal(t, tc.want, TransferSubtitle(tc.direction, tc.status), tc.direction+"/"+tc.status)
++	}
++}
++
++// Вид transfers зарегистрирован в реестре и получает ключ счётчика «transfers».
++func TestKindTransfersRegistry(t *testing.T) {
++	assert.True(t, IsKind("transfers"))
++	assert.Equal(t, "transfers", KindTransfers.CountKey())
++	assert.Equal(t, KindTransfers, Kinds[1], "вкладка «Перемещения» — вторая после «Заказы»")
++}
+diff --git a/internal/features/transfers/dto.go b/internal/features/transfers/dto.go
+index 0d37698..2866d0f 100644
+--- a/internal/features/transfers/dto.go
++++ b/internal/features/transfers/dto.go
+@@ -1,6 +1,7 @@
+ package transfers
+ 
+ import (
++	"encoding/json"
+ 	"time"
+ 
+ 	"github.com/kitavrus/kanban-tree/pkg/numeric"
+@@ -122,8 +123,24 @@ type TransferUnreceiveRequest struct {
+ 	Reason  string `json:"reason"`
+ }
+ 
+-// TransferDeleteResponse — DELETE /api/v1/transfers/:id: номер удалённого документа.
++// TransferDeleteRequest — тело DELETE /api/v1/transfers/:id (soft-delete-transfers §6.1,
++// DS-028): причина 1–500 символов после обрезки пробелов и версия документа (раньше — query).
++// Version — сырой JSON: нет / null → required, не целое ≥ 1 → invalid (а не «битое тело»).
++type TransferDeleteRequest struct {
++	Reason  *string         `json:"reason"`
++	Version json.RawMessage `json:"version"`
++}
++
++// TransferDeleteResponse — DELETE /api/v1/transfers/:id: номер мягко удалённого документа и
++// момент удаления (UTC).
+ type TransferDeleteResponse struct {
++	ID        int64     `json:"id"`
++	DeletedAt time.Time `json:"deleted_at"`
++}
++
++// TransferRestoreResponse — POST /api/v1/transfers/:id/restore: номер восстановленного
++// документа.
++type TransferRestoreResponse struct {
+ 	ID int64 `json:"id"`
+ }
+ 
+@@ -186,6 +203,7 @@ type TransferResponse struct {
+ 	ToWarehouseName   *string                `json:"to_warehouse_name"`
+ 	TaskID            *int64                 `json:"task_id"`
+ 	TaskTitle         *string                `json:"task_title"`
++	TaskIsDeleted     bool                   `json:"task_is_deleted"`
+ 	ClientID          *string                `json:"client_id"`
+ 	ClientName        *string                `json:"client_name"`
+ 	SupplierID        *string                `json:"supplier_id"`
+@@ -215,7 +233,8 @@ type TransferResponse struct {
+ 	Warnings          []StockWarning         `json:"warnings"`
+ }
+ 
+-// TransferSummary — строка списка (без строк документа). Amount — сумма накладной (0.00 вне
++// TransferSummary — строка списка (без строк документа). TaskIsDeleted — заказ документа мягко
++// удалён (бейдж «заказ удалён», soft-delete-transfers DS-007; false, если заказа нет). Amount — сумма накладной (0.00 вне
+ // «склад → клиент»). UnreceivedAt — последняя отмена проведения (значок «↩» у документа,
+ // возвращённого откатом в «В пути»).
+ type TransferSummary struct {
+@@ -226,6 +245,7 @@ type TransferSummary struct {
+ 	ToWarehouseID     *string        `json:"to_warehouse_id"`
+ 	ToWarehouseName   *string        `json:"to_warehouse_name"`
+ 	TaskID            *int64         `json:"task_id"`
++	TaskIsDeleted     bool           `json:"task_is_deleted"`
+ 	ClientID          *string        `json:"client_id"`
+ 	ClientName        *string        `json:"client_name"`
+ 	SupplierID        *string        `json:"supplier_id"`
+diff --git a/internal/features/transfers/handler.go b/internal/features/transfers/handler.go
+index b5c8543..ed5f848 100644
+--- a/internal/features/transfers/handler.go
++++ b/internal/features/transfers/handler.go
+@@ -1,6 +1,8 @@
+ package transfers
+ 
+ import (
++	"bytes"
++	"encoding/json"
+ 	"strconv"
+ 
+ 	"github.com/gofiber/fiber/v3"
+@@ -136,9 +138,28 @@ func (h *Handler) Unreceive(c fiber.Ctx) error {
+ 	return c.JSON(resp)
+ }
+ 
+-// Delete — DELETE /api/v1/transfers/:id?version=N (только admin; «Заявка» / «Отменён»).
++// Delete — DELETE /api/v1/transfers/:id, тело {reason, version} (только admin; «Заявка» /
++// «Отменён»): мягкое удаление (soft-delete-transfers §6.1).
+ func (h *Handler) Delete(c fiber.Ctx) error {
+-	resp, err := h.svc.Delete(c.Context(), actor(c), c.Params("id"), c.Query("version"))
++	// Тело разбирается как JSON независимо от Content-Type; нечитаемое тело — то же, что
++	// отсутствие полей: единый ответ 400 VALIDATION с details.fields[] (как у заказа, часть 1).
++	var req TransferDeleteRequest
++	if body := bytes.TrimSpace(c.Body()); len(body) > 0 {
++		if err := json.Unmarshal(body, &req); err != nil {
++			req = TransferDeleteRequest{}
++		}
++	}
++	resp, err := h.svc.Delete(c.Context(), actor(c), c.Params("id"), req)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Restore — POST /api/v1/transfers/:id/restore (только admin): вернуть документ из раздела
++// «Удалённые». Тела нет.
++func (h *Handler) Restore(c fiber.Ctx) error {
++	resp, err := h.svc.Restore(c.Context(), actor(c), c.Params("id"))
+ 	if err != nil {
+ 		return err
+ 	}
+diff --git a/internal/features/transfers/migration_soft_delete_integration_test.go b/internal/features/transfers/migration_soft_delete_integration_test.go
+new file mode 100644
+index 0000000..9836cc7
+--- /dev/null
++++ b/internal/features/transfers/migration_soft_delete_integration_test.go
+@@ -0,0 +1,151 @@
++//go:build integration
++
++package transfers_test
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// TransfersSoftDeleteMigrationSuite — миграция 0019 (soft-delete-transfers §4.1, TS-012):
++// три колонки удаления на transfers (deleted_at, deleted_by FK users RESTRICT, delete_reason),
++// CHECK transfers_deleted_chk («три поля вместе», причина 1–500 символов после обрезки, удалён
++// может быть только документ в requested / cancelled) и частичный индекс
++// transfers_deleted_at_idx. Существующие документы после up — действующие (DS-022); down
++// убирает колонки, документы остаются.
++type TransfersSoftDeleteMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestTransfersSoftDeleteMigrationSuite(t *testing.T) {
++	suite.Run(t, new(TransfersSoftDeleteMigrationSuite))
++}
++
++const (
++	tsdAdminID  = "aaaaaaaa-0019-0019-0019-000000000001"
++	tsdSecondID = "aaaaaaaa-0019-0019-0019-000000000002"
++)
++
++func (s *TransfersSoftDeleteMigrationSuite) scalar(q string, args ...any) string {
++	var v string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), q, args...).Scan(&v), q)
++	return v
++}
++
++func (s *TransfersSoftDeleteMigrationSuite) exec(q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	s.Require().NoError(err, q)
++}
++
++// failsCheck — запрос обязан упасть на CHECK transfers_deleted_chk.
++func (s *TransfersSoftDeleteMigrationSuite) failsCheck(name, q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	if s.Error(err, name) {
++		s.Contains(err.Error(), "transfers_deleted_chk", name)
++	}
++}
++
++// columns — «имя:тип:nullable» колонок удаления таблицы transfers, по имени.
++func (s *TransfersSoftDeleteMigrationSuite) columns() string {
++	return s.scalar(`
++		SELECT coalesce(string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY column_name), '')
++		FROM information_schema.columns
++		WHERE table_name = 'transfers' AND column_name IN ('deleted_at', 'deleted_by', 'delete_reason')`)
++}
++
++func (s *TransfersSoftDeleteMigrationSuite) exists(catalog, name string) bool {
++	q := `SELECT count(*)::text FROM pg_constraint WHERE conname = $1`
++	if catalog == "index" {
++		q = `SELECT count(*)::text FROM pg_indexes WHERE indexname = $1`
++	}
++	return s.scalar(q, name) == "1"
++}
++
++// TS-012 (DS-022, DS-030): up — существующие документы действующие; CHECK отклоняет частичное
++// заполнение, пустую и слишком длинную причину, удаление проведённого документа; down / up.
++func (s *TransfersSoftDeleteMigrationSuite) TestTS012_Migration0019_UpDown() {
++	ctx := context.Background()
++	mig, err := migrate.New(migrationsURL(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(18))
++	defer func() {
++		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	s.Empty(s.columns(), "0018: колонок удаления на transfers нет")
++
++	// ---- данные «до» (0018): документы во всех четырёх статусах ----
++	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'tsd-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, tsdAdminID)
++	almaty := s.scalar(`SELECT id::text FROM warehouses WHERE name = 'Алматы'`)
++	moscow := s.scalar(`SELECT id::text FROM warehouses WHERE name = 'Москва'`)
++	docs := map[string]int64{}
++	for _, status := range []string{"requested", "in_transit", "received", "cancelled"} {
++		var id int64
++		s.Require().NoError(s.Pool.QueryRow(ctx, `
++			INSERT INTO transfers (direction, from_warehouse_id, to_warehouse_id, status, created_by)
++			VALUES ('warehouse_to_warehouse', $1, $2, $3, $4) RETURNING id`, almaty, moscow, status, tsdAdminID).Scan(&id))
++		docs[status] = id
++		defer s.exec(`DELETE FROM transfers WHERE id = $1`, id)
++	}
++
++	// ---- up → 0019 ----
++	s.Require().NoError(mig.Migrate(19))
++	s.Equal("delete_reason:text:YES,deleted_at:timestamp with time zone:YES,deleted_by:uuid:YES", s.columns())
++	s.True(s.exists("constraint", "transfers_deleted_chk"))
++	s.True(s.exists("index", "transfers_deleted_at_idx"))
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM transfers WHERE deleted_at IS NOT NULL OR deleted_by IS NOT NULL OR delete_reason IS NOT NULL`),
++		"все существующие документы — действующие")
++
++	requested, cancelled := docs["requested"], docs["cancelled"]
++	// негатив: «три поля вместе» — частичное заполнение отклоняется.
++	s.failsCheck("только deleted_at", `UPDATE transfers SET deleted_at = now() WHERE id = $1`, requested)
++	s.failsCheck("без deleted_by", `UPDATE transfers SET deleted_at = now(), delete_reason = 'x' WHERE id = $1`, requested)
++	s.failsCheck("без причины", `UPDATE transfers SET deleted_at = now(), deleted_by = $2 WHERE id = $1`, requested, tsdAdminID)
++	s.failsCheck("только причина", `UPDATE transfers SET delete_reason = 'x' WHERE id = $1`, requested)
++	// причина — 1–500 символов после обрезки пробелов (символов, не байт).
++	s.failsCheck("причина из пробелов",
++		`UPDATE transfers SET deleted_at = now(), deleted_by = $2, delete_reason = '   ' WHERE id = $1`, requested, tsdAdminID)
++	s.failsCheck("причина 501 символ",
++		`UPDATE transfers SET deleted_at = now(), deleted_by = $2, delete_reason = $3 WHERE id = $1`, requested, tsdAdminID, strings.Repeat("я", 501))
++	// удалён может быть только документ, не влияющий на учёт (DS-018).
++	for _, status := range []string{"in_transit", "received"} {
++		s.failsCheck("удаление документа "+status,
++			`UPDATE transfers SET deleted_at = now(), deleted_by = $2, delete_reason = 'x' WHERE id = $1`, docs[status], tsdAdminID)
++	}
++	// позитив: заявка и отменённый удаляются; причина 500 символов допустима.
++	s.exec(`UPDATE transfers SET deleted_at = now(), deleted_by = $2, delete_reason = $3 WHERE id = $1`, requested, tsdAdminID, strings.Repeat("я", 500))
++	s.exec(`UPDATE transfers SET deleted_at = now(), deleted_by = $2, delete_reason = 'Создан по ошибке' WHERE id = $1`, cancelled, tsdAdminID)
++	// удалённый документ нельзя перевести в проведённый статус в обход восстановления.
++	s.failsCheck("отправка удалённой заявки", `UPDATE transfers SET status = 'in_transit' WHERE id = $1`, requested)
++
++	// FK deleted_by → users: несуществующий пользователь и удаление автора удаления запрещены.
++	_, err = s.Pool.Exec(ctx, `UPDATE transfers SET deleted_by = 'aaaaaaaa-0019-0019-0019-00000000dead' WHERE id = $1`, cancelled)
++	s.Error(err, "deleted_by — несуществующий пользователь")
++	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'tsd-second', 'x', 'Second', 'admin') ON CONFLICT (id) DO NOTHING`, tsdSecondID)
++	s.exec(`UPDATE transfers SET deleted_by = $2 WHERE id = $1`, cancelled, tsdSecondID)
++	_, err = s.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, tsdSecondID)
++	s.Error(err, "удаление пользователя, удалившего документ (RESTRICT)")
++
++	// ---- down → 0018: колонки и ограничения ушли, документы остались ----
++	s.Require().NoError(mig.Migrate(18))
++	s.Empty(s.columns())
++	s.False(s.exists("constraint", "transfers_deleted_chk"))
++	s.False(s.exists("index", "transfers_deleted_at_idx"))
++	s.Equal("4", s.scalar(`SELECT count(*)::text FROM transfers WHERE id = ANY($1)`, []int64{docs["requested"], docs["in_transit"], docs["received"], docs["cancelled"]}))
++	s.exec(`DELETE FROM users WHERE id = $1`, tsdSecondID) // FK ушёл вместе с колонкой
++
++	// повторный up поверх отката проходит; документы снова действующие.
++	s.Require().NoError(mig.Migrate(19))
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM transfers WHERE id = ANY($1) AND deleted_at IS NOT NULL`,
++		[]int64{requested, cancelled}))
++}
+diff --git a/internal/features/transfers/repo.go b/internal/features/transfers/repo.go
+index 42fe043..af13507 100644
+--- a/internal/features/transfers/repo.go
++++ b/internal/features/transfers/repo.go
+@@ -21,6 +21,13 @@ var (
+ 	errVersion = errors.New("transfers: version mismatch")
+ 	// errOverflow — 22003 numeric_value_out_of_range при изменении остатка.
+ 	errOverflow = errors.New("transfers: stock overflow")
++	// errTaskDeleted — заказ нового документа мягко удалён (409 TASK_DELETED, DS-007).
++	errTaskDeleted = errors.New("transfers: task deleted")
++	// errNotDeleted — восстановление действующего документа (409 NOT_DELETED, DS-024).
++	errNotDeleted = errors.New("transfers: not deleted")
++	// errClientMismatch — клиент заказа сменился, пока документ был удалён (409
++	// TRANSFER_CLIENT_MISMATCH, DS-040).
++	errClientMismatch = errors.New("transfers: client mismatch")
+ )
+ 
+ // Действия над документом — ключ сообщения 409 TRANSFER_STATUS_CONFLICT (§6.4–§6.7).
+@@ -61,6 +68,13 @@ type notAtSourceError struct {
+ 
+ func (e *notAtSourceError) Error() string { return "transfers: equipment not at source" }
+ 
++// notInTaskError — восстановление заявки с заказом: единицу equipmentID убрали из оборудования
++// заказа, пока документ был удалён (409 TRANSFER_EQUIPMENT_NOT_IN_TASK). При создании и правке
++// то же условие — ошибка поля not_in_task (checkRefs, DS-035).
++type notInTaskError struct{ equipmentID string }
++
++func (e *notInTaskError) Error() string { return "transfers: equipment not in task" }
++
+ // unreceiveBlockedError — отмена проведения запрещена единицей equipmentID (transfers-revert
+ // DS-023, 409 TRANSFER_UNRECEIVE_BLOCKED): later — её увёз более поздний полученный документ
+ // transferID; иначе она стоит в другом незавершённом документе transferID. transferID = 0 —
+@@ -116,21 +130,25 @@ const amountSelectSQL = `
+        (SELECT round(coalesce(sum(round(ai.price * ai.qty_sent, 2)), 0), 2)
+         FROM transfer_items ai WHERE ai.transfer_id = t.id AND ai.kind = 'product')::text`
+ 
+-// List — перемещения, новые сверху; warehouse_id — откуда ИЛИ куда.
++// List — действующие перемещения, новые сверху; warehouse_id — откуда ИЛИ куда. Мягко
++// удалённые документы в список не входят (soft-delete-transfers DS-026); task_is_deleted —
++// заказ документа мягко удалён (DS-007; false, если заказа нет).
+ func (r *Repo) List(ctx context.Context, p ListParams) ([]TransferSummary, int, error) {
+ 	rows, err := r.pool.Query(ctx, `
+ SELECT t.id, t.direction, t.from_warehouse_id::text, fw.name, t.to_warehouse_id::text, tw.name,
+-       t.task_id, t.client_id::text, c.company_name, t.supplier_id::text, sp.name,
++       t.task_id, tk.deleted_at IS NOT NULL, t.client_id::text, c.company_name, t.supplier_id::text, sp.name,
+        t.status, t.note,
+        (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id)::int,
+        cu.name, t.unreceived_at, t.created_at, t.updated_at, t.version, `+amountSelectSQL+`, count(*) OVER () AS total
+ FROM transfers t
+ LEFT JOIN warehouses fw ON fw.id = t.from_warehouse_id
+ LEFT JOIN warehouses tw ON tw.id = t.to_warehouse_id
++LEFT JOIN tasks tk      ON tk.id = t.task_id
+ LEFT JOIN clients c     ON c.id = t.client_id
+ LEFT JOIN suppliers sp  ON sp.id = t.supplier_id
+ JOIN users cu           ON cu.id = t.created_by
+-WHERE ($1::text IS NULL OR t.status = $1)
++WHERE t.deleted_at IS NULL
++  AND ($1::text IS NULL OR t.status = $1)
+   AND ($2::uuid IS NULL OR t.from_warehouse_id = $2::uuid OR t.to_warehouse_id = $2::uuid)
+   AND ($3::text IS NULL OR t.direction = $3)
+   AND ($4::bigint IS NULL OR t.task_id = $4)
+@@ -151,7 +169,7 @@ LIMIT $10 OFFSET $11`, nullable(p.Status), nullable(p.WarehouseID), nullable(p.D
+ 		var t TransferSummary
+ 		var amount string
+ 		if err := rows.Scan(&t.ID, &t.Direction, &t.FromWarehouseID, &t.FromWarehouseName, &t.ToWarehouseID, &t.ToWarehouseName,
+-			&t.TaskID, &t.ClientID, &t.ClientName, &t.SupplierID, &t.SupplierName,
++			&t.TaskID, &t.TaskIsDeleted, &t.ClientID, &t.ClientName, &t.SupplierID, &t.SupplierName,
+ 			&t.Status, &t.Note, &t.ItemsCount, &t.CreatedByName, &t.UnreceivedAt, &t.CreatedAt, &t.UpdatedAt, &t.Version, &amount, &total); err != nil {
+ 			return nil, 0, err
+ 		}
+@@ -161,7 +179,8 @@ LIMIT $10 OFFSET $11`, nullable(p.Status), nullable(p.WarehouseID), nullable(p.D
+ 	return out, total, rows.Err()
+ }
+ 
+-// Get — карточка перемещения со строками (q — пул или транзакция).
++// Get — карточка действующего перемещения со строками (q — пул или транзакция); мягко
++// удалённый документ — errNotFound (DS-026).
+ func (r *Repo) Get(ctx context.Context, id int64) (*TransferResponse, error) {
+ 	return getTransfer(ctx, r.pool, id)
+ }
+@@ -171,7 +190,7 @@ func getTransfer(ctx context.Context, q querier, id int64) (*TransferResponse, e
+ 	var amount string
+ 	err := q.QueryRow(ctx, `
+ SELECT t.id, t.direction, t.from_warehouse_id::text, fw.name, t.to_warehouse_id::text, tw.name,
+-       t.task_id, tk.title, t.client_id::text, c.company_name, t.supplier_id::text, sp.name,
++       t.task_id, tk.title, tk.deleted_at IS NOT NULL, t.client_id::text, c.company_name, t.supplier_id::text, sp.name,
+        t.status, t.note,
+        t.created_by::text, cu.name,
+        t.sent_by::text, su.name, t.sent_at,
+@@ -190,8 +209,8 @@ LEFT JOIN users su ON su.id = t.sent_by
+ LEFT JOIN users ru ON ru.id = t.received_by
+ LEFT JOIN users xu ON xu.id = t.cancelled_by
+ LEFT JOIN users uu ON uu.id = t.unreceived_by
+-WHERE t.id = $1`, id).Scan(&t.ID, &t.Direction, &t.FromWarehouseID, &t.FromWarehouseName, &t.ToWarehouseID, &t.ToWarehouseName,
+-		&t.TaskID, &t.TaskTitle, &t.ClientID, &t.ClientName, &t.SupplierID, &t.SupplierName,
++WHERE t.id = $1 AND t.deleted_at IS NULL`, id).Scan(&t.ID, &t.Direction, &t.FromWarehouseID, &t.FromWarehouseName, &t.ToWarehouseID, &t.ToWarehouseName,
++		&t.TaskID, &t.TaskTitle, &t.TaskIsDeleted, &t.ClientID, &t.ClientName, &t.SupplierID, &t.SupplierName,
+ 		&t.Status, &t.Note, &t.CreatedBy, &t.CreatedByName,
+ 		&t.SentBy, &t.SentByName, &t.SentAt,
+ 		&t.ReceivedBy, &t.ReceivedByName, &t.ReceivedAt,
+@@ -294,7 +313,7 @@ func mapPgErr(err error) error {
+ // Head — направление и заказ документа без блокировки (оба после создания не меняются):
+ // вход валидатора правки и проверки скоупа исполнителя.
+ func (r *Repo) Head(ctx context.Context, id int64) (direction string, taskID *int64, err error) {
+-	err = r.pool.QueryRow(ctx, `SELECT direction, task_id FROM transfers WHERE id = $1`, id).Scan(&direction, &taskID)
++	err = r.pool.QueryRow(ctx, `SELECT direction, task_id FROM transfers WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&direction, &taskID)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return "", nil, errNotFound
+ 	}
+@@ -307,7 +326,7 @@ func (r *Repo) Head(ctx context.Context, id int64) (direction string, taskID *in
+ // equipment.
+ func (r *Repo) Create(ctx context.Context, in Input, userID string, send, receive bool) (*TransferResponse, error) {
+ 	return r.inTx(ctx, func(tx pgx.Tx) ([]StockWarning, int64, error) {
+-		clientID, err := checkRefs(ctx, tx, in, nil, "")
++		clientID, err := checkRefs(ctx, tx, in, nil, "", true)
+ 		if err != nil {
+ 			return nil, 0, err
+ 		}
+@@ -357,7 +376,9 @@ func (r *Repo) Update(ctx context.Context, id int64, in Input, version int) (*Tr
+ 		if err != nil {
+ 			return nil, 0, err
+ 		}
+-		if _, err := checkRefs(ctx, tx, in, existing, doc.supplier); err != nil {
++		// заказ заявки мог быть мягко удалён — правка такой заявки разрешена (DS-007): заказ у
++		// документа не меняется, запрет TASK_DELETED действует только на создание.
++		if _, err := checkRefs(ctx, tx, in, existing, doc.supplier, false); err != nil {
+ 			return nil, 0, err
+ 		}
+ 		if _, err := tx.Exec(ctx, `
+@@ -678,32 +699,173 @@ WHERE id = ANY($2::uuid[])`, transferID, ids, locationInTransit)
+ 	return err
+ }
+ 
+-// Delete — удаление документа, не влияющего на учёт (transfers-revert DS-025): только
+-// requested / cancelled. Строки уходят каскадом FK, stock_movements.transfer_id и
+-// equipment.active_transfer_id (единицы заявки) — SET NULL. Возвращает статус удалённого.
+-func (r *Repo) Delete(ctx context.Context, id int64, version int) (string, error) {
++// SoftDelete — МЯГКОЕ удаление документа, не влияющего на учёт (soft-delete-transfers §6.1,
++// DS-018): только requested / cancelled. Одна транзакция: документ под FOR UPDATE (версия →
++// 409, статус → 409, уже удалён → errNotFound), единицы заявки освобождаются под блокировкой
++// строк equipment (порядок id — общий Lock Order «документ → equipment»), отметка «кто, когда,
++// почему». Строки документа, stock_movements, остатки и местоположение единиц не трогаются
++// (DS-008). Возвращает статус документа и момент удаления (UTC).
++func (r *Repo) SoftDelete(ctx context.Context, id int64, version int, userID, reason string) (string, time.Time, error) {
++	var at time.Time
+ 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+ 	if err != nil {
+-		return "", err
++		return "", at, err
+ 	}
+ 	defer func() { _ = tx.Rollback(ctx) }()
+ 	doc, err := lockTransfer(ctx, tx, id, version, actionDelete, StatusRequested, StatusCancelled)
++	if err != nil {
++		return "", at, err
++	}
++	if doc.status == StatusRequested {
++		ids, err := transferEquipmentIDs(ctx, tx, id)
++		if err != nil {
++			return "", at, err
++		}
++		if _, err := lockEquipment(ctx, tx, ids); err != nil {
++			return "", at, err
++		}
++		if _, err := tx.Exec(ctx, `UPDATE equipment SET active_transfer_id = NULL WHERE active_transfer_id = $1`, id); err != nil {
++			return "", at, err
++		}
++	}
++	// условия версии, статуса и «ещё не удалён» повторены в UPDATE (DS-024): под блокировкой
++	// строки они уже проверены, guard — страховка атомарности.
++	err = tx.QueryRow(ctx, `
++UPDATE transfers SET deleted_at = now(), deleted_by = $3::uuid, delete_reason = $4,
++       updated_at = now(), version = version + 1
++WHERE id = $1 AND version = $2 AND deleted_at IS NULL AND status IN ('requested', 'cancelled')
++RETURNING deleted_at`, id, version, userID, reason).Scan(&at)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return "", at, errNotFound
++	}
++	if err != nil {
++		return "", at, err
++	}
++	return doc.status, at.UTC(), tx.Commit(ctx)
++}
++
++// Restore — восстановление мягко удалённого документа (soft-delete-transfers §6.2). Одна
++// транзакция, Lock Order пакета «документ → заказ → equipment»:
++//   - документ под FOR UPDATE: нет → errNotFound; не удалён → errNotDeleted (DS-024);
++//   - у документа с заказом заказ блокируется FOR KEY SHARE (как checkRefs): смена клиента
++//     заказа (board, LockTask FOR UPDATE) либо уже видна — клиент документа не совпал →
++//     errClientMismatch, либо ждёт восстановление и после него видит действующий документ
++//     (409 TASK_CLIENT_LOCKED_BY_TRANSFERS) — DS-040;
++//   - у заявки с заказом каждая единица обязана по-прежнему входить в оборудование заказа
++//     (её могли убрать из заказа, пока документ был удалён) — иначе notInTaskError, документ
++//     остаётся удалённым;
++//   - у заявки единицы занимаются снова под блокировкой строк equipment (порядок id); единица
++//     в другом незавершённом документе → equipmentBusyError, документ остаётся удалённым
++//     (DS-018);
++//   - отметка удаления стирается (DS-030), version + 1.
++//
++// Остатки и местоположение единиц не меняются (DS-008). Возвращает статус документа.
++func (r *Repo) Restore(ctx context.Context, id int64) (string, error) {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+ 	if err != nil {
+ 		return "", err
+ 	}
++	defer func() { _ = tx.Rollback(ctx) }()
++	var (
++		status   string
++		deleted  bool
++		taskID   *int64
++		clientID *string
++	)
++	err = tx.QueryRow(ctx, `
++SELECT status, deleted_at IS NOT NULL, task_id, client_id::text FROM transfers WHERE id = $1 FOR UPDATE`, id).
++		Scan(&status, &deleted, &taskID, &clientID)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return "", errNotFound
++	}
++	if err != nil {
++		return "", err
++	}
++	if !deleted {
++		return "", errNotDeleted
++	}
++	if taskID != nil {
++		var taskClient string
++		if err := tx.QueryRow(ctx, `SELECT client_id::text FROM tasks WHERE id = $1 FOR KEY SHARE`, *taskID).Scan(&taskClient); err != nil {
++			return "", err
++		}
++		if clientID == nil || *clientID != taskClient {
++			return "", errClientMismatch
++		}
++	}
++	if status == StatusRequested {
++		ids, err := transferEquipmentIDs(ctx, tx, id)
++		if err != nil {
++			return "", err
++		}
++		if taskID != nil && len(ids) > 0 {
++			// та же выборка, что в checkRefs (DS-035), под уже взятой FOR KEY SHARE заказа:
++			// снятие единицы с заказа (board, LockTask FOR UPDATE) либо уже видно, либо ждёт
++			// восстановление и после него получает 409 EQUIPMENT_IN_TRANSFER.
++			inTask, err := idSet(ctx, tx, `
++SELECT te.equipment_id::text FROM task_equipment te
++JOIN equipment e ON e.id = te.equipment_id
++WHERE te.task_id = $2 AND e.client_id = $3::uuid AND te.equipment_id = ANY($1::uuid[])`, ids, *taskID, *clientID)
++			if err != nil {
++				return "", err
++			}
++			for _, eq := range ids { // ids отсортированы по id
++				if !inTask[eq] {
++					return "", &notInTaskError{equipmentID: eq}
++				}
++			}
++		}
++		if err := claimEquipment(ctx, tx, id, ids); err != nil {
++			return "", err
++		}
++	}
++	tag, err := tx.Exec(ctx, `
++UPDATE transfers SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL,
++       updated_at = now(), version = version + 1
++WHERE id = $1 AND deleted_at IS NOT NULL`, id)
++	if err != nil {
++		return "", err
++	}
++	if tag.RowsAffected() == 0 {
++		return "", errNotDeleted
++	}
++	return status, tx.Commit(ctx)
++}
++
++// Purge — служебная ФИЗИЧЕСКАЯ уборка документа автотестами (soft-delete-transfers §6.3,
++// DS-038): документ в requested / cancelled, действующий или мягко удалённый. Строки уходят
++// каскадом FK, stock_movements.transfer_id и equipment.active_transfer_id (единицы заявки) —
++// SET NULL. Проведённый документ → statusError (409), документа нет → errNotFound.
++func (r *Repo) Purge(ctx context.Context, id int64) error {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
++	if err != nil {
++		return err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++	var status string
++	err = tx.QueryRow(ctx, `SELECT status FROM transfers WHERE id = $1 FOR UPDATE`, id).Scan(&status)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return errNotFound
++	}
++	if err != nil {
++		return err
++	}
++	if status != StatusRequested && status != StatusCancelled {
++		return &statusError{action: actionDelete, status: status}
++	}
+ 	// единицы заявки блокируются явно в порядке id (освобождает их FK SET NULL) — порядок
+ 	// блокировок общий с остальными операциями пакета.
+ 	ids, err := transferEquipmentIDs(ctx, tx, id)
+ 	if err != nil {
+-		return "", err
++		return err
+ 	}
+ 	if _, err := lockEquipment(ctx, tx, ids); err != nil {
+-		return "", err
++		return err
+ 	}
+ 	if _, err := tx.Exec(ctx, `DELETE FROM transfers WHERE id = $1`, id); err != nil {
+-		return "", err
++		return err
+ 	}
+-	return doc.status, tx.Commit(ctx)
++	return tx.Commit(ctx)
+ }
+ 
+ // lockedTransfer — шапка документа под блокировкой: from / to / supplier — пустая строка,
+@@ -717,14 +879,14 @@ type lockedTransfer struct {
+ 
+ // lockTransfer — FOR UPDATE строки перемещения (первая блокировка транзакции, D50: затем
+ // product_stock, затем equipment); version сверяется ДО статуса — устаревшая форма получает
+-// 409 version.
++// 409 version. Мягко удалённый документ для мутаций не существует — errNotFound (DS-026).
+ func lockTransfer(ctx context.Context, tx pgx.Tx, id int64, version int, action string, allowed ...string) (lockedTransfer, error) {
+ 	var st lockedTransfer
+ 	var cur int
+ 	err := tx.QueryRow(ctx, `
+ SELECT status, direction, coalesce(from_warehouse_id::text, ''), coalesce(to_warehouse_id::text, ''),
+        coalesce(supplier_id::text, ''), version
+-FROM transfers WHERE id = $1 FOR UPDATE`, id).
++FROM transfers WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).
+ 		Scan(&st.status, &st.direction, &st.from, &st.to, &st.supplier, &cur)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return st, errNotFound
+@@ -1102,11 +1264,13 @@ func activeFlags(ctx context.Context, tx pgx.Tx, table string, ids []string) (ma
+ //   - склады направления существуют и активны;
+ //   - поставщик (приход от поставщика) существует и активен; архивный, уже стоящий в
+ //     документе (grandSupplier), допустим при пересохранении (TS-020);
+-//   - заказ (документы с клиентом) существует — возвращается его клиент (DS-012);
++//   - заказ (документы с клиентом) существует — возвращается его клиент (DS-012); при
++//     liveTaskOnly (создание документа) заказ не должен быть мягко удалён — errTaskDeleted
++//     (soft-delete-transfers DS-007);
+ //   - товары существуют и активны (архивный, уже бывший в заявке, — допустим, D52);
+ //   - единицы существуют; в документе с клиентом — входят в оборудование заказа и
+ //     принадлежат его клиенту, иначе not_in_task (DS-035).
+-func checkRefs(ctx context.Context, tx pgx.Tx, in Input, grandfathered map[string]bool, grandSupplier string) (*string, error) {
++func checkRefs(ctx context.Context, tx pgx.Tx, in Input, grandfathered map[string]bool, grandSupplier string, liveTaskOnly bool) (*string, error) {
+ 	var f []errorspkg.Field
+ 	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
+ 
+@@ -1149,17 +1313,23 @@ func checkRefs(ctx context.Context, tx pgx.Tx, in Input, grandfathered map[strin
+ 	var clientID *string
+ 	if in.TaskID != nil {
+ 		var cid string
++		var taskDeleted bool
+ 		// FOR KEY SHARE: заказ блокируется ДО чтения task_equipment и занятия единиц и держится
+ 		// до коммита. Снятие единицы с заказа и смена клиента заказа (board, LockTask FOR UPDATE)
+ 		// ждут документ и после него видят занятую единицу (409); если они успели раньше —
+ 		// следующий запрос (READ COMMITTED) уже видит их результат: not_in_task / новый клиент
+ 		// (DS-035, DS-026). Порядок блокировок общий с board: заказ → equipment.
+-		err := tx.QueryRow(ctx, `SELECT client_id::text FROM tasks WHERE id = $1 FOR KEY SHARE`, *in.TaskID).Scan(&cid)
++		// deleted_at читается под той же блокировкой: мягкое удаление заказа (FOR UPDATE) ждёт
++		// создание документа, а успевшее раньше — уже видно (TASK_DELETED, DS-007).
++		err := tx.QueryRow(ctx, `SELECT client_id::text, deleted_at IS NOT NULL FROM tasks WHERE id = $1 FOR KEY SHARE`, *in.TaskID).
++			Scan(&cid, &taskDeleted)
+ 		switch {
+ 		case errors.Is(err, pgx.ErrNoRows):
+ 			add("task_id", msgNotFound)
+ 		case err != nil:
+ 			return nil, err
++		case taskDeleted && liveTaskOnly:
++			return nil, errTaskDeleted
+ 		default:
+ 			clientID = &cid
+ 		}
+diff --git a/internal/features/transfers/routes.go b/internal/features/transfers/routes.go
+index a64b93c..bcf352a 100644
+--- a/internal/features/transfers/routes.go
++++ b/internal/features/transfers/routes.go
+@@ -3,6 +3,7 @@ package transfers
+ import (
+ 	"github.com/gofiber/fiber/v3"
+ 
++	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
+ )
+ 
+@@ -21,7 +22,11 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler,
+ 	g.Post("/:id/cancel", h.Cancel)
+ 	// transfers-revert: только администратор — роль проверяет сервис (исполнитель → 403).
+ 	g.Post("/:id/unreceive", h.Unreceive)
+-	g.Delete("/:id", h.Delete)
++	// soft-delete-transfers §6.1, §6.2: удаление — мягкое, с причиной; восстановление — только
++	// admin. Гард softdelete.AdminOnly: executor → 403 «Нет доступа» до поиска записи (DS-003).
++	sdAdmin := softdelete.AdminOnly()
++	g.Delete("/:id", sdAdmin, h.Delete)
++	g.Post("/:id/restore", sdAdmin, h.Restore)
+ 
+ 	if s == nil {
+ 		return
+diff --git a/internal/features/transfers/service.go b/internal/features/transfers/service.go
+index 708f530..fccd66f 100644
+--- a/internal/features/transfers/service.go
++++ b/internal/features/transfers/service.go
+@@ -12,6 +12,7 @@ import (
+ 	"github.com/google/uuid"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+ 
++	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ 	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+@@ -49,6 +50,16 @@ var (
+ 		"Оборудование уже не у клиента")
+ 	// ErrForbidden — исполнитель создаёт документ без клиента (DS-018).
+ 	ErrForbidden = errorspkg.New("FORBIDDEN", http.StatusForbidden, "Нет доступа")
++	// ErrTaskDeleted — новый документ по мягко удалённому заказу (soft-delete-transfers DS-007).
++	ErrTaskDeleted = errorspkg.New("TASK_DELETED", http.StatusConflict, "Заказ удалён — сначала восстановите его")
++	// ErrClientMismatch — клиент заказа сменился, пока документ был удалён: восстановить его
++	// нельзя (soft-delete-transfers DS-040).
++	ErrClientMismatch = errorspkg.New("TRANSFER_CLIENT_MISMATCH", http.StatusConflict,
++		"Клиент заказа изменён — восстановить перемещение нельзя")
++	// ErrEquipmentNotInTask — единицу заявки убрали из оборудования заказа, пока документ был
++	// удалён: восстановить его нельзя (по аналогии с DS-018 / DS-040); details.equipment_id.
++	ErrEquipmentNotInTask = errorspkg.New("TRANSFER_EQUIPMENT_NOT_IN_TASK", http.StatusConflict,
++		"Оборудование убрано из заказа — восстановить перемещение нельзя")
+ )
+ 
+ // Actor — пользователь запроса: права по направлениям (DS-018) и часовой пояс для границ
+@@ -326,9 +337,10 @@ func (s *Service) Unreceive(ctx context.Context, a Actor, rawID string, version
+ 	return t, nil
+ }
+ 
+-// Delete — удаление документа в статусе «Заявка» или «Отменён» (transfers-revert DS-025):
+-// только администратор (DS-042). rawVersion — query-параметр version.
+-func (s *Service) Delete(ctx context.Context, a Actor, rawID, rawVersion string) (*TransferDeleteResponse, error) {
++// Delete — МЯГКОЕ удаление документа в статусе «Заявка» или «Отменён» (soft-delete-transfers
++// §6.1, DS-018): только администратор — роль проверяется первой, до поиска записи (DS-003).
++// Причина и version — из тела (DS-020, DS-028). Документ уходит в раздел «Удалённые».
++func (s *Service) Delete(ctx context.Context, a Actor, rawID string, in TransferDeleteRequest) (*TransferDeleteResponse, error) {
+ 	if !a.IsAdmin {
+ 		return nil, ErrForbidden
+ 	}
+@@ -336,16 +348,54 @@ func (s *Service) Delete(ctx context.Context, a Actor, rawID, rawVersion string)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	version, f := parseVersion(rawVersion)
+-	if len(f) > 0 {
++	reason, f := softdelete.ValidateReason(in.Reason)
++	version, vf := parseVersion(in.Version)
++	if f = append(f, vf...); len(f) > 0 {
+ 		return nil, errorspkg.Validation(f...)
+ 	}
+-	status, err := s.repo.Delete(ctx, id, version)
++	status, deletedAt, err := s.repo.SoftDelete(ctx, id, version, a.ID, reason)
+ 	if err != nil {
+ 		return nil, mapErr(err)
+ 	}
+-	slog.InfoContext(ctx, "transfer deleted", "transfer_id", id, "status", status, "user_id", a.ID)
+-	return &TransferDeleteResponse{ID: id}, nil
++	// Аудит (DS-030): факт удаления — в журнал приложения; причина в журнал не пишется.
++	slog.InfoContext(ctx, "transfer deleted", "transfer_id", id, "status", status, "user_id", a.ID, "action", "delete")
++	return &TransferDeleteResponse{ID: id, DeletedAt: deletedAt}, nil
++}
++
++// Restore — восстановление мягко удалённого документа из раздела «Удалённые»
++// (soft-delete-transfers §6.2): только администратор, роль — первой (DS-003).
++func (s *Service) Restore(ctx context.Context, a Actor, rawID string) (*TransferRestoreResponse, error) {
++	if !a.IsAdmin {
++		return nil, ErrForbidden
++	}
++	id, err := parseID(rawID)
++	if err != nil {
++		return nil, err
++	}
++	status, err := s.repo.Restore(ctx, id)
++	if err != nil {
++		return nil, mapErr(err)
++	}
++	slog.InfoContext(ctx, "transfer restored", "transfer_id", id, "status", status, "user_id", a.ID, "action", "restore")
++	return &TransferRestoreResponse{ID: id}, nil
++}
++
++// Purge — служебная ФИЗИЧЕСКАЯ уборка документа автотестами (soft-delete-transfers §6.3,
++// DS-038): вид transfers адреса DELETE /api/v1/test/purge/:kind/:id (роут и гард admin — в
++// пакете board, существует только при TEST_PURGE_ENABLED=true). Документа нет → 404 NOT_FOUND
++// (уборка не раскрывает вид записи); «в пути» / «получено» → 409 TRANSFER_STATUS_CONFLICT.
++func (s *Service) Purge(ctx context.Context, rawID string) error {
++	id, err := strconv.ParseInt(rawID, 10, 64)
++	if err != nil || id <= 0 {
++		return errorspkg.NotFound("Не найдено")
++	}
++	if err := s.repo.Purge(ctx, id); err != nil {
++		if errors.Is(err, errNotFound) {
++			return errorspkg.NotFound("Не найдено")
++		}
++		return mapErr(err)
++	}
++	return nil
+ }
+ 
+ // actionTarget — id документа перехода: скоуп исполнителя (чужое направление → 404, раньше
+@@ -401,6 +451,7 @@ func mapErr(err error) error {
+ 		busy *equipmentBusyError
+ 		nas  *notAtSourceError
+ 		ub   *unreceiveBlockedError
++		nit  *notInTaskError
+ 	)
+ 	switch {
+ 	case err == nil:
+@@ -409,6 +460,14 @@ func mapErr(err error) error {
+ 		return ErrTransferNotFound
+ 	case errors.Is(err, errVersion):
+ 		return ErrVersionConflict
++	case errors.Is(err, errTaskDeleted):
++		return ErrTaskDeleted
++	case errors.Is(err, errNotDeleted):
++		return softdelete.ErrNotDeleted
++	case errors.Is(err, errClientMismatch):
++		return ErrClientMismatch
++	case errors.As(err, &nit):
++		return ErrEquipmentNotInTask.WithDetail("equipment_id", nit.equipmentID)
+ 	case errors.As(err, &se):
+ 		return statusConflict(se.action, se.status)
+ 	case errors.Is(err, errOverflow):
+diff --git a/internal/features/transfers/transfers_http_live_test.go b/internal/features/transfers/transfers_http_live_test.go
+index 4c3d941..6a0d9ad 100644
+--- a/internal/features/transfers/transfers_http_live_test.go
++++ b/internal/features/transfers/transfers_http_live_test.go
+@@ -40,7 +40,9 @@ type TransfersLiveSuite struct {
+ }
+ 
+ func TestTransfersLiveSuite(t *testing.T) {
+-	suite.Run(t, &TransfersLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++	// TEST_PURGE_ENABLED=true — служебная уборка документов (soft-delete-transfers TS-051); сьюта
++	// без неё (адреса нет, 404) — BoardLiveSuite.
++	suite.Run(t, &TransfersLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server", ExtraEnv: []string{"TEST_PURGE_ENABLED=true"}}})
+ }
+ 
+ func (s *TransfersLiveSuite) SetupSuite() {
+@@ -98,6 +100,7 @@ type transferDTO struct {
+ 	ToWarehouseName   string  `json:"to_warehouse_name"`
+ 	TaskID            *int64  `json:"task_id"`
+ 	TaskTitle         string  `json:"task_title"`
++	TaskIsDeleted     bool    `json:"task_is_deleted"`
+ 	ClientID          string  `json:"client_id"`
+ 	ClientName        string  `json:"client_name"`
+ 	SupplierID        string  `json:"supplier_id"`
+@@ -127,6 +130,7 @@ type listDTO struct {
+ 		Status       string      `json:"status"`
+ 		ItemsCount   int         `json:"items_count"`
+ 		TaskID       *int64      `json:"task_id"`
++		TaskDeleted  bool        `json:"task_is_deleted"`
+ 		ClientName   string      `json:"client_name"`
+ 		SupplierID   string      `json:"supplier_id"`
+ 		SupplierName string      `json:"supplier_name"`
+diff --git a/internal/features/transfers/transfers_revert_http_live_test.go b/internal/features/transfers/transfers_revert_http_live_test.go
+index f758f55..c13140b 100644
+--- a/internal/features/transfers/transfers_revert_http_live_test.go
++++ b/internal/features/transfers/transfers_revert_http_live_test.go
+@@ -41,10 +41,14 @@ func (s *TransfersLiveSuite) must(t transferDTO, act string, body map[string]any
+ 	return out
+ }
+ 
+-func deletePath(id int64, version any) string {
+-	return fmt.Sprintf("/api/v1/transfers/%d?version=%v", id, version)
++// deleteBody — тело мягкого удаления документа (soft-delete-transfers §6.1, DS-028): причина и
++// version — в JSON-теле (раньше version шёл в query).
++func deleteBody(version any) map[string]any {
++	return map[string]any{"reason": "Создан по ошибке", "version": version}
+ }
+ 
++func deletePath(id int64) string { return fmt.Sprintf("/api/v1/transfers/%d", id) }
++
+ // productLine — id товарной строки документа по товару.
+ func (s *TransfersLiveSuite) productLine(t transferDTO, productID string) string {
+ 	for _, it := range t.Items {
+@@ -583,11 +587,12 @@ func (s *TransfersLiveSuite) TestTS012_ParallelUnreceiveVsNewDocument() {
+ // ---- TS-016 ----
+ 
+ func (s *TransfersLiveSuite) deleteDoc(id int64, version any) (int, []byte) {
+-	return s.admin.Do(http.MethodDelete, deletePath(id, version), nil)
++	return s.admin.Do(http.MethodDelete, deletePath(id), deleteBody(version))
+ }
+ 
+-// TS-016: удаление документа — только «Заявка» и «Отменён». Заявка: строки удалены, единица
+-// свободна; отменённый (после «в пути»): движения остатков остались с transfer_id = NULL,
++// TS-016 (transfers-revert; с soft-delete-transfers DS-018 удаление мягкое): удаление документа
++// — только «Заявка» и «Отменён». Заявка: документ помечен удалённым, строки на месте, единица
++// свободна; отменённый (после «в пути»): движения остатков остаются привязаны к документу,
+ // остатки не изменились. «В пути» и «Получено» → 409 со своим сообщением, ничего не
+ // изменилось. Негатив: без version → 400 required, не число → 400 invalid, устаревшая версия
+ // → 409, повтор → 404.
+@@ -603,7 +608,7 @@ func (s *TransfersLiveSuite) TestTS016_DeleteDocumentByStatus() {
+ 	// ---- заявка ----
+ 	requested, uReq := mk(false)
+ 	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", requested.ID), s.unitLoc(uReq), "заявка занимает единицу")
+-	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d", requested.ID), nil)
++	st, raw := s.admin.Do(http.MethodDelete, deletePath(requested.ID), map[string]any{"reason": "Создан по ошибке"})
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal(map[string]string{"version": "required"}, s.fields(raw))
+ 	st, raw = s.deleteDoc(requested.ID, "abc")
+@@ -616,20 +621,24 @@ func (s *TransfersLiveSuite) TestTS016_DeleteDocumentByStatus() {
+ 	st, raw = s.deleteDoc(requested.ID, requested.Version)
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 	var deleted struct {
+-		ID int64 `json:"id"`
++		ID        int64     `json:"id"`
++		DeletedAt time.Time `json:"deleted_at"`
+ 	}
+ 	s.Require().NoError(json.Unmarshal(raw, &deleted), string(raw))
+ 	s.Equal(requested.ID, deleted.ID)
++	s.WithinDuration(time.Now(), deleted.DeletedAt, time.Minute)
+ 	st, _, raw = s.do(http.MethodGet, fmt.Sprintf("/api/v1/transfers/%d", requested.ID), nil)
+ 	s.Equal(http.StatusNotFound, st, string(raw))
+-	s.Equal("0", s.scalarText(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1`, requested.ID), "строки удалены каскадом")
++	s.Equal("requested|true", s.scalarText(`SELECT status || '|' || (deleted_at IS NOT NULL)::text FROM transfers WHERE id = $1`, requested.ID),
++		"документ помечен удалённым, статус не изменился")
++	s.Equal("2", s.scalarText(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1`, requested.ID), "строки на месте")
+ 	s.Equal("at_warehouse|Алматы|", s.unitLoc(uReq), "единица заявки свободна")
+ 	s.Equal("20.000", s.pairStock(p, s.almaty), "заявка остаток не двигала")
+ 	// свободную единицу можно поставить в новый документ.
+ 	reuse := s.create(s.body(unitItem(uReq)))
+ 	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", reuse.ID), s.unitLoc(uReq))
+ 	// повтор → 404.
+-	st, raw = s.deleteDoc(requested.ID, requested.Version)
++	st, raw = s.deleteDoc(requested.ID, requested.Version+1)
+ 	s.Equal(http.StatusNotFound, st, string(raw))
+ 	s.Equal("TRANSFER_NOT_FOUND", s.errOf(raw).Code)
+ 
+@@ -660,11 +669,10 @@ func (s *TransfersLiveSuite) TestTS016_DeleteDocumentByStatus() {
+ 	s.Len(s.movements(cancelled.ID), 4, "out, in, unreceive, return")
+ 	st, raw = s.deleteDoc(cancelled.ID, cancelled.Version)
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+-	s.Equal("0", s.scalarText(`SELECT count(*)::text FROM transfers WHERE id = $1`, cancelled.ID))
+-	s.Equal("0", s.scalarText(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1`, cancelled.ID))
+-	s.Empty(s.movements(cancelled.ID), "движения отвязаны от документа")
++	s.Equal("cancelled|true", s.scalarText(`SELECT status || '|' || (deleted_at IS NOT NULL)::text FROM transfers WHERE id = $1`, cancelled.ID))
++	s.Equal("2", s.scalarText(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1`, cancelled.ID), "строки на месте")
++	s.Len(s.movements(cancelled.ID), 4, "движения остаются привязаны к документу")
+ 	s.Equal(before, s.scalarText(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1`, p), "журнал остатков сохранён")
+-	s.Equal("4", s.scalarText(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1 AND transfer_id IS NULL`, p))
+ 	s.Equal("17.000", s.pairStock(p, s.almaty), "удаление остаток не меняет")
+ 	s.Equal("at_warehouse|Алматы|", s.unitLoc(uRcv))
+ }
+@@ -701,13 +709,13 @@ func (s *TransfersLiveSuite) TestTS015_ExecutorCannotUnreceiveOrDelete() {
+ 		s.Equal(doc.Version, after.Version)
+ 	}
+ 	for _, doc := range []transferDTO{ownReq, w2wReq} {
+-		st, raw := exec.Do(http.MethodDelete, deletePath(doc.ID, doc.Version), nil)
++		st, raw := exec.Do(http.MethodDelete, deletePath(doc.ID), deleteBody(doc.Version))
+ 		forbidden(st, raw, "delete "+doc.Direction)
+ 		s.Equal("requested", s.get(doc.ID).Status)
+ 	}
+ 	st, raw = exec.Do(http.MethodPost, "/api/v1/transfers/999999999/unreceive", map[string]any{"version": 1, "reason": "x"})
+ 	forbidden(st, raw, "unreceive несуществующего")
+-	st, raw = exec.Do(http.MethodDelete, deletePath(999999999, 1), nil)
++	st, raw = exec.Do(http.MethodDelete, deletePath(999999999), deleteBody(1))
+ 	forbidden(st, raw, "delete несуществующего")
+ 	s.Equal("at_warehouse|Алматы|", s.unitLoc(units[0]), "единица проведённого приёма на месте")
+ 
+diff --git a/internal/features/transfers/transfers_soft_delete_http_live_test.go b/internal/features/transfers/transfers_soft_delete_http_live_test.go
+new file mode 100644
+index 0000000..0d81204
+--- /dev/null
++++ b/internal/features/transfers/transfers_soft_delete_http_live_test.go
+@@ -0,0 +1,509 @@
++//go:build integration
++
++package transfers_test
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"strings"
++	"sync"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// Мягкое удаление документов «Перемещение» (docs/features/soft-delete-transfers/draft-spec.md
++// §11) — методы TransfersLiveSuite (§TD-8: боевой бинарь, реальный логин): TS-015 (документ
++// удалённого заказа доводится до конца, новый не создаётся), TS-016 (причина, невидимость
++// удалённого документа), TS-017 (восстановление заявки и занятая единица), TS-018 (гонка
++// «создание документа ↔ удаление заказа»), TS-033 (права). Удаление по статусам (TS-016) —
++// transfers_revert_http_live_test.go; заказ с документами (TS-014), смена клиента (TS-050) и
++// служебная уборка (TS-051) — сьюта доски (internal/features/board).
++
++// ---- хелперы ----
++
++func (s *TransfersLiveSuite) mustDeleteDoc(t transferDTO) {
++	st, raw := s.deleteDoc(t.ID, t.Version)
++	s.Require().Equal(http.StatusOK, st, "delete #%d → %s", t.ID, raw)
++}
++
++func (s *TransfersLiveSuite) restoreDoc(id int64) (int, []byte) {
++	return s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/restore", id), nil)
++}
++
++// softDeleteTask — мягкое удаление заказа через API доски того же сервера.
++func (s *TransfersLiveSuite) softDeleteTask(b *testutil.Browser, taskID int64) (int, []byte) {
++	return b.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{"reason": "Создан по ошибке"})
++}
++
++// docRow — «статус|удалён|версия» строки документа.
++func (s *TransfersLiveSuite) docRow(id int64) string {
++	return s.scalarText(`SELECT status || '|' || (deleted_at IS NOT NULL)::text || '|' || version::text FROM transfers WHERE id = $1`, id)
++}
++
++// ---- TS-015 ----
++
++// TS-015 (DS-007): документ удалённого заказа доводится до конца как обычный — PUT, send,
++// receive, unreceive, cancel → 200, в каждом ответе, в GET и в строке списка task_is_deleted =
++// true (название заказа отдаётся как обычно); местоположение единицы меняется проведением как
++// всегда. После восстановления заказа пометка исчезает. Негатив: POST /api/v1/transfers с
++// task_id удалённого заказа → 409 TASK_DELETED (и администратору, и исполнителю; и «создать»,
++// и «создать и отправить»), документа не появилось.
++func (s *TransfersLiveSuite) TestTS015_TransferOfDeletedTask() {
++	taskID, units := s.taskWithUnits(2)
++	st, doc, raw := s.do(http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, units[0]))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.False(doc.TaskIsDeleted, "заказ действует")
++	s.NotEmpty(doc.TaskTitle)
++
++	st, raw = s.softDeleteTask(s.admin, taskID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	got := s.get(doc.ID)
++	s.True(got.TaskIsDeleted, "GET: заказ удалён")
++	s.Equal(doc.TaskTitle, got.TaskTitle, "название удалённого заказа отдаётся как обычно")
++	s.Equal(doc.Version, got.Version, "удаление заказа документ не меняет")
++	_, l := s.listIDs(s.admin, fmt.Sprintf("&task_id=%d", taskID))
++	s.Require().Len(l.Items, 1)
++	s.True(l.Items[0].TaskDeleted, "строка списка: task_is_deleted")
++	_, l = s.listIDs(s.executor(), fmt.Sprintf("&task_id=%d", taskID))
++	s.Require().Len(l.Items, 1, "исполнитель видит документ своего направления")
++	s.True(l.Items[0].TaskDeleted)
++
++	// негатив: новый документ по удалённому заказу не создаётся.
++	before := s.transfersCount()
++	for _, b := range []*testutil.Browser{s.admin, s.executor()} {
++		for _, flags := range [][]any{nil, {"send", true}, {"receive", true}} {
++			st, _, raw = s.doAs(b, http.MethodPost, "/api/v1/transfers", with(intakeBody(taskID, s.almaty, units[1]), flags...))
++			s.expectConflict(st, raw, "TASK_DELETED", "Заказ удалён — сначала восстановите его", fmt.Sprint(flags))
++		}
++	}
++	s.Equal(before, s.transfersCount(), "документа не появилось")
++	s.Equal("at_client||", s.unitLoc(units[1]), "единица не занята")
++
++	// правка заявки удалённого заказа (заказ у документа не меняется).
++	st, edited, raw := s.do(http.MethodPut, fmt.Sprintf("/api/v1/transfers/%d", doc.ID), map[string]any{
++		"to_warehouse_id": s.moscow, "note": "правка после удаления заказа", "items": unitItems(units[0]), "version": doc.Version,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("правка после удаления заказа", edited.Note)
++	s.Equal(s.moscow, edited.ToWarehouseID)
++	s.True(edited.TaskIsDeleted, "PUT")
++
++	sent := s.must(edited, "send", nil)
++	s.Equal("in_transit", sent.Status)
++	s.True(sent.TaskIsDeleted, "send")
++	s.Equal(fmt.Sprintf("in_transit||%d", doc.ID), s.unitLoc(units[0]))
++
++	received := s.must(sent, "receive", nil)
++	s.Equal("received", received.Status)
++	s.True(received.TaskIsDeleted, "receive")
++	s.Equal("at_warehouse|Москва|", s.unitLoc(units[0]), "приёмка меняет местоположение как обычно")
++
++	back := s.mustUnreceive(received, "ошибочная приёмка")
++	s.True(back.TaskIsDeleted, "unreceive")
++	s.Equal(fmt.Sprintf("in_transit||%d", doc.ID), s.unitLoc(units[0]))
++
++	cancelled := s.must(back, "cancel", nil)
++	s.Equal("cancelled", cancelled.Status)
++	s.True(cancelled.TaskIsDeleted, "cancel")
++	s.Equal("at_client||", s.unitLoc(units[0]), "отмена вернула единицу клиенту")
++
++	// заказ восстановили — пометка исчезает, документ не меняется.
++	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/restore", taskID), nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	after := s.get(doc.ID)
++	s.False(after.TaskIsDeleted)
++	s.Equal(cancelled.Version, after.Version)
++	// …и новые документы по заказу снова создаются.
++	st, _, raw = s.do(http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, units[1]))
++	s.Equal(http.StatusCreated, st, string(raw))
++
++	// документ без заказа: task_is_deleted = false.
++	s.False(s.create(s.body(unitItem(s.newUnit(s.almaty)))).TaskIsDeleted)
++}
++
++// ---- TS-016 (причина и невидимость) ----
++
++// TS-016 (DS-020, DS-026, DS-030, abuse cases 2 и 5): причина удаления обязательна — нет /
++// пробелы → required, длиннее 500 → too_long, NUL → invalid_text; ошибки причины и версии
++// приходят вместе; отказ документ не трогает. Удалённый документ хранит «кто, когда, почему»
++// (причина — после обрезки пробелов), версия +1; для обычных адресов он не существует: GET,
++// PUT, send, receive, cancel, unreceive → 404 TRANSFER_NOT_FOUND; его нет в списке (и у
++// исполнителя) и в истории единицы.
++func (s *TransfersLiveSuite) TestTS016_SoftDeleteReasonAndInvisibility() {
++	taskID, units := s.taskWithUnits(1)
++	st, doc, raw := s.do(http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, units[0]))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	path := deletePath(doc.ID)
++
++	for _, tc := range []struct {
++		name string
++		body any
++		want map[string]string
++	}{
++		{"без причины", map[string]any{"version": doc.Version}, map[string]string{"reason": "required"}},
++		{"причина null", map[string]any{"reason": nil, "version": doc.Version}, map[string]string{"reason": "required"}},
++		{"причина из пробелов", map[string]any{"reason": " \t\n ", "version": doc.Version}, map[string]string{"reason": "required"}},
++		{"причина 501 символ", map[string]any{"reason": strings.Repeat("я", 501), "version": doc.Version}, map[string]string{"reason": "too_long"}},
++		{"причина с NUL", map[string]any{"reason": "a\x00b", "version": doc.Version}, map[string]string{"reason": "invalid_text"}},
++		{"пустое тело", map[string]any{}, map[string]string{"reason": "required", "version": "required"}},
++		{"без тела", nil, map[string]string{"reason": "required", "version": "required"}},
++		{"версия 0", map[string]any{"reason": "x", "version": 0}, map[string]string{"version": "invalid"}},
++		{"версия null", map[string]any{"reason": "x", "version": nil}, map[string]string{"version": "required"}},
++	} {
++		st, raw := s.admin.Do(http.MethodDelete, path, tc.body)
++		s.Equal(http.StatusBadRequest, st, "%s: %s", tc.name, raw)
++		s.Equal("VALIDATION", s.errOf(raw).Code, tc.name)
++		s.Equal(tc.want, s.fields(raw), tc.name)
++	}
++	// прежний формат (version в query, без тела) больше не принимается.
++	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("%s?version=%d", path, doc.Version), nil)
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(fmt.Sprintf("requested|false|%d", doc.Version), s.docRow(doc.ID), "отказы документ не тронули")
++
++	// причина 500 символов после обрезки пробелов — допустима.
++	reason := strings.Repeat("я", 500)
++	st, raw = s.admin.Do(http.MethodDelete, path, map[string]any{"reason": "  " + reason + " \n", "version": doc.Version})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(fmt.Sprintf("requested|true|%d", doc.Version+1), s.docRow(doc.ID), "версия +1, статус прежний")
++	s.Equal(s.adminID+"|"+reason, s.scalarText(`SELECT deleted_by::text || '|' || delete_reason FROM transfers WHERE id = $1`, doc.ID),
++		"кто и почему (причина — после обрезки)")
++	s.Equal("at_client||", s.unitLoc(units[0]), "единица заявки свободна, местоположение прежнее")
++
++	// для обычных адресов документа нет (версия — уже актуальная: 404 не из-за неё).
++	v := doc.Version + 1
++	notFound := func(st int, raw []byte, ctx string) {
++		s.Equal(http.StatusNotFound, st, "%s: %s", ctx, raw)
++		e := s.errOf(raw)
++		s.Equal("TRANSFER_NOT_FOUND", e.Code, ctx)
++		s.Equal("Перемещение не найдено", e.Message, ctx)
++	}
++	docPath := fmt.Sprintf("/api/v1/transfers/%d", doc.ID)
++	for _, b := range []*testutil.Browser{s.admin, s.executor()} {
++		st, raw = b.Do(http.MethodGet, docPath, nil)
++		notFound(st, raw, "GET")
++		st, raw = b.Do(http.MethodPut, docPath, map[string]any{"to_warehouse_id": s.almaty, "items": unitItems(units[0]), "version": v})
++		notFound(st, raw, "PUT")
++		for _, act := range []string{"send", "receive", "cancel"} {
++			st, raw = b.Do(http.MethodPost, docPath+"/"+act, map[string]any{"version": v})
++			notFound(st, raw, act)
++		}
++	}
++	st, raw = s.admin.Do(http.MethodPost, docPath+"/unreceive", map[string]any{"version": v, "reason": "x"})
++	notFound(st, raw, "unreceive")
++	st, raw = s.deleteDoc(doc.ID, v)
++	notFound(st, raw, "повторное удаление")
++	s.Equal(fmt.Sprintf("requested|true|%d", v), s.docRow(doc.ID), "404 документ не тронули")
++
++	for _, b := range []*testutil.Browser{s.admin, s.executor()} {
++		ids, _ := s.listIDs(b, fmt.Sprintf("&task_id=%d", taskID))
++		s.False(ids[doc.ID], "удалённого документа нет в списке")
++	}
++	// история единицы: удалённый документ не показывается, после восстановления — снова есть.
++	history := func() map[int64]bool {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment/"+units[0]+"/history", nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var h struct {
++			Transfers []struct {
++				ID int64 `json:"id"`
++			} `json:"transfers"`
++		}
++		s.Require().NoError(json.Unmarshal(raw, &h), string(raw))
++		out := map[int64]bool{}
++		for _, t := range h.Transfers {
++			out[t.ID] = true
++		}
++		return out
++	}
++	s.False(history()[doc.ID], "история единицы без удалённого документа")
++	st, raw = s.restoreDoc(doc.ID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.True(history()[doc.ID])
++	ids, _ := s.listIDs(s.admin, fmt.Sprintf("&task_id=%d", taskID))
++	s.True(ids[doc.ID], "восстановленный документ снова в списке")
++}
++
++// ---- TS-017 ----
++
++// TS-017 (DS-018, DS-024, DS-030): восстановление заявки — единицы снова заняты документом,
++// строки на месте, отметка удаления стёрта, версия +1; остатки и местоположение не меняются
++// (DS-008). Единица в другом незавершённом документе → 409 EQUIPMENT_IN_TRANSFER с его
++// номером, документ остаётся удалённым, ничего не занято; после отмены мешающего документа
++// восстановление проходит. Отменённый документ восстанавливается без занятия единиц. Негативы:
++// повтор → 409 NOT_DELETED; действующий документ → 409 NOT_DELETED; нет документа → 404.
++func (s *TransfersLiveSuite) TestTS017_RestoreRequest() {
++	p := s.newProduct("20")
++	u1, u2 := s.newUnit(s.almaty), s.newUnit(s.almaty)
++	doc := s.create(s.body(productItem(p, 3), unitItem(u1), unitItem(u2)))
++	s.mustDeleteDoc(doc)
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(u1))
++
++	st, raw := s.restoreDoc(doc.ID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var out struct {
++		ID int64 `json:"id"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++	s.Equal(doc.ID, out.ID)
++	restored := s.get(doc.ID)
++	s.Equal("requested", restored.Status)
++	s.Equal(doc.Version+2, restored.Version, "удаление и восстановление — по +1")
++	s.Len(restored.Items, 3, "документ вернулся со своими строками")
++	s.Equal("||", s.scalarText(`
++		SELECT coalesce(deleted_at::text, '') || '|' || coalesce(deleted_by::text, '') || '|' || coalesce(delete_reason, '')
++		FROM transfers WHERE id = $1`, doc.ID), "отметка удаления стёрта")
++	for _, u := range []string{u1, u2} {
++		s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", doc.ID), s.unitLoc(u), "единица снова занята документом")
++	}
++	s.Equal("20.000", s.pairStock(p, s.almaty), "остаток не менялся")
++	s.Empty(s.movements(doc.ID), "движений нет")
++
++	notDeleted := func(id int64, ctx string) {
++		st, raw := s.restoreDoc(id)
++		s.expectConflict(st, raw, "NOT_DELETED", "Запись уже восстановлена", ctx)
++	}
++	notDeleted(doc.ID, "повтор восстановления")
++	s.Equal(doc.Version+2, s.get(doc.ID).Version, "повтор документ не тронул")
++	for _, id := range []string{"999999999", "abc", "0"} {
++		st, raw = s.admin.Do(http.MethodPost, "/api/v1/transfers/"+id+"/restore", nil)
++		s.Equal(http.StatusNotFound, st, "%s: %s", id, raw)
++		s.Equal("TRANSFER_NOT_FOUND", s.errOf(raw).Code)
++	}
++	// восстановленную заявку можно отправить — единицы на складе отправления и заняты ею.
++	s.Equal("in_transit", s.must(restored, "send", nil).Status)
++
++	// ---- единица занята другим незавершённым документом ----
++	u3, u4 := s.newUnit(s.almaty), s.newUnit(s.almaty)
++	gone := s.create(s.body(unitItem(u3), unitItem(u4)))
++	s.mustDeleteDoc(gone)
++	blocker := s.create(s.body(unitItem(u4)))
++	st, raw = s.restoreDoc(gone.ID)
++	e := s.expectConflict(st, raw, "EQUIPMENT_IN_TRANSFER", fmt.Sprintf("Оборудование уже в перемещении #%d", blocker.ID), "единица занята")
++	s.Require().NotNil(e.Details, string(raw))
++	s.Equal(blocker.ID, e.Details.TransferID)
++	s.Equal(u4, e.Details.EquipmentID)
++	s.Equal(fmt.Sprintf("requested|true|%d", gone.Version+1), s.docRow(gone.ID), "документ остался удалённым")
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(u3), "свободная единица не занята: транзакция откатилась")
++	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", blocker.ID), s.unitLoc(u4))
++	// мешающий документ отменён → восстановление проходит.
++	s.must(blocker, "cancel", nil)
++	st, raw = s.restoreDoc(gone.ID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", gone.ID), s.unitLoc(u3))
++	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", gone.ID), s.unitLoc(u4))
++
++	// ---- отменённый документ: только очистка отметки ----
++	u5 := s.newUnit(s.almaty)
++	cancelled := s.must(s.create(s.body(unitItem(u5))), "cancel", nil)
++	s.mustDeleteDoc(cancelled)
++	other := s.create(s.body(unitItem(u5))) // единица отменённого документа свободна и занята другим
++	st, raw = s.restoreDoc(cancelled.ID)
++	s.Require().Equal(http.StatusOK, st, "отменённый восстанавливается и при занятой единице: %s", raw)
++	s.Equal(fmt.Sprintf("cancelled|false|%d", cancelled.Version+2), s.docRow(cancelled.ID))
++	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", other.ID), s.unitLoc(u5), "единицу держит другой документ")
++	notDeleted(other.ID, "действующий документ")
++}
++
++// TS-017 (§3 «Конкурентность»): два администратора одновременно восстанавливают две удалённые
++// заявки с общей единицей — ровно одна 200, вторая 409 EQUIPMENT_IN_TRANSFER с номером первой;
++// единица занята победителем, проигравшая остаётся удалённой; взаимной блокировки и 500 нет.
++func (s *TransfersLiveSuite) TestTS017_RestoreRace_SharedUnit() {
++	second := s.NewBrowser()
++	second.Login("st-admin", "password1")
++	browsers := []*testutil.Browser{s.admin, second}
++
++	const iterations = 6
++	for i := 0; i < iterations; i++ {
++		shared := s.newUnit(s.almaty)
++		// у каждой заявки ещё и своя единица: блокировки строк equipment берутся в порядке id.
++		docs := make([]transferDTO, 2)
++		for j := range docs {
++			docs[j] = s.create(s.body(unitItem(shared), unitItem(s.newUnit(s.almaty))))
++			s.mustDeleteDoc(docs[j])
++		}
++		statuses := make([]int, 2)
++		bodies := make([][]byte, 2)
++		start := make(chan struct{})
++		var wg sync.WaitGroup
++		for j := range docs {
++			wg.Add(1)
++			go func() {
++				defer wg.Done()
++				<-start
++				statuses[j], bodies[j] = browsers[j].Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/restore", docs[j].ID), nil)
++			}()
++		}
++		close(start)
++		wg.Wait()
++
++		winner, loser := 0, 1
++		if statuses[0] != http.StatusOK {
++			winner, loser = 1, 0
++		}
++		s.Require().Equal(http.StatusOK, statuses[winner], "итерация %d: %s / %s", i, bodies[0], bodies[1])
++		s.expectConflict(statuses[loser], bodies[loser], "EQUIPMENT_IN_TRANSFER",
++			fmt.Sprintf("Оборудование уже в перемещении #%d", docs[winner].ID), fmt.Sprintf("итерация %d", i))
++		s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", docs[winner].ID), s.unitLoc(shared), "итерация %d", i)
++		s.Equal(fmt.Sprintf("requested|false|%d", docs[winner].Version+2), s.docRow(docs[winner].ID), "итерация %d", i)
++		s.Equal(fmt.Sprintf("requested|true|%d", docs[loser].Version+1), s.docRow(docs[loser].ID), "итерация %d", i)
++		s.Equal("0", s.scalarText(`SELECT count(*)::text FROM equipment WHERE active_transfer_id = $1`, docs[loser].ID),
++			"итерация %d: проигравшая заявка ничего не заняла", i)
++	}
++}
++
++// TS-017 (ревью MEDIUM-1): заявка с заказом удалена, её единицу убрали из оборудования заказа →
++// восстановление 409 TRANSFER_EQUIPMENT_NOT_IN_TASK с details.equipment_id; документ остаётся
++// удалённым, ни одна единица не занята (в том числе оставшаяся в заказе). Единицу вернули в
++// заказ → восстановление проходит. Негатив: отменённый документ с той же убранной единицей
++// восстанавливается (единиц он не занимает) — проверка действует только на заявки.
++func (s *TransfersLiveSuite) TestTS017_RestoreRequest_UnitRemovedFromTask() {
++	taskID, units := s.taskWithUnits(3)
++	kept, removed, third := units[0], units[1], units[2]
++	st, doc, raw := s.do(http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, kept, removed))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	st, other, raw := s.do(http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, third))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	cancelled := s.must(other, "cancel", nil)
++	s.mustDeleteDoc(doc)
++	s.mustDeleteDoc(cancelled)
++
++	// единицы удалённых документов свободны — убираются из заказа боевым API доски.
++	for _, u := range []string{removed, third} {
++		st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, u), nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++	}
++
++	st, raw = s.restoreDoc(doc.ID)
++	e := s.expectConflict(st, raw, "TRANSFER_EQUIPMENT_NOT_IN_TASK", "Оборудование убрано из заказа — восстановить перемещение нельзя", "единица вне заказа")
++	s.Require().NotNil(e.Details, string(raw))
++	s.Equal(removed, e.Details.EquipmentID)
++	s.Equal(fmt.Sprintf("requested|true|%d", doc.Version+1), s.docRow(doc.ID), "документ остался удалённым")
++	s.Equal("at_client||", s.unitLoc(kept), "оставшаяся в заказе единица не занята: транзакция откатилась")
++	s.Equal("at_client||", s.unitLoc(removed))
++
++	// негатив: отменённый документ единиц не занимает — восстанавливается и с убранной единицей.
++	st, raw = s.restoreDoc(cancelled.ID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("at_client||", s.unitLoc(third))
++
++	// единицу вернули в заказ — заявка восстанавливается и занимает обе единицы.
++	s.attach(taskID, removed)
++	st, raw = s.restoreDoc(doc.ID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	for _, u := range []string{kept, removed} {
++		s.Equal(fmt.Sprintf("at_client||%d", doc.ID), s.unitLoc(u))
++	}
++}
++
++// ---- TS-018 ----
++
++// TS-018 (DS-007, DS-024): гонка «создание документа ↔ удаление заказа» — исход детерминирован:
++// удаление заказа всегда 200; создание — либо 201 (документ остался у удалённого заказа,
++// task_is_deleted = true, единица занята им), либо 409 TASK_DELETED. Взаимной блокировки и 500
++// нет. Негатив: частично созданного документа нет — при отказе у заказа нет ни документа, ни
++// строк, единица свободна.
++func (s *TransfersLiveSuite) TestTS018_CreateVsDeleteTaskRace() {
++	second := s.NewBrowser()
++	second.Login("st-admin", "password1")
++
++	const iterations = 12
++	created, refused := 0, 0
++	for i := 0; i < iterations; i++ {
++		taskID, units := s.taskWithUnits(1)
++		var (
++			createSt, deleteSt   int
++			createRaw, deleteRaw []byte
++			wg                   sync.WaitGroup
++		)
++		start := make(chan struct{})
++		wg.Add(2)
++		go func() {
++			defer wg.Done()
++			<-start
++			createSt, createRaw = s.admin.Do(http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, units[0]))
++		}()
++		go func() {
++			defer wg.Done()
++			<-start
++			deleteSt, deleteRaw = s.softDeleteTask(second, taskID)
++		}()
++		close(start)
++		wg.Wait()
++
++		s.Require().Equal(http.StatusOK, deleteSt, "итерация %d: удаление заказа → %s", i, deleteRaw)
++		docs := s.scalarText(`SELECT count(*)::text FROM transfers WHERE task_id = $1`, taskID)
++		items := s.scalarText(`SELECT count(*)::text FROM transfer_items i JOIN transfers t ON t.id = i.transfer_id WHERE t.task_id = $1`, taskID)
++		switch createSt {
++		case http.StatusCreated:
++			created++
++			var doc transferDTO
++			s.Require().NoError(json.Unmarshal(createRaw, &doc), string(createRaw))
++			s.Equal("1|1", docs+"|"+items, "итерация %d: документ создан целиком", i)
++			s.Equal(fmt.Sprintf("at_client||%d", doc.ID), s.unitLoc(units[0]), "итерация %d", i)
++			s.True(s.get(doc.ID).TaskIsDeleted, "итерация %d: документ остался у удалённого заказа", i)
++		case http.StatusConflict:
++			refused++
++			s.expectConflict(createSt, createRaw, "TASK_DELETED", "Заказ удалён — сначала восстановите его", fmt.Sprintf("итерация %d", i))
++			s.Equal("0|0", docs+"|"+items, "итерация %d: частично созданного документа нет", i)
++			s.Equal("at_client||", s.unitLoc(units[0]), "итерация %d: единица свободна", i)
++		default:
++			s.Failf("недетерминированный исход", "итерация %d: создание → %d %s", i, createSt, createRaw)
++		}
++	}
++	s.Equal(iterations, created+refused)
++	s.T().Logf("исходы гонки: документ создан — %d, отказ TASK_DELETED — %d", created, refused)
++}
++
++// ---- TS-033 ----
++
++// TS-033 (DS-003, abuse case 1): удаление и восстановление документа — только администратор.
++// Исполнитель получает 403 «Нет доступа» до поиска записи: для документа своего направления
++// (с клиентом), чужого, удалённого, несуществующего и нечислового номера, с телом и без;
++// документы не меняются. Негатив: без сессии → 401.
++func (s *TransfersLiveSuite) TestTS033_SoftDeleteAdminOnly() {
++	exec := s.executor()
++	taskID, units := s.taskWithUnits(2)
++	st, own, raw := s.doAs(exec, http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, units[0]))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	st, ownGone, raw := s.doAs(exec, http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, units[1]))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.mustDeleteDoc(ownGone)
++	w2w := s.create(s.body(unitItem(s.newUnit(s.almaty))))
++	anon := s.NewBrowser()
++
++	type call struct {
++		method, path string
++		body         any
++	}
++	calls := []call{
++		{http.MethodDelete, deletePath(own.ID), deleteBody(own.Version)},
++		{http.MethodDelete, deletePath(own.ID), nil}, // роль проверяется раньше тела
++		{http.MethodDelete, deletePath(w2w.ID), deleteBody(w2w.Version)},
++		{http.MethodDelete, deletePath(ownGone.ID), deleteBody(ownGone.Version + 1)},
++		{http.MethodDelete, deletePath(999999999), deleteBody(1)},
++		{http.MethodDelete, "/api/v1/transfers/abc", deleteBody(1)},
++		{http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/restore", ownGone.ID), nil},
++		{http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/restore", own.ID), nil},
++		{http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/restore", w2w.ID), nil},
++		{http.MethodPost, "/api/v1/transfers/999999999/restore", nil},
++		{http.MethodPost, "/api/v1/transfers/abc/restore", nil},
++	}
++	for _, c := range calls {
++		st, raw := exec.Do(c.method, c.path, c.body)
++		s.Equal(http.StatusForbidden, st, "%s %s: %s", c.method, c.path, raw)
++		e := s.errOf(raw)
++		s.Equal("FORBIDDEN", e.Code, c.path)
++		s.Equal("Нет доступа", e.Message, c.path)
++
++		st, raw = anon.Do(c.method, c.path, c.body)
++		s.Equal(http.StatusUnauthorized, st, "без сессии %s %s: %s", c.method, c.path, raw)
++	}
++	s.Equal(fmt.Sprintf("requested|false|%d", own.Version), s.docRow(own.ID))
++	s.Equal(fmt.Sprintf("requested|false|%d", w2w.Version), s.docRow(w2w.ID))
++	s.Equal(fmt.Sprintf("requested|true|%d", ownGone.Version+1), s.docRow(ownGone.ID))
++
++	// администратору те же действия доступны.
++	s.mustDeleteDoc(own)
++	st, raw = s.restoreDoc(ownGone.ID)
++	s.Equal(http.StatusOK, st, string(raw))
++}
+diff --git a/internal/features/transfers/validate.go b/internal/features/transfers/validate.go
+index b1f7c7f..d632309 100644
+--- a/internal/features/transfers/validate.go
++++ b/internal/features/transfers/validate.go
+@@ -1,6 +1,7 @@
+ package transfers
+ 
+ import (
++	"encoding/json"
+ 	"fmt"
+ 	"math/big"
+ 	"strconv"
+@@ -67,18 +68,18 @@ func validateReason(raw string) (string, []errorspkg.Field) {
+ 	return reason, nil
+ }
+ 
+-// parseVersion — query-параметр version удаления документа: целое ≥ 1; нет → required, не
+-// число → invalid.
+-func parseVersion(raw string) (int, []errorspkg.Field) {
+-	raw = strings.TrimSpace(raw)
+-	if raw == "" {
++// parseVersion — поле version тела удаления документа (сырой JSON): целое ≥ 1; нет / null →
++// required, не целое число (строка, дробь, ноль, отрицательное) → invalid.
++func parseVersion(raw json.RawMessage) (int, []errorspkg.Field) {
++	v := strings.TrimSpace(string(raw))
++	if v == "" || v == "null" {
+ 		return 0, []errorspkg.Field{{Name: "version", Message: msgRequired}}
+ 	}
+-	v, err := strconv.Atoi(raw)
+-	if err != nil || v < 1 {
++	n, err := strconv.Atoi(v)
++	if err != nil || n < 1 {
+ 		return 0, []errorspkg.Field{{Name: "version", Message: msgInvalid}}
+ 	}
+-	return v, nil
++	return n, nil
+ }
+ 
+ // qtyScale — NUMERIC(12,3): 9 цифр целой части, 3 дробной.
+diff --git a/internal/features/transfers/validate_revert_test.go b/internal/features/transfers/validate_revert_test.go
+index a047f23..0daa955 100644
+--- a/internal/features/transfers/validate_revert_test.go
++++ b/internal/features/transfers/validate_revert_test.go
+@@ -1,6 +1,7 @@
+ package transfers
+ 
+ import (
++	"encoding/json"
+ 	"errors"
+ 	"strings"
+ 	"testing"
+@@ -39,6 +40,8 @@ func TestTS010_ValidateReason(t *testing.T) {
+ 	}
+ }
+ 
++// soft-delete-transfers TS-016: version удаления документа — поле JSON-тела (DS-028, раньше
++// query): целое ≥ 1; нет / null → required; строка, дробь, ноль, отрицательное → invalid.
+ func TestTS016_ParseVersion(t *testing.T) {
+ 	for _, tc := range []struct {
+ 		raw    string
+@@ -49,20 +52,67 @@ func TestTS016_ParseVersion(t *testing.T) {
+ 		{" 42 ", 42, map[string]string{}},
+ 		{"", 0, map[string]string{"version": msgRequired}},
+ 		{"   ", 0, map[string]string{"version": msgRequired}},
+-		{"abc", 0, map[string]string{"version": msgInvalid}},
++		{"null", 0, map[string]string{"version": msgRequired}},
++		{`"abc"`, 0, map[string]string{"version": msgInvalid}},
++		{`"2"`, 0, map[string]string{"version": msgInvalid}},
++		{"true", 0, map[string]string{"version": msgInvalid}},
+ 		{"1.5", 0, map[string]string{"version": msgInvalid}},
+ 		{"0", 0, map[string]string{"version": msgInvalid}},
+ 		{"-3", 0, map[string]string{"version": msgInvalid}},
+ 		{"99999999999999999999", 0, map[string]string{"version": msgInvalid}},
+ 	} {
+ 		t.Run("version="+tc.raw, func(t *testing.T) {
+-			got, f := parseVersion(tc.raw)
++			got, f := parseVersion(json.RawMessage(tc.raw))
+ 			assert.Equal(t, tc.want, got)
+ 			assert.Equal(t, tc.fields, fieldMap(f))
+ 		})
+ 	}
+ }
+ 
++// soft-delete-transfers §6.1: тело удаления {reason, version} — version остаётся сырым JSON
++// (не число → 400 invalid, а не «битое тело»), reason без значения — nil (required).
++func TestTS016_DeleteRequestBody(t *testing.T) {
++	var req TransferDeleteRequest
++	require.NoError(t, json.Unmarshal([]byte(`{"reason":"Создан по ошибке","version":2}`), &req))
++	require.NotNil(t, req.Reason)
++	assert.Equal(t, "Создан по ошибке", *req.Reason)
++	v, f := parseVersion(req.Version)
++	assert.Equal(t, 2, v)
++	assert.Empty(t, f)
++
++	req = TransferDeleteRequest{}
++	require.NoError(t, json.Unmarshal([]byte(`{"reason":"  ","version":"x"}`), &req))
++	_, f = parseVersion(req.Version)
++	assert.Equal(t, map[string]string{"version": msgInvalid}, fieldMap(f))
++
++	req = TransferDeleteRequest{}
++	require.NoError(t, json.Unmarshal([]byte(`{}`), &req))
++	assert.Nil(t, req.Reason)
++	_, f = parseVersion(req.Version)
++	assert.Equal(t, map[string]string{"version": msgRequired}, fieldMap(f))
++}
++
++// soft-delete-transfers §6.2, §6.3: ошибки repo мягкого удаления → wire-коды 409 со своими
++// сообщениями (DS-007, DS-024, DS-040).
++func TestTS015_TS017_TS050_SoftDeleteErrorMapping(t *testing.T) {
++	for _, tc := range []struct {
++		err       error
++		code, msg string
++	}{
++		{errTaskDeleted, "TASK_DELETED", "Заказ удалён — сначала восстановите его"},
++		{errNotDeleted, "NOT_DELETED", "Запись уже восстановлена"},
++		{errClientMismatch, "TRANSFER_CLIENT_MISMATCH", "Клиент заказа изменён — восстановить перемещение нельзя"},
++		{&equipmentBusyError{equipmentID: "e", transferID: 7}, "EQUIPMENT_IN_TRANSFER", "Оборудование уже в перемещении #7"},
++		{&notInTaskError{equipmentID: "e"}, "TRANSFER_EQUIPMENT_NOT_IN_TASK", "Оборудование убрано из заказа — восстановить перемещение нельзя"},
++	} {
++		var app *errorspkg.AppError
++		require.True(t, errors.As(mapErr(tc.err), &app), tc.code)
++		assert.Equal(t, tc.code, app.Code)
++		assert.Equal(t, 409, app.HTTP)
++		assert.Equal(t, tc.msg, app.Message)
++	}
++}
++
+ // Каждый недопустимый статус отката / удаления / отмены — 409 TRANSFER_STATUS_CONFLICT со
+ // своим сообщением (§5, §6.1, §6.2, §6.4).
+ func TestTS010_TS016_StatusConflictMessages(t *testing.T) {
+diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
+index 7d591a1..a33c259 100644
+--- a/internal/seeddemo/seeddemo.go
++++ b/internal/seeddemo/seeddemo.go
+@@ -698,9 +698,34 @@ func (s *seeder) seedTransfers(products []productRow) error {
+ 		}
+ 	}
+ 	s.transitTransferID = transitID
++	if err := s.seedDeletedTransfer(products); err != nil {
++		return err
++	}
+ 	return s.seedSupplierTransfers(products)
+ }
+ 
++// seedDeletedTransfer — одна мягко удалённая заявка «склад → склад» (soft-delete-transfers
++// TS-F: вкладка «Перемещения» раздела «Удалённые» на демо-стенде непустая): статус requested,
++// «кто, когда, почему» заполнены вместе (CHECK transfers_deleted_chk), version = 2 (создание +
++// удаление). Строка — товарная: заявка остатки не двигает и единиц оборудования не занимает,
++// так что документ восстанавливается без условий.
++func (s *seeder) seedDeletedTransfer(products []productRow) error {
++	var id int64
++	if err := s.tx.QueryRow(s.ctx, `
++		INSERT INTO transfers (direction, from_warehouse_id, to_warehouse_id, status, note, created_by,
++		                       created_at, updated_at, version, deleted_at, deleted_by, delete_reason)
++		VALUES ('warehouse_to_warehouse', $1, $2, 'requested', 'Заявка на перемещение расходников', $3,
++		        now() - interval '1 day 2 hours', now() - interval '1 day', 2,
++		        now() - interval '1 day', $3, 'Заявка создана по ошибке: товар уже отправлен другим документом')
++		RETURNING id`, s.almatyID, s.moscowID, s.adminID).Scan(&id); err != nil {
++		return err
++	}
++	_, err := s.tx.Exec(s.ctx, `
++		INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent) VALUES ($1, 'product', $2::uuid, 1, 3)`,
++		id, products[5].ID)
++	return err
++}
++
+ // seedSupplierTransfers — два прихода от поставщика на «Алматы»: полученный с недопоставкой
+ // (остаток растёт на факт, движение supplier_in) и «в пути» (учтён на «Остатках» в колонке
+ // «в пути», DS-047; движений нет). Полученный — откатанный и принятый заново (transfers-revert
+diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
+index 8924b93..a631e35 100644
+--- a/internal/seeddemo/seeddemo_integration_test.go
++++ b/internal/seeddemo/seeddemo_integration_test.go
+@@ -190,15 +190,37 @@ func (s *SeedDemoSuite) assertWarehouses() {
+ 	s.Equal(1, statuses["warehouse_to_client:in_transit"], "один возврат клиенту в пути")
+ 	// transfers-revert TS-F1: один отменённый документ у заказа (удаляется вместе с заказом).
+ 	s.Equal(1, statuses["warehouse_to_client:cancelled"], "одна отменённая заявка на возврат")
+-	s.Len(statuses, 8, "других сочетаний направление × статус нет")
++	// soft-delete-transfers TS-F: ровно один мягко удалённый документ — заявка «склад → склад»
++	// с причиной и автором удаления: вкладка «Перемещения» раздела «Удалённые» на демо-стенде
++	// непустая; единиц оборудования он не занимает и остатки не двигал.
++	s.Equal(1, statuses["warehouse_to_warehouse:requested"], "одна (мягко удалённая) заявка склад → склад")
++	s.Len(statuses, 9, "других сочетаний направление × статус нет")
++	var deletedDocs, deletedDocMoves, deletedDocUnits, deletedDocItems int
++	var docState, docReason, docBy string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT count(*), coalesce(min(t.direction || ':' || t.status), ''), coalesce(min(t.delete_reason), ''),
++		       coalesce(min(u.role), ''),
++		       (SELECT count(*) FROM stock_movements m JOIN transfers d ON d.id = m.transfer_id WHERE d.deleted_at IS NOT NULL),
++		       (SELECT count(*) FROM equipment e JOIN transfers d ON d.id = e.active_transfer_id WHERE d.deleted_at IS NOT NULL),
++		       (SELECT count(*) FROM transfer_items i JOIN transfers d ON d.id = i.transfer_id WHERE d.deleted_at IS NOT NULL)
++		FROM transfers t LEFT JOIN users u ON u.id = t.deleted_by
++		WHERE t.deleted_at IS NOT NULL`).Scan(&deletedDocs, &docState, &docReason, &docBy, &deletedDocMoves, &deletedDocUnits, &deletedDocItems))
++	s.Equal(1, deletedDocs)
++	s.Equal("warehouse_to_warehouse:requested", docState)
++	s.NotEmpty(docReason)
++	s.Equal("admin", docBy, "удалил администратор")
++	s.Zero(deletedDocMoves, "заявка остатки не двигала")
++	s.Zero(deletedDocUnits, "единицы удалённой заявки свободны")
++	s.Equal(1, deletedDocItems, "строки удалённого документа на месте")
+ 	s.assertPartners()
+ 
+-	// журнал перемещений = qty_sent (out) и qty_received (in) по строкам.
++	// журнал перемещений = qty_sent (out) и qty_received (in) по строкам отправленных документов
++	// (заявка — мягко удалённая — остатки не двигает).
+ 	var outSum, sentSum, inSum, receivedSum string
+ 	s.Require().NoError(s.Pool.QueryRow(ctx, `
+ 		SELECT (SELECT coalesce(-sum(qty_delta), 0)::text FROM stock_movements WHERE reason = 'transfer_out'),
+ 		       (SELECT coalesce(sum(i.qty_sent), 0)::text FROM transfer_items i JOIN transfers t ON t.id = i.transfer_id
+-		         WHERE i.kind = 'product' AND t.direction = 'warehouse_to_warehouse'),
++		         WHERE i.kind = 'product' AND t.direction = 'warehouse_to_warehouse' AND t.status <> 'requested'),
+ 		       (SELECT coalesce(sum(qty_delta), 0)::text FROM stock_movements WHERE reason = 'transfer_in'),
+ 		       (SELECT coalesce(sum(i.qty_received), 0)::text FROM transfer_items i JOIN transfers t ON t.id = i.transfer_id
+ 		         WHERE i.kind = 'product' AND t.direction = 'warehouse_to_warehouse')`).Scan(&outSum, &sentSum, &inSum, &receivedSum))
+diff --git a/internal/server/router.go b/internal/server/router.go
+index a106f40..d2abd4e 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -203,8 +203,11 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	executorpayouts.Register(app, api, guard, executorpayouts.NewHandler(executorpayouts.NewService(pool)),
+ 		executorpayouts.NewSSR(payoutsR, shell))
+ 	// Раздел «Удалённые» (soft-delete-core DS-011): только admin. Источники видов подключают
+-	// части мастер-спеки soft-delete; в части 1 — заказы.
+-	deletedSvc := softdelete.NewService().Register(softdelete.KindTasks, softdelete.NewTasksSource(pool))
++	// части мастер-спеки soft-delete; часть 1 — заказы.
++	// Часть 2 (soft-delete-transfers) — документы перемещения.
++	deletedSvc := softdelete.NewService().
++		Register(softdelete.KindTasks, softdelete.NewTasksSource(pool)).
++		Register(softdelete.KindTransfers, softdelete.NewTransfersSource(pool))
+ 	softdelete.Register(app, api, guard, softdelete.NewHandler(deletedSvc), softdelete.NewSSR(deletedR, shell, status))
+ 
+ 	// board — доска заказов занимает корень «/» (ADR-100, снимает home) + «/stock» +
+@@ -218,8 +221,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	boardCardSvc := board.NewCardService(pool, boardTaskRepo, boardCardRepo, boardEquipmentRepo, boardEngine,
+ 		boardSubtaskRepo, boardSubtaskProductRepo, boardSubtaskLogRepo).WithFiles(files)
+ 	board.Register(app, api, guard, &board.Handlers{
+-		Columns:     board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine)),
+-		Tasks:       board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine, boardEquipmentRepo).WithFiles(files)),
++		Columns: board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine)),
++		// Служебная уборка вида transfers (soft-delete-transfers DS-038) — сервис документов.
++		Tasks: board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine, boardEquipmentRepo).WithFiles(files)).
++			WithPurger(string(softdelete.KindTransfers), transfersSvc.Purge),
+ 		Assignees:   board.NewAssigneesHandler(pool),
+ 		Stock:       board.NewStockHandler(boardStockSvc),
+ 		Card:        board.NewCardHandler(boardCardSvc),

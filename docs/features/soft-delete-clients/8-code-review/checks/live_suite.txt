@@ -1,0 +1,5 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/live_suite_check.py --feature soft-delete-clients --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a --paths internal/features/board internal/features/clients internal/features/softdelete internal/features/transfers
+(exit 0)
+
+live-suite internal/features/board,internal/features/clients,internal/features/softdelete,internal/features/transfers: HTTP-слоя в модулях нет (repository/service-only) — live-сьюта не требуется
+live-suite internal/features/board,internal/features/clients,internal/features/softdelete,internal/features/transfers: PASS

@@ -1,0 +1,2490 @@
+diff --git a/cmd/migrate/main.go b/cmd/migrate/main.go
+new file mode 100644
+index 0000000..92de9d6
+--- /dev/null
++++ b/cmd/migrate/main.go
+@@ -0,0 +1,41 @@
++// Migrate — go run ./cmd/migrate up|down (без внешнего migrate-CLI).
++// DATABASE_URL читается напрямую (не internal/config): миграции не обязаны знать
++// auth-режимные переменные (JWT_SECRET и т.п.), которые config.Load() требует.
++package main
++
++import (
++	"errors"
++	"fmt"
++	"os"
++
++	"github.com/golang-migrate/migrate/v4"
++	_ "github.com/golang-migrate/migrate/v4/database/postgres"
++	_ "github.com/golang-migrate/migrate/v4/source/file"
++)
++
++func main() {
++	if len(os.Args) < 2 || (os.Args[1] != "up" && os.Args[1] != "down") {
++		fmt.Fprintln(os.Stderr, "usage: migrate up|down")
++		os.Exit(1)
++	}
++	dsn := os.Getenv("DATABASE_URL")
++	if dsn == "" {
++		fmt.Fprintln(os.Stderr, "DATABASE_URL обязателен")
++		os.Exit(1)
++	}
++	m, err := migrate.New("file://migrations", dsn)
++	if err != nil {
++		fmt.Fprintln(os.Stderr, "migrate init:", err)
++		os.Exit(1)
++	}
++	if os.Args[1] == "up" {
++		err = m.Up()
++	} else {
++		err = m.Steps(-1)
++	}
++	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
++		fmt.Fprintln(os.Stderr, "migrate", os.Args[1]+":", err)
++		os.Exit(1)
++	}
++	fmt.Println("migrate", os.Args[1], "OK")
++}
+diff --git a/cmd/seed/main.go b/cmd/seed/main.go
+new file mode 100644
+index 0000000..7c14054
+--- /dev/null
++++ b/cmd/seed/main.go
+@@ -0,0 +1,47 @@
++// Seed — идемпотентный локальный admin (make local-up-seed). ON CONFLICT DO NOTHING:
++// повторный прогон безопасен. Одна и та же users-таблица под session и jwt auth.mode.
++package main
++
++import (
++	"context"
++	"fmt"
++	"os"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++	"golang.org/x/crypto/bcrypt"
++)
++
++const (
++	seedLogin    = "admin"
++	seedPassword = "admin1234"
++)
++
++func main() {
++	dsn := os.Getenv("DATABASE_URL")
++	if dsn == "" {
++		fmt.Fprintln(os.Stderr, "DATABASE_URL обязателен")
++		os.Exit(1)
++	}
++	ctx := context.Background()
++	pool, err := pgxpool.New(ctx, dsn)
++	if err != nil {
++		fmt.Fprintln(os.Stderr, "pgx:", err)
++		os.Exit(1)
++	}
++	defer pool.Close()
++
++	hash, err := bcrypt.GenerateFromPassword([]byte(seedPassword), bcrypt.DefaultCost)
++	if err != nil {
++		fmt.Fprintln(os.Stderr, "bcrypt:", err)
++		os.Exit(1)
++	}
++	_, err = pool.Exec(ctx,
++		`INSERT INTO users (login, password_hash, name) VALUES ($1, $2, $3)
++		 ON CONFLICT (login) DO NOTHING`,
++		seedLogin, string(hash), "Admin")
++	if err != nil {
++		fmt.Fprintln(os.Stderr, "seed:", err)
++		os.Exit(1)
++	}
++	fmt.Printf("seed: %s / %s (готов, если не существовал)\n", seedLogin, seedPassword)
++}
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+new file mode 100644
+index 0000000..fff8ab0
+--- /dev/null
++++ b/cmd/server/main.go
+@@ -0,0 +1,72 @@
++package main
++
++import (
++	"context"
++	"flag"
++	"fmt"
++	"os"
++	"os/signal"
++	"syscall"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++	"github.com/redis/go-redis/v9"
++
++	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/internal/observability"
++	"github.com/kitavrus/kanban-tree/internal/server"
++)
++
++func main() {
++	// --check-config ОБЯЗАТЕЛЕН (контракт infra-bootstrap): образ проверяет env
++	// своим кодом и выходит 0/1, не поднимая БД/Redis/портов.
++	checkConfig := flag.Bool("check-config", false, "validate env and exit")
++	flag.Parse()
++
++	cfg, err := config.Load()
++	if err != nil {
++		fmt.Fprintln(os.Stderr, "config:", err)
++		os.Exit(1)
++	}
++	if *checkConfig {
++		os.Exit(0)
++	}
++
++	logger := observability.NewLogger(cfg.LogLevel)
++	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
++	defer stop()
++
++	shutdownTracer, err := observability.InitTracer(ctx, "kanban-tree", cfg.OTLPEndpoint)
++	if err != nil {
++		logger.Error("otel init", "err", err)
++		os.Exit(1)
++	}
++	defer func() { _ = shutdownTracer(context.Background()) }()
++
++	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
++	if err != nil {
++		logger.Error("pgx pool", "err", err)
++		os.Exit(1)
++	}
++	defer pool.Close()
++
++	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
++	defer rdb.Close()
++
++	app, err := server.New(cfg, logger, pool, rdb)
++	if err != nil {
++		logger.Error("server init", "err", err)
++		os.Exit(1)
++	}
++
++	go func() {
++		<-ctx.Done()
++		logger.Info("shutdown")
++		_ = app.Shutdown()
++	}()
++
++	logger.Info("listening", "port", cfg.Port)
++	if err := app.Listen(":" + cfg.Port); err != nil {
++		logger.Error("listen", "err", err)
++		os.Exit(1)
++	}
++}
+diff --git a/go.mod b/go.mod
+new file mode 100644
+index 0000000..0c0866e
+--- /dev/null
++++ b/go.mod
+@@ -0,0 +1,89 @@
++module github.com/kitavrus/kanban-tree
++
++go 1.26.0
++
++// Зависимости разрешает `go mod tidy` (первый next-step после генерации):
++// fiber/v3, pgx/v5, go-redis/v9, golang-migrate/v4, dockertest/v3, testify,
++// prometheus/client_golang, otel (+ golang-jwt/v5 при auth.mode=jwt).
++
++require (
++	github.com/gofiber/fiber/v3 v3.5.0
++	github.com/golang-migrate/migrate/v4 v4.20.1
++	github.com/jackc/pgx/v5 v5.11.0
++	github.com/ory/dockertest/v3 v3.12.0
++	github.com/prometheus/client_golang v1.24.1
++	github.com/redis/go-redis/v9 v9.22.0
++	github.com/stretchr/testify v1.12.1
++	github.com/valyala/fasthttp v1.73.0
++	go.opentelemetry.io/otel v1.46.0
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
++	go.opentelemetry.io/otel/sdk v1.46.0
++	go.opentelemetry.io/otel/trace v1.46.0
++	golang.org/x/crypto v0.57.0
++)
++
++require (
++	dario.cat/mergo v1.0.0 // indirect
++	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
++	github.com/Microsoft/go-winio v0.6.2 // indirect
++	github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 // indirect
++	github.com/andybalholm/brotli v1.2.2 // indirect
++	github.com/beorn7/perks v1.0.1 // indirect
++	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
++	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
++	github.com/cespare/xxhash/v2 v2.3.0 // indirect
++	github.com/containerd/continuity v0.4.5 // indirect
++	github.com/docker/cli v27.4.1+incompatible // indirect
++	github.com/docker/docker v28.5.2+incompatible // indirect
++	github.com/docker/go-connections v0.7.0 // indirect
++	github.com/docker/go-units v0.5.0 // indirect
++	github.com/go-logr/logr v1.4.4 // indirect
++	github.com/go-logr/stdr v1.2.2 // indirect
++	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
++	github.com/gofiber/schema v1.8.3 // indirect
++	github.com/gofiber/utils/v2 v2.4.1 // indirect
++	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
++	github.com/google/uuid v1.6.0 // indirect
++	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
++	github.com/jackc/pgpassfile v1.0.0 // indirect
++	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
++	github.com/jackc/puddle/v2 v2.2.2 // indirect
++	github.com/klauspost/compress v1.19.2 // indirect
++	github.com/kr/text v0.2.0 // indirect
++	github.com/lib/pq v1.10.9 // indirect
++	github.com/mattn/go-colorable v0.1.15 // indirect
++	github.com/mattn/go-isatty v0.0.24 // indirect
++	github.com/moby/docker-image-spec v1.3.1 // indirect
++	github.com/moby/sys/user v0.3.0 // indirect
++	github.com/moby/term v0.5.2 // indirect
++	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
++	github.com/opencontainers/go-digest v1.0.0 // indirect
++	github.com/opencontainers/image-spec v1.1.1 // indirect
++	github.com/opencontainers/runc v1.2.3 // indirect
++	github.com/philhofer/fwd v1.2.0 // indirect
++	github.com/pkg/errors v0.9.1 // indirect
++	github.com/prometheus/client_model v0.6.2 // indirect
++	github.com/prometheus/common v0.70.1 // indirect
++	github.com/prometheus/procfs v0.21.1 // indirect
++	github.com/sirupsen/logrus v1.9.3 // indirect
++	github.com/tinylib/msgp v1.6.4 // indirect
++	github.com/valyala/bytebufferpool v1.0.0 // indirect
++	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
++	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
++	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
++	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
++	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0 // indirect
++	go.opentelemetry.io/otel/metric v1.46.0 // indirect
++	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
++	go.uber.org/atomic v1.11.0 // indirect
++	go.yaml.in/yaml/v3 v3.0.5 // indirect
++	golang.org/x/net v0.58.0 // indirect
++	golang.org/x/sync v0.23.0 // indirect
++	golang.org/x/sys v0.48.0 // indirect
++	golang.org/x/text v0.42.0 // indirect
++	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
++	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
++	google.golang.org/grpc v1.83.1 // indirect
++	google.golang.org/protobuf v1.36.12 // indirect
++	gopkg.in/yaml.v2 v2.4.0 // indirect
++)
+diff --git a/go.sum b/go.sum
+new file mode 100644
+index 0000000..09edf89
+--- /dev/null
++++ b/go.sum
+@@ -0,0 +1,229 @@
++dario.cat/mergo v1.0.0 h1:AGCNq9Evsj31mOgNPcLyXc+4PNABt905YmuqPYYpBWk=
++dario.cat/mergo v1.0.0/go.mod h1:uNxQE+84aUszobStD9th8a29P2fMDhsBdgRYvZOxGmk=
++filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
++filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
++github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
++github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
++github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
++github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
++github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 h1:TngWCqHvy9oXAN6lEVMRuU21PR1EtLVZJmdB18Gu3Rw=
++github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5/go.mod h1:lmUJ/7eu/Q8D7ML55dXQrVaamCz2vxCfdQBasLZfHKk=
++github.com/andybalholm/brotli v1.2.2 h1:HzTuoo2ErYQqf5qvcJInB8uvqSVxRttzkFexPWtnceM=
++github.com/andybalholm/brotli v1.2.2/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
++github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
++github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
++github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
++github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
++github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
++github.com/bsm/gomega v1.27.10/go.mod h1:JyEr/xRbxbtgWNi8tIEVPUYZ5Dzef52k01W3YH0H+O0=
++github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
++github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
++github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
++github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
++github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
++github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
++github.com/containerd/continuity v0.4.5 h1:ZRoN1sXq9u7V6QoHMcVWGhOwDFqZ4B9i5H6un1Wh0x4=
++github.com/containerd/continuity v0.4.5/go.mod h1:/lNJvtJKUQStBzpVQ1+rasXO1LAWtUQssk28EZvJ3nE=
++github.com/containerd/errdefs v1.0.0 h1:tg5yIfIlQIrxYtu9ajqY42W3lpS19XqdxRQeEwYG8PI=
++github.com/containerd/errdefs v1.0.0/go.mod h1:+YBYIdtsnF4Iw6nWZhJcqGSg/dwvV7tyJ/kCkyJ2k+M=
++github.com/containerd/errdefs/pkg v0.3.0 h1:9IKJ06FvyNlexW690DXuQNx2KA2cUJXx151Xdx3ZPPE=
++github.com/containerd/errdefs/pkg v0.3.0/go.mod h1:NJw6s9HwNuRhnjJhM7pylWwMyAkmCQvQ4GpJHEqRLVk=
++github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
++github.com/creack/pty v1.1.18 h1:n56/Zwd5o6whRC5PMGretI4IdRLlmBXYNjScPaBgsbY=
++github.com/creack/pty v1.1.18/go.mod h1:MOBLtS5ELjhRRrroQr9kyvTxUAFNvYEK993ew/Vr4O4=
++github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
++github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
++github.com/dhui/dktest v0.4.6 h1:+DPKyScKSEp3VLtbMDHcUq6V5Lm5zfZZVb0Sk7Ahom4=
++github.com/dhui/dktest v0.4.6/go.mod h1:JHTSYDtKkvFNFHJKqCzVzqXecyv+tKt8EzceOmQOgbU=
++github.com/distribution/reference v0.6.0 h1:0IXCQ5g4/QMHHkarYzh5l+u8T3t73zM5QvfrDyIgxBk=
++github.com/distribution/reference v0.6.0/go.mod h1:BbU0aIcezP1/5jX/8MP0YiH4SdvB5Y4f/wlDRiLyi3E=
++github.com/docker/cli v27.4.1+incompatible h1:VzPiUlRJ/xh+otB75gva3r05isHMo5wXDfPRi5/b4hI=
++github.com/docker/cli v27.4.1+incompatible/go.mod h1:JLrzqnKDaYBop7H2jaqPtU4hHvMKP+vjCwu2uszcLI8=
++github.com/docker/docker v28.5.2+incompatible h1:DBX0Y0zAjZbSrm1uzOkdr1onVghKaftjlSWt4AFexzM=
++github.com/docker/docker v28.5.2+incompatible/go.mod h1:eEKB0N0r5NX/I1kEveEz05bcu8tLC/8azJZsviup8Sk=
++github.com/docker/go-connections v0.7.0 h1:6SsRfJddP22WMrCkj19x9WKjEDTB+ahsdiGYf0mN39c=
++github.com/docker/go-connections v0.7.0/go.mod h1:no1qkHdjq7kLMGUXYAduOhYPSJxxvgWBh7ogVvptn3Q=
++github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4=
++github.com/docker/go-units v0.5.0/go.mod h1:fgPhTUdO+D/Jk86RDLlptpiXQzgHJF7gydDDbaIK4Dk=
++github.com/felixge/httpsnoop v1.1.0 h1:3YtUj32ZZkqZtt3sZZsClsymw/QDuVfpNhoA31zeORc=
++github.com/felixge/httpsnoop v1.1.0/go.mod h1:Zqxgdd+1Rkcz8euOqdr7lqgCRJztwr5hp9vDSi5UZCE=
++github.com/fxamacker/cbor/v2 v2.9.2 h1:X4Ksno9+x3cz0TZv69ec1hxP/+tymuR8PXQJyDwfh78=
++github.com/fxamacker/cbor/v2 v2.9.2/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
++github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
++github.com/go-logr/logr v1.4.4 h1:tG4xh9yMsRCAiodLVTxyrkzSZ9+o0L1Kg/+cPVcbP/8=
++github.com/go-logr/logr v1.4.4/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
++github.com/go-logr/stdr v1.2.2 h1:hSWxHoqTgW2S2qGc0LTAI563KZ5YKYRhT3MFKZMbjag=
++github.com/go-logr/stdr v1.2.2/go.mod h1:mMo/vtBO5dYbehREoey6XUKy/eSumjCCveDpRre4VKE=
++github.com/go-sql-driver/mysql v1.8.1 h1:LedoTUt/eveggdHS9qUFC1EFSa8bU2+1pZjSRpvNJ1Y=
++github.com/go-sql-driver/mysql v1.8.1/go.mod h1:wEBSXgmK//2ZFJyE+qWnIsVGmvmEKlqwuVSjsCm7DZg=
++github.com/go-viper/mapstructure/v2 v2.5.0 h1:vM5IJoUAy3d7zRSVtIwQgBj7BiWtMPfmPEgAXnvj1Ro=
++github.com/go-viper/mapstructure/v2 v2.5.0/go.mod h1:oJDH3BJKyqBA2TXFhDsKDGDTlndYOZ6rGS0BRZIxGhM=
++github.com/gofiber/fiber/v3 v3.5.0 h1:dk7TOUH6DXJGtOLsN2XEG+0ZML7cznzHILTVozbNEK8=
++github.com/gofiber/fiber/v3 v3.5.0/go.mod h1:GOVDTW+gjJvfe0iJyVujbQ1Lnx+JUjFySJRI/9/xX/w=
++github.com/gofiber/schema v1.8.3 h1:06ZedxIYjngzc0095PYy7uWnFnbRflWFpikvZH61fDc=
++github.com/gofiber/schema v1.8.3/go.mod h1:jWnnZdhcW1mHyV+VnfRxKJDPNcepJsTZ9RIWxrr32Ng=
++github.com/gofiber/utils/v2 v2.4.1 h1:E2X9G8O5Mn7b2GDb0JU3IUk42Rw2npuhhepIbuJQ2po=
++github.com/gofiber/utils/v2 v2.4.1/go.mod h1:I+RTsgMUdzFuifVc3LOEkfh32wQW9BfRl7l5RYjamW4=
++github.com/golang-migrate/migrate/v4 v4.20.1 h1:2N/ToVTKrKl58ynBpgeVJ4In7VcLCjWTZtm4eP1LxhU=
++github.com/golang-migrate/migrate/v4 v4.20.1/go.mod h1:DDPgKVb4ovSWc4FwSPfV2Uz1160f4XBiTHTrAJtljmM=
++github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek=
++github.com/golang/protobuf v1.5.4/go.mod h1:lnTiLA8Wa4RWRcIUkrtSVa5nRhsEGBg48fD6rSs7xps=
++github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
++github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
++github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 h1:El6M4kTTCOh6aBiKaUGG7oYTSPP8MxqL4YI3kZKwcP4=
++github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510/go.mod h1:pupxD2MaaD3pAXIBCelhxNneeOaAeabZDe5s4K6zSpQ=
++github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
++github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
++github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 h1:/Tnpcb2E0Pz/tN9s3bfEY2Q8ePCEX9iuS+cneUwncnw=
++github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0/go.mod h1:zOBXOsUaBSjKgmH4OGzV1esUpR3oUSCPYVd2cUBjKYY=
++github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
++github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
++github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
++github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
++github.com/jackc/pgx/v5 v5.11.0 h1:IzBBtyK9AHqf98cctWFifYSci2hgQR/cd56wB4p+ogg=
++github.com/jackc/pgx/v5 v5.11.0/go.mod h1:mal1tBGAFfLHvZzaYh77YS/eC6IX9OWbRV1QIIM0Jn4=
++github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
++github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
++github.com/klauspost/compress v1.19.2 h1:hMRETovs/pu/dVWN7zIT1PGG8t509MwT6bO7XSi26R8=
++github.com/klauspost/compress v1.19.2/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
++github.com/klauspost/cpuid/v2 v2.2.10 h1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2skhE=
++github.com/klauspost/cpuid/v2 v2.2.10/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
++github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
++github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
++github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
++github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
++github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
++github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
++github.com/lib/pq v1.10.9 h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
++github.com/lib/pq v1.10.9/go.mod h1:AlVN5x4E4T544tWzH6hKfbfQvm3HdbOxrmggDNAPY9o=
++github.com/mattn/go-colorable v0.1.15 h1:+u9SLTRGnXv73cEsnsmoZBom+dMU88B2M0aDcWy0/jY=
++github.com/mattn/go-colorable v0.1.15/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
++github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=
++github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
++github.com/moby/docker-image-spec v1.3.1 h1:jMKff3w6PgbfSa69GfNg+zN/XLhfXJGnEx3Nl2EsFP0=
++github.com/moby/docker-image-spec v1.3.1/go.mod h1:eKmb5VW8vQEh/BAr2yvVNvuiJuY6UIocYsFu/DxxRpo=
++github.com/moby/moby/api v1.54.2 h1:wiat9QAhnDQjA7wk1kh/TqHz2I1uUA7M7t9SAl/JNXg=
++github.com/moby/moby/api v1.54.2/go.mod h1:+RQ6wluLwtYaTd1WnPLykIDPekkuyD/ROWQClE83pzs=
++github.com/moby/moby/client v0.4.1 h1:DMQgisVoMkmMs7fp3ROSdiBnoAu8+vo3GggFl06M/wY=
++github.com/moby/moby/client v0.4.1/go.mod h1:z52C9O2POPOsnxZAy//WtKcQ32P+jT/NGeXu/7nfjGQ=
++github.com/moby/sys/user v0.3.0 h1:9ni5DlcW5an3SvRSx4MouotOygvzaXbaSrc/wGDFWPo=
++github.com/moby/sys/user v0.3.0/go.mod h1:bG+tYYYJgaMtRKgEmuueC0hJEAZWwtIbZTB+85uoHjs=
++github.com/moby/term v0.5.2 h1:6qk3FJAFDs6i/q3W/pQ97SX192qKfZgGjCQqfCJkgzQ=
++github.com/moby/term v0.5.2/go.mod h1:d3djjFCrjnB+fl8NJux+EJzu0msscUP+f8it8hPkFLc=
++github.com/morikuni/aec v1.0.0 h1:nP9CBfwrvYnBRgY6qfDQkygYDmYwOilePFkwzv4dU8A=
++github.com/morikuni/aec v1.0.0/go.mod h1:BbKIizmSmc5MMPqRYbxO4ZU0S0+P200+tUnFx7PXmsc=
++github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
++github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
++github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=
++github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
++github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
++github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
++github.com/opencontainers/runc v1.2.3 h1:fxE7amCzfZflJO2lHXf4y/y8M1BoAqp+FVmG19oYB80=
++github.com/opencontainers/runc v1.2.3/go.mod h1:nSxcWUydXrsBZVYNSkTjoQ/N6rcyTtn+1SD5D4+kRIM=
++github.com/ory/dockertest/v3 v3.12.0 h1:3oV9d0sDzlSQfHtIaB5k6ghUCVMVLpAY8hwrqoCyRCw=
++github.com/ory/dockertest/v3 v3.12.0/go.mod h1:aKNDTva3cp8dwOWwb9cWuX84aH5akkxXRvO7KCwWVjE=
++github.com/philhofer/fwd v1.2.0 h1:e6DnBTl7vGY+Gz322/ASL4Gyp1FspeMvx1RNDoToZuM=
++github.com/philhofer/fwd v1.2.0/go.mod h1:RqIHx9QI14HlwKwm98g9Re5prTQ6LdeRQn+gXJFxsJM=
++github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
++github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
++github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
++github.com/prometheus/client_golang v1.24.1 h1:JnJkREXzWxUdCuPFpIWZiPispT9xVV59uiuyR2bPlnU=
++github.com/prometheus/client_golang v1.24.1/go.mod h1:F+oSRECHg4sse5ucfYpYDeIv/hu68Zo0uoHKetWnzcE=
++github.com/prometheus/client_model v0.6.2 h1:oBsgwpGs7iVziMvrGhE53c/GrLUsZdHnqNwqPLxwZyk=
++github.com/prometheus/client_model v0.6.2/go.mod h1:y3m2F6Gdpfy6Ut/GBsUqTWZqCUvMVzSfMLjcu6wAwpE=
++github.com/prometheus/common v0.70.1 h1:1HvjP4D5oL3t8RsPlwxA9onvvStjtIHYE5XuuwOi/PY=
++github.com/prometheus/common v0.70.1/go.mod h1:VdFUQDMZK3VLkurFUVhia6uys/0suUp86TJz5qbJRhc=
++github.com/prometheus/procfs v0.21.1 h1:GljZCt+zSTS+NZq88cyQ1LjZ+RCHp3uVuabBWA5+OJI=
++github.com/prometheus/procfs v0.21.1/go.mod h1:aB55Cww9pdSJVHk0hUf0inxWyyjPogFIjmHKYgMKmtY=
++github.com/redis/go-redis/v9 v9.22.0 h1:laDvpYXTJtZLloinw1fA5Kqd6HAEH2XKxOkG/PDq2F0=
++github.com/redis/go-redis/v9 v9.22.0/go.mod h1:y2g0Wj8rQvuK0ELM+oxSudcLtC09JScs98I/X9gRWY4=
++github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
++github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
++github.com/shamaton/msgpack/v3 v3.2.0 h1:1q2Ms+MWmuRju+PuDMSFDB7p7621npeX4zprJN5Zck8=
++github.com/shamaton/msgpack/v3 v3.2.0/go.mod h1:sgBYvEiyz8JR1NC3yGRoPVME9xXovpnh3l/plW1nfRo=
++github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=
++github.com/sirupsen/logrus v1.9.3/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
++github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
++github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
++github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
++github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
++github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
++github.com/tinylib/msgp v1.6.4 h1:mOwYbyYDLPj35mkA2BjjYejgJk9BuHxDdvRnb6v2ZcQ=
++github.com/tinylib/msgp v1.6.4/go.mod h1:RSp0LW9oSxFut3KzESt5Voq4GVWyS+PSulT77roAqEA=
++github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
++github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
++github.com/valyala/fasthttp v1.73.0 h1:ocTOORnBWtJ+P8t/6wAjdkchMzdfHmWx2VD/DPbgZ7s=
++github.com/valyala/fasthttp v1.73.0/go.mod h1:EtXQDHaR+5P18p8wqDRFpUhxr108Ga9mXvVJXHRrN2k=
++github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
++github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
++github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f/go.mod h1:N2zxlSyiKSe5eX1tZViRH5QA0qijqEDrYZiPEAiq3wU=
++github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb h1:zGWFAtiMcyryUHoUjUJX0/lt1H2+i2Ka2n+D3DImSNo=
++github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb/go.mod h1:N2zxlSyiKSe5eX1tZViRH5QA0qijqEDrYZiPEAiq3wU=
++github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 h1:EzJWgHovont7NscjpAxXsDA8S8BMYve8Y5+7cuRE7R0=
++github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415/go.mod h1:GwrjFmJcFw6At/Gs6z4yjiIwzuJ1/+UwLxMQDVQXShQ=
++github.com/xeipuuv/gojsonschema v1.2.0 h1:LhYJRs+L4fBtjZUfuSZIKGeVu0QRy8e5Xi7D17UxZ74=
++github.com/xeipuuv/gojsonschema v1.2.0/go.mod h1:anYRn/JVcOK2ZgGU+IjEV4nwlhoK5sQluxsYJ78Id3Y=
++github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZqKjWU=
++github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
++github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=
++github.com/zeebo/xxh3 v1.1.0/go.mod h1:IisAie1LELR4xhVinxWS5+zf1lA4p0MW4T+w+W07F5s=
++go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
++go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
++go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 h1:LMuyCAyfalSjDyjdC65nK6N0zoTT63+E/u95X0JovZI=
++go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0/go.mod h1:085m8qbm4hgc8rZWGDEa4vmyyo2c3nPxUslYUKUIU04=
++go.opentelemetry.io/otel v1.46.0 h1:FHt5/CDyVxi/8IM1CH7VE/rRgq3kLHa2mSTVMO8AWyc=
++go.opentelemetry.io/otel v1.46.0/go.mod h1:Gj3SEScelsNC45tp4nSxRYlS+f5iez7W8XPMCt905kE=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0 h1:OFnwLJr+pF3iHrlGSzbxyuo6/6HyBlnlN1CWEJmBVcw=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0/go.mod h1:716wFneO0ov19A2beH5hjfh9AK5z/VWNAtDijp1Y0/g=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0 h1:KrC1YrQeSt46ITMWAbgQx1M1eV1/1TKzttrBzymPmss=
++go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0/go.mod h1:zDSEzoEqsOrgBeGvH66KRgxh90VonFyJqBHA0Pk3+rM=
++go.opentelemetry.io/otel/metric v1.46.0 h1:yBnkXvgV7AXFILZc5K6IZe/CBFF3OS7BJ8ov6/lj0K8=
++go.opentelemetry.io/otel/metric v1.46.0/go.mod h1:iPmdWqifKUdzziPkvvzIJXITl56fQx2mGM/DHLB3/2o=
++go.opentelemetry.io/otel/sdk v1.46.0 h1:h5CNQQjEbuQXY/JfZtgt3i7HVFV3aHPO2OAwO2eTYPI=
++go.opentelemetry.io/otel/sdk v1.46.0/go.mod h1:GAERFXFt5SYCEB+YiKUbMBeza6UaDH7GmGOZEfh2gSM=
++go.opentelemetry.io/otel/sdk/metric v1.46.0 h1:0piZ26EG4RBfebb2jhDH6ERCYHoVWduc3kLgPCwSnSE=
++go.opentelemetry.io/otel/sdk/metric v1.46.0/go.mod h1:I1PbKrdVc8Qu8HYVDNtqVIwLwjNrhsV/uFuxfwg8mO4=
++go.opentelemetry.io/otel/trace v1.46.0 h1:OULy7ccdJnZtJ0UDYFOIGaCmiWzJ8Vi2G/Rsu60qs1c=
++go.opentelemetry.io/otel/trace v1.46.0/go.mod h1:J7GAXweO77XSFkB/rmAqk9D6ihszhFjLU+d9WuUxDLI=
++go.opentelemetry.io/proto/otlp v1.11.0 h1:5rrYs0Ykyj50sdU/JU0x8etU+LubXWb+gED6TbEdMIk=
++go.opentelemetry.io/proto/otlp v1.11.0/go.mod h1:SmVizdCOAm3XBtG1g1NnOdhW6jtddT72hLMhv8VwA8E=
++go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
++go.uber.org/atomic v1.11.0/go.mod h1:LUxbIzbOniOlMKjJjyPfpl4v+PKK2cNJn91OQbhoJI0=
++go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
++go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
++go.yaml.in/yaml/v2 v2.4.4 h1:tuyd0P+2Ont/d6e2rl3be67goVK4R6deVxCUX5vyPaQ=
++go.yaml.in/yaml/v2 v2.4.4/go.mod h1:gMZqIpDtDqOfM0uNfy0SkpRhvUryYH0Z6wdMYcacYXQ=
++go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
++go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
++golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
++golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
++golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
++golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
++golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
++golang.org/x/sync v0.23.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
++golang.org/x/sys v0.0.0-20210616094352-59db8d763f22/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
++golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
++golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=
++golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=
++gonum.org/v1/gonum v0.17.0 h1:VbpOemQlsSMrYmn7T2OUvQ4dqxQXU+ouZFQsZOx50z4=
++gonum.org/v1/gonum v0.17.0/go.mod h1:El3tOrEuMpv2UdMrbNlKEh9vd86bmQ6vqIcDwxEOc1E=
++google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 h1:ax2KzoSRIZU/M0cIxri3pKxy99vniH1PVxWC6si/eZI=
++google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688/go.mod h1:1RJ9BQGyNdZwkGc1eTqkErfRZ6RJyYPHZo73BZ1vQqI=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 h1:cYNAzI2sUwhmCcoj9TxvihSrqsxt6uIkj3rDRhSDmW4=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688/go.mod h1:DjtHYE8FKJLivXcBEjGwndXfIC23G0VpXiXKqG179uA=
++google.golang.org/grpc v1.83.1 h1:HIO0+BEtBP6soyqvqC8sNUjZ7bTs+0hFQuFF+RAy++Y=
++google.golang.org/grpc v1.83.1/go.mod h1:kDyl6SKsiHKt0uylY5gtn5cEjkrIOhQOGDgIc4JGwzQ=
++google.golang.org/protobuf v1.36.12 h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=
++google.golang.org/protobuf v1.36.12/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
++gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
++gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
++gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
++gopkg.in/yaml.v2 v2.4.0 h1:D8xgwECY7CYvx+Y2n4sBz93Jn9JRvxdiyyo8CTfuKaY=
++gopkg.in/yaml.v2 v2.4.0/go.mod h1:RDklbk79AGWmwhnvt/jBztapEOGDOx6ZbXqjP6csGnQ=
++gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
++gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
++gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
++gotest.tools/v3 v3.5.1 h1:EENdUnS3pdur5nybKYIh2Vfgc8IUNBjxDPSjtiJcOzU=
++gotest.tools/v3 v3.5.1/go.mod h1:isy3WKz7GK6uNw/sbHzfKBLvlvXwUyV06n6brMxxopU=
+diff --git a/internal/config/auth.go b/internal/config/auth.go
+new file mode 100644
+index 0000000..dae1577
+--- /dev/null
++++ b/internal/config/auth.go
+@@ -0,0 +1,21 @@
++package config
++
++import (
++	"fmt"
++	"time"
++)
++
++// AuthConfig — session-режим (auth.mode=session, /project-bootstrap):
++// HttpOnly cookie `sid`, store — Redis.
++type AuthConfig struct {
++	SessionTTL time.Duration
++}
++
++func loadAuth() (AuthConfig, error) {
++	ttl := getenv("SESSION_TTL", "720h")
++	d, err := time.ParseDuration(ttl)
++	if err != nil {
++		return AuthConfig{}, fmt.Errorf("SESSION_TTL '%s': %w", ttl, err)
++	}
++	return AuthConfig{SessionTTL: d}, nil
++}
+diff --git a/internal/config/config.go b/internal/config/config.go
+new file mode 100644
+index 0000000..6854fc0
+--- /dev/null
++++ b/internal/config/config.go
+@@ -0,0 +1,44 @@
++package config
++
++import (
++	"fmt"
++	"os"
++)
++
++// Config — env-контракт приложения. Имена переменных — референс LiveSuite (§TD-8):
++// DATABASE_URL, REDIS_ADDR, PORT. Auth-часть — internal/config/auth.go (штампуется
++// фрагментом project-bootstrap под выбранный auth.mode).
++type Config struct {
++	DatabaseURL  string
++	RedisAddr    string
++	Port         string
++	LogLevel     string
++	OTLPEndpoint string // пусто → трейсинг no-op
++	Auth         AuthConfig
++}
++
++func Load() (*Config, error) {
++	cfg := &Config{
++		DatabaseURL:  os.Getenv("DATABASE_URL"),
++		RedisAddr:    getenv("REDIS_ADDR", "127.0.0.1:6379"),
++		Port:         getenv("PORT", "8080"),
++		LogLevel:     getenv("LOG_LEVEL", "info"),
++		OTLPEndpoint: os.Getenv("OTLP_ENDPOINT"),
++	}
++	if cfg.DatabaseURL == "" {
++		return nil, fmt.Errorf("DATABASE_URL обязателен")
++	}
++	auth, err := loadAuth()
++	if err != nil {
++		return nil, err
++	}
++	cfg.Auth = auth
++	return cfg, nil
++}
++
++func getenv(key, def string) string {
++	if v := os.Getenv(key); v != "" {
++		return v
++	}
++	return def
++}
+diff --git a/internal/features/auth/dto.go b/internal/features/auth/dto.go
+new file mode 100644
+index 0000000..2197ebc
+--- /dev/null
++++ b/internal/features/auth/dto.go
+@@ -0,0 +1,14 @@
++package auth
++
++// Wire-типы — JSON только snake_case (§API-1). Идентификатор — login, не адрес почты.
++
++type LoginRequest struct {
++	Login    string `json:"login"`
++	Password string `json:"password"`
++}
++
++type UserResponse struct {
++	ID    string `json:"id"`
++	Login string `json:"login"`
++	Name  string `json:"name"`
++}
+diff --git a/internal/features/auth/handler.go b/internal/features/auth/handler.go
+new file mode 100644
+index 0000000..a86d200
+--- /dev/null
++++ b/internal/features/auth/handler.go
+@@ -0,0 +1,64 @@
++package auth
++
++import (
++	"time"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++type Handler struct {
++	svc *Service
++}
++
++func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
++
++// Login — POST /api/v1/auth/login. Успех: HttpOnly cookie sid + профиль.
++func (h *Handler) Login(c fiber.Ctx) error {
++	var req LoginRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("invalid body")
++	}
++	if req.Login == "" || req.Password == "" {
++		return errorspkg.Validation(
++			errorspkg.Field{Name: "login", Message: "required"},
++			errorspkg.Field{Name: "password", Message: "required"},
++		)
++	}
++	sid, u, err := h.svc.Login(c.Context(), req.Login, req.Password)
++	if err != nil {
++		return err
++	}
++	c.Cookie(&fiber.Cookie{
++		Name:     "sid",
++		Value:    sid,
++		HTTPOnly: true,
++		SameSite: fiber.CookieSameSiteLaxMode,
++		Path:     "/",
++		Expires:  time.Now().Add(h.svc.cfg.Auth.SessionTTL),
++	})
++	return c.JSON(UserResponse{ID: u.ID, Login: u.Login, Name: u.Name})
++}
++
++// Logout — POST /api/v1/auth/logout (protected).
++func (h *Handler) Logout(c fiber.Ctx) error {
++	if sid := c.Cookies("sid"); sid != "" {
++		if err := h.svc.Logout(c.Context(), sid); err != nil {
++			return err
++		}
++	}
++	c.ClearCookie("sid")
++	return c.JSON(fiber.Map{"status": "ok"})
++}
++
++// Me — GET /api/v1/auth/me (protected).
++func (h *Handler) Me(c fiber.Ctx) error {
++	userID, _ := c.Locals(middleware.UserIDKey).(string)
++	u, err := h.svc.UserByID(c.Context(), userID)
++	if err != nil {
++		return err
++	}
++	return c.JSON(UserResponse{ID: u.ID, Login: u.Login, Name: u.Name})
++}
+diff --git a/internal/features/auth/repo.go b/internal/features/auth/repo.go
+new file mode 100644
+index 0000000..d991607
+--- /dev/null
++++ b/internal/features/auth/repo.go
+@@ -0,0 +1,47 @@
++package auth
++
++import (
++	"context"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++type User struct {
++	ID           string
++	Login        string
++	PasswordHash string
++	Name         string
++}
++
++type Repo struct {
++	pool *pgxpool.Pool
++}
++
++func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
++
++var ErrNotFound = pgx.ErrNoRows
++
++func (r *Repo) GetByLogin(ctx context.Context, login string) (*User, error) {
++	var u User
++	err := r.pool.QueryRow(ctx,
++		`SELECT id, login, password_hash, name FROM users WHERE login = $1`, login,
++	).Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name)
++	if err != nil {
++		return nil, err
++	}
++	return &u, nil
++}
++
++func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
++	var u User
++	// ::uuid — id хранится как uuid, а pgx шлёт Go-string параметром как text;
++	// Postgres не кастует text→uuid неявно в сравнении (operator does not exist).
++	err := r.pool.QueryRow(ctx,
++		`SELECT id, login, password_hash, name FROM users WHERE id = $1::uuid`, id,
++	).Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name)
++	if err != nil {
++		return nil, err
++	}
++	return &u, nil
++}
+diff --git a/internal/features/auth/routes.go b/internal/features/auth/routes.go
+new file mode 100644
+index 0000000..1ad861b
+--- /dev/null
++++ b/internal/features/auth/routes.go
+@@ -0,0 +1,21 @@
++package auth
++
++import (
++	"github.com/gofiber/fiber/v3"
++	"github.com/redis/go-redis/v9"
++
++	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++)
++
++// Register монтирует /auth/* под /api/v1 (§API-1).
++func Register(api fiber.Router, svc *Service, cfg *config.Config, rdb *redis.Client) {
++	h := NewHandler(svc)
++	g := api.Group("/auth")
++	// Fiber выполняет хэндлеры В ПОРЯДКЕ АРГУМЕНТОВ: middleware ОБЯЗАН идти
++	// первым — иначе Me/Logout читают Locals(UserIDKey) до того, как RequireAuth
++	// его заполнит (проявляется как пустой userID → битый запрос ниже по стеку).
++	g.Post("/login", h.Login)
++	g.Post("/logout", middleware.RequireAuth(cfg, rdb), h.Logout)
++	g.Get("/me", middleware.RequireAuth(cfg, rdb), h.Me)
++}
+diff --git a/internal/features/auth/service.go b/internal/features/auth/service.go
+new file mode 100644
+index 0000000..5b617ff
+--- /dev/null
++++ b/internal/features/auth/service.go
+@@ -0,0 +1,66 @@
++package auth
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"errors"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++	"github.com/redis/go-redis/v9"
++	"golang.org/x/crypto/bcrypt"
++
++	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Service — session-auth: логин выдаёт sid, сессия живёт в Redis (SESSION_TTL).
++type Service struct {
++	repo *Repo
++	rdb  *redis.Client
++	cfg  *config.Config
++}
++
++func NewService(pool *pgxpool.Pool, rdb *redis.Client, cfg *config.Config) *Service {
++	return &Service{repo: NewRepo(pool), rdb: rdb, cfg: cfg}
++}
++
++// Login проверяет пароль и создаёт сессию. Неверные креды → единый 401
++// (без утечки "user not found" vs "wrong password").
++func (s *Service) Login(ctx context.Context, login, password string) (sid string, u *User, err error) {
++	u, err = s.repo.GetByLogin(ctx, login)
++	if err != nil {
++		if errors.Is(err, ErrNotFound) {
++			return "", nil, errorspkg.Unauthorized("invalid credentials")
++		}
++		return "", nil, err
++	}
++	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
++		return "", nil, errorspkg.Unauthorized("invalid credentials")
++	}
++	raw := make([]byte, 32)
++	if _, err := rand.Read(raw); err != nil {
++		return "", nil, err
++	}
++	sid = hex.EncodeToString(raw)
++	if err := s.rdb.Set(ctx, middleware.SessionKeyPrefix+sid, u.ID, s.cfg.Auth.SessionTTL).Err(); err != nil {
++		return "", nil, err
++	}
++	return sid, u, nil
++}
++
++func (s *Service) Logout(ctx context.Context, sid string) error {
++	return s.rdb.Del(ctx, middleware.SessionKeyPrefix+sid).Err()
++}
++
++func (s *Service) UserByID(ctx context.Context, id string) (*User, error) {
++	u, err := s.repo.GetByID(ctx, id)
++	if err != nil {
++		if errors.Is(err, ErrNotFound) {
++			return nil, errorspkg.Unauthorized("user gone")
++		}
++		return nil, err
++	}
++	return u, nil
++}
+diff --git a/internal/features/home/handler.go b/internal/features/home/handler.go
+new file mode 100644
+index 0000000..6a48011
+--- /dev/null
++++ b/internal/features/home/handler.go
+@@ -0,0 +1,31 @@
++// Package home — главная страница «/». В фазе 1 — заглушка внутри общего layout;
++// в фазе 5 её место займёт доска заказов (plan.md §6).
++package home
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++)
++
++// Root — шаблоны фичи относительно корня модуля.
++const Root = "web/ssr/home/templates"
++
++// PageVM — view-model главной страницы.
++type PageVM struct {
++	Shell ssr.Shell
++}
++
++type Handlers struct {
++	R     *ssr.Renderer
++	Shell ssr.ShellBuilder
++}
++
++func (h *Handlers) Register(app *fiber.App) {
++	app.Get("/", h.index)
++}
++
++// index — GET /.
++func (h *Handlers) index(c fiber.Ctx) error {
++	return h.R.Page(c, "index", PageVM{Shell: h.Shell.Build(c, "Доска заказов")})
++}
+diff --git a/internal/features/users/dto.go b/internal/features/users/dto.go
+new file mode 100644
+index 0000000..10fb00a
+--- /dev/null
++++ b/internal/features/users/dto.go
+@@ -0,0 +1,35 @@
++package users
++
++import "time"
++
++// Wire-типы — JSON только snake_case (§API-1); конверт списка §FE-1.1.
++
++type UserResponse struct {
++	ID        string    `json:"id"`
++	Login     string    `json:"login"`
++	Name      string    `json:"name"`
++	IsActive  bool      `json:"is_active"`
++	CreatedAt time.Time `json:"created_at"`
++}
++
++type ListResponse struct {
++	Items  []UserResponse `json:"items"`
++	Total  int            `json:"total"`
++	Limit  int            `json:"limit"`
++	Offset int            `json:"offset"`
++}
++
++type CreateRequest struct {
++	Login    string `json:"login"`
++	Password string `json:"password"`
++	Name     string `json:"name"`
++}
++
++// UpdateRequest — частичное обновление: указатели, чтобы отличить «не передано»
++// от пустого значения (переключатель статуса шлёт только is_active, форма правки —
++// name и, при желании сменить, password).
++type UpdateRequest struct {
++	Name     *string `json:"name"`
++	IsActive *bool   `json:"is_active"`
++	Password *string `json:"password"`
++}
+diff --git a/internal/features/users/handler.go b/internal/features/users/handler.go
+new file mode 100644
+index 0000000..81f41d1
+--- /dev/null
++++ b/internal/features/users/handler.go
+@@ -0,0 +1,79 @@
++package users
++
++import (
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++type Handler struct {
++	svc *Service
++}
++
++func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
++
++// List — GET /api/v1/users?limit=&offset=&login=&name=&is_active=&sort=&order=
++// (конверт §FE-1.1). Фильтры и сортировка — стандарт списочных экранов.
++func (h *Handler) List(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	// Пустой is_active = «любой статус»; невалидное значение трактуем так же.
++	var isActive *bool
++	if raw := c.Query("is_active"); raw != "" {
++		if v, err := strconv.ParseBool(raw); err == nil {
++			isActive = &v
++		}
++	}
++	resp, err := h.svc.List(c.Context(), ListQuery{
++		Login:    c.Query("login"),
++		Name:     c.Query("name"),
++		IsActive: isActive,
++		Sort:     c.Query("sort"),
++		Order:    c.Query("order"),
++		Limit:    limit,
++		Offset:   offset,
++	})
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Create — POST /api/v1/users.
++func (h *Handler) Create(c fiber.Ctx) error {
++	var req CreateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("invalid body")
++	}
++	resp, err := h.svc.Create(c.Context(), req)
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// Update — PATCH /api/v1/users/:id (частичное; используется и для toggle статуса).
++func (h *Handler) Update(c fiber.Ctx) error {
++	var req UpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("invalid body")
++	}
++	currentUserID, _ := c.Locals(middleware.UserIDKey).(string)
++	resp, err := h.svc.Update(c.Context(), currentUserID, c.Params("id"), req)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Delete — DELETE /api/v1/users/:id.
++func (h *Handler) Delete(c fiber.Ctx) error {
++	currentUserID, _ := c.Locals(middleware.UserIDKey).(string)
++	if err := h.svc.Delete(c.Context(), currentUserID, c.Params("id")); err != nil {
++		return err
++	}
++	return c.JSON(fiber.Map{"status": "ok"})
++}
+diff --git a/internal/features/users/repo.go b/internal/features/users/repo.go
+new file mode 100644
+index 0000000..c5ffc50
+--- /dev/null
++++ b/internal/features/users/repo.go
+@@ -0,0 +1,165 @@
++package users
++
++import (
++	"context"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++type User struct {
++	ID        string
++	Login     string
++	Name      string
++	IsActive  bool
++	CreatedAt time.Time
++}
++
++type Repo struct {
++	pool *pgxpool.Pool
++}
++
++func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
++
++var ErrNotFound = pgx.ErrNoRows
++
++// ListParams — фильтры + сортировка + пагинация списка (стандарт списочных экранов).
++// Sort/Order приходят из сервиса УЖЕ прошедшими whitelist: их нельзя передать
++// параметром запроса, они склеиваются в SQL как идентификаторы.
++type ListParams struct {
++	Login    string // подстрока, регистронезависимо
++	Name     string // подстрока, регистронезависимо
++	IsActive *bool  // nil = любой статус
++	Sort     string // login | name | is_active | created_at
++	Order    string // ASC | DESC
++	Limit    int
++	Offset   int
++}
++
++func (r *Repo) List(ctx context.Context, p ListParams) ([]User, int, error) {
++	where := ""
++	var args []any
++	add := func(cond string, val any) {
++		args = append(args, val)
++		if where == "" {
++			where = " WHERE "
++		} else {
++			where += " AND "
++		}
++		where += fmt.Sprintf(cond, len(args))
++	}
++	if p.Login != "" {
++		add("login ILIKE $%d", "%"+escapeLike(p.Login)+"%")
++	}
++	if p.Name != "" {
++		add("name ILIKE $%d", "%"+escapeLike(p.Name)+"%")
++	}
++	if p.IsActive != nil {
++		add("is_active = $%d", *p.IsActive)
++	}
++
++	// id вторым ключом — стабильный тай-брейк: без него строки с равным значением
++	// сортировки прыгают между запросами и ломают пагинацию.
++	order := fmt.Sprintf(" ORDER BY %s %s, id", p.Sort, p.Order)
++
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM users`+where, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++
++	args = append(args, p.Limit, p.Offset)
++	q := `SELECT id, login, name, is_active, created_at FROM users` + where + order +
++		fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
++	rows, err := r.pool.Query(ctx, q, args...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++	var out []User
++	for rows.Next() {
++		var u User
++		if err := rows.Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt); err != nil {
++			return nil, 0, err
++		}
++		out = append(out, u)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, 0, err
++	}
++	return out, total, nil
++}
++
++// escapeLike — символы шаблона LIKE в пользовательском вводе ищутся буквально.
++func escapeLike(s string) string {
++	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
++	return r.Replace(s)
++}
++
++func (r *Repo) Create(ctx context.Context, login, passwordHash, name string) (*User, error) {
++	var u User
++	err := r.pool.QueryRow(ctx,
++		`INSERT INTO users (login, password_hash, name) VALUES ($1, $2, $3)
++		 RETURNING id, login, name, is_active, created_at`,
++		login, passwordHash, name,
++	).Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt)
++	if err != nil {
++		return nil, err
++	}
++	return &u, nil
++}
++
++func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
++	var u User
++	// ::uuid — id хранится как uuid, а pgx шлёт Go-string параметром как text;
++	// Postgres не кастует text→uuid неявно в сравнении (operator does not exist).
++	err := r.pool.QueryRow(ctx,
++		`SELECT id, login, name, is_active, created_at FROM users WHERE id = $1::uuid`, id,
++	).Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt)
++	if err != nil {
++		return nil, err
++	}
++	return &u, nil
++}
++
++// Update — частичное обновление (nil-поля не трогаем); version бампается (§FE-1.1).
++// passwordHash приходит уже посчитанным (bcrypt в сервисе — repo не знает про хеши).
++func (r *Repo) Update(ctx context.Context, id string, name *string, isActive *bool, passwordHash *string) (*User, error) {
++	var u User
++	err := r.pool.QueryRow(ctx,
++		`UPDATE users SET
++		   name = COALESCE($2, name),
++		   is_active = COALESCE($3, is_active),
++		   password_hash = COALESCE($4, password_hash),
++		   version = version + 1,
++		   updated_at = now()
++		 WHERE id = $1::uuid
++		 RETURNING id, login, name, is_active, created_at`,
++		id, name, isActive, passwordHash,
++	).Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt)
++	if err != nil {
++		return nil, err
++	}
++	return &u, nil
++}
++
++func (r *Repo) Delete(ctx context.Context, id string) error {
++	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid`, id)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrNotFound
++	}
++	return nil
++}
++
++func (r *Repo) LoginExists(ctx context.Context, login string) (bool, error) {
++	var exists bool
++	err := r.pool.QueryRow(ctx,
++		`SELECT EXISTS(SELECT 1 FROM users WHERE login = $1)`, login,
++	).Scan(&exists)
++	return exists, err
++}
+diff --git a/internal/features/users/routes.go b/internal/features/users/routes.go
+new file mode 100644
+index 0000000..bfc9e8f
+--- /dev/null
++++ b/internal/features/users/routes.go
+@@ -0,0 +1,16 @@
++package users
++
++import (
++	"github.com/gofiber/fiber/v3"
++)
++
++// Register монтирует /users под уже защищённую группу (§API-1) — RequireAuth
++// вешает вызывающий код (router.go), здесь предполагается protected-роутер.
++func Register(protected fiber.Router, svc *Service) {
++	h := NewHandler(svc)
++	g := protected.Group("/users")
++	g.Get("", h.List)
++	g.Post("", h.Create)
++	g.Patch("/:id", h.Update)
++	g.Delete("/:id", h.Delete)
++}
+diff --git a/internal/features/users/service.go b/internal/features/users/service.go
+new file mode 100644
+index 0000000..5f46514
+--- /dev/null
++++ b/internal/features/users/service.go
+@@ -0,0 +1,174 @@
++package users
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++	"golang.org/x/crypto/bcrypt"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++const (
++	defaultLimit = 20
++	maxLimit     = 100
++)
++
++type Service struct {
++	repo *Repo
++}
++
++func NewService(pool *pgxpool.Pool) *Service {
++	return &Service{repo: NewRepo(pool)}
++}
++
++// sortColumns — whitelist сортировки: значение query-параметра НЕ попадает в SQL,
++// в SQL идёт только имя колонки из этой карты (иначе — SQL-инъекция через ORDER BY).
++var sortColumns = map[string]string{
++	"login":      "login",
++	"name":       "name",
++	"is_active":  "is_active",
++	"created_at": "created_at",
++}
++
++const defaultSort = "created_at"
++
++// ListQuery — сырые параметры из HTTP-слоя (уже разобранные, но не валидированные).
++type ListQuery struct {
++	Login    string
++	Name     string
++	IsActive *bool
++	Sort     string
++	Order    string
++	Limit    int
++	Offset   int
++}
++
++func (s *Service) List(ctx context.Context, q ListQuery) (*ListResponse, error) {
++	limit, offset := q.Limit, q.Offset
++	if limit <= 0 {
++		limit = defaultLimit
++	}
++	if limit > maxLimit {
++		limit = maxLimit
++	}
++	if offset < 0 {
++		offset = 0
++	}
++	// Неизвестное поле/направление — тихий откат к дефолту, а не 400: сортировка
++	// приходит из URL, кривая ссылка не должна ломать экран.
++	col, ok := sortColumns[q.Sort]
++	if !ok {
++		col = sortColumns[defaultSort]
++	}
++	order := "DESC"
++	if strings.EqualFold(q.Order, "asc") {
++		order = "ASC"
++	}
++	items, total, err := s.repo.List(ctx, ListParams{
++		Login:    strings.TrimSpace(q.Login),
++		Name:     strings.TrimSpace(q.Name),
++		IsActive: q.IsActive,
++		Sort:     col,
++		Order:    order,
++		Limit:    limit,
++		Offset:   offset,
++	})
++	if err != nil {
++		return nil, err
++	}
++	resp := &ListResponse{Items: make([]UserResponse, len(items)), Total: total, Limit: limit, Offset: offset}
++	for i, u := range items {
++		resp.Items[i] = toResponse(u)
++	}
++	return resp, nil
++}
++
++func (s *Service) Create(ctx context.Context, req CreateRequest) (*UserResponse, error) {
++	var fields []errorspkg.Field
++	if utf8.RuneCountInString(req.Login) < 3 {
++		fields = append(fields, errorspkg.Field{Name: "login", Message: "min 3 chars"})
++	}
++	if utf8.RuneCountInString(req.Password) < 8 {
++		fields = append(fields, errorspkg.Field{Name: "password", Message: "min 8 chars"})
++	}
++	if len(fields) > 0 {
++		return nil, errorspkg.Validation(fields...)
++	}
++	exists, err := s.repo.LoginExists(ctx, req.Login)
++	if err != nil {
++		return nil, err
++	}
++	if exists {
++		return nil, errorspkg.Conflict("login already taken")
++	}
++	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
++	if err != nil {
++		return nil, err
++	}
++	u, err := s.repo.Create(ctx, req.Login, string(hash), req.Name)
++	if err != nil {
++		var pgErr *pgconn.PgError
++		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation — гонка мимо pre-check
++			return nil, errorspkg.Conflict("login already taken")
++		}
++		return nil, err
++	}
++	resp := toResponse(*u)
++	return &resp, nil
++}
++
++// Update — currentUserID из сессии: самому себе статус менять нельзя (не остаться
++// без доступа), удобство важнее полноты — гарда «последний активный» намеренно не
++// добавлена (минимальный набор каркаса, расширяется через /scaffold при надобности).
++// Имя и пароль себе менять МОЖНО — это не самоблокировка.
++func (s *Service) Update(ctx context.Context, currentUserID, id string, req UpdateRequest) (*UserResponse, error) {
++	if req.IsActive != nil && id == currentUserID {
++		return nil, errorspkg.Forbidden("cannot change your own status")
++	}
++	var passwordHash *string
++	if req.Password != nil {
++		if utf8.RuneCountInString(*req.Password) < 8 {
++			return nil, errorspkg.Validation(errorspkg.Field{Name: "password", Message: "min 8 chars"})
++		}
++		hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
++		if err != nil {
++			return nil, err
++		}
++		hashStr := string(hash)
++		passwordHash = &hashStr
++	}
++	if req.Name != nil && *req.Name == "" {
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "name", Message: "required"})
++	}
++	u, err := s.repo.Update(ctx, id, req.Name, req.IsActive, passwordHash)
++	if err != nil {
++		if errors.Is(err, ErrNotFound) {
++			return nil, errorspkg.NotFound("user not found")
++		}
++		return nil, err
++	}
++	resp := toResponse(*u)
++	return &resp, nil
++}
++
++func (s *Service) Delete(ctx context.Context, currentUserID, id string) error {
++	if id == currentUserID {
++		return errorspkg.Forbidden("cannot delete your own account")
++	}
++	if err := s.repo.Delete(ctx, id); err != nil {
++		if errors.Is(err, ErrNotFound) {
++			return errorspkg.NotFound("user not found")
++		}
++		return err
++	}
++	return nil
++}
++
++func toResponse(u User) UserResponse {
++	return UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, IsActive: u.IsActive, CreatedAt: u.CreatedAt}
++}
+diff --git a/internal/observability/logger.go b/internal/observability/logger.go
+new file mode 100644
+index 0000000..f5a3d27
+--- /dev/null
++++ b/internal/observability/logger.go
+@@ -0,0 +1,15 @@
++package observability
++
++import (
++	"log/slog"
++	"os"
++)
++
++// NewLogger — JSON slog с уровнем из конфига.
++func NewLogger(level string) *slog.Logger {
++	var lvl slog.Level
++	if err := lvl.UnmarshalText([]byte(level)); err != nil {
++		lvl = slog.LevelInfo
++	}
++	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
++}
+diff --git a/internal/observability/metrics.go b/internal/observability/metrics.go
+new file mode 100644
+index 0000000..8571c9b
+--- /dev/null
++++ b/internal/observability/metrics.go
+@@ -0,0 +1,35 @@
++package observability
++
++import (
++	"strconv"
++	"time"
++
++	"github.com/gofiber/fiber/v3"
++	"github.com/prometheus/client_golang/prometheus"
++	"github.com/prometheus/client_golang/prometheus/promauto"
++)
++
++var (
++	httpRequests = promauto.NewCounterVec(prometheus.CounterOpts{
++		Name: "http_requests_total",
++		Help: "HTTP requests by method/path/status.",
++	}, []string{"method", "path", "status"})
++	httpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
++		Name:    "http_request_duration_seconds",
++		Help:    "HTTP request duration.",
++		Buckets: prometheus.DefBuckets,
++	}, []string{"method", "path"})
++)
++
++// MetricsMiddleware — счётчик и гистограмма запросов (/metrics — Prometheus).
++func MetricsMiddleware() fiber.Handler {
++	return func(c fiber.Ctx) error {
++		start := time.Now()
++		err := c.Next()
++		path := c.Route().Path // шаблон роута, не сырой URL — без кардинального взрыва
++		httpRequests.WithLabelValues(c.Method(), path,
++			strconv.Itoa(c.Response().StatusCode())).Inc()
++		httpDuration.WithLabelValues(c.Method(), path).Observe(time.Since(start).Seconds())
++		return err
++	}
++}
+diff --git a/internal/observability/otel.go b/internal/observability/otel.go
+new file mode 100644
+index 0000000..c99fb38
+--- /dev/null
++++ b/internal/observability/otel.go
+@@ -0,0 +1,58 @@
++package observability
++
++import (
++	"context"
++
++	"github.com/gofiber/fiber/v3"
++	"go.opentelemetry.io/otel"
++	"go.opentelemetry.io/otel/attribute"
++	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
++	sdkresource "go.opentelemetry.io/otel/sdk/resource"
++	sdktrace "go.opentelemetry.io/otel/sdk/trace"
++	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
++	"go.opentelemetry.io/otel/trace"
++)
++
++// InitTracer — OTLP/HTTP экспорт (Jaeger из monitoring-стека /infra-bootstrap).
++// Пустой endpoint → трейсинг no-op (dev без Jaeger), shutdown безопасен.
++func InitTracer(ctx context.Context, service, endpoint string) (func(context.Context) error, error) {
++	if endpoint == "" {
++		return func(context.Context) error { return nil }, nil
++	}
++	exp, err := otlptracehttp.New(ctx,
++		otlptracehttp.WithEndpoint(endpoint),
++		otlptracehttp.WithInsecure(),
++	)
++	if err != nil {
++		return nil, err
++	}
++	res, err := sdkresource.Merge(sdkresource.Default(),
++		sdkresource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(service)))
++	if err != nil {
++		return nil, err
++	}
++	tp := sdktrace.NewTracerProvider(
++		sdktrace.WithBatcher(exp),
++		sdktrace.WithResource(res),
++	)
++	otel.SetTracerProvider(tp)
++	return tp.Shutdown, nil
++}
++
++// TraceMiddleware — span на каждый HTTP-запрос.
++func TraceMiddleware(service string) fiber.Handler {
++	tracer := otel.Tracer(service)
++	return func(c fiber.Ctx) error {
++		ctx, span := tracer.Start(c.Context(), c.Method()+" "+c.Path(),
++			trace.WithSpanKind(trace.SpanKindServer))
++		defer span.End()
++		c.SetContext(ctx)
++		err := c.Next()
++		span.SetAttributes(
++			attribute.Int("http.status_code", c.Response().StatusCode()),
++			attribute.String("http.method", c.Method()),
++			attribute.String("http.route", c.Path()),
++		)
++		return err
++	}
++}
+diff --git a/internal/server/middleware/auth.go b/internal/server/middleware/auth.go
+new file mode 100644
+index 0000000..dadd96f
+--- /dev/null
++++ b/internal/server/middleware/auth.go
+@@ -0,0 +1,31 @@
++package middleware
++
++import (
++	"github.com/gofiber/fiber/v3"
++	"github.com/redis/go-redis/v9"
++
++	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// SessionKeyPrefix — ключи сессий в Redis: session:<sid> → user_id.
++const SessionKeyPrefix = "session:"
++
++// UserIDKey — Locals-ключ авторизованного пользователя.
++const UserIDKey = "user_id"
++
++// RequireAuth (session-режим): cookie sid → Redis lookup. Нет/протухла → 401.
++func RequireAuth(cfg *config.Config, rdb *redis.Client) fiber.Handler {
++	return func(c fiber.Ctx) error {
++		sid := c.Cookies("sid")
++		if sid == "" {
++			return errorspkg.Unauthorized("no session")
++		}
++		userID, err := rdb.Get(c.Context(), SessionKeyPrefix+sid).Result()
++		if err != nil {
++			return errorspkg.Unauthorized("invalid session")
++		}
++		c.Locals(UserIDKey, userID)
++		return c.Next()
++	}
++}
+diff --git a/internal/server/middleware/logging.go b/internal/server/middleware/logging.go
+new file mode 100644
+index 0000000..13f8bb8
+--- /dev/null
++++ b/internal/server/middleware/logging.go
+@@ -0,0 +1,25 @@
++package middleware
++
++import (
++	"log/slog"
++	"time"
++
++	"github.com/gofiber/fiber/v3"
++	"github.com/gofiber/fiber/v3/middleware/requestid"
++)
++
++// RequestLogger — структурный access-лог (slog).
++func RequestLogger(logger *slog.Logger) fiber.Handler {
++	return func(c fiber.Ctx) error {
++		start := time.Now()
++		err := c.Next()
++		logger.Info("http",
++			"method", c.Method(),
++			"path", c.Path(),
++			"status", c.Response().StatusCode(),
++			"dur_ms", time.Since(start).Milliseconds(),
++			"request_id", requestid.FromContext(c),
++		)
++		return err
++	}
++}
+diff --git a/internal/server/router.go b/internal/server/router.go
+new file mode 100644
+index 0000000..8f56bdc
+--- /dev/null
++++ b/internal/server/router.go
+@@ -0,0 +1,80 @@
++package server
++
++import (
++	"context"
++	"log/slog"
++	"time"
++
++	"github.com/gofiber/fiber/v3"
++	"github.com/gofiber/fiber/v3/middleware/adaptor"
++	"github.com/gofiber/fiber/v3/middleware/recover"
++	"github.com/gofiber/fiber/v3/middleware/requestid"
++	"github.com/gofiber/fiber/v3/middleware/static"
++	"github.com/jackc/pgx/v5/pgxpool"
++	"github.com/prometheus/client_golang/prometheus/promhttp"
++	"github.com/redis/go-redis/v9"
++
++	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/internal/features/auth"
++	"github.com/kitavrus/kanban-tree/internal/features/home"
++	"github.com/kitavrus/kanban-tree/internal/features/users"
++	"github.com/kitavrus/kanban-tree/internal/observability"
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// New собирает Fiber-приложение: middleware, health/ready/metrics, роуты фич.
++// Новые фичи регистрируются здесь: feature.Register(protected) — URL по §API-1
++// (kebab-сегменты, /api/v1/...), JSON-ключи snake_case; SSR-экраны — через
++// ssr.NewRenderer(root, ssr.SharedRoot) + Handlers.Register(app).
++func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis.Client) (*fiber.App, error) {
++	app := fiber.New(fiber.Config{
++		ErrorHandler: errorspkg.FiberErrorHandler,
++	})
++
++	app.Use(recover.New())
++	app.Use(requestid.New())
++	app.Use(observability.TraceMiddleware("kanban-tree"))
++	app.Use(observability.MetricsMiddleware())
++	app.Use(middleware.RequestLogger(logger))
++
++	app.Get("/health", func(c fiber.Ctx) error {
++		return c.JSON(fiber.Map{"status": "ok"})
++	})
++	app.Get("/ready", func(c fiber.Ctx) error {
++		ctx, cancel := context.WithTimeout(c.Context(), 2*time.Second)
++		defer cancel()
++		if err := pool.Ping(ctx); err != nil {
++			return errorspkg.Internal("db not ready")
++		}
++		if err := rdb.Ping(ctx).Err(); err != nil {
++			return errorspkg.Internal("redis not ready")
++		}
++		return c.JSON(fiber.Map{"status": "ready"})
++	})
++	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
++
++	api := app.Group("/api/v1")
++	auth.Register(api, auth.NewService(pool, rdb, cfg), cfg, rdb)
++
++	// Защищённая зона: новые фичи регистрируются здесь через protected.Group(...).
++	protected := api.Group("", middleware.RequireAuth(cfg, rdb))
++	users.Register(protected, users.NewService(pool))
++
++	// SSR: общая статика (Bootstrap, app.css, js/) — один маунт на проект (путь — как
++	// у /z-scaffold). Шаблонов под корнем статики НЕТ (они в web/ssr/_layout): фильтр
++	// по URL обходится кодированием/регистром/`..`, поэтому закрытость — структурная.
++	app.Use("/assets/ssr-shared", static.New("./web/ssr/_shared"))
++
++	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
++	shell := ssr.NewShellBuilder("/")
++
++	homeR, err := ssr.NewRenderer(home.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
++	(&home.Handlers{R: homeR, Shell: shell}).Register(app)
++
++	return app, nil
++}
+diff --git a/internal/server/shell_http_live_test.go b/internal/server/shell_http_live_test.go
+new file mode 100644
+index 0000000..fc183ce
+--- /dev/null
++++ b/internal/server/shell_http_live_test.go
+@@ -0,0 +1,100 @@
++//go:build integration
++
++package server_test
++
++import (
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// ShellLiveSuite (§TD-8): боевой бинарь + реальная сеть — SSR-каркас фазы 1:
++// общий layout, раздача общей статики и закрытость каталога шаблонов.
++type ShellLiveSuite struct {
++	testutil.LiveSuite
++}
++
++func TestShellLive(t *testing.T) {
++	suite.Run(t, &ShellLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *ShellLiveSuite) get(path string) (*http.Response, string) {
++	resp, err := s.Client.Get(s.BaseURL + path)
++	s.Require().NoError(err)
++	defer resp.Body.Close()
++	body, err := io.ReadAll(resp.Body)
++	s.Require().NoError(err)
++	return resp, string(body)
++}
++
++func (s *ShellLiveSuite) TestHomeRendersLayout() {
++	resp, body := s.get("/")
++	s.Equal(http.StatusOK, resp.StatusCode)
++	s.True(strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html"), resp.Header.Get("Content-Type"))
++	s.Contains(body, `data-testid="sidebar"`)
++	s.Contains(body, `data-testid="home-placeholder"`)
++	s.Contains(body, `<meta name="csrf-token"`)
++	s.Contains(body, `href="/assets/ssr-shared/app.css"`)
++}
++
++func (s *ShellLiveSuite) TestSharedAssetsServed() {
++	cases := map[string]string{
++		"/assets/ssr-shared/app.css":                                  "text/css",
++		"/assets/ssr-shared/vendor/bootstrap/bootstrap.min.css":       "text/css",
++		"/assets/ssr-shared/vendor/bootstrap/bootstrap.bundle.min.js": "javascript",
++		"/assets/ssr-shared/js/theme.js":                              "javascript",
++		"/assets/ssr-shared/js/api.js":                                "javascript",
++		"/assets/ssr-shared/js/ui-dialog.js":                          "javascript",
++		"/assets/ssr-shared/js/combobox.js":                           "javascript",
++		"/assets/ssr-shared/favicon.svg":                              "image/svg+xml",
++	}
++	for path, ct := range cases {
++		resp, body := s.get(path)
++		s.Equal(http.StatusOK, resp.StatusCode, path)
++		s.Contains(resp.Header.Get("Content-Type"), ct, path)
++		s.NotEmpty(body, path)
++	}
++}
++
++// getRaw шлёт путь байт-в-байт (URL.Opaque): Go-клиент не нормализует %XX, `//`, `..`.
++func (s *ShellLiveSuite) getRaw(path string) (int, string) {
++	req, err := http.NewRequest(http.MethodGet, s.BaseURL+"/", nil)
++	s.Require().NoError(err)
++	req.URL.Opaque = path
++	resp, err := s.Client.Do(req)
++	s.Require().NoError(err)
++	defer resp.Body.Close()
++	body, err := io.ReadAll(resp.Body)
++	s.Require().NoError(err)
++	return resp.StatusCode, string(body)
++}
++
++// Исходники шаблонов не отдаются ни прямым путём, ни обходами фильтра по URL
++// (кодирование, двойной слэш, `..`, регистр) — шаблоны лежат вне корня статики.
++func (s *ShellLiveSuite) TestTemplatesNotExposed() {
++	for _, path := range []string{
++		"/assets/ssr-shared/templates/layouts/base.html",
++		"/assets/ssr-shared/%74emplates/layouts/base.html",
++		"/assets/ssr-shared//templates/layouts/base.html",
++		"/assets/ssr-shared/js/../templates/layouts/base.html",
++		"/ASSETS/ssr-shared/templates/layouts/base.html",
++		"/assets/ssr-shared/../_layout/templates/layouts/base.html",
++		"/assets/ssr-shared/..%2f_layout/templates/layouts/base.html",
++		"/assets/ssr-shared/%2e%2e/_layout/templates/layouts/base.html",
++		"/assets/ssr-shared/../home/templates/pages/index.html",
++	} {
++		status, body := s.getRaw(path)
++		s.NotContains(body, `{{ define`, path)
++		s.NotEqual(http.StatusOK, status, path)
++	}
++}
++
++func (s *ShellLiveSuite) TestUnknownAssetIs404() {
++	resp, _ := s.get("/assets/ssr-shared/js/nope.js")
++	s.Equal(http.StatusNotFound, resp.StatusCode)
++}
+diff --git a/internal/ssr/menu.go b/internal/ssr/menu.go
+new file mode 100644
+index 0000000..e8fc1ac
+--- /dev/null
++++ b/internal/ssr/menu.go
+@@ -0,0 +1,50 @@
++package ssr
++
++// NavItem — пункт сайдбара.
++type NavItem struct {
++	Title     string
++	Icon      string
++	URL       string
++	AdminOnly bool
++}
++
++// NavGroup — группа пунктов с подписью.
++type NavGroup struct {
++	Label string
++	Items []NavItem
++}
++
++// menu — полный сайдбар приложения (эталон — prototype/index.html, plan.md §5).
++// Пункты справочников и администрирования видит только admin (plan.md §2, D19).
++var menu = []NavGroup{
++	{Label: "Работа", Items: []NavItem{
++		{Title: "Доска", Icon: "▦", URL: "/"},
++		{Title: "Остатки", Icon: "📊", URL: "/stock"},
++	}},
++	{Label: "Справочники", Items: []NavItem{
++		{Title: "Клиенты", Icon: "🏢", URL: "/clients", AdminOnly: true},
++		{Title: "Услуги и товары", Icon: "🧰", URL: "/catalog", AdminOnly: true},
++	}},
++	{Label: "Администрирование", Items: []NavItem{
++		{Title: "Сотрудники", Icon: "👥", URL: "/users", AdminOnly: true},
++	}},
++}
++
++// BuildMenu — сайдбар для пользователя: только реализованные разделы (enabled) и
++// только доступные по роли; пустые группы выкидываются.
++func BuildMenu(enabled map[string]bool, isAdmin bool) []NavGroup {
++	var out []NavGroup
++	for _, g := range menu {
++		var items []NavItem
++		for _, it := range g.Items {
++			if !enabled[it.URL] || (it.AdminOnly && !isAdmin) {
++				continue
++			}
++			items = append(items, it)
++		}
++		if len(items) > 0 {
++			out = append(out, NavGroup{Label: g.Label, Items: items})
++		}
++	}
++	return out
++}
+diff --git a/internal/ssr/render.go b/internal/ssr/render.go
+new file mode 100644
+index 0000000..0f360b8
+--- /dev/null
++++ b/internal/ssr/render.go
+@@ -0,0 +1,122 @@
++// Package ssr — общий SSR-рендерер проекта (Go html/template + vanilla JS, D30).
++//
++// Совместим с /z-scaffold: тот генерирует internal/ssr/render.go ОДИН раз на проект
++// (SKIP, если файл уже есть) и в хендлерах фич зовёт ssr.NewRenderer(root) /
++// r.Page / r.Fragment — сигнатуры сохранены, sharedRoots — вариадик-надстройка.
++//
++// Каждая фича держит свои pages/partials в web/ssr/{feature}/templates (у каждой свой
++// Renderer: html/template требует уникальных {{ define }} внутри набора). Общий layout
++// приложения (сайдбар, топбар, тема — "base") живёт в web/ssr/_layout/templates — ВНЕ
++// корня раздаваемой статики web/ssr/_shared — и подмешивается в каждую страницу через
++// sharedRoots (паттерн zerem_wms).
++//
++// Подключение фичи от /z-scaffold (он штампует свой layouts/base.html и BaseVM без Shell):
++//  1. удалить web/ssr/{feature}/templates/layouts/base.html — иначе два {{ define "base" }};
++//  2. добавить в dto.BaseVM поле `Shell ssr.Shell` и заполнять его в хендлерах
++//     (h.Shell.Build(c, title)) — общий layout читает .Shell.*;
++//  3. в router.go: ssr.NewRenderer("web/ssr/{feature}/templates", ssr.SharedRoot),
++//     путь раздела — в ssr.NewShellBuilder(...), чтобы он появился в сайдбаре.
++//
++// Пути — относительно корня модуля (make run / LiveSuite запускают бинарь оттуда).
++package ssr
++
++import (
++	"bytes"
++	"fmt"
++	"html/template"
++	"io"
++	"path/filepath"
++	"strings"
++
++	"github.com/gofiber/fiber/v3"
++)
++
++// SharedRoot — общий набор шаблонов (layout "base") относительно корня модуля.
++const SharedRoot = "web/ssr/_layout/templates"
++
++type Renderer struct {
++	pages     map[string]*template.Template // имя страницы → set (layouts+partials+page)
++	fragments *template.Template            // только partials — для AJAX-фрагментов
++}
++
++// NewRenderer собирает Renderer из root (layouts/partials/pages фичи) плюс layouts/
++// partials каждого из sharedRoots. Страницы берутся только из root.
++func NewRenderer(root string, sharedRoots ...string) (*Renderer, error) {
++	var layouts, partials []string
++	for _, dir := range append([]string{root}, sharedRoots...) {
++		l, err := filepath.Glob(filepath.Join(dir, "layouts", "*.html"))
++		if err != nil {
++			return nil, err
++		}
++		p, err := filepath.Glob(filepath.Join(dir, "partials", "*.html"))
++		if err != nil {
++			return nil, err
++		}
++		layouts = append(layouts, l...)
++		partials = append(partials, p...)
++	}
++	pages, err := filepath.Glob(filepath.Join(root, "pages", "*.html"))
++	if err != nil {
++		return nil, err
++	}
++	if len(layouts) == 0 || len(pages) == 0 {
++		return nil, fmt.Errorf("ssr: не найдены шаблоны в %s", root)
++	}
++
++	r := &Renderer{pages: map[string]*template.Template{}}
++	for _, p := range pages {
++		files := append(append(append([]string{}, layouts...), partials...), p)
++		name := strings.TrimSuffix(filepath.Base(p), ".html")
++		t, err := template.New(name).Funcs(Funcs).ParseFiles(files...)
++		if err != nil {
++			return nil, fmt.Errorf("ssr: страница %s: %w", name, err)
++		}
++		r.pages[name] = t
++	}
++	// Набор без partials: ParseFiles с пустым списком паникует — fragments опциональны.
++	if len(partials) > 0 {
++		frag, err := template.New("fragments").Funcs(Funcs).ParseFiles(partials...)
++		if err != nil {
++			return nil, fmt.Errorf("ssr: partials: %w", err)
++		}
++		r.fragments = frag
++	}
++	return r, nil
++}
++
++// Funcs — функции шаблонов, общие для всех наборов.
++var Funcs = template.FuncMap{
++	"initials": Initials,
++}
++
++// Render пишет страницу page в layout в w — без HTTP (unit-тесты, печатные формы).
++func (r *Renderer) Render(w io.Writer, page, layout string, vm any) error {
++	t, ok := r.pages[page]
++	if !ok {
++		return fmt.Errorf("ssr: нет страницы %q", page)
++	}
++	return t.ExecuteTemplate(w, layout, vm)
++}
++
++// Page — полная страница: layout "base" + блоки страницы.
++func (r *Renderer) Page(c fiber.Ctx, page string, vm any) error {
++	var buf bytes.Buffer
++	if err := r.Render(&buf, page, "base", vm); err != nil {
++		return err
++	}
++	c.Type("html", "utf-8")
++	return c.Send(buf.Bytes())
++}
++
++// Fragment — именованный partial для AJAX-ответа.
++func (r *Renderer) Fragment(c fiber.Ctx, name string, vm any) error {
++	if r.fragments == nil {
++		return fmt.Errorf("ssr: у набора без partials нет фрагментов (%q)", name)
++	}
++	var buf bytes.Buffer
++	if err := r.fragments.ExecuteTemplate(&buf, name, vm); err != nil {
++		return err
++	}
++	c.Type("html", "utf-8")
++	return c.Send(buf.Bytes())
++}
+diff --git a/internal/ssr/render_test.go b/internal/ssr/render_test.go
+new file mode 100644
+index 0000000..c54c9b6
+--- /dev/null
++++ b/internal/ssr/render_test.go
+@@ -0,0 +1,138 @@
++package ssr
++
++import (
++	"bytes"
++	"strings"
++	"testing"
++
++	"github.com/gofiber/fiber/v3"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++	"github.com/valyala/fasthttp"
++)
++
++// Пути — от каталога пакета (go test запускается в internal/ssr).
++const (
++	testSharedRoot = "../../" + SharedRoot
++	testHomeRoot   = "../../web/ssr/home/templates"
++)
++
++type pageVM struct{ Shell Shell }
++
++func render(t *testing.T, sh Shell) string {
++	t.Helper()
++	r, err := NewRenderer(testHomeRoot, testSharedRoot)
++	require.NoError(t, err)
++	var buf bytes.Buffer
++	require.NoError(t, r.Render(&buf, "index", "base", pageVM{Shell: sh}))
++	return buf.String()
++}
++
++func TestRenderer_PageInSharedLayout(t *testing.T) {
++	html := render(t, Shell{
++		Title:      "Доска заказов",
++		Menu:       BuildMenu(map[string]bool{"/": true}, false),
++		ActivePath: "/",
++		CSRFToken:  "tok-123",
++	})
++
++	assert.Contains(t, html, "<title>Доска заказов — Kanban-tree</title>")
++	assert.Contains(t, html, `<meta name="csrf-token" content="tok-123">`)
++	assert.Contains(t, html, `data-testid="sidebar"`)
++	assert.Contains(t, html, `data-testid="home-placeholder"`, "страница вставлена в блок content")
++	assert.Contains(t, html, `class="app-nav-link active" aria-current="page">▦ Доска</a>`)
++	for _, js := range []string{"theme.js", "api.js", "ui-dialog.js", "combobox.js", "bootstrap.bundle.min.js"} {
++		assert.Contains(t, html, js)
++	}
++	// гость: блока пользователя и формы выхода нет
++	assert.NotContains(t, html, `action="/logout"`)
++}
++
++func TestRenderer_UserBlock(t *testing.T) {
++	html := render(t, Shell{Title: "x", User: Viewer{Name: "Сидоров Пётр", Role: "executor"}})
++	assert.Contains(t, html, `<span class="app-avatar">СП</span>`)
++	assert.Contains(t, html, "Исполнитель")
++	assert.Contains(t, html, `action="/logout"`)
++
++	html = render(t, Shell{Title: "x", User: Viewer{Name: "Админ", Role: RoleAdmin}, IsAdmin: true})
++	assert.Contains(t, html, "Администратор")
++}
++
++func TestRenderer_EscapesData(t *testing.T) {
++	html := render(t, Shell{Title: `<script>alert(1)</script>`, User: Viewer{Name: `<b>x</b>`}})
++	assert.NotContains(t, html, "<script>alert(1)</script>")
++	assert.Contains(t, html, "&lt;script&gt;alert(1)&lt;/script&gt;")
++	assert.NotContains(t, html, "<b>x</b>")
++}
++
++func TestRenderer_Errors(t *testing.T) {
++	r, err := NewRenderer(testHomeRoot, testSharedRoot)
++	require.NoError(t, err)
++	var buf bytes.Buffer
++	assert.ErrorContains(t, r.Render(&buf, "nope", "base", nil), `нет страницы "nope"`)
++
++	_, err = NewRenderer("../../web/ssr/does-not-exist")
++	assert.ErrorContains(t, err, "не найдены шаблоны")
++
++	// без shared-набора у страницы нет layout "base"
++	_, err = NewRenderer(testHomeRoot)
++	assert.ErrorContains(t, err, "не найдены шаблоны")
++}
++
++func TestBuildMenu(t *testing.T) {
++	all := map[string]bool{"/": true, "/stock": true, "/clients": true, "/catalog": true, "/users": true}
++
++	titles := func(groups []NavGroup) []string {
++		var out []string
++		for _, g := range groups {
++			for _, it := range g.Items {
++				out = append(out, g.Label+"/"+it.Title)
++			}
++		}
++		return out
++	}
++
++	assert.Equal(t, []string{"Работа/Доска", "Работа/Остатки", "Справочники/Клиенты", "Справочники/Услуги и товары", "Администрирование/Сотрудники"},
++		titles(BuildMenu(all, true)))
++	assert.Equal(t, []string{"Работа/Доска", "Работа/Остатки"}, titles(BuildMenu(all, false)),
++		"исполнитель не видит справочники и сотрудников (D19); пустые группы выкинуты")
++	assert.Equal(t, []string{"Работа/Доска"}, titles(BuildMenu(map[string]bool{"/": true}, true)),
++		"нереализованные разделы скрыты")
++	assert.Empty(t, BuildMenu(nil, true))
++}
++
++func TestShellBuilder_Build(t *testing.T) {
++	app := fiber.New()
++	fctx := &fasthttp.RequestCtx{}
++	fctx.Request.SetRequestURI("/stock")
++	c := app.AcquireCtx(fctx)
++	defer app.ReleaseCtx(c)
++
++	b := NewShellBuilder("/", "/stock", "/users")
++
++	sh := b.Build(c, "Остатки")
++	assert.Equal(t, "Остатки", sh.Title)
++	assert.Equal(t, "/stock", sh.ActivePath)
++	assert.False(t, sh.IsAdmin, "без viewer — гость")
++	assert.Len(t, sh.Menu, 1, "гостю — только «Работа»")
++
++	c.Locals(LocalViewer, Viewer{Name: "Админ", Role: RoleAdmin})
++	c.Locals(LocalCSRFToken, "csrf-x")
++	sh = b.Build(c, "Остатки")
++	assert.True(t, sh.IsAdmin)
++	assert.Equal(t, "csrf-x", sh.CSRFToken)
++	assert.Len(t, sh.Menu, 2, "admin видит «Администрирование»")
++}
++
++func TestInitials(t *testing.T) {
++	cases := map[string]string{
++		"Сидоров Пётр Иванович": "СП",
++		"admin":            "A",
++		"  волков   олег ": "ВО",
++		"":                 "",
++	}
++	for in, want := range cases {
++		assert.Equal(t, want, Initials(in), in)
++	}
++	assert.True(t, strings.HasPrefix(Initials("ёжик"), "Ё"))
++}
+diff --git a/internal/ssr/shell.go b/internal/ssr/shell.go
+new file mode 100644
+index 0000000..22b206d
+--- /dev/null
++++ b/internal/ssr/shell.go
+@@ -0,0 +1,81 @@
++package ssr
++
++import (
++	"strings"
++	"unicode"
++
++	"github.com/gofiber/fiber/v3"
++)
++
++// RoleAdmin — роль администратора (plan.md §2); остальные роли видят меню «Работа».
++const RoleAdmin = "admin"
++
++// LocalViewer — Locals-ключ текущего пользователя для layout. Кладёт auth-middleware
++// (фаза 2); нет значения — гость: меню строится без admin-пунктов, блок пользователя скрыт.
++const LocalViewer = "ssr_viewer"
++
++// LocalCSRFToken — Locals-ключ CSRF-токена запроса (CSRF-middleware, фаза 2).
++const LocalCSRFToken = "ssr_csrf_token"
++
++// Viewer — кто смотрит страницу (для сайдбара и прав в шаблонах).
++type Viewer struct {
++	Name string
++	Role string
++}
++
++// Shell — данные общего layout "base", одинаковые для любой страницы любой фичи.
++// Встраивается во view-model страницы полем Shell; хендлер заполняет его через
++// ShellBuilder.Build перед Renderer.Page (сам Renderer сессию не читает).
++type Shell struct {
++	Title      string // заголовок топбара и <title>
++	Menu       []NavGroup
++	ActivePath string
++	User       Viewer
++	IsAdmin    bool
++	// CSRFToken — формы отдают полем _csrf, fetch — заголовком X-Csrf-Token
++	// (скрипты берут из <meta name="csrf-token">).
++	CSRFToken string
++}
++
++// ShellBuilder собирает Shell из запроса. Один экземпляр на процесс.
++type ShellBuilder struct {
++	enabled map[string]bool
++}
++
++// NewShellBuilder — enabled: пути разделов, уже реализованных в приложении. Пункты
++// меню остальных разделов скрыты, чтобы сайдбар не вёл на 404 между фазами плана.
++func NewShellBuilder(enabled ...string) ShellBuilder {
++	b := ShellBuilder{enabled: map[string]bool{}}
++	for _, p := range enabled {
++		b.enabled[p] = true
++	}
++	return b
++}
++
++// Build — Shell для текущего запроса с заголовком title.
++func (b ShellBuilder) Build(c fiber.Ctx, title string) Shell {
++	v, _ := c.Locals(LocalViewer).(Viewer)
++	token, _ := c.Locals(LocalCSRFToken).(string)
++	isAdmin := v.Role == RoleAdmin
++	return Shell{
++		Title:      title,
++		Menu:       BuildMenu(b.enabled, isAdmin),
++		ActivePath: c.Path(),
++		User:       v,
++		IsAdmin:    isAdmin,
++		CSRFToken:  token,
++	}
++}
++
++// Initials — «Сидоров Пётр» → «СП» (аватар в сайдбаре, как в прототипе).
++func Initials(name string) string {
++	var out []rune
++	for _, w := range strings.Fields(name) {
++		r := []rune(w)
++		out = append(out, unicode.ToUpper(r[0]))
++		if len(out) == 2 {
++			break
++		}
++	}
++	return string(out)
++}
+diff --git a/pkg/errorspkg/errors.go b/pkg/errorspkg/errors.go
+new file mode 100644
+index 0000000..0741636
+--- /dev/null
++++ b/pkg/errorspkg/errors.go
+@@ -0,0 +1,76 @@
++// Package errorspkg — единый формат ошибок API (wire — CLAUDE.md §API-1/§FE-1.1):
++// JSON snake_case, валидация 400 несёт details.fields[] — клиент раскладывает по полям.
++package errorspkg
++
++import (
++	"errors"
++	"log/slog"
++	"net/http"
++
++	"github.com/gofiber/fiber/v3"
++)
++
++// Field — ошибка конкретного поля (валидация server-only, §FE-1.1).
++type Field struct {
++	Name    string `json:"name"`
++	Message string `json:"message"`
++}
++
++type AppError struct {
++	Code    string  `json:"code"`
++	HTTP    int     `json:"-"`
++	Message string  `json:"message"`
++	Fields  []Field `json:"-"`
++}
++
++func (e *AppError) Error() string { return e.Code + ": " + e.Message }
++
++func New(code string, httpStatus int, message string) *AppError {
++	return &AppError{Code: code, HTTP: httpStatus, Message: message}
++}
++
++func BadRequest(msg string) *AppError   { return New("BAD_REQUEST", http.StatusBadRequest, msg) }
++func Unauthorized(msg string) *AppError { return New("UNAUTHORIZED", http.StatusUnauthorized, msg) }
++func Forbidden(msg string) *AppError    { return New("FORBIDDEN", http.StatusForbidden, msg) }
++func NotFound(msg string) *AppError     { return New("NOT_FOUND", http.StatusNotFound, msg) }
++func Conflict(msg string) *AppError     { return New("CONFLICT", http.StatusConflict, msg) }
++func Internal(msg string) *AppError     { return New("INTERNAL", http.StatusInternalServerError, msg) }
++
++// Validation — 400 с пополевыми ошибками.
++func Validation(fields ...Field) *AppError {
++	e := New("VALIDATION", http.StatusBadRequest, "validation failed")
++	e.Fields = fields
++	return e
++}
++
++type errorBody struct {
++	Code    string      `json:"code"`
++	Message string      `json:"message"`
++	Details *errDetails `json:"details,omitempty"`
++}
++
++type errDetails struct {
++	Fields []Field `json:"fields"`
++}
++
++// FiberErrorHandler — маппинг ошибок в wire-формат. Мусор/паника наружу не течёт:
++// неизвестная ошибка = 500 INTERNAL без текста первопричины.
++func FiberErrorHandler(c fiber.Ctx, err error) error {
++	var app *AppError
++	if errors.As(err, &app) {
++		body := errorBody{Code: app.Code, Message: app.Message}
++		if len(app.Fields) > 0 {
++			body.Details = &errDetails{Fields: app.Fields}
++		}
++		return c.Status(app.HTTP).JSON(body)
++	}
++	var fe *fiber.Error
++	if errors.As(err, &fe) {
++		return c.Status(fe.Code).JSON(errorBody{Code: "HTTP_ERROR", Message: fe.Message})
++	}
++	// Неизвестная ошибка (SQL/паника/т.п.) — клиенту наружу текст НЕ течёт, но в
++	// логи пишем полностью: иначе 500 немой и первопричину не найти без дебаггера.
++	slog.Error("unhandled error", "err", err, "path", c.Path(), "method", c.Method())
++	return c.Status(http.StatusInternalServerError).
++		JSON(errorBody{Code: "INTERNAL", Message: "internal error"})
++}
+diff --git a/pkg/testutil/base_suite.go b/pkg/testutil/base_suite.go
+new file mode 100644
+index 0000000..40b5d44
+--- /dev/null
++++ b/pkg/testutil/base_suite.go
+@@ -0,0 +1,91 @@
++//go:build integration
++
++// Package testutil — интеграционная база (§TD-8): dockertest PG+Redis + миграции.
++package testutil
++
++import (
++	"context"
++	"fmt"
++	"time"
++
++	"github.com/golang-migrate/migrate/v4"
++	_ "github.com/golang-migrate/migrate/v4/database/postgres"
++	_ "github.com/golang-migrate/migrate/v4/source/file"
++	"github.com/jackc/pgx/v5/pgxpool"
++	"github.com/ory/dockertest/v3"
++	"github.com/redis/go-redis/v9"
++	"github.com/stretchr/testify/suite"
++)
++
++// BaseSuite — тест-контейнеры PG18 + Redis, миграции применены. Экспортирует
++// Pool/DSN/RedisAddr() — их использует LiveSuite и repository-интеграция.
++type BaseSuite struct {
++	suite.Suite
++
++	Pool *pgxpool.Pool
++	DSN  string
++
++	redisAddr string
++	pool      *dockertest.Pool
++	pgRes     *dockertest.Resource
++	redisRes  *dockertest.Resource
++}
++
++func (s *BaseSuite) RedisAddr() string { return s.redisAddr }
++
++func (s *BaseSuite) SetupSuite() {
++	var err error
++	s.pool, err = dockertest.NewPool("")
++	s.Require().NoError(err, "docker недоступен")
++	s.pool.MaxWait = 90 * time.Second
++
++	s.pgRes, err = s.pool.RunWithOptions(&dockertest.RunOptions{
++		Repository: "postgres", Tag: "18",
++		Env: []string{"POSTGRES_USER=test", "POSTGRES_PASSWORD=test", "POSTGRES_DB=test"},
++	})
++	s.Require().NoError(err)
++	_ = s.pgRes.Expire(600)
++	s.DSN = fmt.Sprintf("postgres://test:test@127.0.0.1:%s/test?sslmode=disable",
++		s.pgRes.GetPort("5432/tcp"))
++
++	s.redisRes, err = s.pool.RunWithOptions(&dockertest.RunOptions{
++		Repository: "redis", Tag: "8",
++	})
++	s.Require().NoError(err)
++	_ = s.redisRes.Expire(600)
++	s.redisAddr = "127.0.0.1:" + s.redisRes.GetPort("6379/tcp")
++
++	s.Require().NoError(s.pool.Retry(func() error {
++		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		p, err := pgxpool.New(ctx, s.DSN)
++		if err != nil {
++			return err
++		}
++		defer p.Close()
++		return p.Ping(ctx)
++	}))
++	s.Require().NoError(s.pool.Retry(func() error {
++		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		return redis.NewClient(&redis.Options{Addr: s.redisAddr}).Ping(ctx).Err()
++	}))
++
++	mig, err := migrate.New("file://"+moduleRoot()+"/migrations", s.DSN)
++	s.Require().NoError(err)
++	s.Require().NoError(mig.Up())
++
++	s.Pool, err = pgxpool.New(context.Background(), s.DSN)
++	s.Require().NoError(err)
++}
++
++func (s *BaseSuite) TearDownSuite() {
++	if s.Pool != nil {
++		s.Pool.Close()
++	}
++	for _, r := range []*dockertest.Resource{s.pgRes, s.redisRes} {
++		if r != nil {
++			_ = s.pool.Purge(r)
++		}
++	}
++}
+diff --git a/pkg/testutil/live_suite.go b/pkg/testutil/live_suite.go
+new file mode 100644
+index 0000000..6f507d3
+--- /dev/null
++++ b/pkg/testutil/live_suite.go
+@@ -0,0 +1,112 @@
++//go:build integration
++
++package testutil
++
++import (
++	"fmt"
++	"net"
++	"net/http"
++	"net/http/cookiejar"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"time"
++)
++
++// LiveSuite (CLAUDE.md §TD-8): боевой бинарь + реальная сеть поверх BaseSuite.
++// Сьюта обязана задать BinaryPkg до SetupSuite. Auth-стабы запрещены — LoginAs
++// (login_*.go, штампуется под auth.mode) ходит в реальный endpoint.
++type LiveSuite struct {
++	BaseSuite
++
++	BinaryPkg   string   // пакет бинаря: "./cmd/server"
++	ExtraEnv    []string // доп. env поверх обязательных
++	HealthzPath string   // дефолт "/health"
++
++	BaseURL string
++	Client  *http.Client
++
++	cmd *exec.Cmd
++}
++
++// moduleRoot — корень Go-модуля (каталог с go.mod) от текущего файла.
++func moduleRoot() string {
++	_, f, _, _ := runtime.Caller(0)
++	d := filepath.Dir(f)
++	for d != "/" {
++		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
++			return d
++		}
++		d = filepath.Dir(d)
++	}
++	return "."
++}
++
++func freePort() (int, error) {
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		return 0, err
++	}
++	defer ln.Close()
++	return ln.Addr().(*net.TCPAddr).Port, nil
++}
++
++func (s *LiveSuite) SetupSuite() {
++	s.Require().NotEmpty(s.BinaryPkg, "LiveSuite.BinaryPkg обязателен (§TD-8)")
++	s.BaseSuite.SetupSuite() // dockertest PG+Redis + миграции
++
++	// 1. Боевой бинарь — go build (одна сборка на сьюту).
++	binPath := filepath.Join(s.T().TempDir(), "server")
++	build := exec.Command("go", "build", "-o", binPath, s.BinaryPkg)
++	build.Dir = moduleRoot()
++	if out, err := build.CombinedOutput(); err != nil {
++		s.Require().NoError(err, "go build %s:\n%s", s.BinaryPkg, out)
++	}
++
++	// 2. Запуск subprocess'ом на тест-контейнеры, случайный порт.
++	port, err := freePort()
++	s.Require().NoError(err)
++	s.BaseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
++
++	s.cmd = exec.Command(binPath)
++	s.cmd.Dir = moduleRoot()
++	s.cmd.Env = append(os.Environ(),
++		"DATABASE_URL="+s.DSN,
++		"REDIS_ADDR="+s.RedisAddr(),
++		fmt.Sprintf("PORT=%d", port),
++	)
++	s.cmd.Env = append(s.cmd.Env, defaultExtraEnv()...) // auth-режимный env (login.go)
++	s.cmd.Env = append(s.cmd.Env, s.ExtraEnv...)
++	s.cmd.Stdout, s.cmd.Stderr = os.Stdout, os.Stderr
++	s.Require().NoError(s.cmd.Start())
++
++	jar, _ := cookiejar.New(nil)
++	s.Client = &http.Client{Jar: jar, Timeout: 10 * time.Second}
++
++	// 3. Ожидание готовности — /health до 200 (детерминированный retry, не sleep-вслепую).
++	hp := s.HealthzPath
++	if hp == "" {
++		hp = "/health"
++	}
++	deadline := time.Now().Add(30 * time.Second)
++	for {
++		resp, err := s.Client.Get(s.BaseURL + hp)
++		if err == nil {
++			resp.Body.Close()
++			if resp.StatusCode == http.StatusOK {
++				break
++			}
++		}
++		s.Require().True(time.Now().Before(deadline), "бинарь не поднялся за 30s: %v", err)
++		time.Sleep(100 * time.Millisecond)
++	}
++}
++
++func (s *LiveSuite) TearDownSuite() {
++	if s.cmd != nil && s.cmd.Process != nil {
++		_ = s.cmd.Process.Kill()
++		_, _ = s.cmd.Process.Wait()
++	}
++	s.BaseSuite.TearDownSuite()
++}
+diff --git a/pkg/testutil/login.go b/pkg/testutil/login.go
+new file mode 100644
+index 0000000..a2228d1
+--- /dev/null
++++ b/pkg/testutil/login.go
+@@ -0,0 +1,23 @@
++//go:build integration
++
++package testutil
++
++import (
++	"fmt"
++	"net/http"
++	"strings"
++)
++
++// defaultExtraEnv — session-режим: обязательного auth-env нет.
++func defaultExtraEnv() []string { return nil }
++
++// LoginAs — реальный логин через реальный endpoint (session-режим, логин/пароль —
++// не email); cookie sid остаётся в jar. Auth-стабы запрещены §TD-8. Пользователя
++// сидируй через s.Pool.
++func (s *LiveSuite) LoginAs(login, password string) {
++	body := strings.NewReader(fmt.Sprintf(`{"login":%q,"password":%q}`, login, password))
++	resp, err := s.Client.Post(s.BaseURL+"/api/v1/auth/login", "application/json", body)
++	s.Require().NoError(err)
++	defer resp.Body.Close()
++	s.Require().Equal(http.StatusOK, resp.StatusCode, "реальный логин обязан пройти (§TD-8)")
++}

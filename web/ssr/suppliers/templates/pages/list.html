@@ -1,0 +1,75 @@
+{{ define "actions" }}<button type="button" class="btn btn-primary" id="sup-add" data-testid="supplier-add">Добавить</button>{{ end }}
+
+{{ define "content" }}
+<div id="sup" class="row g-3" data-testid="suppliers-root">
+  <!-- Список поставщиков -->
+  <div class="col-lg" style="min-width:0">
+    <div class="d-flex flex-wrap align-items-center gap-3 mb-3" data-testid="suppliers-filters">
+      <input type="search" class="form-control" id="sup-q" maxlength="200" placeholder="Поиск по названию" aria-label="Поиск по названию" autocomplete="off" style="max-width:320px" data-testid="supplier-search">
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" role="switch" id="sup-archived" data-testid="supplier-filter-archived">
+        <label class="form-check-label" for="sup-archived">Показать архивные</label>
+      </div>
+    </div>
+    <div class="table-responsive d-none" id="sup-table-wrap">
+      <table class="table table-hover align-middle" data-testid="suppliers-table">
+        <thead><tr><th>Название</th><th>Контактное лицо</th><th>Телефон</th><th>Адрес</th></tr></thead>
+        <tbody id="sup-tbody"></tbody>
+      </table>
+    </div>
+    <div class="empty-state d-none" id="sup-empty" data-testid="suppliers-empty">
+      <div class="mb-3">Поставщиков нет</div>
+      <button type="button" class="btn btn-primary" id="sup-empty-add" data-testid="supplier-empty-add">Добавить</button>
+    </div>
+    <p class="text-body-secondary small d-none mt-2" id="sup-shown" data-testid="suppliers-shown"></p>
+  </div>
+
+  <!-- Форма поставщика (создание: ?new=1, правка: ?id=<uuid>) -->
+  <div class="col-lg-5 d-none" id="sup-form-col">
+    <form class="card" id="sup-form" data-testid="supplier-form" novalidate>
+      <div class="card-body">
+        <h2 class="fs-5 mb-3" id="sup-form-title" data-testid="supplier-form-title">Новый поставщик</h2>
+        <p class="text-body-secondary small d-none" id="sup-archived-note" data-testid="supplier-archived-note">Поставщик в архиве.</p>
+        <div class="mb-3">
+          <label for="sup-name" class="form-label">Название *</label>
+          <input id="sup-name" name="name" class="form-control" maxlength="200" autocomplete="off" data-testid="supplier-name">
+          <div class="invalid-feedback" data-error-for="name" data-testid="error-name"></div>
+        </div>
+        <div class="mb-3">
+          <label for="sup-contact-name" class="form-label">Контактное лицо</label>
+          <input id="sup-contact-name" name="contact_name" class="form-control" maxlength="200" autocomplete="off" data-testid="supplier-contact-name">
+          <div class="invalid-feedback" data-error-for="contact_name" data-testid="error-contact-name"></div>
+        </div>
+        <div class="mb-3">
+          <label for="sup-phone" class="form-label">Телефон</label>
+          <input id="sup-phone" name="phone" class="form-control" maxlength="50" autocomplete="off" data-testid="supplier-phone">
+          <div class="invalid-feedback" data-error-for="phone" data-testid="error-phone"></div>
+        </div>
+        <div class="mb-3">
+          <label for="sup-address" class="form-label">Адрес</label>
+          <input id="sup-address" name="address" class="form-control" maxlength="500" autocomplete="off" data-testid="supplier-address">
+          <div class="invalid-feedback" data-error-for="address" data-testid="error-address"></div>
+        </div>
+        <div class="mb-3">
+          <label for="sup-note" class="form-label">Примечание</label>
+          <textarea id="sup-note" name="note" class="form-control" rows="3" maxlength="1000" data-testid="supplier-note"></textarea>
+          <div class="invalid-feedback" data-error-for="note" data-testid="error-note"></div>
+        </div>
+        <div class="d-flex flex-wrap justify-content-end gap-2">
+          <button type="button" class="btn btn-outline-secondary text-danger me-auto d-none" id="sup-delete" data-testid="supplier-delete">Удалить</button>
+          <button type="button" class="btn btn-outline-secondary" id="sup-cancel" data-testid="supplier-cancel">Отмена</button>
+          <button type="button" class="btn btn-outline-secondary d-none" id="sup-toggle-active" data-testid="supplier-toggle-active">В архив</button>
+          <button type="submit" class="btn btn-primary" id="sup-save" data-testid="supplier-save">Сохранить</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Тосты: правый верхний угол, 5 секунд (UI-конвенции §8) -->
+<div class="toast-container position-fixed top-0 end-0 p-3" id="sup-toasts" style="z-index:1090;max-width:min(380px,100vw)" aria-live="polite"></div>
+{{ end }}
+
+{{ define "scripts" }}
+<script src="/assets/ssr-shared/js/suppliers.js"></script>
+{{ end }}

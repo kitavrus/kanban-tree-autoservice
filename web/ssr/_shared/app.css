@@ -1,0 +1,347 @@
+/*
+ * z-scaffold SSR — overlay ПОВЕРХ настоящего Bootstrap 5 (vendor/bootstrap/bootstrap.min.css,
+ * грузится ДО этого файла в base.html.tmpl). Здесь НЕТ переизобретённых компонентов
+ * (кнопки, гриды, формы, таблицы, пагинация, табы, алерты, карточки — всё это уже даёт
+ * сам Bootstrap своими родными классами, включая расположение и отступы — utility-классы
+ * d-flex, gap-N, mb-N, mt-N, my-N прямо в разметке partials, не здесь) — только:
+ *   1) --bs- брендовые токены (primary, secondary, danger, success) — нейтральные
+ *      токены (body-bg, border-color, emphasis-color и т.п.) не трогаем, тема — родной
+ *      data-bs-theme="dark" Bootstrap Color Modes, см. base.html.tmpl;
+ *   2) классы, которых у Bootstrap нет вообще (form-scan, dashboard, .empty-state).
+ * Переопределяется per-project: <project>/.claude/scaffold-templates/ssr/static/app.css
+ * (project-canon overlay, см. tools/z_scaffold.py:tpl()) — там меняй ТОЛЬКО токены,
+ * имена классов из ssr/partials не переименовывай (см. SKILL.md §Стили).
+ */
+
+:root {
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --text-xs: 12px; --text-sm: 14px; --text-lg: 20px; --text-xl: 24px;
+
+  /* Только БРЕНД-цвета — реальные переменные Bootstrap 5.3 (компоненты читают их
+     через var()). Нейтральные токены (--bs-body-bg, --bs-body-color, --bs-emphasis-color,
+     --bs-border-color, --bs-secondary-bg, --bs-tertiary-bg, --bs-border-radius,
+     --bs-box-shadow-sm и т.д.) НЕ переопределяем — у Bootstrap уже разумные дефолты,
+     а главное — темизация ЭТИХ токенов идёт через [data-bs-theme="dark"] ниже, родной
+     механизм Bootstrap Color Modes (getbootstrap.com/docs/5.3/customize/color-modes/),
+     который переключает их ВСЕ разом (см. base.html.tmpl). Раньше мы вручную дублировали
+     часть нейтральных токенов в @media(prefers-color-scheme:dark) и пропустили
+     --bs-emphasis-color — текст в table/list-group рендерился чёрным на тёмном фоне
+     (найдено визуально), больше такого класса багов не будет — токены одни на оба
+     режима, кроме явно перечисленных брендовых. */
+  --bs-primary: #2563EB; --bs-primary-rgb: 37, 99, 235;
+  --bs-secondary: #475569;
+  --bs-danger: #DC2626; --bs-danger-rgb: 220, 38, 38;
+  --bs-success: #047857; --bs-success-rgb: 4, 120, 87;
+}
+
+[data-bs-theme="dark"] {
+  --bs-primary: #60A5FA; --bs-primary-rgb: 96, 165, 250;
+  --bs-secondary: #94A3B8;
+  --bs-danger: #F87171; --bs-danger-rgb: 248, 113, 113;
+  --bs-success: #34D399; --bs-success-rgb: 52, 211, 153;
+}
+
+/* ---- текст НА брендовой заливке (фаза 8, polish) ----
+   В тёмной теме брендовые цвета светлые (#60A5FA/#F87171) — белый текст на них даёт
+   контраст ~2.5:1 (ниже WCAG AA 4.5:1). --kt-on-accent — цвет текста поверх
+   --bs-primary/--bs-danger заливки: белый в светлой теме, тёмный в тёмной. Все
+   «активные» заливки (меню, вкладки, категории, логотип, .btn-primary, бейдж) читают его,
+   а не захардкоженный #fff. */
+:root { --kt-on-accent: #fff; }
+[data-bs-theme="dark"] { --kt-on-accent: #0B1220; }
+[data-bs-theme="dark"] .text-bg-danger,
+[data-bs-theme="dark"] .text-bg-primary,
+[data-bs-theme="dark"] .text-bg-success { color: var(--kt-on-accent) !important; }
+
+/* ---- перекраска brand-цвета в precompiled bootstrap.min.css ----
+   --bs-primary и т.п. на :root — это ФОНОВЫЕ/нейтральные переменные (body/card/table/
+   border уже используют var() динамически, проверено в bootstrap.min.css), но
+   .btn-primary/ссылки/focus-ring в precompiled-дистрибутиве Bootstrap 5.3 — статичный
+   hex (#0d6efd), НЕ var(--bs-primary) (это Sass-время компиляции, известное ограничение
+   dist-сборки без пересборки). Официальный способ перекрасить БЕЗ Sass — Bootstrap CSS
+   Variables API: переопределить component-scoped переменные (getbootstrap.com/docs/5.3/
+   customize/css-variables/), а не изобретать свои .btn/.alert правила заново. */
+a { --bs-link-color-rgb: var(--bs-primary-rgb); --bs-link-hover-color-rgb: var(--bs-primary-rgb); }
+.btn-primary { --bs-btn-color: var(--kt-on-accent); --bs-btn-hover-color: var(--kt-on-accent);
+  --bs-btn-active-color: var(--kt-on-accent); --bs-btn-disabled-color: var(--kt-on-accent);
+  --bs-btn-bg: var(--bs-primary); --bs-btn-border-color: var(--bs-primary);
+  --bs-btn-hover-bg: var(--bs-primary); --bs-btn-hover-border-color: var(--bs-primary);
+  --bs-btn-active-bg: var(--bs-primary); --bs-btn-active-border-color: var(--bs-primary);
+  --bs-btn-disabled-bg: var(--bs-primary); --bs-btn-disabled-border-color: var(--bs-primary); }
+.btn-outline-primary { --bs-btn-color: var(--bs-primary); --bs-btn-border-color: var(--bs-primary);
+  --bs-btn-hover-bg: var(--bs-primary); --bs-btn-hover-border-color: var(--bs-primary);
+  --bs-btn-active-bg: var(--bs-primary); --bs-btn-active-border-color: var(--bs-primary);
+  --bs-btn-hover-color: var(--kt-on-accent); --bs-btn-active-color: var(--kt-on-accent); }
+.btn-outline-danger { --bs-btn-color: var(--bs-danger); --bs-btn-border-color: var(--bs-danger);
+  --bs-btn-hover-bg: var(--bs-danger); --bs-btn-hover-border-color: var(--bs-danger);
+  --bs-btn-active-bg: var(--bs-danger); --bs-btn-active-border-color: var(--bs-danger);
+  --bs-btn-hover-color: var(--kt-on-accent); --bs-btn-active-color: var(--kt-on-accent); }
+.form-control:focus, .form-select:focus { border-color: var(--bs-primary); box-shadow: 0 0 0 .25rem rgba(var(--bs-primary-rgb), .25); }
+.page-item.active .page-link { background-color: var(--bs-primary); border-color: var(--bs-primary); }
+.page-link { color: var(--bs-primary); }
+.nav-tabs .nav-link.active { border-bottom-color: var(--bs-primary); color: var(--bs-primary); }
+.alert-success { --bs-alert-color: var(--bs-success); --bs-alert-bg: color-mix(in srgb, var(--bs-success) 12%, var(--bs-tertiary-bg)); --bs-alert-border-color: var(--bs-success); }
+/* .alert-danger — та же статичная проблема, что у .btn-primary выше: precompiled
+   .alert-danger читает -bg-subtle/-text-emphasis/-border-subtle (Sass-время, дефолтный
+   красный #dc3545), а НЕ var(--bs-danger) напрямую. Используется на каждой странице
+   с ошибкой сканирования (partials/scan-result.html) — без этого переопределения
+   баннер оставался бы дефолтным Bootstrap-красным вместо брендового --bs-danger. */
+.alert-danger { --bs-alert-color: var(--bs-danger); --bs-alert-bg: color-mix(in srgb, var(--bs-danger) 12%, var(--bs-tertiary-bg)); --bs-alert-border-color: var(--bs-danger); }
+.alert-warning { --bs-alert-color: var(--bs-secondary); --bs-alert-bg: color-mix(in srgb, var(--bs-secondary) 12%, var(--bs-tertiary-bg)); --bs-alert-border-color: var(--bs-secondary); }
+.alert-info { --bs-alert-color: var(--bs-primary); --bs-alert-bg: color-mix(in srgb, var(--bs-primary) 12%, var(--bs-tertiary-bg)); --bs-alert-border-color: var(--bs-primary); }
+/* .invalid-feedback/.is-invalid — та же статичная проблема: --bs-form-invalid-color и
+   --bs-form-invalid-border-color в precompiled Bootstrap — #dc3545, не var(--bs-danger).
+   Задействовано на КАЖДОЙ форме фичи (422 — validators.ValidateX, cls_attr is-invalid,
+   z_scaffold.py ssr_form_fields_html) — без этого переопределения ошибки валидации были
+   бы дефолтным красным, а не брендовым --bs-danger. */
+:root, [data-bs-theme="dark"] {
+  --bs-form-invalid-color: var(--bs-danger);
+  --bs-form-invalid-border-color: var(--bs-danger);
+  --bs-form-valid-color: var(--bs-success);
+  --bs-form-valid-border-color: var(--bs-success);
+}
+
+/* ---- page chrome (не bootstrap-компонент — упрощённый однострочный navbar) ---- */
+main.container { max-width: 1100px; padding-top: var(--space-5); padding-bottom: var(--space-5); }
+.navbar { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-3) var(--space-5); background: var(--bs-tertiary-bg); border-bottom: 1px solid var(--bs-border-color); }
+.navbar-brand { font-weight: 700; text-decoration: none; font-size: var(--text-sm); color: var(--bs-body-color); }
+.nav-link:not(.nav-tabs .nav-link) { font-weight: 600; font-size: var(--text-sm); }
+/* .page-header, .list-total, .filters-form, .form-control-wrap, .form-actions убраны —
+   были самодельными обёртками поверх настоящих Bootstrap-примитивов (d-flex, gap,
+   card, card-body), теперь эти классы прямо в разметке (ssr partials,
+   z_scaffold.py child_tab_partial_file_code), маржины и spacing — utility-классы
+   (mb-4, mt-4, my-4, gap-N), не CSS-правила по имени компонента — единый источник
+   правды: разметка, не app.css. Найдено пользователем визуально (отступ между
+   detail-header и вкладками потерялся при рефакторинге на список компонентов по
+   отдельности, а не единый паттерн). */
+
+/* ---- список/таблица — доп. подписи, которых нет у Bootstrap ---- */
+.empty-state { padding: var(--space-7); text-align: center; color: var(--bs-secondary-color); background: var(--bs-tertiary-bg); border-radius: var(--bs-border-radius-lg); border: 1px solid var(--bs-border-color); }
+.row-actions form { display: inline; }
+.page-icon { width: 18px; height: 18px; }
+
+/* ---- максимальная ширина карточки формы (у Bootstrap нет утилиты под 760px) ---- */
+.mw-760 { max-width: 760px; }
+
+/* ---- detail-header (.card + .list-group-flush — родной Bootstrap, никаких доп.
+   правил не нужно, см. partials/detail-header.html.tmpl) ---- */
+.detail-header .fw-semibold { font-variant-numeric: tabular-nums; }
+
+/* ---- form-scan (своя фича, у Bootstrap такого компонента нет) ---- */
+.scan-chain { display: flex; flex-direction: column; gap: var(--space-2); max-width: 420px; }
+.scan-field .form-control { font-size: var(--text-lg); font-variant-numeric: tabular-nums; }
+.scan-field--main .form-control { border-color: var(--bs-primary); border-width: 2px; }
+.scan-field .input-group-text { font-variant-numeric: tabular-nums; }
+
+/* ---- dashboard (своя сводка, у Bootstrap такого компонента нет) ---- */
+.dashboard-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--space-3); margin-bottom: var(--space-4); }
+.dashboard-count { display: flex; flex-direction: column; align-items: center; gap: var(--space-1); background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius-lg); box-shadow: var(--bs-box-shadow-sm); padding: var(--space-4); }
+.dashboard-count-value { font-size: var(--text-xl); font-weight: 700; color: var(--bs-body-color); }
+.dashboard-count-label { font-size: var(--text-xs); color: var(--bs-secondary-color); text-transform: uppercase; letter-spacing: .02em; }
+
+/* =====================================================================
+   kanban-tree — app shell и общие компоненты (эталон — prototype/index.html).
+   Поверх Bootstrap: только то, чего у него нет (сайдбар-раскладка, combobox,
+   бейдж-счётчик меню). Цвета — только --bs-* токены, тёмная тема — data-bs-theme.
+   ===================================================================== */
+:root { --sidebar-w: 240px; --kt-radius: 8px; }
+body { background: var(--bs-body-bg); }
+
+.app-shell { display: flex; min-height: 100vh; }
+.app-sidebar { width: var(--sidebar-w); flex-shrink: 0; display: flex; flex-direction: column; gap: var(--space-1);
+  padding: var(--space-4); background: var(--bs-tertiary-bg); border-right: 1px solid var(--bs-border-color); }
+.app-brand { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-lg); font-weight: 700; margin-bottom: var(--space-4); }
+.app-brand-logo { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; font-size: 15px;
+  background: var(--bs-primary); color: var(--kt-on-accent); }
+.app-nav { display: flex; flex-direction: column; gap: 2px; }
+.app-nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--bs-secondary-color); margin: var(--space-3) 0 var(--space-1); }
+.app-nav-link { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; color: var(--bs-body-color); text-decoration: none; }
+.app-nav-link:hover { background: var(--bs-secondary-bg); color: var(--bs-body-color); }
+.app-nav-link.active { background: var(--bs-primary); color: var(--kt-on-accent); }
+.app-nav-count { margin-left: auto; font-size: 11px; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--bs-danger); color: var(--kt-on-accent); text-align: center; }
+.app-sidebar-footer { margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--bs-border-color); display: flex; flex-direction: column; gap: var(--space-2); }
+.app-avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 700;
+  background: rgba(var(--bs-primary-rgb), .15); color: var(--bs-primary); flex-shrink: 0; }
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.app-topbar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding: var(--space-3) var(--space-5);
+  background: var(--bs-body-bg); border-bottom: 1px solid var(--bs-border-color); }
+.app-title { font-size: var(--text-lg); font-weight: 600; margin: 0 auto 0 0; }
+.app-content { padding: var(--space-5); min-width: 0; }
+.app-menu-btn, .app-backdrop { display: none; }
+
+@media (max-width: 900px) {
+  .app-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 1030; transform: translateX(-100%); transition: transform .2s; }
+  .app-shell.sidebar-open .app-sidebar { transform: none; box-shadow: var(--bs-box-shadow-lg); }
+  .app-shell.sidebar-open .app-backdrop { display: block; position: fixed; inset: 0; z-index: 1029; background: rgba(0, 0, 0, .35); }
+  .app-menu-btn { display: inline-flex; }
+  .app-topbar, .app-content { padding-left: var(--space-4); padding-right: var(--space-4); }
+}
+
+/* ---- combobox: выпадающий список с поиском (D6, js/combobox.js) ---- */
+.cb { position: relative; min-width: 0; }
+.cb-btn { display: flex; align-items: center; gap: var(--space-2); text-align: left; cursor: pointer; }
+.cb-btn:disabled { cursor: default; }
+.cb-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb-label.is-placeholder { color: var(--bs-secondary-color); }
+.cb-dd { position: fixed; z-index: 1080; display: flex; flex-direction: column; max-height: 320px; padding: 6px;
+  background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-radius: var(--kt-radius); box-shadow: var(--bs-box-shadow-lg); }
+.cb-search { margin-bottom: 6px; }
+.cb-list { overflow-y: auto; }
+.cb-group { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--bs-secondary-color); padding: 8px 8px 2px; }
+.cb-opt { padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+.cb-opt small { display: block; color: var(--bs-secondary-color); font-size: 11px; }
+.cb-opt.active { background: var(--bs-secondary-bg); }
+.cb-opt.sel { font-weight: 600; color: var(--bs-primary); }
+.cb-opt mark { padding: 0 1px; border-radius: 2px; color: inherit; }
+.cb-empty { padding: 12px; color: var(--bs-secondary-color); text-align: center; }
+
+/* ---- страницы без сайдбара (вход, ошибки) ---- */
+.app-bare { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--space-4); position: relative; background: var(--bs-tertiary-bg); }
+.app-bare-theme { position: absolute; top: var(--space-4); right: var(--space-4); }
+.app-login { width: 100%; max-width: 360px; box-shadow: var(--bs-box-shadow); }
+.app-login .app-brand { margin-bottom: var(--space-5); }
+.app-status { max-width: 480px; text-align: center; }
+.app-status-code { font-size: 48px; font-weight: 700; color: var(--bs-secondary-color); line-height: 1; }
+
+/* ---- сотрудники ---- */
+.badge-off { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: rgba(var(--bs-danger-rgb), .12); color: var(--bs-danger); }
+.app-table-link { cursor: pointer; }
+
+/* ---- row-list: динамические строки 1..N (js/row-list.js, ADR-002) ---- */
+.row-list-item { display: flex; gap: var(--space-2); align-items: flex-start; margin-bottom: var(--space-2); }
+.row-list-item > input.form-control { flex: 1 1 0; min-width: 0; }
+/* без min-width:0 flex-обёртка не сжимается ниже min-content своего содержимого — для
+   строки комплекта услуги (combobox товара внутри .cb-btn с текстом названия, code
+   review CT-008 fix-loop 1) это раздвигало .row-list-item (и всю страницу) шире 360px,
+   даже с overflow:hidden на .cb-label (тот же класс бага, что у .cat-panel input.form-control
+   выше — overflow:hidden у потомка не сбрасывает min-content родителя-flex-item). */
+.row-list-item > div { min-width: 0; }
+@media (max-width: 576px) {
+  .row-list-item { flex-wrap: wrap; }
+  .row-list-item > input.form-control, .row-list-item > div { flex: 1 1 100%; }
+}
+
+/* ---- каталог: полоса вкладок, панель категорий, метки остатка (фаза 4, эталон
+   prototype/index.html renderCatalog) ---- */
+.tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; border-bottom: 1px solid var(--bs-border-color); padding-bottom: var(--space-3); }
+.tab-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; text-decoration: none; color: var(--bs-body-color); background: var(--bs-tertiary-bg); }
+.tab-link.active { background: var(--bs-primary); color: var(--kt-on-accent); }
+.tab-link .count { font-size: 11px; opacity: .8; }
+.two-pane { display: flex; gap: var(--space-4); align-items: flex-start; min-width: 0; }
+.cat-panel { width: 220px; flex-shrink: 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cat-item { display: flex; justify-content: space-between; gap: var(--space-2); padding: 6px 10px; border-radius: 6px; text-decoration: none; color: var(--bs-body-color); overflow: hidden; }
+.cat-item:hover { background: var(--bs-secondary-bg); }
+.cat-item.active { background: var(--bs-primary); color: var(--kt-on-accent); }
+.cat-panel-content { flex: 1; min-width: 0; }
+.stock-low { color: var(--bs-danger); font-weight: 600; }
+.stock-out { color: var(--bs-danger); font-weight: 700; }
+/* Строка категории — flex-row (имя + счётчик) + под ней formы (переименовать/архив/
+   удалить, фаза 4): без min-width:0 инпут внутри d-flex не сжимается ниже своей
+   content-ширины (дефолт браузера min-width:auto для textbox) и раздвигает .cat-panel
+   шире вьюпорта на узких экранах (adaptive:min, code review CT-008). */
+.cat-panel input.form-control { min-width: 0; flex: 1 1 auto; }
+.cat-panel form.d-flex { min-width: 0; }
+@media (max-width: 900px) {
+  .two-pane { flex-direction: column; align-items: stretch; } /* flex-start давал колонке ширину по содержимому → таблица раздвигала страницу */
+  .cat-panel { width: 100%; }
+}
+
+/* ---- доска (фаза 6, эталон prototype/index.html .board/.column/.card) ----
+   .board-columns скроллится ВНУТРИ себя по X — страница целиком не скроллится вбок
+   (adaptive:min, US-1); min-width:0 у детей обязателен, иначе flex-item не сжимается
+   ниже content-width своего содержимого и раздвигает контейнер (тот же класс бага,
+   что у .cat-panel input выше). */
+.board-columns { display: flex; align-items: flex-start; gap: var(--space-4); overflow-x: auto; padding-bottom: var(--space-2); min-width: 0; }
+.board-col { width: 280px; flex-shrink: 0; min-width: 0; display: flex; flex-direction: column;
+  background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-top: 3px solid var(--c, var(--bs-border-color));
+  border-radius: var(--kt-radius); max-height: calc(100vh - 220px); }
+.board-col-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; font-weight: 600; min-width: 0; }
+.board-col-head .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--bs-secondary)); flex-shrink: 0; }
+.board-col-head .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-col-head .count { background: var(--bs-body-bg); color: var(--bs-secondary-color); border-radius: 10px; padding: 0 8px; font-size: var(--text-xs); font-weight: 500; }
+.board-col-head .final-mark { color: var(--bs-success); font-weight: 700; }
+.board-col-head .column-total { font-size: var(--text-xs); font-weight: 500; color: var(--bs-secondary-color); white-space: nowrap; flex-shrink: 0; }
+.board-col-body { padding: 0 8px 8px; overflow-y: auto; min-height: 60px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.board-col-body.drag-over { background: rgba(var(--bs-primary-rgb), .08); border-radius: 6px; }
+.board-add-task { margin: 0 8px 8px; border-style: dashed; }
+/* pagination DS-001: «показаны N из M» + «Показать ещё» внизу колонки */
+.board-col-more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin: 0 8px 8px; }
+.task-card { background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-left: 4px solid var(--c, var(--bs-border-color));
+  border-radius: var(--kt-radius); padding: 8px 10px; cursor: grab; min-width: 0; }
+.task-card.dragging { opacity: .4; }
+.task-card.overdue { box-shadow: 0 0 0 1px var(--bs-danger); }
+.task-card-title { font-weight: 600; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card-client { font-size: var(--text-xs); color: var(--bs-secondary-color); display: flex; align-items: center; gap: 6px; margin-bottom: 6px; min-width: 0; }
+.task-card-client .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.task-card-menu-btn { margin-left: auto; flex-shrink: 0; }
+.task-card-total { font-size: var(--text-xs); font-weight: 600; margin-bottom: 2px; }
+.task-card-last-log { font-size: var(--text-xs); color: var(--bs-secondary-color); margin-bottom: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.task-card-foot { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); margin-top: 6px; }
+.task-card .pay { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 10px; white-space: nowrap; }
+.task-card .pay-yes { background: rgba(var(--bs-success-rgb), .15); color: var(--bs-success); }
+.task-card .pay-no { background: rgba(var(--bs-danger-rgb), .15); color: var(--bs-danger); }
+.task-card .due { padding: 1px 6px; border-radius: 4px; background: var(--bs-secondary-bg); color: var(--bs-secondary-color); }
+.task-card .due-soon { background: rgba(var(--bs-primary-rgb), .15); color: var(--bs-primary); font-weight: 600; }
+.task-card .due-overdue { background: rgba(var(--bs-danger-rgb), .15); color: var(--bs-danger); font-weight: 600; }
+.task-card .avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 10px; font-weight: 700;
+  background: rgba(var(--bs-primary-rgb), .15); color: var(--bs-primary); flex-shrink: 0; margin-left: auto; }
+.board-drop-placeholder { height: 48px; border: 2px dashed var(--bs-primary); border-radius: var(--kt-radius); background: rgba(var(--bs-primary-rgb), .06); }
+.board-add-column { width: 240px; flex-shrink: 0; border: 2px dashed var(--bs-border-color); border-radius: var(--kt-radius); padding: 14px;
+  text-align: center; color: var(--bs-secondary-color); background: transparent; }
+.board-add-column:hover { border-color: var(--bs-primary); color: var(--bs-primary); }
+.swatches { flex-wrap: wrap; }
+.swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; outline: 2px solid transparent; outline-offset: 1px; }
+.swatch.on { outline-color: var(--bs-body-color); }
+.board-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1090; max-width: min(560px, 92vw); }
+
+@media (max-width: 576px) {
+  .board-col { width: 85vw; }
+  .board-filters .form-select, .board-filters .form-control, .board-filters .cb { flex: 1 1 100%; max-width: none !important; }
+}
+
+/* ---- остатки (фаза 7, эталон prototype/index.html .kpis/.kpi) ---- */
+.stock-kpis { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-4); min-width: 0; }
+.stock-kpi { flex: 1 1 160px; min-width: 0; background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color);
+  border-radius: var(--kt-radius); padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: 4px; }
+.stock-kpi span { font-size: var(--text-xs); color: var(--bs-secondary-color); }
+.stock-kpi b { font-size: var(--text-xl); }
+
+@media (max-width: 576px) {
+  .stock-kpis { gap: var(--space-2); }
+  .stock-kpi { flex: 1 1 45%; padding: var(--space-2) var(--space-3); }
+  .stock-view .d-flex.flex-wrap .form-select, .stock-view .d-flex.flex-wrap .form-control, .stock-view .d-flex.flex-wrap .cb { flex: 1 1 100%; max-width: none !important; }
+}
+
+/* ---- вложения заказа (фаза 7, D21; эталон prototype/index.html .gallery/.thumb) ----
+   Цвета — только --bs-* токены (обе темы). */
+.att-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.att-item { position: relative; border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); background: var(--bs-secondary-bg); overflow: hidden; min-width: 0; display: flex; flex-direction: column; }
+.att-media { aspect-ratio: 4 / 3; display: grid; place-items: center; background: var(--bs-tertiary-bg); }
+.att-media img, .att-media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.att-media video { object-fit: contain; background: #000; }
+.att-pdf-icon { font-size: 36px; text-decoration: none; }
+.att-meta { padding: 4px 6px; font-size: var(--text-xs); min-width: 0; }
+.att-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-sub { color: var(--bs-secondary-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-delete { position: absolute; top: 4px; right: 4px; line-height: 1; padding: 2px 6px; }
+.att-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.att-upload .progress { flex: 1 1 160px; min-width: 120px; }
+
+/* ---- polish (фаза 8): карточка заказа на узком экране ----
+   Шапка модалки — заголовок + кнопки актов + закрыть в одну строку (flex без wrap) на
+   360px шире вьюпорта: переносим кнопки актов на свою строку. Длинные слова без пробелов
+   (серийник, название файла, комментарий) — переносятся, а не раздвигают тело модалки;
+   поле ввода журнала и заголовок оборудования в d-flex-строках сжимаются (min-width:0 —
+   урок CT-008); селектор узкий, чтобы не сжимать другие обёртки внутри d-flex (ревью LOW-1). */
+#task-modal .modal-header { flex-wrap: wrap; row-gap: var(--space-2); }
+#task-modal .modal-title { min-width: 0; overflow-wrap: anywhere; }
+#task-modal .modal-body { overflow-wrap: anywhere; }
+#task-modal .modal-body .d-flex > .form-control,
+#task-modal .modal-body .card-eq-title { min-width: 0; }
+@media (max-width: 576px) {
+  #card-print-actions { order: 3; flex: 1 1 100%; margin-left: 0 !important; flex-wrap: wrap; }
+  #card-print-actions:empty { display: none !important; }
+  .app-topbar .app-title { min-width: 0; overflow-wrap: anywhere; }
+}

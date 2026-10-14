@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/contract_check.py --feature suppliers --repo /Users/igorpotema/mycode/kanban-tree
+(exit 0)
+
+contract suppliers: SKIP (нет /Users/igorpotema/mycode/kanban-tree/frontend/src/features/suppliers — frontend ещё не создан)

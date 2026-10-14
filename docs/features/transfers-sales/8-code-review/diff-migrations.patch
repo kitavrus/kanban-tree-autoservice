@@ -1,0 +1,47 @@
+diff --git a/migrations/0016_transfers_sales.down.sql b/migrations/0016_transfers_sales.down.sql
+new file mode 100644
+index 0000000..84ef2c7
+--- /dev/null
++++ b/migrations/0016_transfers_sales.down.sql
+@@ -0,0 +1,17 @@
++-- Откат части transfers-sales: документ «склад → клиент» снова везёт только оборудование.
++-- Товарные строки накладных удаляются (в модели 0015 товар в этом направлении недопустим);
++-- их движения client_out / transfer_return сохраняются, остаток не пересчитывается.
++
++DELETE FROM transfer_items i
++USING transfers t
++WHERE t.id = i.transfer_id AND t.direction = 'warehouse_to_client' AND i.kind = 'product';
++
++ALTER TABLE transfer_items
++    DROP CONSTRAINT IF EXISTS transfer_items_price_check,
++    DROP CONSTRAINT transfer_items_kind_check,
++    DROP COLUMN price,
++    ADD CONSTRAINT transfer_items_kind_check CHECK (
++        (kind = 'product' AND product_id IS NOT NULL AND qty_sent IS NOT NULL
++            AND equipment_id IS NULL)
++     OR (kind = 'equipment' AND equipment_id IS NOT NULL AND product_id IS NULL
++            AND qty_sent IS NULL AND qty_received IS NULL));
+diff --git a/migrations/0016_transfers_sales.up.sql b/migrations/0016_transfers_sales.up.sql
+new file mode 100644
+index 0000000..5dec256
+--- /dev/null
++++ b/migrations/0016_transfers_sales.up.sql
+@@ -0,0 +1,18 @@
++-- Перемещения — накладная клиенту (docs/features/transfers-sales/draft-spec.md, часть 5
++-- мастер-спеки transfers): DS-011 цена продажи у товарной строки документа «склад → клиент»,
++-- DS-039 цена по умолчанию — из каталога (подставляет приложение при сохранении). Режим MVP
++-- (DS-027): ALTER поверх 0015. Существующие строки получают price = NULL.
++
++ALTER TABLE transfer_items
++    ADD COLUMN price numeric(12,2) NULL;
++
++-- Строка-единица цены не несёт; цена товарной строки вне «склад → клиент» — правило
++-- валидатора сервиса (направление живёт в шапке документа, CHECK строки его не видит).
++ALTER TABLE transfer_items
++    DROP CONSTRAINT transfer_items_kind_check,
++    ADD CONSTRAINT transfer_items_kind_check CHECK (
++        (kind = 'product' AND product_id IS NOT NULL AND qty_sent IS NOT NULL
++            AND equipment_id IS NULL)
++     OR (kind = 'equipment' AND equipment_id IS NOT NULL AND product_id IS NULL
++            AND qty_sent IS NULL AND qty_received IS NULL AND price IS NULL)),
++    ADD CONSTRAINT transfer_items_price_check CHECK (price IS NULL OR price >= 0);

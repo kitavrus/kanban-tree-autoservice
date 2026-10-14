@@ -1,0 +1,30 @@
+diff --git a/migrations/0017_transfers_revert.down.sql b/migrations/0017_transfers_revert.down.sql
+new file mode 100644
+index 0000000..b54e5d1
+--- /dev/null
++++ b/migrations/0017_transfers_revert.down.sql
+@@ -0,0 +1,8 @@
++-- Откат части transfers-revert: сведения о последней отмене проведения удаляются; статусы
++-- документов и компенсирующие движения transfer_unreceive сохраняются.
++
++ALTER TABLE transfers
++    DROP CONSTRAINT IF EXISTS transfers_unreceive_reason_check,
++    DROP COLUMN unreceive_reason,
++    DROP COLUMN unreceived_at,
++    DROP COLUMN unreceived_by;
+diff --git a/migrations/0017_transfers_revert.up.sql b/migrations/0017_transfers_revert.up.sql
+new file mode 100644
+index 0000000..eb0bb2e
+--- /dev/null
++++ b/migrations/0017_transfers_revert.up.sql
+@@ -0,0 +1,10 @@
++-- Перемещения — отмена проведения и удаление (docs/features/transfers-revert/draft-spec.md,
++-- часть 6 мастер-спеки transfers): DS-044 сведения о последнем откате на документе (кто,
++-- когда, причина), DS-053 причина 1–500 символов. Режим MVP (DS-027): ALTER поверх 0016.
++-- Причина движения transfer_unreceive уже разрешена CHECK'ом миграции 0015.
++
++ALTER TABLE transfers
++    ADD COLUMN unreceived_by uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    ADD COLUMN unreceived_at timestamptz NULL,
++    ADD COLUMN unreceive_reason text NOT NULL DEFAULT '',
++    ADD CONSTRAINT transfers_unreceive_reason_check CHECK (char_length(unreceive_reason) <= 500);

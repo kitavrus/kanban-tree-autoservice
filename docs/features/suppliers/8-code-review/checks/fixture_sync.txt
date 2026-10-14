@@ -1,0 +1,8 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fixture_sync_check.py --repo /Users/igorpotema/mycode/kanban-tree --base 18a0137023680a2073f2a197e40d8bbb080f346e
+(exit 1)
+
+fixture-sync: FAIL — схема/DTO изменены, тест-данные НЕ тронуты (TD-1/TD-6.2: та же фаза)
+  схемные изменения:
+    migrations/0012_suppliers.down.sql
+    migrations/0012_suppliers.up.sql
+  обнови scripts/e2e/fixtures/ | testdata/ | seed — или закрой фазу с --ack "<причина>" (попадает в отчёт)

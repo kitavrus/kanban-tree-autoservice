@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature attachment-orphan-gc --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/jovial-babbage-3d79d4 --paths internal/filestore internal/config internal/features/board cmd/server
+(exit 0)
+
+api-conventions internal/filestore,internal/config,internal/features/board,cmd/server: PASS (проблем: 0)

@@ -1,0 +1,10 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/artifact_lint.py --e2e-drift /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae/docs/features/pagination/draft-spec.md /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae/e2e --spec-glob pagination*.spec.ts
+(exit 1)
+
+e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 10 id, code: 4 в 1 файлах, проблем: 6)
+  DRIFT: TS-001 есть в draft-spec.md, теста test('TS-001: …') нет (сценарий без теста)
+  DRIFT: TS-002 есть в draft-spec.md, теста test('TS-002: …') нет (сценарий без теста)
+  DRIFT: TS-003 есть в draft-spec.md, теста test('TS-003: …') нет (сценарий без теста)
+  DRIFT: TS-004 есть в draft-spec.md, теста test('TS-004: …') нет (сценарий без теста)
+  DRIFT: TS-005 есть в draft-spec.md, теста test('TS-005: …') нет (сценарий без теста)
+  DRIFT: TS-006 есть в draft-spec.md, теста test('TS-006: …') нет (сценарий без теста)

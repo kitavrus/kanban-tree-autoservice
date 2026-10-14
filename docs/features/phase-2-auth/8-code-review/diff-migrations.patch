@@ -1,0 +1,24 @@
+diff --git a/migrations/0002_users_roles.down.sql b/migrations/0002_users_roles.down.sql
+new file mode 100644
+index 0000000..74f358c
+--- /dev/null
++++ b/migrations/0002_users_roles.down.sql
+@@ -0,0 +1,2 @@
++DROP INDEX IF EXISTS users_login_lower_uq;
++ALTER TABLE users DROP COLUMN IF EXISTS phone, DROP COLUMN IF EXISTS role;
+diff --git a/migrations/0002_users_roles.up.sql b/migrations/0002_users_roles.up.sql
+new file mode 100644
+index 0000000..489eb36
+--- /dev/null
++++ b/migrations/0002_users_roles.up.sql
+@@ -0,0 +1,10 @@
++-- Роли и телефон сотрудника (plan.md §2, D19). login храним в нижнем регистре —
++-- вход регистронезависимый (как в прототипе); уникальность — по lower(login).
++ALTER TABLE users
++    ADD COLUMN role  text NOT NULL DEFAULT 'executor' CHECK (role IN ('admin', 'executor')),
++    ADD COLUMN phone text NOT NULL DEFAULT '';
++
++-- CM-1 = MVP: до этой миграции существовал только seed-админ каркаса — делаем его admin.
++UPDATE users SET role = 'admin', login = lower(login);
++
++CREATE UNIQUE INDEX users_login_lower_uq ON users (lower(login));

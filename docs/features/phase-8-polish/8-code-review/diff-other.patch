@@ -1,0 +1,103 @@
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index d82ec63..7a4acf7 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -42,6 +42,16 @@
+   --bs-success: #34D399; --bs-success-rgb: 52, 211, 153;
+ }
+ 
++/* ---- текст НА брендовой заливке (фаза 8, polish) ----
++   В тёмной теме брендовые цвета светлые (#60A5FA/#F87171) — белый текст на них даёт
++   контраст ~2.5:1 (ниже WCAG AA 4.5:1). --kt-on-accent — цвет текста поверх
++   --bs-primary/--bs-danger заливки: белый в светлой теме, тёмный в тёмной. Все
++   «активные» заливки (меню, вкладки, категории, логотип, .btn-primary, бейдж) читают его,
++   а не захардкоженный #fff. */
++:root { --kt-on-accent: #fff; }
++[data-bs-theme="dark"] { --kt-on-accent: #0B1220; }
++[data-bs-theme="dark"] .text-bg-danger { color: var(--kt-on-accent) !important; }
++
+ /* ---- перекраска brand-цвета в precompiled bootstrap.min.css ----
+    --bs-primary и т.п. на :root — это ФОНОВЫЕ/нейтральные переменные (body/card/table/
+    border уже используют var() динамически, проверено в bootstrap.min.css), но
+@@ -51,7 +61,9 @@
+    Variables API: переопределить component-scoped переменные (getbootstrap.com/docs/5.3/
+    customize/css-variables/), а не изобретать свои .btn/.alert правила заново. */
+ a { --bs-link-color-rgb: var(--bs-primary-rgb); --bs-link-hover-color-rgb: var(--bs-primary-rgb); }
+-.btn-primary { --bs-btn-bg: var(--bs-primary); --bs-btn-border-color: var(--bs-primary);
++.btn-primary { --bs-btn-color: var(--kt-on-accent); --bs-btn-hover-color: var(--kt-on-accent);
++  --bs-btn-active-color: var(--kt-on-accent); --bs-btn-disabled-color: var(--kt-on-accent);
++  --bs-btn-bg: var(--bs-primary); --bs-btn-border-color: var(--bs-primary);
+   --bs-btn-hover-bg: var(--bs-primary); --bs-btn-hover-border-color: var(--bs-primary);
+   --bs-btn-active-bg: var(--bs-primary); --bs-btn-active-border-color: var(--bs-primary);
+   --bs-btn-disabled-bg: var(--bs-primary); --bs-btn-disabled-border-color: var(--bs-primary); }
+@@ -136,13 +148,13 @@ body { background: var(--bs-body-bg); }
+   padding: var(--space-4); background: var(--bs-tertiary-bg); border-right: 1px solid var(--bs-border-color); }
+ .app-brand { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-lg); font-weight: 700; margin-bottom: var(--space-4); }
+ .app-brand-logo { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; font-size: 15px;
+-  background: var(--bs-primary); color: #fff; }
++  background: var(--bs-primary); color: var(--kt-on-accent); }
+ .app-nav { display: flex; flex-direction: column; gap: 2px; }
+ .app-nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--bs-secondary-color); margin: var(--space-3) 0 var(--space-1); }
+ .app-nav-link { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; color: var(--bs-body-color); text-decoration: none; }
+ .app-nav-link:hover { background: var(--bs-secondary-bg); color: var(--bs-body-color); }
+-.app-nav-link.active { background: var(--bs-primary); color: #fff; }
+-.app-nav-count { margin-left: auto; font-size: 11px; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--bs-danger); color: #fff; text-align: center; }
++.app-nav-link.active { background: var(--bs-primary); color: var(--kt-on-accent); }
++.app-nav-count { margin-left: auto; font-size: 11px; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--bs-danger); color: var(--kt-on-accent); text-align: center; }
+ .app-sidebar-footer { margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--bs-border-color); display: flex; flex-direction: column; gap: var(--space-2); }
+ .app-avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 700;
+   background: rgba(var(--bs-primary-rgb), .15); color: var(--bs-primary); flex-shrink: 0; }
+@@ -209,13 +221,13 @@ body { background: var(--bs-body-bg); }
+    prototype/index.html renderCatalog) ---- */
+ .tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; border-bottom: 1px solid var(--bs-border-color); padding-bottom: var(--space-3); }
+ .tab-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; text-decoration: none; color: var(--bs-body-color); background: var(--bs-tertiary-bg); }
+-.tab-link.active { background: var(--bs-primary); color: #fff; }
++.tab-link.active { background: var(--bs-primary); color: var(--kt-on-accent); }
+ .tab-link .count { font-size: 11px; opacity: .8; }
+ .two-pane { display: flex; gap: var(--space-4); align-items: flex-start; min-width: 0; }
+ .cat-panel { width: 220px; flex-shrink: 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+ .cat-item { display: flex; justify-content: space-between; gap: var(--space-2); padding: 6px 10px; border-radius: 6px; text-decoration: none; color: var(--bs-body-color); overflow: hidden; }
+ .cat-item:hover { background: var(--bs-secondary-bg); }
+-.cat-item.active { background: var(--bs-primary); color: #fff; }
++.cat-item.active { background: var(--bs-primary); color: var(--kt-on-accent); }
+ .cat-panel-content { flex: 1; min-width: 0; }
+ .stock-low { color: var(--bs-danger); font-weight: 600; }
+ .stock-out { color: var(--bs-danger); font-weight: 700; }
+@@ -309,3 +321,19 @@ body { background: var(--bs-body-bg); }
+ .att-delete { position: absolute; top: 4px; right: 4px; line-height: 1; padding: 2px 6px; }
+ .att-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+ .att-upload .progress { flex: 1 1 160px; min-width: 120px; }
++
++/* ---- polish (фаза 8): карточка заказа на узком экране ----
++   Шапка модалки — заголовок + кнопки актов + закрыть в одну строку (flex без wrap) на
++   360px шире вьюпорта: переносим кнопки актов на свою строку. Длинные слова без пробелов
++   (серийник, название файла, комментарий) — переносятся, а не раздвигают тело модалки;
++   поля ввода в d-flex-строках (журнал, товары) сжимаются (min-width:0 — урок CT-008). */
++#task-modal .modal-header { flex-wrap: wrap; row-gap: var(--space-2); }
++#task-modal .modal-title { min-width: 0; overflow-wrap: anywhere; }
++#task-modal .modal-body { overflow-wrap: anywhere; }
++#task-modal .modal-body .d-flex > .form-control,
++#task-modal .modal-body .d-flex > div { min-width: 0; }
++@media (max-width: 576px) {
++  #card-print-actions { order: 3; flex: 1 1 100%; margin-left: 0 !important; flex-wrap: wrap; }
++  #card-print-actions:empty { display: none !important; }
++  .app-topbar .app-title { min-width: 0; overflow-wrap: anywhere; }
++}
+diff --git a/web/ssr/_shared/print.css b/web/ssr/_shared/print.css
+index 06c5910..16313e7 100644
+--- a/web/ssr/_shared/print.css
++++ b/web/ssr/_shared/print.css
+@@ -63,6 +63,13 @@ body {
+   flex: 1;
+ }
+ 
++/* узкий экран (просмотр акта с телефона, фаза 8 polish): таблицы и длинные слова
++   переносятся, подписи — в столбик; страница не скроллится вбок. */
++.print-page table { overflow-wrap: anywhere; }
++@media screen and (max-width: 576px) {
++  .print-page { padding: 12px; }
++  .print-signatures { flex-direction: column; margin-top: 32px; }
++}
+ @media print {
+   .no-print {
+     display: none !important;

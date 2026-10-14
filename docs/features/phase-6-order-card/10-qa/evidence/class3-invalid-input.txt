@@ -1,0 +1,22 @@
+Класс 3 — edge cases: invalid input / 404-коды / идемпотентность (LV-170…174, TD-4).
+
+$ PUT /api/v1/subtasks/not-uuid {}          -> 404 SUBTASK_NOT_FOUND
+$ PUT /api/v1/subtask-products/{random-uuid} {"qty":1} -> 404 SUBTASK_PRODUCT_NOT_FOUND
+$ DELETE /api/v1/subtask-logs/{random-uuid} -> 404 SUBTASK_LOG_NOT_FOUND
+$ GET /api/v1/tasks/abc/card                -> 404 TASK_NOT_FOUND
+$ DELETE /api/v1/tasks/1862/equipment/x     -> 404 TASK_EQUIPMENT_NOT_FOUND
+$ PUT /api/v1/subtasks/{random-uuid} с телом [1,2,3] (массив вместо объекта) -> 400 BAD_REQUEST
+$ PUT /api/v1/subtasks/{random-uuid} с телом "not-json-at-all"               -> 400 BAD_REQUEST
+$ PUT /api/v1/subtasks/{random-uuid} с лишним полем "task_id" (strictJSON)   -> 400 BAD_REQUEST
+
+Идемпотентность:
+$ DELETE /api/v1/subtask-products/{sp} (первый раз) -> 200, товар удалён, склад возвращён
+$ DELETE /api/v1/subtask-products/{sp} (повтор)      -> 404 SUBTASK_PRODUCT_NOT_FOUND (состояние не меняется — LV-173)
+$ POST /api/v1/tasks/1862/equipment {"equipment_id": уже прикреплённая единица} (повтор)
+-> 201, без дубля в card.equipment (ON CONFLICT DO NOTHING, идемпотентно — LV-108)
+
+Огромное значение qty (999999) на товаре с недостаточным остатком:
+$ POST /api/v1/subtasks/{sub}/products {"qty":999999} (product stock=48.667)
+-> 201, стал stock=-999950.333 (отрицательный остаток — допустимо by design, LV-122);
+   line_total=10499989.50, task.total_amount корректно пересчитан (10500303.5) — без переполнения/паники.
+   (Значение затем откачено серией PUT qty=40/48/DELETE — инвариант склада восстановлен, см. class4 evidence.)

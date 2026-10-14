@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 400" width="680" height="400" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="400" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="231.0" lengthAdjust="spacingAndGlyphs">Сценарий: смена часового пояса</text>
+<rect x="5" y="40" width="170" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="11.5" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="126.5" lengthAdjust="spacingAndGlyphs">Пользователь / админ</text>
+<path d="M90,70 L90,375" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="215" y="40" width="170" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="11.5" fill="#334155" text-anchor="middle" font-weight="bold" textLength="139.2" lengthAdjust="spacingAndGlyphs">Сайдбар / форма (§8.1)</text>
+<path d="M300,70 L300,375" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="455" y="40" width="170" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="11.5" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="50.6" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,375" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="207.9" lengthAdjust="spacingAndGlyphs">select в сайдбаре → «Москва (UTC+3)»</text>
+<path d="M300,127 L540,127" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="121" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="231.0" lengthAdjust="spacingAndGlyphs">PUT /api/v1/users/me/timezone {timezone}</text>
+<path d="M540,154 L300,154" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="148" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">200 {timezone:"Europe/Moscow"}</text>
+<path d="M300,181 L90,181" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="195.0" y="175" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="179.0" lengthAdjust="spacingAndGlyphs">reload: все даты в поясе Москвы</text>
+<path d="M90,208 L300,208" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="202" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">админ: Сотрудники → форма → пояс</text>
+<path d="M300,235 L540,235" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="229" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="202.1" lengthAdjust="spacingAndGlyphs">PUT /api/v1/users/:id {…, timezone}</text>
+<path d="M540,262 L300,262" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="256" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="98.2" lengthAdjust="spacingAndGlyphs">200 {…, timezone}</text>
+<path d="M300,289 L540,289" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="283" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="196.4" lengthAdjust="spacingAndGlyphs">PUT …/me/timezone {"Mars/Olympus"}</text>
+<path d="M540,316 L300,316" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="310" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">400 VALIDATION timezone: invalid</text>
+<path d="M300,343 L90,343" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="195.0" y="337" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">тост, select вернулся к прежнему</text>
+<text x="340" y="390" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветка</text>
+</svg>

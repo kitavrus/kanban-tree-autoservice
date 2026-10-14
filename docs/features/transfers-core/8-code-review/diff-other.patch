@@ -1,0 +1,3707 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 8b5ba8f..e414fee 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -146,36 +146,63 @@ export type Supplier = {
+ };
+ export type SupplierList = { items: Supplier[]; total: number; limit: number; offset: number };
+ 
+-// Wire-типы перемещений товаров (internal/features/stocktransfers/dto.go, §TD-6.2).
+-export type StockTransferStatus = 'requested' | 'in_transit' | 'received' | 'cancelled';
+-export type NewStockTransfer = {
++// Wire-типы документа «Перемещение» (internal/features/transfers/dto.go, §TD-6.2;
++// transfers-core §6.2): строка — товар с количеством либо единица оборудования клиента.
++export type TransferStatus = 'requested' | 'in_transit' | 'received' | 'cancelled';
++export type TransferItemKind = 'product' | 'equipment';
++export type NewTransferItem =
++  | { kind: 'product'; product_id: string; qty_sent: number }
++  | { kind: 'equipment'; equipment_id: string };
++export type NewTransfer = {
+   from_warehouse_id: string;
+   to_warehouse_id: string;
+   note?: string;
+-  items: { product_id: string; qty_sent: number }[];
++  items: NewTransferItem[];
+   send?: boolean;
+ };
+-export type StockTransferItem = {
++export type TransferItem = {
+   id: string;
+-  product_id: string;
+-  product_name: string;
+-  unit: string;
+-  qty_sent: number | string;
++  kind: TransferItemKind;
++  product_id: string | null;
++  product_name: string | null;
++  unit: string | null;
++  equipment_id: string | null;
++  equipment_name: string | null;
++  equipment_serial: string | null;
++  equipment_client_name: string | null;
++  qty_sent: number | string | null;
+   qty_received: number | string | null;
+ };
+-export type StockTransfer = {
++export type Transfer = {
+   id: number;
+   from_warehouse_id: string;
+   from_warehouse_name: string;
+   to_warehouse_id: string;
+   to_warehouse_name: string;
+-  status: StockTransferStatus;
++  status: TransferStatus;
+   note: string;
+   version: number;
+-  items: StockTransferItem[];
++  items: TransferItem[];
+   warnings: { product_id: string; warehouse_id: string; stock: number | string; kind: 'negative' | 'below_min' }[];
+ };
+ 
++// Wire-типы поиска единиц оборудования GET /api/v1/equipment (internal/features/clients/
++// equipment_search.go, transfers-core §6.8).
++export type EquipmentSearchItem = {
++  id: string;
++  client_id: string;
++  client_name: string;
++  type_name: string;
++  brand: string;
++  model: string;
++  serial: string;
++  location_status: import('./board-types').EquipmentLocationStatus;
++  warehouse_id: string | null;
++  warehouse_name: string | null;
++  active_transfer_id: number | null;
++};
++export type EquipmentSearchList = { items: EquipmentSearchItem[]; total: number; limit: number; offset: number };
++
+ // Wire-типы services (internal/features/catalog/services_dto.go, §TD-6.2). price: null —
+ // «по факту»; products[].qty — дубли product_id объединяются суммой на сервере (D10).
+ export type NewServiceProduct = { product_id: string; qty: number };
+@@ -366,28 +393,37 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  // ---- stock transfers (internal/features/stocktransfers, DS-006/DS-011) ----
++  // ---- transfers (internal/features/transfers, transfers-core §6.1–§6.7) ----
+ 
+-  async createStockTransfer(t: NewStockTransfer): Promise<StockTransfer> {
+-    const res = await this.ctx.post('/api/v1/stock-transfers', { data: t, headers: await this.headers() });
++  async createTransfer(t: NewTransfer): Promise<Transfer> {
++    const res = await this.ctx.post('/api/v1/transfers', { data: t, headers: await this.headers() });
+     expect(res.status(), `создание перемещения: ${await res.text()}`).toBe(201);
+     return res.json();
+   }
+ 
+-  async getStockTransfer(id: number): Promise<StockTransfer> {
+-    const res = await this.ctx.get(`/api/v1/stock-transfers/${id}`);
++  async getTransfer(id: number): Promise<Transfer> {
++    const res = await this.ctx.get(`/api/v1/transfers/${id}`);
+     expect(res.status(), `перемещение #${id}: ${await res.text()}`).toBe(200);
+     return res.json();
+   }
+ 
+   /** Действие над перемещением (send/receive/cancel) с актуальным version. */
+-  async stockTransferAction(id: number, action: 'send' | 'receive' | 'cancel', extra: Record<string, unknown> = {}): Promise<StockTransfer> {
+-    const cur = await this.getStockTransfer(id);
+-    const res = await this.ctx.post(`/api/v1/stock-transfers/${id}/${action}`, { data: { version: cur.version, ...extra }, headers: await this.headers() });
++  async transferAction(id: number, action: 'send' | 'receive' | 'cancel', extra: Record<string, unknown> = {}): Promise<Transfer> {
++    const cur = await this.getTransfer(id);
++    const res = await this.ctx.post(`/api/v1/transfers/${id}/${action}`, { data: { version: cur.version, ...extra }, headers: await this.headers() });
+     expect(res.status(), `${action} перемещения #${id}: ${await res.text()}`).toBe(200);
+     return res.json();
+   }
+ 
++  /** Поиск единиц оборудования по всем клиентам (transfers-core §6.8). */
++  async searchEquipment(query: { warehouse_id?: string; location_status?: string; q?: string; limit?: number } = {}): Promise<EquipmentSearchList> {
++    const params: Record<string, string> = {};
++    for (const [k, v] of Object.entries(query)) if (v !== undefined) params[k] = String(v);
++    const res = await this.ctx.get('/api/v1/equipment', { params });
++    expect(res.status(), `поиск оборудования: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
+   private async withDefaultStock(p: Omit<Product, 'stock' | 'min_stock' | 'box' | 'place'>): Promise<Product> {
+     const def = await this.defaultWarehouse();
+     const row = p.stocks.find((s) => s.warehouse_id === def.id);
+@@ -562,7 +598,8 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  /** warehouseId — склад приёма (warehouses DS-008); без него — первый активный склад (D56). */
++  /** warehouseId — склад приёма: пишется на саму единицу, если она «у клиента» (transfers-core
++   *  DS-008); без него — первый активный склад (D56). */
+   async addTaskEquipment(taskId: number, equipmentId: string, warehouseId?: string): Promise<import('./board-types').OrderCardMutationResponse> {
+     const data: Record<string, string> = { equipment_id: equipmentId };
+     if (warehouseId) data.warehouse_id = warehouseId;
+@@ -574,21 +611,6 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  /** Склад оборудования заказа (DS-008): send {to_warehouse_id} | receive | cancel-transit. */
+-  async taskEquipmentAction(
+-    taskId: number,
+-    equipmentId: string,
+-    action: 'send' | 'receive' | 'cancel-transit',
+-    toWarehouseId?: string,
+-  ): Promise<import('./board-types').OrderCardMutationResponse> {
+-    const res = await this.ctx.post(`/api/v1/tasks/${taskId}/equipment/${equipmentId}/${action}`, {
+-      data: action === 'send' ? { to_warehouse_id: toWarehouseId } : {},
+-      headers: await this.headers(),
+-    });
+-    expect(res.status(), `${action} оборудования ${equipmentId}: ${await res.text()}`).toBe(200);
+-    return res.json();
+-  }
+-
+   // ---- stock (internal/features/board/stock_dto.go, §TD-6.2 — типы в board-types.ts) ----
+ 
+   async getStockSummary(): Promise<import('./board-types').StockSummaryResponse> {
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index fd90992..371156d 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -53,7 +53,8 @@ export type TaskCard = {
+   last_log: TaskLastLog | null;
+   // pagination DS-002: заказов колонки под фильтрами GET /tasks (в GET /tasks/:id — 0).
+   column_total: number;
+-  // warehouses DS-009: у заказа есть оборудование в пути (бейдж «в пути» на доске).
++  // transfers-core DS-046: у заказа есть единица оборудования с location_status = in_transit
++  // (бейдж «в пути» на доске).
+   has_in_transit: boolean;
+   // executor-payouts D68: услуг done с исполнителем без выплаты (метка «к выплате: N»).
+   executor_unpaid_done: number;
+@@ -148,28 +149,18 @@ export type CardEquipment = {
+   completeness: string;
+   condition: string;
+   history: EquipmentHistory[];
+-  // Склад единицы (warehouses DS-008): null-поля — неприменимо к статусу.
+-  status: 'at_warehouse' | 'in_transit';
++  // Местоположение единицы (transfers-core DS-008, §6.9) — читается с equipment:
++  // warehouse_* — только at_warehouse; active_transfer_id — незавершённый документ
++  // «Перемещение»; transit_to_name — склад назначения документа, пока единица в пути.
++  location_status: EquipmentLocationStatus;
+   warehouse_id: string | null;
+   warehouse_name: string | null;
+-  transit_from_warehouse_id: string | null;
+-  transit_from_warehouse_name: string | null;
+-  transit_to_warehouse_id: string | null;
+-  transit_to_warehouse_name: string | null;
+-  movements: CardEquipmentMovement[];
++  active_transfer_id: number | null;
++  transit_to_name: string | null;
+ };
+ 
+-export type CardEquipmentMovement = {
+-  id: string;
+-  action: 'received' | 'sent' | 'arrived' | 'cancelled';
+-  from_warehouse_id: string | null;
+-  from_warehouse_name: string | null;
+-  to_warehouse_id: string | null;
+-  to_warehouse_name: string | null;
+-  user_id: string;
+-  user_name: string;
+-  created_at: string;
+-};
++/** equipment.location_status (CHECK миграции 0014). */
++export type EquipmentLocationStatus = 'at_client' | 'at_warehouse' | 'in_transit';
+ 
+ export type CardSubtaskProduct = {
+   id: string;
+diff --git a/e2e/fixtures/contrast.ts b/e2e/fixtures/contrast.ts
+new file mode 100644
+index 0000000..fc43c8e
+--- /dev/null
++++ b/e2e/fixtures/contrast.ts
+@@ -0,0 +1,56 @@
++import type { Locator } from '@playwright/test';
++
++/**
++ * WCAG-контраст текста элемента к его ФАКТИЧЕСКОМУ фону (TS-046).
++ *
++ * Цвета берутся из computed style и приводятся к RGBA браузером (1×1 canvas), а не разбором
++ * строки: computed-значение бывает не только `rgb(…)`/`rgba(…)`, но и `color(srgb 0.89 0.9
++ * 0.91)` — так Chromium отдаёт результат `color-mix()` (им в app.css заданы фоны .alert-*),
++ * где компоненты — доли 0…1, а не 0…255. Фон собирается наложением всех слоёв от корня к
++ * элементу с учётом альфы (полупрозрачный фон смешивается с подложкой предка, подложка
++ * страницы — фон body/html, иначе белый холст); полупрозрачный цвет текста накладывается на
++ * итоговый фон.
++ */
++export async function contrastOf(el: Locator): Promise<number> {
++  return el.evaluate((node) => {
++    type RGBA = { r: number; g: number; b: number; a: number };
++    const canvas = document.createElement('canvas');
++    canvas.width = canvas.height = 1;
++    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
++    const toRGBA = (css: string): RGBA => {
++      ctx.clearRect(0, 0, 1, 1);
++      ctx.fillStyle = '#000';
++      ctx.fillStyle = css; // невалидная строка оставит #000 — см. проверку ниже
++      ctx.fillRect(0, 0, 1, 1);
++      const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
++      return { r, g, b, a: a / 255 };
++    };
++    const over = (top: RGBA, bottom: RGBA): RGBA => ({
++      r: top.r * top.a + bottom.r * (1 - top.a),
++      g: top.g * top.a + bottom.g * (1 - top.a),
++      b: top.b * top.a + bottom.b * (1 - top.a),
++      a: 1,
++    });
++    const lum = (c: RGBA) => {
++      const f = (v: number) => {
++        const s = v / 255;
++        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
++      };
++      return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
++    };
++
++    // слои фона: от элемента вверх до <html>; накладываются снизу вверх на белый холст.
++    const layers: RGBA[] = [];
++    for (let n: Element | null = node; n; n = n.parentElement) {
++      const style = getComputedStyle(n);
++      if (style.backgroundImage !== 'none') throw new Error(`contrastOf: фон-картинка у <${n.tagName.toLowerCase()}> — контраст по цвету не определён`);
++      layers.push(toRGBA(style.backgroundColor));
++    }
++    let bg: RGBA = { r: 255, g: 255, b: 255, a: 1 };
++    for (const layer of layers.reverse()) bg = over(layer, bg);
++
++    const fg = over(toRGBA(getComputedStyle(node).color), bg);
++    const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
++    return (hi + 0.05) / (lo + 0.05);
++  });
++}
+diff --git a/e2e/pages/ExecutorPayoutsPage.ts b/e2e/pages/ExecutorPayoutsPage.ts
+index 7b736e3..a3102b3 100644
+--- a/e2e/pages/ExecutorPayoutsPage.ts
++++ b/e2e/pages/ExecutorPayoutsPage.ts
+@@ -3,7 +3,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
+ // POM экрана-отчёта «Выплаты» «/executor-payouts» (executor-payouts D69/D70,
+ // js/executor-payouts.js). Селекты фильтров превращаются js/combobox.js в комбобоксы:
+ // testid уходит на видимую кнопку, выбор — клик по кнопке и по `.cb-opt` в
+-// `combobox-dropdown` (эталон — StockTransfersPage).
++// `combobox-dropdown` (эталон — TransfersPage).
+ export class ExecutorPayoutsPage {
+   readonly root: Locator;
+   readonly filterAssignee: Locator;
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 805c825..f81bdb5 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -267,38 +267,33 @@ export class OrderCardPage {
+     return this.equipmentRow(equipmentId).getByTestId('card-equipment-history');
+   }
+ 
+-  // ---- склад оборудования заказа (warehouses DS-008) ----
++  // ---- местоположение оборудования заказа (transfers-core DS-003, DS-008, §8.2) ----
+ 
+-  /** Бейдж «На складе: X» / «В пути: X → Y». */
++  /** Бейдж местоположения: «у клиента» / «на складе X» / «в пути → Y». */
+   equipmentLocation(equipmentId: string): Locator {
+     return this.equipmentRow(equipmentId).getByTestId('card-equipment-location');
+   }
+ 
+-  equipmentSend(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-send');
++  /** «перемещение #N» единицы в незавершённом документе: ссылка (admin) либо текст (executor). */
++  equipmentTransfer(equipmentId: string): Locator {
++    return this.equipmentRow(equipmentId).getByTestId('card-equipment-transfer');
+   }
+ 
+-  equipmentReceive(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-receive');
++  /** Подпись под select «Склад приёма». */
++  get equipmentWarehouseHint(): Locator {
++    return this.page.getByTestId('card-equipment-warehouse-hint');
+   }
+ 
+-  equipmentCancelTransit(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-cancel-transit');
++  /** Снятые D57-кнопки строки единицы (DS-003): «Отправить / Принять / Отменить отправку». */
++  equipmentMoveButtons(equipmentId: string): Locator {
++    return this.equipmentRow(equipmentId).locator(
++      '[data-testid="card-equipment-send"], [data-testid="card-equipment-receive"], [data-testid="card-equipment-cancel-transit"]',
++    );
+   }
+ 
+-  /** Записи блока «Перемещения» (журнал task_equipment_movements), по времени. */
++  /** Снятый журнал перемещений единицы в заказе (DS-029). */
+   equipmentMovements(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-movement');
+-  }
+-
+-  /** «Отправить на склад…» → модалка KT.uiDialog с нативным select → «Отправить». */
+-  async sendEquipment(equipmentId: string, warehouseName: string) {
+-    await this.equipmentSend(equipmentId).click();
+-    const dialog = this.page.getByTestId('ui-dialog');
+-    await expect(dialog).toBeVisible();
+-    await dialog.getByTestId('ui-dialog-select').selectOption({ label: warehouseName });
+-    await dialog.getByTestId('ui-dialog-ok').click();
+-    await expect(dialog).toHaveCount(0);
++    return this.equipmentRow(equipmentId).locator('[data-testid="card-equipment-movements"], [data-testid="card-equipment-movement"]');
+   }
+ 
+   /** Вложение по имени файла (имена в тестах уникальны через uniq()). */
+diff --git a/e2e/pages/StockTransfersPage.ts b/e2e/pages/StockTransfersPage.ts
+deleted file mode 100644
+index f36a88b..0000000
+--- a/e2e/pages/StockTransfersPage.ts
++++ /dev/null
+@@ -1,102 +0,0 @@
+-import { expect, type Locator, type Page } from '@playwright/test';
+-
+-// POM экрана «Перемещения» «/stock-transfers» (warehouses DS-006, js/stock-transfers.js).
+-// Селекты складов/товаров превращаются js/combobox.js в комбобоксы: testid уходит на
+-// видимую кнопку, выбор — клик по кнопке, поиск в `.cb-search` и клик по `.cb-opt` в
+-// `combobox-dropdown` (эталон — StockPage/CatalogPage).
+-export class StockTransfersPage {
+-  readonly root: Locator;
+-  readonly list: Locator;
+-  readonly filterStatus: Locator;
+-  readonly filterWarehouse: Locator;
+-  readonly newBtn: Locator;
+-  readonly cardTitle: Locator;
+-  readonly cardStatus: Locator;
+-  readonly from: Locator;
+-  readonly to: Locator;
+-  readonly note: Locator;
+-  readonly itemProducts: Locator;
+-  readonly itemQtys: Locator;
+-  readonly itemAdd: Locator;
+-  readonly save: Locator;
+-  readonly send: Locator;
+-  readonly cancel: Locator;
+-  readonly receive: Locator;
+-  readonly error: Locator;
+-  readonly warnings: Locator;
+-  readonly receiveModal: Locator;
+-  readonly receiveQtys: Locator;
+-  readonly receiveConfirm: Locator;
+-  readonly dropdown: Locator;
+-
+-  constructor(readonly page: Page) {
+-    this.root = page.getByTestId('st-root');
+-    this.list = page.getByTestId('st-list');
+-    this.filterStatus = page.getByTestId('st-filter-status');
+-    this.filterWarehouse = page.getByTestId('st-filter-warehouse');
+-    this.newBtn = page.getByTestId('st-new');
+-    this.cardTitle = page.getByTestId('st-card-title');
+-    this.cardStatus = page.getByTestId('st-card-status').getByTestId('st-status-badge');
+-    this.from = page.getByTestId('st-from');
+-    this.to = page.getByTestId('st-to');
+-    this.note = page.getByTestId('st-note');
+-    this.itemProducts = page.getByTestId('st-item-product');
+-    this.itemQtys = page.getByTestId('st-item-qty');
+-    this.itemAdd = page.getByTestId('st-item-add');
+-    this.save = page.getByTestId('st-save');
+-    this.send = page.getByTestId('st-send');
+-    this.cancel = page.getByTestId('st-cancel');
+-    this.receive = page.getByTestId('st-receive');
+-    this.error = page.getByTestId('st-error');
+-    this.warnings = page.getByTestId('st-warnings');
+-    this.receiveModal = page.getByTestId('st-receive-modal');
+-    this.receiveQtys = page.getByTestId('st-receive-qty');
+-    this.receiveConfirm = page.getByTestId('st-receive-confirm');
+-    this.dropdown = page.getByTestId('combobox-dropdown');
+-  }
+-
+-  async goto(id?: number) {
+-    await this.page.goto(id ? `/stock-transfers?id=${id}` : '/stock-transfers');
+-    await expect(this.root).toBeVisible();
+-    if (id) await expect(this.cardTitle).toHaveText(`Перемещение #${id}`);
+-  }
+-
+-  row(id: number): Locator {
+-    return this.list.locator(`[data-testid="st-row"][data-id="${id}"]`);
+-  }
+-
+-  async choose(button: Locator, label: string) {
+-    await button.click();
+-    await expect(this.dropdown).toBeVisible();
+-    await this.dropdown.locator('.cb-search').fill(label);
+-    await this.dropdown.locator('.cb-opt', { hasText: label }).first().click();
+-  }
+-
+-  async chooseStatusFilter(label: string) {
+-    await this.filterStatus.click();
+-    await expect(this.dropdown).toBeVisible();
+-    await this.dropdown.locator('.cb-opt', { hasText: label }).first().click();
+-  }
+-
+-  /** Строка товара редактора: товар + количество. */
+-  async setItem(index: number, productName: string, qty: number | string) {
+-    await this.choose(this.itemProducts.nth(index), productName);
+-    await this.itemQtys.nth(index).fill(String(qty));
+-  }
+-
+-  viewItem(productId: string): Locator {
+-    return this.page.locator(`[data-testid="st-view-item"][data-product-id="${productId}"]`);
+-  }
+-
+-  receiveQty(productId: string): Locator {
+-    return this.page.locator(`[data-testid="st-receive-row"][data-product-id="${productId}"]`).getByTestId('st-receive-qty');
+-  }
+-
+-  /** Номер перемещения из заголовка карточки «Перемещение #N». */
+-  async currentId(): Promise<number> {
+-    const text = (await this.cardTitle.textContent()) ?? '';
+-    const m = /#(\d+)/.exec(text);
+-    expect(m, `номер в заголовке «${text}»`).toBeTruthy();
+-    return Number(m![1]);
+-  }
+-}
+diff --git a/e2e/pages/TransfersPage.ts b/e2e/pages/TransfersPage.ts
+new file mode 100644
+index 0000000..bb8e96e
+--- /dev/null
++++ b/e2e/pages/TransfersPage.ts
+@@ -0,0 +1,169 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана «Перемещения» «/transfers» (transfers-core §8.1, js/transfers.js): документ
++// «склад → склад» со смешанными строками — товары и единицы оборудования клиентов.
++// Селекты (фильтры, склады документа, «+ Товар») превращаются js/combobox.js в комбобоксы:
++// testid уходит на видимую кнопку, выбор — клик по кнопке, поиск в `.cb-search` и клик по
++// `.cb-opt` в `combobox-dropdown` (эталон — StockPage/CatalogPage). «+ Оборудование» — поле
++// поиска с выпадающим списком единиц склада отправления (GET /api/v1/equipment).
++export class TransfersPage {
++  readonly root: Locator;
++  readonly list: Locator;
++  readonly rows: Locator;
++  readonly filterStatus: Locator;
++  readonly filterWarehouse: Locator;
++  readonly filterReset: Locator;
++  readonly shown: Locator;
++  readonly more: Locator;
++  readonly newBtn: Locator;
++  readonly placeholder: Locator;
++  readonly cardTitle: Locator;
++  readonly cardStatus: Locator;
++  readonly cardMeta: Locator;
++  readonly from: Locator;
++  readonly to: Locator;
++  readonly toError: Locator;
++  readonly note: Locator;
++  readonly itemsTable: Locator;
++  readonly itemsError: Locator;
++  readonly itemRows: Locator;
++  readonly addProduct: Locator;
++  readonly equipmentSearch: Locator;
++  readonly equipmentHint: Locator;
++  readonly equipmentOptions: Locator;
++  readonly save: Locator;
++  readonly send: Locator;
++  readonly cancel: Locator;
++  readonly receive: Locator;
++  readonly warnings: Locator;
++  readonly toast: Locator;
++  readonly toastError: Locator;
++  readonly receiveModal: Locator;
++  readonly receiveRows: Locator;
++  readonly receiveConfirm: Locator;
++  readonly dropdown: Locator;
++
++  constructor(readonly page: Page) {
++    this.root = page.getByTestId('st-root');
++    this.list = page.getByTestId('st-list');
++    this.rows = this.list.getByTestId('st-row');
++    this.filterStatus = page.getByTestId('st-filter-status');
++    this.filterWarehouse = page.getByTestId('st-filter-warehouse');
++    this.filterReset = page.getByTestId('st-filter-reset');
++    this.shown = page.getByTestId('st-shown');
++    this.more = page.getByTestId('st-more');
++    this.newBtn = page.getByTestId('st-new');
++    this.placeholder = page.getByTestId('st-placeholder');
++    this.cardTitle = page.getByTestId('st-card-title');
++    this.cardStatus = page.getByTestId('st-card-status').getByTestId('st-status-badge');
++    this.cardMeta = page.getByTestId('st-card-meta');
++    this.from = page.getByTestId('st-from');
++    this.to = page.getByTestId('st-to');
++    this.toError = page.getByTestId('st-to-error');
++    this.note = page.getByTestId('st-note');
++    this.itemsTable = page.getByTestId('st-items');
++    this.itemsError = page.getByTestId('st-items-error');
++    this.itemRows = page.getByTestId('st-item-row');
++    this.addProduct = page.getByTestId('st-add-product');
++    this.equipmentSearch = page.getByTestId('st-equipment-search');
++    this.equipmentHint = page.getByTestId('st-equipment-hint');
++    this.equipmentOptions = page.getByTestId('st-equipment-option');
++    this.save = page.getByTestId('st-save');
++    this.send = page.getByTestId('st-send');
++    this.cancel = page.getByTestId('st-cancel');
++    this.receive = page.getByTestId('st-receive');
++    this.warnings = page.getByTestId('st-warnings');
++    this.toast = page.getByTestId('st-toast');
++    this.toastError = page.getByTestId('st-toast-error');
++    this.receiveModal = page.getByTestId('st-receive-modal');
++    this.receiveRows = page.getByTestId('st-receive-row');
++    this.receiveConfirm = page.getByTestId('st-receive-confirm');
++    this.dropdown = page.getByTestId('combobox-dropdown');
++  }
++
++  async goto(id?: number) {
++    await this.page.goto(id ? `/transfers?id=${id}` : '/transfers');
++    await expect(this.root).toBeVisible();
++    if (id) await expect(this.cardTitle).toHaveText(`Перемещение #${id}`);
++  }
++
++  row(id: number): Locator {
++    return this.list.locator(`[data-testid="st-row"][data-id="${id}"]`);
++  }
++
++  async choose(button: Locator, label: string) {
++    await button.click();
++    await expect(this.dropdown).toBeVisible();
++    await this.dropdown.locator('.cb-search').fill(label);
++    await this.dropdown.locator('.cb-opt', { hasText: label }).first().click();
++  }
++
++  async chooseStatusFilter(label: string) {
++    await this.filterStatus.click();
++    await expect(this.dropdown).toBeVisible();
++    await this.dropdown.locator('.cb-opt', { hasText: label }).first().click();
++  }
++
++  /** Строка редактора заявки: товар — по id товара, единица — по id оборудования. */
++  itemRow(kind: 'product' | 'equipment', key: string): Locator {
++    return this.page.locator(`[data-testid="st-item-row"][data-kind="${kind}"][data-key="${key}"]`);
++  }
++
++  itemQty(productId: string): Locator {
++    return this.itemRow('product', productId).getByTestId('st-item-qty');
++  }
++
++  itemError(kind: 'product' | 'equipment', key: string): Locator {
++    return this.itemRow(kind, key).getByTestId('st-item-error');
++  }
++
++  /** «+ Товар»: комбобокс по каталогу → новая строка-товар с количеством. */
++  async addProductRow(productName: string, productId: string, qty: number | string) {
++    await this.choose(this.addProduct, productName);
++    await expect(this.itemRow('product', productId)).toBeVisible();
++    await this.itemQty(productId).fill(String(qty));
++  }
++
++  equipmentOption(equipmentId: string): Locator {
++    return this.page.locator(`[data-testid="st-equipment-option"][data-equipment-id="${equipmentId}"]`);
++  }
++
++  /** «+ Оборудование»: поиск по вводу (debounce) → клик по единице → новая строка-единица. */
++  async addEquipmentRow(query: string, equipmentId: string) {
++    await this.equipmentSearch.fill(query);
++    await expect(this.equipmentOption(equipmentId)).toBeVisible();
++    await this.equipmentOption(equipmentId).click();
++    await expect(this.itemRow('equipment', equipmentId)).toBeVisible();
++  }
++
++  /** Строка документа в режиме просмотра (в пути / получено / отменён). */
++  viewItem(kind: 'product' | 'equipment', key: string): Locator {
++    return this.page.locator(`[data-testid="st-view-item"][data-kind="${kind}"][data-key="${key}"]`);
++  }
++
++  /** Поле «Факт» товарной строки в модалке «Приёмка» (по id строки документа). */
++  receiveQty(itemId: string): Locator {
++    return this.page.locator(`[data-testid="st-receive-qty"][data-item-id="${itemId}"]`);
++  }
++
++  receiveQtyError(itemId: string): Locator {
++    return this.page.locator(`[data-testid="st-receive-row"][data-item-id="${itemId}"]`).getByTestId('st-receive-qty-error');
++  }
++
++  /** Номер перемещения из заголовка документа «Перемещение #N». */
++  async currentId(): Promise<number> {
++    const text = (await this.cardTitle.textContent()) ?? '';
++    const m = /#(\d+)/.exec(text);
++    expect(m, `номер в заголовке «${text}»`).toBeTruthy();
++    return Number(m![1]);
++  }
++
++  /** TS-045: у документа нет горизонтальной прокрутки. */
++  async expectNoHorizontalScroll() {
++    const overflow = await this.page.evaluate(() => {
++      const el = document.documentElement;
++      return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth };
++    });
++    expect(overflow.scrollWidth, 'горизонтальная прокрутка страницы').toBeLessThanOrEqual(overflow.clientWidth);
++  }
++}
+diff --git a/e2e/tests/equipment-warehouses.spec.ts b/e2e/tests/equipment-warehouses.spec.ts
+index 2811c04..f25e6da 100644
+--- a/e2e/tests/equipment-warehouses.spec.ts
++++ b/e2e/tests/equipment-warehouses.spec.ts
+@@ -1,14 +1,21 @@
+ import { test, expect, columnByName } from '../fixtures/board';
+ import { BoardPage } from '../pages/BoardPage';
+ import { OrderCardPage } from '../pages/OrderCardPage';
++import { TransfersPage } from '../pages/TransfersPage';
+ import type { AdminApi } from '../fixtures/auth';
++import type { CardEquipment } from '../fixtures/board-types';
++import { contrastOf } from '../fixtures/contrast';
+ 
+-// Склад и перемещения оборудования заказа — warehouses подфаза C (docs/features/warehouses/
+-// draft-spec.md DS-005/DS-008/DS-009, TS-006, TS-011…TS-014; D55–D59). Общая dev-БД
++// Местоположение оборудования заказа — на самой единице, двигается только документом
++// «Перемещение» (docs/features/transfers-core/draft-spec.md §8.2, DS-003, DS-008, DS-026,
++// DS-046; TS-036, TS-044, TS-045, TS-046). В карточке заказа — бейдж местоположения и
++// «перемещение #N» вместо кнопок «Отправить / Принять / Отменить отправку». Общая dev-БД
+ // (§TD-6.2): свои клиенты/оборудование/заказы через uniq()+adminApi, заказы удаляет
+-// _boardCleanup (журнал перемещений уходит каскадом).
++// _boardCleanup.
+ test.use({ colorScheme: 'light' });
+ 
++const THEMES = ['light', 'dark'] as const;
++
+ async function setup(adminApi: AdminApi, uniq: (s: string) => string, tag: string, equipmentCount = 1) {
+   const almaty = await adminApi.warehouseByName('Алматы');
+   const moscow = await adminApi.warehouseByName('Москва');
+@@ -22,15 +29,29 @@ async function setup(adminApi: AdminApi, uniq: (s: string) => string, tag: strin
+   return { almaty, moscow, client, equipment, columns };
+ }
+ 
+-test.describe('EW: склад оборудования заказа', () => {
+-  test('EW-001 (TS-011): склад приёма → «На складе: Москва»; отправить на Алматы → «В пути»; принять; история из 3 записей', async ({
++function cardUnit(card: { equipment: CardEquipment[] }, equipmentId: string): CardEquipment {
++  const row = card.equipment.find((e) => e.equipment_id === equipmentId);
++  if (!row) throw new Error(`единица ${equipmentId} не найдена в карточке`);
++  return row;
++}
++
++test.describe('EW: местоположение оборудования заказа', () => {
++  test('EW-001 (TS-036): карточка без кнопок перемещения — бейдж местоположения и «перемещение #N»; «Убрать» скрыта у единицы в незавершённом документе', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+   }) => {
+-    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW001');
+-    const eq = equipment[0];
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW001', 3);
++    const [viaUi, inRequest, inTransit] = equipment;
+     const task = await adminApi.createTask({ title: uniq('EW-001 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    await adminApi.addTaskEquipment(task.id, inRequest.id, almaty.id);
++    await adminApi.addTaskEquipment(task.id, inTransit.id, almaty.id);
++    const request = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'equipment', equipment_id: inRequest.id }],
++    });
++    const transit = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ kind: 'equipment', equipment_id: inTransit.id }],
++    });
+ 
+     const board = new BoardPage(page);
+     const card = new OrderCardPage(page);
+@@ -38,90 +59,105 @@ test.describe('EW: склад оборудования заказа', () => {
+     await board.openTaskEdit(task.id);
+     await card.waitOpen();
+ 
++    // добавление единицы «у клиента» со «Складом приёма» → «на складе Москва».
++    await expect(card.equipmentWarehouseHint).toHaveText('Если оборудование уже на складе или в пути, местоположение не изменится');
+     await card.chooseCombobox(card.equipmentWarehouse, 'Москва');
+-    await card.chooseCombobox(card.equipmentAdd, 'BrandEW001');
+-    await expect(card.equipmentRows).toHaveCount(1);
+-    await expect(card.equipmentLocation(eq.id)).toHaveText('На складе: Москва');
+-    await expect(card.equipmentMovements(eq.id)).toHaveCount(1);
+-    await expect(card.equipmentMovements(eq.id).first()).toContainText('Принято на склад Москва');
+-    await expect(card.equipmentReceive(eq.id)).toHaveCount(0);
+-
+-    // модалка выбора склада: текущий склад не предлагается.
+-    await card.equipmentSend(eq.id).click();
+-    const dialog = page.getByTestId('ui-dialog');
+-    await expect(dialog).toBeVisible();
+-    const options = await dialog.getByTestId('ui-dialog-select').locator('option').allTextContents();
+-    expect(options).toContain('Алматы');
+-    expect(options).not.toContain('Москва');
+-    await dialog.getByTestId('ui-dialog-select').selectOption({ label: 'Алматы' });
+-    await dialog.getByTestId('ui-dialog-ok').click();
+-
+-    await expect(card.equipmentLocation(eq.id)).toHaveText('В пути: Москва → Алматы');
+-    await expect(card.equipmentSend(eq.id)).toHaveCount(0);
+-    await expect(card.equipmentDelete(eq.id)).toHaveCount(0); // D61: в пути не убрать
+-    await expect(card.equipmentMovements(eq.id)).toHaveCount(2);
+-
+-    await card.equipmentReceive(eq.id).click();
+-    await expect(card.equipmentLocation(eq.id)).toHaveText('На складе: Алматы');
+-    await expect(card.equipmentDelete(eq.id)).toBeVisible();
+-    await expect(card.equipmentMovements(eq.id)).toHaveCount(3);
+-    await expect(card.equipmentMovements(eq.id).nth(2)).toContainText('Принято на складе Алматы (из Москва)');
+-    expect(await card.equipmentMovements(eq.id).evaluateAll((els) => els.map((e) => e.getAttribute('data-action')))).toEqual([
+-      'received',
+-      'sent',
+-      'arrived',
+-    ]);
++    await card.chooseCombobox(card.equipmentAdd, viaUi.model);
++    await expect(card.equipmentRows).toHaveCount(3);
++    await expect(card.equipmentLocation(viaUi.id)).toHaveText('на складе Москва');
++    await expect(card.equipmentLocation(viaUi.id)).toHaveAttribute('data-location-status', 'at_warehouse');
++    await expect(card.equipmentTransfer(viaUi.id)).toHaveCount(0);
++    await expect(card.equipmentDelete(viaUi.id)).toBeVisible();
++
++    // заявка: местоположение прежнее, ссылка на документ, «Убрать» скрыта.
++    await expect(card.equipmentLocation(inRequest.id)).toHaveText('на складе Алматы');
++    await expect(card.equipmentTransfer(inRequest.id)).toHaveText(`перемещение #${request.id}`);
++    await expect(card.equipmentTransfer(inRequest.id)).toHaveAttribute('href', `/transfers?id=${request.id}`);
++    await expect(card.equipmentDelete(inRequest.id)).toHaveCount(0);
++
++    // в пути: «в пути → Москва», ссылка, «Убрать» скрыта.
++    await expect(card.equipmentLocation(inTransit.id)).toHaveText('в пути → Москва');
++    await expect(card.equipmentLocation(inTransit.id)).toHaveAttribute('data-location-status', 'in_transit');
++    await expect(card.equipmentTransfer(inTransit.id)).toHaveText(`перемещение #${transit.id}`);
++    await expect(card.equipmentDelete(inTransit.id)).toHaveCount(0);
++
++    // кнопок «Отправить / Принять / Отменить отправку» и журнала перемещений нет ни у одной единицы.
++    for (const eq of equipment) {
++      await expect(card.equipmentMoveButtons(eq.id)).toHaveCount(0);
++      await expect(card.equipmentMovements(eq.id)).toHaveCount(0);
++    }
+ 
+     const data = await adminApi.getCard(task.id);
+-    const row = data.equipment.find((e) => e.equipment_id === eq.id)!;
+-    expect(row.status).toBe('at_warehouse');
+-    expect(row.warehouse_id).toBe(almaty.id);
+-    expect(row.movements.map((m) => m.action)).toEqual(['received', 'sent', 'arrived']);
+-    expect(row.movements[1].from_warehouse_id).toBe(moscow.id);
++    expect(cardUnit(data, viaUi.id)).toMatchObject({ location_status: 'at_warehouse', warehouse_id: moscow.id, active_transfer_id: null, transit_to_name: null });
++    expect(cardUnit(data, inRequest.id)).toMatchObject({ location_status: 'at_warehouse', warehouse_id: almaty.id, active_transfer_id: request.id, transit_to_name: null });
++    expect(cardUnit(data, inTransit.id)).toMatchObject({ location_status: 'in_transit', warehouse_id: null, active_transfer_id: transit.id, transit_to_name: 'Москва' });
++    expect(data.task.has_in_transit).toBe(true);
++
++    // ссылка «перемещение #N» открывает документ на экране «Перемещения».
++    await card.equipmentTransfer(inTransit.id).click();
++    const tr = new TransfersPage(page);
++    await expect(page).toHaveURL(new RegExp(`/transfers\\?id=${transit.id}$`));
++    await expect(tr.cardTitle).toHaveText(`Перемещение #${transit.id}`);
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.viewItem('equipment', inTransit.id)).toContainText(inTransit.model);
+   });
+ 
+-  test('EW-002 (TS-012): «Отменить отправку» → обратно на исходный склад; устаревшая карточка — «Принять» → 409 с понятным текстом', async ({
+-    adminPage: page,
++  test('EW-002 (TS-036, TS-018): исполнитель — «перемещение #N» текстом без ссылки; убрать единицу в документе нельзя (409), после отмены документа — можно', async ({
++    page,
+     adminApi,
+     uniq,
+-    allowHttpErrors,
++    makeUser,
++    loginAs,
+   }) => {
+-    allowHttpErrors((url, status) => url.includes('/equipment/') && url.endsWith('/receive') && status === 409);
+-    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW002', 2);
+-    const [eqCancel, eqStale] = equipment;
+-    const task = await adminApi.createTask({ title: uniq('EW-002 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+-    await adminApi.addTaskEquipment(task.id, eqCancel.id, almaty.id);
+-    await adminApi.addTaskEquipment(task.id, eqStale.id, almaty.id);
+-    await adminApi.taskEquipmentAction(task.id, eqCancel.id, 'send', moscow.id);
+-    await adminApi.taskEquipmentAction(task.id, eqStale.id, 'send', moscow.id);
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW002');
++    const eq = equipment[0];
++    const exec = await makeUser({ login: uniq('ew002-exec'), name: uniq('EW-002 Исполнитель') });
++    const task = await adminApi.createTask({
++      title: uniq('EW-002 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id, assignee_id: exec.id,
++    });
++    await adminApi.addTaskEquipment(task.id, eq.id, almaty.id);
++    const doc = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ kind: 'equipment', equipment_id: eq.id }],
++    });
+ 
++    await loginAs(page, exec.login, exec.password);
+     const board = new BoardPage(page);
+     const card = new OrderCardPage(page);
+     await board.goto(`?client_id=${client.id}`);
+     await board.openTaskEdit(task.id);
+     await card.waitOpen();
+-    await expect(card.equipmentLocation(eqCancel.id)).toHaveText('В пути: Алматы → Москва');
+ 
+-    // отмена — через подтверждение KT.uiDialog.
+-    await card.equipmentCancelTransit(eqCancel.id).click();
+-    await card.confirmUiDialog();
+-    await expect(card.equipmentLocation(eqCancel.id)).toHaveText('На складе: Алматы');
+-    await expect(card.equipmentMovements(eqCancel.id).nth(2)).toContainText('отменена, возврат на Алматы');
++    await expect(card.equipmentLocation(eq.id)).toHaveText('в пути → Москва');
++    await expect(card.equipmentTransfer(eq.id)).toHaveText(`перемещение #${doc.id}`);
++    // экран /transfers исполнителю недоступен — текст, не ссылка.
++    await expect(card.equipmentTransfer(eq.id)).not.toHaveAttribute('href', /.*/);
++    await expect(card.equipment.locator('a[href^="/transfers"]')).toHaveCount(0);
++    await expect(card.equipmentDelete(eq.id)).toHaveCount(0);
++    await expect(card.equipmentMoveButtons(eq.id)).toHaveCount(0);
+ 
+-    // единицу уже принял кто-то другой (API) — кнопка в открытой карточке устарела → 409.
+-    await adminApi.taskEquipmentAction(task.id, eqStale.id, 'receive');
+-    await card.equipmentReceive(eqStale.id).click();
+-    const dialog = page.getByTestId('ui-dialog');
+-    await expect(dialog).toBeVisible();
+-    await expect(dialog.getByTestId('ui-dialog-text')).toContainText('не в пути');
+-    await dialog.getByTestId('ui-dialog-ok').click();
++    // API под сессией исполнителя: единица в незавершённом документе не убирается.
++    const csrf = (await page.locator('meta[name="csrf-token"]').getAttribute('content')) ?? '';
++    const del = await page.request.delete(`/api/v1/tasks/${task.id}/equipment/${eq.id}`, { headers: { 'X-Csrf-Token': csrf }, failOnStatusCode: false });
++    expect(del.status()).toBe(409);
++    expect(await del.json()).toMatchObject({
++      code: 'EQUIPMENT_IN_TRANSFER',
++      message: `Оборудование в перемещении #${doc.id} — сначала отмените его`,
++      details: { transfer_id: doc.id },
++    });
+ 
+-    const data = await adminApi.getCard(task.id);
+-    expect(data.equipment.find((e) => e.equipment_id === eqCancel.id)!.movements.map((m) => m.action)).toEqual(['received', 'sent', 'cancelled']);
+-    expect(data.equipment.find((e) => e.equipment_id === eqStale.id)!.movements.filter((m) => m.action === 'arrived')).toHaveLength(1);
++    // негатив TS-018: после отмены документа единица свободна и убирается из заказа через UI.
++    await adminApi.transferAction(doc.id, 'cancel');
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++    await expect(card.equipmentLocation(eq.id)).toHaveText('на складе Алматы'); // вернулась на склад отправления
++    await expect(card.equipmentTransfer(eq.id)).toHaveCount(0);
++    await card.equipmentDelete(eq.id).click();
++    await card.confirmUiDialog();
++    await expect(card.equipmentRows).toHaveCount(0);
+   });
+ 
+-  test('EW-003 (TS-006): склад по умолчанию строки товара — склад оборудования услуги', async ({ adminPage: page, adminApi, uniq }) => {
++  test('EW-003 (DS-046, D58): склад по умолчанию строки товара — склад единицы оборудования услуги', async ({ adminPage: page, adminApi, uniq }) => {
+     const { moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW003');
+     const eq = equipment[0];
+     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('EW-003 категория товаров') });
+@@ -145,7 +181,7 @@ test.describe('EW: склад оборудования заказа', () => {
+     await expect(card.productWarehouse(productRowId)).toContainText('Москва');
+   });
+ 
+-  test('EW-004 (TS-013): доска — фильтр «Склад» (на складе/едет на склад) и бейдж «в пути»; фильтр в URL переживает reload', async ({
++  test('EW-004 (TS-044): доска — фильтр «Склад» (на складе / едет на склад) и бейдж «в пути» по документу; после приёмки бейджа нет', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+@@ -157,19 +193,25 @@ test.describe('EW: склад оборудования заказа', () => {
+     const atAlmaty = await adminApi.createTask({ title: uniq('EW-004 в Алматы'), client_id: client.id, column_id: col });
+     await adminApi.addTaskEquipment(atMoscow.id, equipment[0].id, moscow.id);
+     await adminApi.addTaskEquipment(toMoscow.id, equipment[1].id, almaty.id);
+-    await adminApi.taskEquipmentAction(toMoscow.id, equipment[1].id, 'send', moscow.id);
+     await adminApi.addTaskEquipment(atAlmaty.id, equipment[2].id, almaty.id);
++    // документ с единицей заказа отправлен.
++    const doc = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ kind: 'equipment', equipment_id: equipment[1].id }],
++    });
+ 
+     const board = new BoardPage(page);
+     await board.goto(`?client_id=${client.id}`);
+     await expect(board.card(atAlmaty.id)).toBeVisible();
+     await expect(board.inTransitBadge(toMoscow.id)).toBeVisible();
+     await expect(board.inTransitBadge(atMoscow.id)).toHaveCount(0);
++    await expect(board.inTransitBadge(atAlmaty.id)).toHaveCount(0);
+ 
++    // под фильтром склада назначения виден и заказ с единицей в пути.
+     await board.chooseCombobox(board.filterWarehouse, 'Москва');
+     await expect(page).toHaveURL(new RegExp(`warehouse_id=${moscow.id}`));
+     await expect(board.card(atMoscow.id)).toBeVisible();
+     await expect(board.card(toMoscow.id)).toBeVisible();
++    await expect(board.inTransitBadge(toMoscow.id)).toBeVisible();
+     await expect(board.card(atAlmaty.id)).toHaveCount(0);
+ 
+     await page.reload();
+@@ -177,57 +219,131 @@ test.describe('EW: склад оборудования заказа', () => {
+     await expect(board.card(atAlmaty.id)).toHaveCount(0);
+     await expect(board.filterWarehouse).toContainText('Москва');
+ 
++    // под складом отправления единицы в пути уже нет.
+     await board.chooseCombobox(board.filterWarehouse, 'Алматы');
+     await expect(board.card(atAlmaty.id)).toBeVisible();
+     await expect(board.card(toMoscow.id)).toHaveCount(0);
+ 
++    // негатив: после приёмки документа бейджа «в пути» нет, заказ — под складом назначения.
++    await adminApi.transferAction(doc.id, 'receive');
++    await board.chooseCombobox(board.filterWarehouse, 'Москва');
++    await expect(board.card(toMoscow.id)).toBeVisible();
++    await expect(board.inTransitBadge(toMoscow.id)).toHaveCount(0);
++    expect((await adminApi.getTask(toMoscow.id)).has_in_transit).toBe(false);
++
+     await board.filterReset.click();
+     await expect(page).not.toHaveURL(/warehouse_id=/);
+     await expect(board.card(atMoscow.id)).toBeVisible();
+     await expect(board.card(atAlmaty.id)).toBeVisible();
++    await expect(board.inTransitBadge(toMoscow.id)).toHaveCount(0);
+   });
+ 
+-  test('EW-005 (TS-014): executor отправляет и принимает оборудование своего заказа', async ({
+-    page,
+-    adminApi,
+-    uniq,
+-    makeUser,
+-    loginAs,
+-  }) => {
+-    const { almaty, client, equipment, columns } = await setup(adminApi, uniq, 'EW005');
++  test('EW-005 (TS-027): «Склад приёма» не двигает единицу, уже лежащую на другом складе', async ({ adminPage: page, adminApi, uniq }) => {
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW005');
+     const eq = equipment[0];
+-    const exec = await makeUser({ login: uniq('ew005-exec'), name: uniq('EW-005 Исполнитель') });
+-    const task = await adminApi.createTask({
+-      title: uniq('EW-005 заказ'),
+-      client_id: client.id,
+-      column_id: columnByName(columns, 'Новые').id,
+-      assignee_id: exec.id,
+-    });
+-    await adminApi.addTaskEquipment(task.id, eq.id, almaty.id);
++    const col = columnByName(columns, 'Новые').id;
++    const first = await adminApi.createTask({ title: uniq('EW-005 первый заказ'), client_id: client.id, column_id: col });
++    const second = await adminApi.createTask({ title: uniq('EW-005 второй заказ'), client_id: client.id, column_id: col });
++    await adminApi.addTaskEquipment(first.id, eq.id, moscow.id);
+ 
+-    await loginAs(page, exec.login, exec.password);
+     const board = new BoardPage(page);
+     const card = new OrderCardPage(page);
+     await board.goto(`?client_id=${client.id}`);
+-    await board.openTaskEdit(task.id);
++    await board.openTaskEdit(second.id);
+     await card.waitOpen();
+-
+-    await card.sendEquipment(eq.id, 'Москва');
+-    await expect(card.equipmentLocation(eq.id)).toHaveText('В пути: Алматы → Москва');
+-    await card.equipmentReceive(eq.id).click();
+-    await expect(card.equipmentLocation(eq.id)).toHaveText('На складе: Москва');
+-    await expect(card.equipmentMovements(eq.id).nth(2)).toContainText(exec.name);
++    await card.chooseCombobox(card.equipmentWarehouse, 'Алматы');
++    await card.chooseCombobox(card.equipmentAdd, eq.model);
++    await expect(card.equipmentRows).toHaveCount(1);
++    await expect(card.equipmentLocation(eq.id)).toHaveText('на складе Москва'); // прежнее местоположение
++    expect(cardUnit(await adminApi.getCard(second.id), eq.id).warehouse_id).toBe(moscow.id);
++    expect(cardUnit(await adminApi.getCard(first.id), eq.id).warehouse_id).not.toBe(almaty.id);
+   });
+ 
+-  test('EW-006: история оборудования — склад единицы в каждом заказе', async ({ adminPage: page, adminApi, uniq }) => {
++  test('EW-006 (DS-046): история оборудования — текущее местоположение и список документов единицы', async ({ adminPage: page, adminApi, uniq }) => {
+     const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW006');
+     const eq = equipment[0];
++
++    await page.goto(`/equipment/${eq.id}/history`);
++    await expect(page.getByTestId('history-location')).toHaveText('у клиента');
++    await expect(page.getByTestId('history-transfers')).toHaveCount(0);
++
+     const task = await adminApi.createTask({ title: uniq('EW-006 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
+     await adminApi.addTaskEquipment(task.id, eq.id, almaty.id);
+-    await adminApi.taskEquipmentAction(task.id, eq.id, 'send', moscow.id);
++    const doc = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ kind: 'equipment', equipment_id: eq.id }],
++    });
+ 
+-    await page.goto(`/equipment/${eq.id}/history`);
+-    const order = page.locator(`[data-testid="history-order"][data-task-id="${task.id}"]`);
+-    await expect(order.getByTestId('history-order-location')).toHaveText('В пути: Алматы → Москва');
++    await page.reload();
++    await expect(page.getByTestId('history-location')).toHaveText('в пути → Москва');
++    await expect(page.getByTestId('history-active-transfer')).toHaveText(`перемещение #${doc.id}`);
++    const row = page.locator(`[data-testid="history-transfer"][data-transfer-id="${doc.id}"]`);
++    await expect(row).toContainText('Алматы → Москва');
++    await expect(row.getByTestId('history-transfer-status')).toHaveText('В пути');
++    await expect(row.getByTestId('history-transfer-date')).toHaveText(/^\d{2}\.\d{2}\.\d{4}$/);
++    // склада единицы «в каждом заказе» больше нет.
++    await expect(page.locator(`[data-testid="history-order"][data-task-id="${task.id}"]`).getByTestId('history-order-location')).toHaveCount(0);
++
++    await adminApi.transferAction(doc.id, 'receive');
++    await page.reload();
++    await expect(page.getByTestId('history-location')).toHaveText('на складе Москва');
++    await expect(page.getByTestId('history-active-transfer')).toHaveCount(0);
++    await expect(row.getByTestId('history-transfer-status')).toHaveText('Получено');
++
++    await row.getByTestId('history-transfer-link').click();
++    await expect(page).toHaveURL(new RegExp(`/transfers\\?id=${doc.id}$`));
++    await expect(new TransfersPage(page).cardStatus).toHaveText('Получено');
++  });
++
++  test('EW-007 (TS-045, TS-046): карточка заказа 375×812 в светлой и тёмной теме — без горизонтальной прокрутки, бейджи местоположения читаемы', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW007', 3);
++    const [atClient, atWarehouse, inTransit] = equipment;
++    const colId = columnByName(columns, 'Новые').id;
++    const task = await adminApi.createTask({ title: uniq('EW-007 заказ'), client_id: client.id, column_id: colId });
++    await adminApi.addTaskEquipment(task.id, atWarehouse.id, almaty.id);
++    await adminApi.addTaskEquipment(task.id, inTransit.id, almaty.id);
++    await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ kind: 'equipment', equipment_id: inTransit.id }],
++    });
++
++    await page.setViewportSize({ width: 375, height: 812 });
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    for (const theme of THEMES) {
++      // последний зарегистрированный init-скрипт задаёт тему (эталон — polish.spec.ts).
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      const where = `карточка заказа ${theme} 375×812`;
++      await board.goto(`?client_id=${client.id}&task=${task.id}`);
++      await card.waitOpen();
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      await expect(card.equipmentLocation(atWarehouse.id)).toHaveText('на складе Алматы');
++      await expect(card.equipmentLocation(inTransit.id)).toHaveText('в пути → Москва');
++
++      // TS-045: нет горизонтальной прокрутки страницы с открытой карточкой.
++      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
++      expect(overflow, `${where}: горизонтальная прокрутка`).toBeLessThanOrEqual(0);
++
++      // TS-046: бейджи местоположения и «перемещение #N» читаемы.
++      for (const [id, label] of [[atWarehouse.id, 'на складе'], [inTransit.id, 'в пути']] as const) {
++        expect(await contrastOf(card.equipmentLocation(id)), `${where}: бейдж «${label}»`).toBeGreaterThanOrEqual(3);
++      }
++      expect(await contrastOf(card.equipmentTransfer(inTransit.id)), `${where}: «перемещение #N»`).toBeGreaterThanOrEqual(3);
++    }
++
++    // бейдж «у клиента»: местоположение единицы видно на странице истории (в заказ единица
++    // «у клиента» через API не попадает — добавление принимает её на склад).
++    for (const theme of THEMES) {
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      await page.goto(`/equipment/${atClient.id}/history`);
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      const badge = page.getByTestId('history-location');
++      await expect(badge).toHaveText('у клиента');
++      expect(await contrastOf(badge), `история ${theme}: бейдж «у клиента»`).toBeGreaterThanOrEqual(3);
++      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
++      expect(overflow, `история ${theme} 375×812: горизонтальная прокрутка`).toBeLessThanOrEqual(0);
++    }
+   });
+ });
+diff --git a/e2e/tests/order-card.spec.ts b/e2e/tests/order-card.spec.ts
+index 28e32ae..fa20072 100644
+--- a/e2e/tests/order-card.spec.ts
++++ b/e2e/tests/order-card.spec.ts
+@@ -195,9 +195,10 @@ test.describe('OC: оборудование заказа', () => {
+ 
+     await card.chooseCombobox(card.equipmentAdd, 'BrandOC006');
+     await expect(card.equipmentRows).toHaveCount(1);
+-    // warehouses DS-008: склад приёма по умолчанию — первый активный склад.
++    // transfers-core DS-008: склад приёма по умолчанию — первый активный склад; местоположение
++    // пишется на саму единицу («у клиента» → «на складе X»).
+     const defaultWh = await adminApi.defaultWarehouse();
+-    await expect(card.equipmentLocation(eq.id)).toHaveText(`На складе: ${defaultWh.name}`);
++    await expect(card.equipmentLocation(eq.id)).toHaveText(`на складе ${defaultWh.name}`);
+ 
+     await card.equipmentCompleteness(eq.id).fill('Полный комплект');
+     await card.equipmentCompleteness(eq.id).blur();
+diff --git a/e2e/tests/stock-transfers.spec.ts b/e2e/tests/stock-transfers.spec.ts
+deleted file mode 100644
+index 7cf7677..0000000
+--- a/e2e/tests/stock-transfers.spec.ts
++++ /dev/null
+@@ -1,237 +0,0 @@
+-import { test, expect } from '../fixtures/board';
+-import { StockTransfersPage } from '../pages/StockTransfersPage';
+-import { StockPage } from '../pages/StockPage';
+-import { ShellPage } from '../pages/ShellPage';
+-import type { AdminApi } from '../fixtures/auth';
+-
+-// Перемещения товаров между складами — подфаза B (docs/features/warehouses/draft-spec.md
+-// DS-006/DS-007/DS-010, TS-007 «В пути», TS-008, TS-009, TS-010, TS-014). Общая dev-БД
+-// (§TD-6.2): свои товары через uniq()+adminApi, склады — сид «Алматы»/«Москва».
+-test.use({ colorScheme: 'light' });
+-
+-function csrfToken(page: import('@playwright/test').Page): Promise<string> {
+-  return page.locator('meta[name="csrf-token"]').getAttribute('content').then((v) => v ?? '');
+-}
+-
+-async function pairStock(adminApi: AdminApi, productName: string, warehouseId: string): Promise<number> {
+-  const list = await adminApi.getStock({ q: productName, scope: 'all' });
+-  const cell = list.items[0]?.by_warehouse.find((c) => c.warehouse_id === warehouseId);
+-  return Number(cell?.stock ?? NaN);
+-}
+-
+-async function newProduct(adminApi: AdminApi, uniq: (s: string) => string, label: string, stock: number) {
+-  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${label} категория`) });
+-  return adminApi.createProduct({ category_id: cat.id, name: uniq(`${label} товар`), stock }); // остаток — на «Алматы»
+-}
+-
+-test.describe('ST: перемещения товаров', () => {
+-  test('ST-001 (TS-008, TS-007): заявка → правка строк → отправка («В пути») → приёмка с недостачей', async ({
+-    adminPage: page,
+-    adminApi,
+-    uniq,
+-  }) => {
+-    const almaty = await adminApi.warehouseByName('Алматы');
+-    const moscow = await adminApi.warehouseByName('Москва');
+-    const p1 = await newProduct(adminApi, uniq, 'ST-001 a', 10);
+-    const p2 = await newProduct(adminApi, uniq, 'ST-001 b', 1);
+-
+-    const shell = new ShellPage(page);
+-    await shell.goto('/');
+-    await shell.navLink('Перемещения').click();
+-    await expect(page).toHaveURL(/\/stock-transfers$/);
+-
+-    const st = new StockTransfersPage(page);
+-    await st.newBtn.click();
+-    await expect(st.cardTitle).toHaveText('Новое перемещение');
+-    await st.choose(st.from, 'Алматы');
+-    await st.choose(st.to, 'Москва');
+-    await st.note.fill('ST-001 под заказ');
+-    await st.setItem(0, p1.name, 4);
+-    await st.itemAdd.click();
+-    await st.setItem(1, p2.name, 2);
+-    await st.save.click();
+-
+-    await expect(st.cardTitle).toHaveText(/Перемещение #\d+/);
+-    await expect(st.cardStatus).toHaveText('Заявка');
+-    const id = await st.currentId();
+-    await expect(page).toHaveURL(new RegExp(`id=${id}`));
+-    await expect(st.row(id)).toBeVisible();
+-    expect(await pairStock(adminApi, p1.name, almaty.id)).toBe(10); // заявка не двигает остатки
+-
+-    // правка строки заявки.
+-    await st.itemQtys.nth(0).fill('6');
+-    await st.save.click();
+-    await expect.poll(async () => Number((await adminApi.getStockTransfer(id)).items[0].qty_sent)).toBe(6);
+-    await expect(st.cardStatus).toHaveText('Заявка');
+-
+-    // отправка: минус на источнике; p2 уходит в минус — предупреждение.
+-    await st.send.click();
+-    await expect(st.cardStatus).toHaveText('В пути');
+-    await expect(st.warnings).toContainText(p2.name);
+-    await expect(st.warnings).toContainText('отрицательный');
+-    await expect(st.viewItem(p1.id).getByTestId('st-view-sent')).toHaveText('6');
+-    expect(await pairStock(adminApi, p1.name, almaty.id)).toBe(4);
+-    expect(await pairStock(adminApi, p2.name, almaty.id)).toBe(-1);
+-
+-    // «В пути» на экране «Остатки» (TS-007): все склады и фильтр склада-получателя.
+-    const stock = new StockPage(page);
+-    await stock.goto();
+-    await stock.chooseScope('Все товары');
+-    await stock.q.fill(p1.name);
+-    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('6');
+-    await stock.chooseWarehouse('Москва');
+-    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('6');
+-    await stock.chooseWarehouse('Алматы');
+-    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('0');
+-
+-    // приёмка по факту: p1 — 5 из 6, p2 — по умолчанию = отправлено.
+-    await st.goto(id);
+-    await st.receive.click();
+-    await expect(st.receiveModal).toBeVisible();
+-    await expect(st.receiveQty(p2.id)).toHaveValue('2');
+-    await st.receiveQty(p1.id).fill('5');
+-    await st.receiveConfirm.click();
+-    await expect(st.receiveModal).toBeHidden();
+-    await expect(st.cardStatus).toHaveText('Принято');
+-    await expect(st.viewItem(p1.id).getByTestId('st-view-received')).toHaveText('5');
+-    await expect(st.viewItem(p1.id).getByTestId('st-view-received')).toHaveClass(/text-danger/);
+-    await expect(st.viewItem(p2.id).getByTestId('st-view-received')).toHaveText('2');
+-    await expect(st.receive).toHaveCount(0);
+-    await expect(st.cancel).toHaveCount(0);
+-
+-    expect(await pairStock(adminApi, p1.name, moscow.id)).toBe(5);
+-    expect(await pairStock(adminApi, p2.name, moscow.id)).toBe(2);
+-    const after = await adminApi.getStock({ q: p1.name, scope: 'all' });
+-    expect(Number(after.items[0].in_transit)).toBe(0);
+-  });
+-
+-  test('ST-002 (TS-009): отмена в пути — возврат на источник; отмена заявки; from = to → ошибка', async ({
+-    adminPage: page,
+-    adminApi,
+-    uniq,
+-    allowHttpErrors,
+-  }) => {
+-    allowHttpErrors((url, status) => url.includes('/api/v1/stock-transfers') && status === 400);
+-    const almaty = await adminApi.warehouseByName('Алматы');
+-    const moscow = await adminApi.warehouseByName('Москва');
+-    const p = await newProduct(adminApi, uniq, 'ST-002', 10);
+-    const sent = await adminApi.createStockTransfer({
+-      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ product_id: p.id, qty_sent: 3 }],
+-    });
+-    const req = await adminApi.createStockTransfer({
+-      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ product_id: p.id, qty_sent: 1 }],
+-    });
+-    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(7);
+-
+-    const st = new StockTransfersPage(page);
+-    await st.goto(sent.id);
+-    await expect(st.cardStatus).toHaveText('В пути');
+-
+-    // «Назад» в диалоге — ничего не происходит.
+-    await st.cancel.click();
+-    await expect(page.getByTestId('ui-dialog-text')).toContainText('вернутся на склад «Алматы»');
+-    await page.getByTestId('ui-dialog-cancel').click();
+-    await expect(page.getByTestId('ui-dialog')).toHaveCount(0);
+-    await expect(st.cardStatus).toHaveText('В пути');
+-
+-    await st.cancel.click();
+-    await page.getByTestId('ui-dialog-ok').click();
+-    await expect(st.cardStatus).toHaveText('Отменено');
+-    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(10);
+-    expect((await adminApi.getStockTransfer(sent.id)).status).toBe('cancelled');
+-
+-    // отмена заявки — без движений.
+-    await st.row(req.id).click();
+-    await expect(st.cardTitle).toHaveText(`Перемещение #${req.id}`);
+-    await st.cancel.click();
+-    await page.getByTestId('ui-dialog-ok').click();
+-    await expect(st.cardStatus).toHaveText('Отменено');
+-    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(10);
+-
+-    // from = to → ошибка под формой.
+-    await st.newBtn.click();
+-    await st.choose(st.from, 'Алматы');
+-    await st.choose(st.to, 'Алматы');
+-    await st.setItem(0, p.name, 1);
+-    await st.save.click();
+-    await expect(st.error).toContainText('совпадает с источником');
+-  });
+-
+-  test('ST-003 (TS-010): устаревшая карточка — 409, показано актуальное состояние', async ({
+-    adminPage: page,
+-    adminApi,
+-    uniq,
+-    allowHttpErrors,
+-  }) => {
+-    allowHttpErrors((url, status) => url.includes('/api/v1/stock-transfers') && status === 409);
+-    const almaty = await adminApi.warehouseByName('Алматы');
+-    const moscow = await adminApi.warehouseByName('Москва');
+-    const p = await newProduct(adminApi, uniq, 'ST-003', 5);
+-    const req = await adminApi.createStockTransfer({
+-      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ product_id: p.id, qty_sent: 2 }],
+-    });
+-
+-    const st = new StockTransfersPage(page);
+-    await st.goto(req.id);
+-    await expect(st.cardStatus).toHaveText('Заявка');
+-
+-    // пока карточка открыта, перемещение отправили в другом месте.
+-    await adminApi.stockTransferAction(req.id, 'send');
+-
+-    await st.send.click();
+-    await expect(st.error).toContainText('обновите страницу');
+-    await expect(st.cardStatus).toHaveText('В пути');
+-    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(3); // списано один раз
+-  });
+-
+-  test('ST-004: фильтр списка по статусу', async ({ adminPage: page, adminApi, uniq }) => {
+-    const almaty = await adminApi.warehouseByName('Алматы');
+-    const moscow = await adminApi.warehouseByName('Москва');
+-    const p = await newProduct(adminApi, uniq, 'ST-004', 5);
+-    const inTransit = await adminApi.createStockTransfer({
+-      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ product_id: p.id, qty_sent: 1 }],
+-    });
+-    const req = await adminApi.createStockTransfer({
+-      from_warehouse_id: moscow.id, to_warehouse_id: almaty.id, items: [{ product_id: p.id, qty_sent: 1 }],
+-    });
+-
+-    const st = new StockTransfersPage(page);
+-    await st.goto();
+-    await expect(st.row(inTransit.id)).toBeVisible();
+-    await expect(st.row(req.id)).toBeVisible();
+-    await st.chooseStatusFilter('В пути');
+-    await expect(st.row(req.id)).toHaveCount(0);
+-    await expect(st.row(inTransit.id)).toBeVisible();
+-    await expect(st.row(inTransit.id).getByTestId('st-status-badge')).toHaveText('В пути');
+-  });
+-
+-  test('ST-005 (TS-014): executor не видит «Перемещения» — нет пункта меню, страница и API 403', async ({
+-    page,
+-    uniq,
+-    makeUser,
+-    loginAs,
+-    allowHttpErrors,
+-  }) => {
+-    const login = uniq('exec-st005');
+-    const user = await makeUser({ login });
+-    await loginAs(page, login, user.password);
+-
+-    const shell = new ShellPage(page);
+-    await shell.goto('/');
+-    await expect(shell.navLink('Остатки')).toBeVisible();
+-    await expect(shell.navLink('Перемещения')).toHaveCount(0);
+-
+-    allowHttpErrors((url, status) => (url.endsWith('/stock-transfers') || url.includes('/api/v1/stock-transfers')) && status === 403);
+-    const resp = await page.goto('/stock-transfers');
+-    expect(resp?.status()).toBe(403);
+-
+-    const api = await page.request.get('/api/v1/stock-transfers', { failOnStatusCode: false });
+-    expect(api.status()).toBe(403);
+-    const post = await page.request.post('/api/v1/stock-transfers', {
+-      data: { from_warehouse_id: '', to_warehouse_id: '', items: [] },
+-      headers: { 'X-Csrf-Token': await csrfToken(page) },
+-      failOnStatusCode: false,
+-    });
+-    expect(post.status()).toBe(403);
+-  });
+-});
+diff --git a/e2e/tests/transfers.spec.ts b/e2e/tests/transfers.spec.ts
+new file mode 100644
+index 0000000..5d60158
+--- /dev/null
++++ b/e2e/tests/transfers.spec.ts
+@@ -0,0 +1,579 @@
++import type { Page } from '@playwright/test';
++import { test, expect, columnByName } from '../fixtures/board';
++import { TransfersPage } from '../pages/TransfersPage';
++import { StockPage } from '../pages/StockPage';
++import { ShellPage } from '../pages/ShellPage';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { loginContext, type AdminApi, type NewTransfer, type Transfer } from '../fixtures/auth';
++import { contrastOf } from '../fixtures/contrast';
++
++// Экран «Перемещения» /transfers — документ «склад → склад» со смешанными строками: товары и
++// единицы оборудования клиентов (docs/features/transfers-core/draft-spec.md §8.1; TS-031,
++// TS-043, TS-045, TS-046 + UI-части TS-005, TS-006, TS-009). Общая dev-БД (§TD-6.2): свои
++// товары, клиенты, оборудование и заказы через uniq()+adminApi, склады — сид «Алматы»/«Москва».
++test.use({ colorScheme: 'light' });
++
++const THEMES = ['light', 'dark'] as const;
++
++function csrfToken(page: Page): Promise<string> {
++  return page.locator('meta[name="csrf-token"]').getAttribute('content').then((v) => v ?? '');
++}
++
++async function pairStock(adminApi: AdminApi, productName: string, warehouseId: string): Promise<number> {
++  const list = await adminApi.getStock({ q: productName, scope: 'all' });
++  const cell = list.items[0]?.by_warehouse.find((c) => c.warehouse_id === warehouseId);
++  return Number(cell?.stock ?? NaN);
++}
++
++async function newProduct(adminApi: AdminApi, uniq: (s: string) => string, label: string, stock: number) {
++  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${label} категория`) });
++  return adminApi.createProduct({ category_id: cat.id, name: uniq(`${label} товар`), stock }); // остаток — на «Алматы»
++}
++
++/** Клиент + заказ + единицы оборудования, принятые на «Алматы» добавлением в заказ (DS-008). */
++async function unitsAtAlmaty(adminApi: AdminApi, uniq: (s: string) => string, tag: string, count = 1) {
++  const almaty = await adminApi.warehouseByName('Алматы');
++  const moscow = await adminApi.warehouseByName('Москва');
++  const client = await adminApi.createClient({ company_name: uniq(`${tag} клиент`), phones: [{ phone: '9990000401', note: '' }] });
++  const type = await adminApi.createEquipmentType({ name: uniq(`${tag} тип`) });
++  const columns = (await adminApi.listColumns()).items;
++  const task = await adminApi.createTask({ title: uniq(`${tag} заказ`), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++  const units = [];
++  for (let i = 0; i < count; i++) {
++    const eq = await adminApi.createEquipment(client.id, {
++      type_id: type.id, brand: `Brand${tag}`, model: uniq(`${tag} модель ${i}`), serial: uniq(`sn-${tag}-${i}`),
++    });
++    await adminApi.addTaskEquipment(task.id, eq.id, almaty.id);
++    units.push(eq);
++  }
++  return { almaty, moscow, client, task, units };
++}
++
++test.describe('TR: перемещения — документ склад → склад', () => {
++  test('TR-001 (TS-031): товар + оборудование клиента — отправка, приёмка с фактом меньше отправленного; в карточке заказа единица «на складе Москва»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    // негатив сценария: факт больше отправленного → POST …/receive → 400.
++    allowHttpErrors((url, status) => /\/api\/v1\/transfers\/\d+\/receive$/.test(url) && status === 400);
++    const { almaty, moscow, client, task, units } = await unitsAtAlmaty(adminApi, uniq, 'TR001');
++    const unit = units[0];
++    const product = await newProduct(adminApi, uniq, 'TR-001', 10);
++
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await shell.navLink('Перемещения').click();
++    await expect(page).toHaveURL(/\/transfers$/);
++
++    const tr = new TransfersPage(page);
++    await tr.newBtn.click();
++    await expect(tr.cardTitle).toHaveText('Новое перемещение');
++    // «+ Оборудование» недоступно, пока не выбран склад отправления.
++    await expect(tr.equipmentSearch).toBeDisabled();
++    await expect(tr.equipmentHint).toHaveText('Сначала выберите склад отправления');
++    await tr.choose(tr.from, 'Алматы');
++    await tr.choose(tr.to, 'Москва');
++    await expect(tr.equipmentSearch).toBeEnabled();
++    await tr.note.fill('TR-001 принтер на диагностику + расходники');
++
++    await tr.addProductRow(product.name, product.id, 4);
++    await tr.addEquipmentRow(unit.serial, unit.id);
++    await expect(tr.itemRows).toHaveCount(2);
++    await expect(tr.itemRow('equipment', unit.id).getByTestId('st-item-kind')).toHaveText('оборудование');
++    await expect(tr.itemRow('equipment', unit.id)).toContainText(unit.model);
++    await expect(tr.itemRow('equipment', unit.id)).toContainText(client.company_name);
++    await expect(tr.itemRow('equipment', unit.id).getByTestId('st-item-qty')).toHaveCount(0); // количества у единицы нет
++    await expect(tr.itemRow('product', product.id).getByTestId('st-item-kind')).toHaveText('товар');
++
++    // «Отправить» нового документа — создать и отправить одним действием.
++    await tr.send.click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    const id = await tr.currentId();
++    await expect(page).toHaveURL(new RegExp(`id=${id}`));
++    await expect(tr.row(id).getByTestId('st-status-badge')).toHaveText('В пути');
++    await expect(tr.row(id).getByTestId('st-row-count')).toHaveText('2');
++    await expect(tr.viewItem('product', product.id).getByTestId('st-view-sent')).toHaveText('4');
++    await expect(tr.save).toHaveCount(0);
++    await expect(tr.cancel).toHaveText('Отменить отправку');
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(6);
++
++    const sent = await adminApi.getTransfer(id);
++    expect(sent.status).toBe('in_transit');
++    const productLine = sent.items.find((i) => i.kind === 'product')!;
++    expect(sent.items.find((i) => i.kind === 'equipment')?.equipment_id).toBe(unit.id);
++    let card = await adminApi.getCard(task.id);
++    expect(card.equipment[0]).toMatchObject({ location_status: 'in_transit', active_transfer_id: id, transit_to_name: 'Москва', warehouse_id: null });
++
++    // «Принять»: факт — только по товару; единица — «принимается целиком».
++    await tr.receive.click();
++    await expect(tr.receiveModal).toBeVisible();
++    await expect(tr.receiveRows).toHaveCount(2);
++    await expect(tr.receiveRows.filter({ hasText: unit.model }).getByTestId('st-receive-whole')).toHaveText('принимается целиком');
++    await expect(tr.receiveRows.filter({ hasText: unit.model }).getByTestId('st-receive-qty')).toHaveCount(0);
++    await expect(tr.receiveQty(productLine.id)).toHaveValue('4');
++
++    // негатив: факт больше отправленного.
++    await tr.receiveQty(productLine.id).fill('5');
++    await tr.receiveConfirm.click();
++    await expect(tr.receiveQtyError(productLine.id)).toHaveText('Факт больше отправленного');
++    await expect(tr.receiveModal).toBeVisible();
++    expect((await adminApi.getTransfer(id)).status).toBe('in_transit');
++
++    await tr.receiveQty(productLine.id).fill('3');
++    await tr.receiveConfirm.click();
++    await expect(tr.receiveModal).toBeHidden();
++    await expect(tr.cardStatus).toHaveText('Получено');
++    const fact = tr.viewItem('product', product.id).getByTestId('st-view-received');
++    await expect(fact).toHaveText('3');
++    await expect(fact).toHaveAttribute('data-loss', 'true'); // расхождение подсвечено
++    await expect(fact).toHaveClass(/text-danger/);
++    await expect(tr.receive).toHaveCount(0);
++    await expect(tr.cancel).toHaveCount(0);
++    await expect(tr.cardMeta).toContainText('Получен: ');
++    expect(await pairStock(adminApi, product.name, moscow.id)).toBe(3);
++
++    // карточка заказа: единица «на складе Москва», документа за ней больше нет.
++    card = await adminApi.getCard(task.id);
++    expect(card.equipment[0]).toMatchObject({ location_status: 'at_warehouse', warehouse_id: moscow.id, active_transfer_id: null, transit_to_name: null });
++    const board = new BoardPage(page);
++    const orderCard = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await orderCard.waitOpen();
++    await expect(orderCard.equipmentLocation(unit.id)).toHaveText('на складе Москва');
++    await expect(orderCard.equipmentTransfer(unit.id)).toHaveCount(0);
++  });
++
++  test('TR-002: товарный документ — заявка → правка строк → отправка («В пути» на остатках, предупреждение) → приёмка', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p1 = await newProduct(adminApi, uniq, 'TR-002 a', 10);
++    const p2 = await newProduct(adminApi, uniq, 'TR-002 b', 1);
++
++    const tr = new TransfersPage(page);
++    await tr.goto();
++    await tr.newBtn.click();
++    await tr.choose(tr.from, 'Алматы');
++    await tr.choose(tr.to, 'Москва');
++    await tr.addProductRow(p1.name, p1.id, 4);
++    await tr.addProductRow(p2.name, p2.id, 2);
++    await tr.save.click();
++    await expect(tr.toast).toHaveText('Сохранено');
++    await expect(tr.cardStatus).toHaveText('Заявка');
++    const id = await tr.currentId();
++    await expect(page).toHaveURL(new RegExp(`id=${id}`));
++    await expect(tr.row(id)).toBeVisible();
++    expect(await pairStock(adminApi, p1.name, almaty.id)).toBe(10); // заявка не двигает остатки
++
++    // правка строки заявки.
++    await tr.itemQty(p1.id).fill('6');
++    await tr.save.click();
++    await expect.poll(async () => Number((await adminApi.getTransfer(id)).items[0].qty_sent)).toBe(6);
++
++    // отправка: минус на источнике; p2 уходит в минус — жёлтый блок предупреждений.
++    await tr.send.click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.warnings).toContainText(p2.name);
++    await expect(tr.warnings).toContainText('отрицательный');
++    expect(await pairStock(adminApi, p1.name, almaty.id)).toBe(4);
++    expect(await pairStock(adminApi, p2.name, almaty.id)).toBe(-1);
++
++    // «В пути» на экране «Остатки»: все склады и фильтр склада назначения.
++    const stock = new StockPage(page);
++    await stock.goto();
++    await stock.chooseScope('Все товары');
++    await stock.q.fill(p1.name);
++    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('6');
++    await stock.chooseWarehouse('Москва');
++    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('6');
++    await stock.chooseWarehouse('Алматы');
++    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('0');
++
++    // приёмка: факт по умолчанию = отправлено.
++    await tr.goto(id);
++    await tr.receive.click();
++    await expect(tr.receiveModal).toBeVisible();
++    await tr.receiveConfirm.click();
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.viewItem('product', p1.id).getByTestId('st-view-received')).toHaveText('6');
++    await expect(tr.viewItem('product', p1.id).getByTestId('st-view-received')).not.toHaveAttribute('data-loss', 'true');
++    expect(await pairStock(adminApi, p1.name, moscow.id)).toBe(6);
++    expect(Number((await adminApi.getStock({ q: p1.name, scope: 'all' })).items[0].in_transit)).toBe(0);
++  });
++
++  test('TR-003 (TS-009): отмена «в пути» — возврат на склад отправления; отмена заявки; склады совпадают → ошибка под полем', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.endsWith('/api/v1/transfers') && status === 400);
++    const { almaty, moscow, task, units } = await unitsAtAlmaty(adminApi, uniq, 'TR003');
++    const unit = units[0];
++    const p = await newProduct(adminApi, uniq, 'TR-003', 10);
++    const sent = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true,
++      items: [{ kind: 'product', product_id: p.id, qty_sent: 3 }, { kind: 'equipment', equipment_id: unit.id }],
++    } satisfies NewTransfer);
++    const req = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'product', product_id: p.id, qty_sent: 1 }],
++    });
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(7);
++
++    const tr = new TransfersPage(page);
++    await tr.goto(sent.id);
++    await expect(tr.cardStatus).toHaveText('В пути');
++
++    // «Отмена» в диалоге — ничего не происходит.
++    await tr.cancel.click();
++    await expect(page.getByTestId('ui-dialog-text')).toHaveText(`Отменить перемещение #${sent.id}?`);
++    await page.getByTestId('ui-dialog-cancel').click();
++    await expect(page.getByTestId('ui-dialog')).toHaveCount(0);
++    await expect(tr.cardStatus).toHaveText('В пути');
++
++    await tr.cancel.click();
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(tr.cardStatus).toHaveText('Отменён');
++    await expect(tr.cardMeta).toContainText('Отменён: ');
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(10);
++    expect((await adminApi.getTransfer(sent.id)).status).toBe('cancelled');
++    // единица вернулась на склад отправления и свободна.
++    expect((await adminApi.getCard(task.id)).equipment[0]).toMatchObject({
++      location_status: 'at_warehouse', warehouse_id: almaty.id, active_transfer_id: null,
++    });
++
++    // отмена заявки — без движений.
++    await tr.row(req.id).click();
++    await expect(tr.cardTitle).toHaveText(`Перемещение #${req.id}`);
++    await expect(tr.cancel).toHaveText('Отменить');
++    await tr.cancel.click();
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(tr.cardStatus).toHaveText('Отменён');
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(10);
++
++    // склады совпадают → ошибка под «Складом назначения», документ не создан.
++    await tr.newBtn.click();
++    await tr.choose(tr.from, 'Алматы');
++    await tr.choose(tr.to, 'Алматы');
++    await tr.addProductRow(p.name, p.id, 1);
++    await tr.save.click();
++    await expect(tr.toError).toHaveText('Склады должны различаться');
++    await expect(tr.cardTitle).toHaveText('Новое перемещение');
++  });
++
++  test('TR-004 (TS-043): два администратора открыли одну заявку — первый отправил, второй сохраняет → тост «Перемещение уже изменено, обновите», документ перечитан', async ({
++    adminPage: page,
++    adminApi,
++    runAdmin,
++    browser,
++    baseURL,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => /\/api\/v1\/transfers\/\d+$/.test(url) && status === 409);
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p = await newProduct(adminApi, uniq, 'TR-004', 5);
++    const req = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, note: 'TR-004 исходное примечание',
++      items: [{ kind: 'product', product_id: p.id, qty_sent: 2 }],
++    });
++
++    const other = await browser.newContext({ baseURL, locale: 'ru-RU' });
++    try {
++      await loginContext(other, runAdmin.login, runAdmin.password);
++      const first = new TransfersPage(await other.newPage());
++      const second = new TransfersPage(page);
++      // оба открыли одну и ту же версию заявки.
++      await first.goto(req.id);
++      await second.goto(req.id);
++      await expect(first.cardStatus).toHaveText('Заявка');
++      await expect(second.cardStatus).toHaveText('Заявка');
++
++      await first.send.click();
++      await expect(first.cardStatus).toHaveText('В пути');
++
++      // второй правит устаревшую заявку и сохраняет.
++      await second.note.fill('TR-004 правка второго');
++      await second.itemQty(p.id).fill('4');
++      await second.save.click();
++      await expect(second.toastError).toHaveText('Перемещение уже изменено, обновите');
++      await expect(second.cardStatus).toHaveText('В пути'); // документ перечитан
++      await expect(second.save).toHaveCount(0);
++      await expect(second.row(req.id).getByTestId('st-status-badge')).toHaveText('В пути');
++
++      // негатив: данные первого не затёрты.
++      const final: Transfer = await adminApi.getTransfer(req.id);
++      expect(final.status).toBe('in_transit');
++      expect(final.note).toBe('TR-004 исходное примечание');
++      expect(Number(final.items[0].qty_sent)).toBe(2);
++      expect(await pairStock(adminApi, p.name, almaty.id)).toBe(3); // списано один раз, 2 шт.
++    } finally {
++      await other.close();
++    }
++  });
++
++  test('TR-005 (TS-009): устаревший документ — «Отправить» уже отправленной заявки → тост, показано актуальное состояние', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/api/v1/transfers/') && status === 409);
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p = await newProduct(adminApi, uniq, 'TR-005', 5);
++    const req = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'product', product_id: p.id, qty_sent: 2 }],
++    });
++
++    const tr = new TransfersPage(page);
++    await tr.goto(req.id);
++    await expect(tr.cardStatus).toHaveText('Заявка');
++    await adminApi.transferAction(req.id, 'send'); // отправили в другом месте
++
++    await tr.send.click();
++    await expect(tr.toastError).toHaveText('Перемещение уже изменено, обновите');
++    await expect(tr.cardStatus).toHaveText('В пути');
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(3); // списано один раз
++  });
++
++  test('TR-006: фильтры списка — статус, склад, «Сбросить»; счётчик «N из total»', async ({ adminPage: page, adminApi, uniq }) => {
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p = await newProduct(adminApi, uniq, 'TR-006', 5);
++    const inTransit = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ kind: 'product', product_id: p.id, qty_sent: 1 }],
++    });
++    const req = await adminApi.createTransfer({
++      from_warehouse_id: moscow.id, to_warehouse_id: almaty.id, items: [{ kind: 'product', product_id: p.id, qty_sent: 1 }],
++    });
++
++    const tr = new TransfersPage(page);
++    await tr.goto();
++    await expect(tr.row(inTransit.id)).toBeVisible();
++    await expect(tr.row(req.id)).toBeVisible();
++    await expect(tr.shown).toHaveText(/^\d+ из \d+$/);
++    await expect(tr.placeholder).toHaveText('Выберите перемещение');
++
++    await tr.chooseStatusFilter('В пути');
++    await expect(tr.row(req.id)).toHaveCount(0);
++    await expect(tr.row(inTransit.id).getByTestId('st-status-badge')).toHaveText('В пути');
++    for (const badge of await tr.rows.getByTestId('st-status-badge').all()) {
++      await expect(badge).toHaveAttribute('data-status', 'in_transit');
++    }
++
++    await tr.choose(tr.filterWarehouse, 'Москва');
++    await expect(tr.row(inTransit.id)).toBeVisible(); // склад — отправитель ИЛИ получатель
++
++    await tr.filterReset.click();
++    await expect(tr.row(req.id)).toBeVisible();
++    await expect(tr.row(inTransit.id)).toBeVisible();
++    await expect(tr.filterStatus).toContainText('Все статусы');
++    await expect(tr.filterWarehouse).toContainText('Все склады');
++  });
++
++  test('TR-007 (abuse 1): исполнитель не видит «Перемещения» — нет пункта меню, страница и API 403; старый адрес /stock-transfers — 404', async ({
++    page,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const login = uniq('exec-tr007');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await expect(shell.navLink('Остатки')).toBeVisible();
++    await expect(shell.navLink('Перемещения')).toHaveCount(0);
++
++    allowHttpErrors((url, status) => (url.endsWith('/transfers') || url.includes('/api/v1/transfers')) && status === 403);
++    allowHttpErrors((url, status) => url.includes('/stock-transfers') && status === 404);
++    const resp = await page.goto('/transfers');
++    expect(resp?.status()).toBe(403);
++    await expect(page.getByTestId('st-root')).toHaveCount(0); // экран не отрисован
++
++    const api = await page.request.get('/api/v1/transfers', { failOnStatusCode: false });
++    expect(api.status()).toBe(403);
++    const post = await page.request.post('/api/v1/transfers', {
++      data: { from_warehouse_id: '', to_warehouse_id: '', items: [] },
++      headers: { 'X-Csrf-Token': await csrfToken(page) },
++      failOnStatusCode: false,
++    });
++    expect(post.status()).toBe(403);
++
++    // DS-030: старые адреса убраны без редиректов.
++    expect((await page.request.get('/api/v1/stock-transfers', { failOnStatusCode: false })).status()).toBe(404);
++    expect((await page.goto('/stock-transfers'))?.status()).toBe(404);
++    // поиск единиц (§6.8) исполнителю доступен — чтение оборудования клиентов.
++    expect((await page.request.get('/api/v1/equipment?limit=1', { failOnStatusCode: false })).status()).toBe(200);
++  });
++
++  test('TR-008 (TS-005): единица, занятая другой заявкой, в поиске «+ Оборудование» неактивна с пометкой «в перемещении #N»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, moscow, units } = await unitsAtAlmaty(adminApi, uniq, 'TR008', 2);
++    const [busy, free] = units;
++    const holder = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'equipment', equipment_id: busy.id }],
++    });
++
++    const tr = new TransfersPage(page);
++    await tr.goto();
++    await tr.newBtn.click();
++    await tr.choose(tr.from, 'Алматы');
++    await tr.choose(tr.to, 'Москва');
++
++    await tr.equipmentSearch.fill('BrandTR008');
++    await expect(tr.equipmentOption(busy.id)).toBeVisible();
++    await expect(tr.equipmentOption(busy.id)).toBeDisabled();
++    await expect(tr.equipmentOption(busy.id).getByTestId('st-equipment-busy')).toHaveText(`в перемещении #${holder.id}`);
++    await expect(tr.equipmentOption(free.id)).toBeEnabled();
++
++    await tr.equipmentOption(free.id).click();
++    await expect(tr.itemRow('equipment', free.id)).toBeVisible();
++    await expect(tr.itemRow('equipment', busy.id)).toHaveCount(0);
++    await tr.save.click();
++    await expect(tr.cardStatus).toHaveText('Заявка');
++    const id = await tr.currentId();
++    const search = await adminApi.searchEquipment({ q: 'BrandTR008', warehouse_id: almaty.id, location_status: 'at_warehouse' });
++    expect(search.items.find((e) => e.id === free.id)?.active_transfer_id).toBe(id);
++    expect(search.items.find((e) => e.id === busy.id)?.active_transfer_id).toBe(holder.id);
++
++    // в своей заявке единица — не «занята»: повторно в поиске она помечена «уже в документе».
++    await tr.equipmentSearch.fill(free.serial);
++    await expect(tr.equipmentOption(free.id)).toBeDisabled();
++    await expect(tr.equipmentOption(free.id)).toContainText('уже в документе');
++  });
++
++  test('TR-009 (TS-006): отправка единицы не со склада отправления → красный текст в строке, документ остаётся заявкой', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => /\/api\/v1\/transfers\/\d+\/send$/.test(url) && status === 409);
++    const { almaty, moscow, task, units } = await unitsAtAlmaty(adminApi, uniq, 'TR009');
++    const unit = units[0];
++    const req = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'equipment', equipment_id: unit.id }],
++    });
++
++    const tr = new TransfersPage(page);
++    await tr.goto(req.id);
++    // маршрут развернули: единица числится на «Алматы», а склад отправления теперь «Москва».
++    await tr.choose(tr.to, 'Алматы');
++    await tr.choose(tr.from, 'Москва');
++    await tr.send.click();
++    await expect(tr.itemError('equipment', unit.id)).toHaveText('Оборудование находится не на складе отправления');
++    await expect(tr.cardStatus).toHaveText('Заявка');
++
++    const after = await adminApi.getTransfer(req.id);
++    expect(after.status).toBe('requested');
++    expect(after.from_warehouse_id).toBe(moscow.id); // правка сохранена, отправка — нет
++    expect((await adminApi.getCard(task.id)).equipment[0]).toMatchObject({
++      location_status: 'at_warehouse', warehouse_id: almaty.id, active_transfer_id: req.id,
++    });
++  });
++
++  test('TR-010 (TS-045): вьюпорт 375×812 — документ со строками обоих видов без горизонтальной прокрутки (заявка, в пути, приёмка)', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, moscow, units } = await unitsAtAlmaty(adminApi, uniq, 'TR010');
++    const p = await adminApi.createProduct({
++      category_id: (await adminApi.createCategory({ kind: 'product', name: uniq('TR-010 категория') })).id,
++      name: uniq(`TR-010 ${'оченьдлинноеназваниетоварабезпробелов'.repeat(2)}`),
++      stock: 1,
++    });
++    const doc = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, note: 'примечание '.repeat(30).trim(),
++      items: [{ kind: 'product', product_id: p.id, qty_sent: 3 }, { kind: 'equipment', equipment_id: units[0].id }],
++    });
++
++    await page.setViewportSize({ width: 375, height: 812 });
++    const tr = new TransfersPage(page);
++    await tr.goto();
++    await tr.expectNoHorizontalScroll(); // список
++    await tr.goto(doc.id);
++    await expect(tr.itemRows).toHaveCount(2);
++    await tr.expectNoHorizontalScroll(); // заявка (редактор)
++
++    await tr.send.click(); // остаток 1 − 3 → предупреждение
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.warnings).toBeVisible();
++    await tr.expectNoHorizontalScroll(); // в пути + жёлтый блок
++
++    await tr.receive.click();
++    await expect(tr.receiveModal).toBeVisible();
++    await tr.expectNoHorizontalScroll(); // модалка «Приёмка»
++    await tr.receiveConfirm.click();
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await tr.expectNoHorizontalScroll(); // получено (колонка «Факт»)
++  });
++
++  test('TR-011 (TS-046): светлая и тёмная тема — бейджи статусов читаемы, жёлтый блок предупреждений контрастен', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, moscow, units } = await unitsAtAlmaty(adminApi, uniq, 'TR011');
++    const p = await newProduct(adminApi, uniq, 'TR-011', 1);
++    const mk = (send: boolean, extra: NewTransfer['items'] = []) =>
++      adminApi.createTransfer({
++        from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send,
++        items: [{ kind: 'product', product_id: p.id, qty_sent: 2 }, ...extra],
++      });
++    const requested = await mk(false, [{ kind: 'equipment', equipment_id: units[0].id }]);
++    const cancelled = await mk(false);
++    await adminApi.transferAction(cancelled.id, 'cancel');
++    const received = await mk(true);
++    await adminApi.transferAction(received.id, 'receive', { items: [{ id: (await adminApi.getTransfer(received.id)).items[0].id, qty_received: 1 }] });
++
++    const tr = new TransfersPage(page);
++    for (const theme of THEMES) {
++      // последний зарегистрированный init-скрипт задаёт тему (эталон — polish.spec.ts).
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      const where = `/transfers ${theme}`;
++
++      // заявка со строками обоих видов → отправка из UI: жёлтый блок предупреждений.
++      const fresh = await mk(false);
++      await tr.goto(fresh.id);
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      expect(await contrastOf(tr.cardStatus), `${where}: бейдж «Заявка»`).toBeGreaterThanOrEqual(3);
++      await tr.send.click();
++      await expect(tr.cardStatus).toHaveText('В пути');
++      await expect(tr.warnings).toBeVisible();
++      expect(await contrastOf(tr.warnings), `${where}: блок предупреждений`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.cardStatus), `${where}: бейдж «В пути»`).toBeGreaterThanOrEqual(3);
++
++      for (const [doc, label] of [[requested, 'Заявка'], [received, 'Получено'], [cancelled, 'Отменён']] as const) {
++        await tr.goto(doc.id);
++        await expect(tr.cardStatus).toHaveText(label);
++        expect(await contrastOf(tr.cardStatus), `${where}: бейдж «${label}»`).toBeGreaterThanOrEqual(3);
++        expect(await contrastOf(tr.row(doc.id).getByTestId('st-status-badge')), `${where}: бейдж «${label}» в списке`).toBeGreaterThanOrEqual(3);
++      }
++      // строки документа: тип строки и подсветка расхождения.
++      await tr.goto(requested.id);
++      for (const kind of await tr.itemRows.getByTestId('st-item-kind').all()) {
++        expect(await contrastOf(kind), `${where}: бейдж типа строки`).toBeGreaterThanOrEqual(3);
++      }
++      await tr.goto(received.id);
++      const loss = tr.viewItem('product', p.id).getByTestId('st-view-received');
++      await expect(loss).toHaveAttribute('data-loss', 'true');
++      expect(await contrastOf(loss), `${where}: расхождение факта`).toBeGreaterThanOrEqual(3);
++    }
++  });
++});
+diff --git a/e2e/tests/user-timezone.spec.ts b/e2e/tests/user-timezone.spec.ts
+index 36e6497..dcc9af2 100644
+--- a/e2e/tests/user-timezone.spec.ts
++++ b/e2e/tests/user-timezone.spec.ts
+@@ -14,7 +14,7 @@ import {
+ import { BoardPage } from '../pages/BoardPage';
+ import { OrderCardPage } from '../pages/OrderCardPage';
+ import { ExecutorPayoutsPage } from '../pages/ExecutorPayoutsPage';
+-import { StockTransfersPage } from '../pages/StockTransfersPage';
++import { TransfersPage } from '../pages/TransfersPage';
+ import { ShellPage } from '../pages/ShellPage';
+ import { UsersPage } from '../pages/UsersPage';
+ 
+@@ -213,12 +213,12 @@ test.describe('TZ: пояс применяется во всей системе'
+     await ep.goto(`assignee=${d.executorId}`);
+     await expect(ep.row(d.subId).getByTestId('ep-row-paid-at')).toHaveText(view.dateTime);
+ 
+-    // «Перемещения» (старый экран): создан / отправлен.
+-    const st = new StockTransfersPage(page);
++    // «Перемещения»: сведения документа — создан / отправлен.
++    const st = new TransfersPage(page);
+     await st.goto(d.transferId);
+-    const meta = page.getByTestId('st-card-meta');
+-    await expect(meta).toContainText(`Создал: `);
+-    await expect(meta).toContainText(`Отправил: `);
++    const meta = st.cardMeta;
++    await expect(meta).toContainText(`Создан: `);
++    await expect(meta).toContainText(`Отправлен: `);
+     await expect(meta).toContainText(view.dateTime);
+     await expect(meta).not.toContainText(other.dateTime);
+   }
+@@ -263,10 +263,10 @@ test.describe('TZ: пояс применяется во всей системе'
+     const { client, equipment, task, subId } = await seedPaidOrder({ adminApi, uniq, insertSubtask }, 'TZ-010', exec.id);
+     const productCat = await adminApi.createCategory({ kind: 'product', name: uniq('TZ-010 товары') });
+     const product = await adminApi.createProduct({ category_id: productCat.id, name: uniq('TZ-010 товар'), stock: 5 });
+-    const transfer = await adminApi.createStockTransfer({
++    const transfer = await adminApi.createTransfer({
+       from_warehouse_id: (await adminApi.warehouseByName('Алматы')).id,
+       to_warehouse_id: (await adminApi.warehouseByName('Москва')).id,
+-      items: [{ product_id: product.id, qty_sent: 1 }],
++      items: [{ kind: 'product', product_id: product.id, qty_sent: 1 }],
+       send: true,
+     });
+     const data = { clientId: client.id, taskId: task.id, subId, executorId: exec.id, transferId: transfer.id, equipmentId: equipment.id };
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index b3f6505..9c4cc52 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -50,7 +50,9 @@
+    а не захардкоженный #fff. */
+ :root { --kt-on-accent: #fff; }
+ [data-bs-theme="dark"] { --kt-on-accent: #0B1220; }
+-[data-bs-theme="dark"] .text-bg-danger { color: var(--kt-on-accent) !important; }
++[data-bs-theme="dark"] .text-bg-danger,
++[data-bs-theme="dark"] .text-bg-primary,
++[data-bs-theme="dark"] .text-bg-success { color: var(--kt-on-accent) !important; }
+ 
+ /* ---- перекраска brand-цвета в precompiled bootstrap.min.css ----
+    --bs-primary и т.п. на :root — это ФОНОВЫЕ/нейтральные переменные (body/card/table/
+diff --git a/web/ssr/_shared/js/stock-transfers.js b/web/ssr/_shared/js/stock-transfers.js
+deleted file mode 100644
+index 79a7a1c..0000000
+--- a/web/ssr/_shared/js/stock-transfers.js
++++ /dev/null
+@@ -1,505 +0,0 @@
+-/* KT.stockTransfers — экран «Перемещения» «/stock-transfers» (admin, warehouses DS-006/
+-   DS-011): master-detail поверх JSON API /api/v1/stock-transfers.
+-
+-   Слева — список с фильтром по статусу/складу ({items,total,limit,offset}); справа —
+-   карточка выбранного перемещения (?id=N в адресе). Заявка (requested) и новое
+-   перемещение — редактор: склады, примечание, строки товаров; кнопки «Сохранить заявку» /
+-   «Отправить» / «Отменить». В пути (in_transit) — «Принять» (модалка с фактом по строкам,
+-   по умолчанию = отправлено) и «Отменить». Принято/отменено — только просмотр.
+-   Подтверждение отмены — KT.uiDialog (нативные confirm/prompt не используются).
+-   Числа выводятся как пришли в JSON (String()), весь текст — через esc(). */
+-(function () {
+-  'use strict';
+-  var KT = window.KT = window.KT || {};
+-
+-  function esc(s) {
+-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+-    });
+-  }
+-  function $(sel, root) { return (root || document).querySelector(sel); }
+-  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
+-  function num(v) { return String(v == null ? 0 : v); }
+-
+-  var STATUS = {
+-    requested: { label: 'Заявка', cls: 'text-bg-secondary' },
+-    in_transit: { label: 'В пути', cls: 'text-bg-warning' },
+-    received: { label: 'Принято', cls: 'text-bg-success' },
+-    cancelled: { label: 'Отменено', cls: 'text-bg-light border' }
+-  };
+-
+-  var FIELD_TEXT = {
+-    required: 'обязательное поле',
+-    invalid: 'недопустимое значение',
+-    invalid_format: 'введите число',
+-    too_precise: 'не больше 3 знаков после запятой',
+-    too_large: 'слишком большое число',
+-    too_long: 'слишком длинное значение',
+-    invalid_text: 'недопустимые символы',
+-    too_many: 'слишком много строк',
+-    same_warehouse: 'склад-получатель совпадает с источником',
+-    duplicate: 'товар уже есть в другой строке',
+-    exceeds_sent: 'больше отправленного'
+-  };
+-  var FIELD_LABEL = {
+-    from_warehouse_id: 'Откуда',
+-    to_warehouse_id: 'Куда',
+-    note: 'Примечание',
+-    items: 'Товары',
+-    version: 'Версия'
+-  };
+-
+-  var state = {
+-    list: [],
+-    total: 0,
+-    status: '',
+-    warehouseId: '',
+-    warehouses: [],
+-    products: [],
+-    current: null, // TransferResponse | {new: true}
+-    warnings: [],
+-    busy: false
+-  };
+-  var receiveModal = null;
+-
+-  // ---------- загрузка ----------
+-  // Активные товары для строк — постранично (API отдаёт не больше 500 за запрос).
+-  function loadProducts(offset, acc) {
+-    return KT.api.get('/api/v1/products?limit=500&offset=' + offset).then(function (r) {
+-      var items = acc.concat(r.items || []);
+-      if ((r.items || []).length > 0 && items.length < r.total && items.length < 10000) return loadProducts(items.length, items);
+-      return items;
+-    });
+-  }
+-
+-  function loadRefs() {
+-    return Promise.all([
+-      KT.api.get('/api/v1/warehouses'),
+-      loadProducts(0, [])
+-    ]).then(function (r) {
+-      state.warehouses = r[0].items || [];
+-      state.products = r[1];
+-      var sel = $('#st-filter-warehouse');
+-      sel.innerHTML = '<option value="">Все склады</option>' + state.warehouses.map(function (w) {
+-        return '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>';
+-      }).join('');
+-      if (sel._cbSync) sel._cbSync();
+-    });
+-  }
+-
+-  function loadList() {
+-    var p = new URLSearchParams();
+-    if (state.status) p.set('status', state.status);
+-    if (state.warehouseId) p.set('warehouse_id', state.warehouseId);
+-    p.set('limit', '500');
+-    return KT.api.get('/api/v1/stock-transfers?' + p.toString()).then(function (r) {
+-      state.list = r.items || [];
+-      state.total = r.total || 0;
+-      renderList();
+-    });
+-  }
+-
+-  function loadTransfer(id) {
+-    return KT.api.get('/api/v1/stock-transfers/' + id).then(function (t) {
+-      state.current = t;
+-      setUrl(t.id);
+-      renderCard();
+-      renderList();
+-    });
+-  }
+-
+-  function setUrl(id) {
+-    var u = new URL(window.location.href);
+-    if (id) u.searchParams.set('id', id); else u.searchParams.delete('id');
+-    window.history.replaceState(null, '', u.pathname + u.search);
+-  }
+-
+-  // ---------- список ----------
+-  // Дата и время — только через KT.time (пояс пользователя, не браузера; DS-032).
+-  function fmtDate(s) { return KT.time.fmtDateTime(s); }
+-
+-  function badge(status) {
+-    var s = STATUS[status] || { label: status, cls: 'text-bg-secondary' };
+-    return '<span class="badge ' + s.cls + '" data-testid="st-status-badge" data-status="' + esc(status) + '">' + esc(s.label) + '</span>';
+-  }
+-
+-  function renderList() {
+-    var box = $('#st-list');
+-    var curId = state.current && state.current.id;
+-    box.innerHTML = state.list.map(function (t) {
+-      return '<button type="button" class="list-group-item list-group-item-action' + (t.id === curId ? ' active' : '') + '"' +
+-        ' data-testid="st-row" data-id="' + esc(t.id) + '">' +
+-        '<div class="d-flex justify-content-between align-items-center gap-2">' +
+-        '<span class="fw-semibold">#' + esc(t.id) + ' · ' + esc(t.from_warehouse_name) + ' → ' + esc(t.to_warehouse_name) + '</span>' +
+-        badge(t.status) + '</div>' +
+-        '<div class="small' + (t.id === curId ? '' : ' text-body-secondary') + '">' +
+-        '<span data-testid="st-row-date">' + esc(fmtDate(t.created_at)) + '</span> · позиций: ' + esc(t.items_count) + (t.note ? ' · ' + esc(t.note) : '') + '</div>' +
+-        '</button>';
+-    }).join('');
+-    $('#st-empty').classList.toggle('d-none', state.list.length > 0);
+-    var shown = $('#st-shown');
+-    if (state.total > state.list.length) {
+-      shown.textContent = 'Показано ' + state.list.length + ' из ' + state.total;
+-      shown.classList.remove('d-none');
+-    } else {
+-      shown.classList.add('d-none');
+-    }
+-  }
+-
+-  // ---------- карточка ----------
+-  function warehouseOptions(selected, withEmpty) {
+-    var list = state.warehouses.slice();
+-    if (selected && !list.some(function (w) { return w.id === selected; })) {
+-      // склад заявки ушёл в архив — показать его, чтобы не потерять значение
+-      var cur = state.current || {};
+-      var name = cur.from_warehouse_id === selected ? cur.from_warehouse_name : cur.to_warehouse_name;
+-      list.push({ id: selected, name: (name || selected) + ' (архив)' });
+-    }
+-    return (withEmpty ? '<option value="">— выберите склад —</option>' : '') + list.map(function (w) {
+-      return '<option value="' + esc(w.id) + '"' + (w.id === selected ? ' selected' : '') + '>' + esc(w.name) + '</option>';
+-    }).join('');
+-  }
+-
+-  function productOptions(selected, fallbackName) {
+-    var list = state.products.slice();
+-    if (selected && !list.some(function (p) { return p.id === selected; })) {
+-      list.push({ id: selected, name: (fallbackName || selected) + ' (архив)', unit: '' });
+-    }
+-    return '<option value="">— выберите товар —</option>' + list.map(function (p) {
+-      return '<option value="' + esc(p.id) + '"' + (p.id === selected ? ' selected' : '') + '>' + esc(p.name) + (p.unit ? ', ' + esc(p.unit) : '') + '</option>';
+-    }).join('');
+-  }
+-
+-  function itemRowHTML(it) {
+-    it = it || {};
+-    return '<tr data-testid="st-item-row">' +
+-      '<td><select class="form-select form-select-sm" data-testid="st-item-product" aria-label="Товар">' + productOptions(it.product_id, it.product_name) + '</select></td>' +
+-      '<td style="width:140px"><input type="number" step="any" min="0" class="form-control form-control-sm" data-testid="st-item-qty" aria-label="Количество" value="' + esc(it.qty_sent == null ? '' : num(it.qty_sent)) + '"></td>' +
+-      '<td style="width:44px" class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-testid="st-item-remove" title="Убрать строку" aria-label="Убрать строку">×</button></td>' +
+-      '</tr>';
+-  }
+-
+-  function warningsHTML() {
+-    if (!state.warnings.length) return '';
+-    return '<div class="alert alert-warning" data-testid="st-warnings"><div class="fw-semibold mb-1">Остатки на складе-источнике:</div><ul class="mb-0">' +
+-      state.warnings.map(function (w) {
+-        return '<li>' + esc(w.name) + ' (' + esc(w.warehouse_name) + '): ' + esc(num(w.stock)) +
+-          (w.kind === 'negative' ? ' — отрицательный остаток' : ' — на минимуме или ниже (' + esc(num(w.min_stock)) + ')') + '</li>';
+-      }).join('') + '</ul></div>';
+-  }
+-
+-  function headerHTML(t) {
+-    if (t.new) return '<h2 class="fs-5 mb-3" data-testid="st-card-title">Новое перемещение</h2>';
+-    var meta = ['Создал: ' + esc(t.created_by_name) + ', ' + esc(fmtDate(t.created_at))];
+-    if (t.sent_at) meta.push('Отправил: ' + esc(t.sent_by_name || '') + ', ' + esc(fmtDate(t.sent_at)));
+-    if (t.received_at) meta.push('Принял: ' + esc(t.received_by_name || '') + ', ' + esc(fmtDate(t.received_at)));
+-    if (t.cancelled_at) meta.push('Отменил: ' + esc(t.cancelled_by_name || '') + ', ' + esc(fmtDate(t.cancelled_at)));
+-    return '<div class="d-flex justify-content-between align-items-center mb-2">' +
+-      '<h2 class="fs-5 mb-0" data-testid="st-card-title">Перемещение #' + esc(t.id) + '</h2>' +
+-      '<span data-testid="st-card-status">' + badge(t.status) + '</span></div>' +
+-      '<div class="small text-body-secondary mb-3" data-testid="st-card-meta">' + meta.join('<br>') + '</div>';
+-  }
+-
+-  function renderCard() {
+-    var t = state.current;
+-    $('#st-placeholder').classList.toggle('d-none', !!t);
+-    var card = $('#st-card');
+-    card.classList.toggle('d-none', !t);
+-    if (!t) { card.innerHTML = ''; return; }
+-    var editable = t.new || t.status === 'requested';
+-    var html = headerHTML(t) + warningsHTML() +
+-      '<div class="alert alert-danger d-none" data-testid="st-error" id="st-error"></div>';
+-    if (editable) {
+-      html += '<div class="row g-2 mb-2">' +
+-        '<div class="col-sm-6"><label class="form-label" for="st-from">Откуда *</label>' +
+-        '<select class="form-select" id="st-from" data-testid="st-from">' + warehouseOptions(t.from_warehouse_id, true) + '</select></div>' +
+-        '<div class="col-sm-6"><label class="form-label" for="st-to">Куда *</label>' +
+-        '<select class="form-select" id="st-to" data-testid="st-to">' + warehouseOptions(t.to_warehouse_id, true) + '</select></div>' +
+-        '</div>' +
+-        '<div class="mb-3"><label class="form-label" for="st-note">Примечание</label>' +
+-        '<textarea class="form-control" id="st-note" data-testid="st-note" rows="2" maxlength="1000">' + esc(t.note || '') + '</textarea></div>' +
+-        '<div class="table-responsive"><table class="table table-sm align-middle mb-2" data-testid="st-items">' +
+-        '<thead><tr><th>Товар *</th><th>Количество *</th><th></th></tr></thead><tbody id="st-items-tbody">' +
+-        ((t.items && t.items.length) ? t.items.map(itemRowHTML).join('') : itemRowHTML()) +
+-        '</tbody></table></div>' +
+-        '<button type="button" class="btn btn-sm btn-outline-secondary mb-3" data-testid="st-item-add" id="st-item-add">+ Товар</button>' +
+-        '<div class="d-flex flex-wrap gap-2">' +
+-        '<button type="button" class="btn btn-outline-primary" data-testid="st-save" data-act="save">' + (t.new ? 'Сохранить заявку' : 'Сохранить') + '</button>' +
+-        '<button type="button" class="btn btn-primary" data-testid="st-send" data-act="send">Отправить</button>' +
+-        (t.new ? '' : '<button type="button" class="btn btn-outline-danger ms-auto" data-testid="st-cancel" data-act="cancel">Отменить перемещение</button>') +
+-        '</div>';
+-    } else {
+-      var showReceived = t.status === 'received';
+-      html += '<dl class="row mb-2">' +
+-        '<dt class="col-sm-3">Откуда</dt><dd class="col-sm-9" data-testid="st-view-from">' + esc(t.from_warehouse_name) + '</dd>' +
+-        '<dt class="col-sm-3">Куда</dt><dd class="col-sm-9" data-testid="st-view-to">' + esc(t.to_warehouse_name) + '</dd>' +
+-        (t.note ? '<dt class="col-sm-3">Примечание</dt><dd class="col-sm-9" data-testid="st-view-note">' + esc(t.note) + '</dd>' : '') +
+-        '</dl>' +
+-        '<div class="table-responsive"><table class="table table-sm align-middle" data-testid="st-items">' +
+-        '<thead><tr><th>Товар</th><th>Отправлено</th>' + (showReceived ? '<th>Получено</th>' : '') + '</tr></thead><tbody>' +
+-        t.items.map(function (it) {
+-          var loss = showReceived && it.qty_received != null && Number(it.qty_received) < Number(it.qty_sent);
+-          return '<tr data-testid="st-view-item" data-product-id="' + esc(it.product_id) + '">' +
+-            '<td>' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</td>' +
+-            '<td data-testid="st-view-sent">' + esc(num(it.qty_sent)) + '</td>' +
+-            (showReceived ? '<td data-testid="st-view-received"' + (loss ? ' class="text-danger" title="Недостача"' : '') + '>' + esc(num(it.qty_received)) + '</td>' : '') +
+-            '</tr>';
+-        }).join('') + '</tbody></table></div>';
+-      if (t.status === 'in_transit') {
+-        html += '<div class="d-flex flex-wrap gap-2">' +
+-          '<button type="button" class="btn btn-primary" data-testid="st-receive" data-act="receive">Принять</button>' +
+-          '<button type="button" class="btn btn-outline-danger ms-auto" data-testid="st-cancel" data-act="cancel">Отменить перемещение</button>' +
+-          '</div>';
+-      }
+-    }
+-    card.innerHTML = html;
+-  }
+-
+-  function showError(msg) {
+-    var el = $('#st-error');
+-    if (!el) return;
+-    el.textContent = msg;
+-    el.classList.toggle('d-none', !msg);
+-  }
+-
+-  function fieldMessage(f) {
+-    var text = FIELD_TEXT[f.message] || f.message;
+-    var m = /^items\[(\d+)\]\.(\w+)$/.exec(f.name);
+-    if (m) return 'Строка ' + (Number(m[1]) + 1) + ': ' + text;
+-    return (FIELD_LABEL[f.name] || f.name) + ': ' + text;
+-  }
+-
+-  function markFields(fields) {
+-    $$('#st-card .is-invalid').forEach(function (n) { n.classList.remove('is-invalid'); });
+-    var rows = $$('#st-items-tbody tr');
+-    fields.forEach(function (f) {
+-      var target = null;
+-      var m = /^items\[(\d+)\]\.(\w+)$/.exec(f.name);
+-      if (m && rows[Number(m[1])]) {
+-        target = m[2] === 'qty_sent' ? $('input', rows[Number(m[1])]) : $('select', rows[Number(m[1])]);
+-      } else if (f.name === 'from_warehouse_id') target = $('#st-from');
+-      else if (f.name === 'to_warehouse_id') target = $('#st-to');
+-      else if (f.name === 'note') target = $('#st-note');
+-      if (target) target.classList.add('is-invalid');
+-    });
+-  }
+-
+-  function handleError(err) {
+-    if (err && err.fields && err.fields.length) {
+-      markFields(err.fields);
+-      showError(err.fields.map(fieldMessage).join('; '));
+-      return;
+-    }
+-    showError((err && err.message) || 'Не удалось выполнить действие');
+-    if (err && err.status === 409 && state.current && !state.current.new) {
+-      // перемещение изменилось или уже в другом статусе — показать актуальное состояние
+-      var msg = err.message;
+-      var id = state.current.id;
+-      Promise.all([loadList(), loadTransfer(id)]).then(function () { showError(msg); });
+-    }
+-  }
+-
+-  function collectForm() {
+-    var items = $$('#st-items-tbody tr').map(function (tr) {
+-      var raw = $('input', tr).value.trim();
+-      var n = Number(raw);
+-      return { product_id: $('select', tr).value, qty_sent: raw === '' || Number.isNaN(n) ? null : n };
+-    });
+-    return {
+-      from_warehouse_id: $('#st-from').value,
+-      to_warehouse_id: $('#st-to').value,
+-      note: $('#st-note').value,
+-      items: items
+-    };
+-  }
+-
+-  function after(t, keepWarnings) {
+-    state.warnings = keepWarnings && t.warnings ? t.warnings : [];
+-    state.current = t;
+-    setUrl(t.id);
+-    renderCard();
+-    if (KT.refreshNavBadge) KT.refreshNavBadge();
+-    return loadList();
+-  }
+-
+-  function withBusy(p) {
+-    state.busy = true;
+-    $$('#st-card button').forEach(function (b) { b.disabled = true; });
+-    return p.catch(handleError).then(function () {
+-      state.busy = false;
+-      $$('#st-card button').forEach(function (b) { b.disabled = false; });
+-    });
+-  }
+-
+-  function save() {
+-    var t = state.current;
+-    var body = collectForm();
+-    if (t.new) return KT.api.post('/api/v1/stock-transfers', body);
+-    body.version = t.version;
+-    return KT.api.put('/api/v1/stock-transfers/' + t.id, body);
+-  }
+-
+-  function doSave() {
+-    return withBusy(save().then(function (t) { return after(t, false); }));
+-  }
+-
+-  function doSend() {
+-    var t = state.current;
+-    var p;
+-    if (t.new) {
+-      var body = collectForm();
+-      body.send = true;
+-      p = KT.api.post('/api/v1/stock-transfers', body);
+-    } else {
+-      // несохранённые правки заявки уходят вместе с отправкой
+-      p = save().then(function (saved) {
+-        state.current = saved;
+-        return KT.api.post('/api/v1/stock-transfers/' + saved.id + '/send', { version: saved.version });
+-      });
+-    }
+-    return withBusy(p.then(function (r) { return after(r, true); }));
+-  }
+-
+-  function doCancel() {
+-    var t = state.current;
+-    var text = t.status === 'in_transit'
+-      ? 'Отменить перемещение #' + t.id + '? Товары вернутся на склад «' + t.from_warehouse_name + '».'
+-      : 'Отменить заявку на перемещение #' + t.id + '?';
+-    return KT.uiDialog({ title: 'Отмена перемещения', text: text, ok: 'Отменить перемещение', cancel: 'Назад', danger: true })
+-      .then(function (ok) {
+-        if (!ok) return;
+-        return withBusy(KT.api.post('/api/v1/stock-transfers/' + t.id + '/cancel', { version: t.version })
+-          .then(function (r) { return after(r, false); }));
+-      });
+-  }
+-
+-  // ---------- приёмка ----------
+-  function openReceive() {
+-    var t = state.current;
+-    $('#st-receive-tbody').innerHTML = t.items.map(function (it) {
+-      return '<tr data-testid="st-receive-row" data-product-id="' + esc(it.product_id) + '">' +
+-        '<td>' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</td>' +
+-        '<td>' + esc(num(it.qty_sent)) + '</td>' +
+-        '<td><input type="number" step="any" min="0" class="form-control form-control-sm" data-testid="st-receive-qty"' +
+-        ' data-item-id="' + esc(it.id) + '" value="' + esc(num(it.qty_sent)) + '" aria-label="Получено"></td></tr>';
+-    }).join('');
+-    var err = $('#st-receive-error');
+-    err.classList.add('d-none');
+-    err.textContent = '';
+-    $('#st-receive-confirm').disabled = false;
+-    if (!receiveModal) receiveModal = new bootstrap.Modal($('#st-receive-modal'));
+-    receiveModal.show();
+-  }
+-
+-  function bindReceive() {
+-    var receiving = false;
+-    $('#st-receive-form').addEventListener('submit', function (e) {
+-      e.preventDefault();
+-      if (receiving) return;
+-      var t = state.current;
+-      var errEl = $('#st-receive-error');
+-      var bad = false;
+-      var items = $$('#st-receive-tbody input').map(function (inp) {
+-        var raw = inp.value.trim();
+-        var n = Number(raw);
+-        if (raw === '' || Number.isNaN(n)) bad = true;
+-        return { id: inp.dataset.itemId, qty_received: n };
+-      });
+-      if (bad) {
+-        errEl.textContent = 'Введите число в каждой строке';
+-        errEl.classList.remove('d-none');
+-        return;
+-      }
+-      receiving = true;
+-      $('#st-receive-confirm').disabled = true;
+-      KT.api.post('/api/v1/stock-transfers/' + t.id + '/receive', { version: t.version, items: items })
+-        .then(function (r) {
+-          receiveModal.hide();
+-          return after(r, false);
+-        })
+-        .catch(function (err) {
+-          var rows = $$('#st-receive-tbody tr');
+-          var msg = err && err.fields && err.fields.length
+-            ? err.fields.map(function (f) {
+-              var m = /^items\[(\d+)\]/.exec(f.name);
+-              if (m && rows[Number(m[1])]) $('input', rows[Number(m[1])]).classList.add('is-invalid');
+-              return fieldMessage(f);
+-            }).join('; ')
+-            : (err && err.message) || 'Не удалось принять перемещение';
+-          errEl.textContent = msg;
+-          errEl.classList.remove('d-none');
+-          if (err && err.status === 409) {
+-            receiveModal.hide();
+-            handleError(err);
+-          }
+-        })
+-        .then(function () {
+-          receiving = false;
+-          $('#st-receive-confirm').disabled = false;
+-        });
+-    });
+-  }
+-
+-  // ---------- события ----------
+-  function bind() {
+-    $('#st-filter-status').addEventListener('change', function (e) {
+-      state.status = e.target.value;
+-      loadList();
+-    });
+-    $('#st-filter-warehouse').addEventListener('change', function (e) {
+-      state.warehouseId = e.target.value;
+-      loadList();
+-    });
+-    $('#st-new').addEventListener('click', function () {
+-      state.warnings = [];
+-      state.current = { new: true, from_warehouse_id: '', to_warehouse_id: '', note: '', items: [] };
+-      setUrl(null);
+-      renderCard();
+-      renderList();
+-    });
+-    $('#st-list').addEventListener('click', function (e) {
+-      var row = e.target.closest('[data-testid="st-row"]');
+-      if (!row) return;
+-      state.warnings = [];
+-      loadTransfer(row.dataset.id).catch(function (err) { showError(err && err.message); });
+-    });
+-    $('#st-card').addEventListener('click', function (e) {
+-      if (state.busy) return;
+-      if (e.target.closest('#st-item-add')) {
+-        $('#st-items-tbody').insertAdjacentHTML('beforeend', itemRowHTML());
+-        return;
+-      }
+-      var rm = e.target.closest('[data-testid="st-item-remove"]');
+-      if (rm) {
+-        rm.closest('tr').remove();
+-        return;
+-      }
+-      var act = e.target.closest('[data-act]');
+-      if (!act) return;
+-      switch (act.dataset.act) {
+-        case 'save': doSave(); break;
+-        case 'send': doSend(); break;
+-        case 'cancel': doCancel(); break;
+-        case 'receive': openReceive(); break;
+-      }
+-    });
+-    bindReceive();
+-  }
+-
+-  // ---------- инициализация ----------
+-  function init() {
+-    var root = $('#st');
+-    if (!root) return;
+-    bind();
+-    var id = new URLSearchParams(window.location.search).get('id');
+-    loadRefs()
+-      .then(function () { return loadList(); })
+-      .then(function () { if (id) return loadTransfer(id); })
+-      .catch(function (err) {
+-        $('#st-list').innerHTML = '<div class="empty-state">Не удалось загрузить перемещения' + (err && err.message ? ': ' + esc(err.message) : '') + '</div>';
+-      });
+-  }
+-
+-  KT.stockTransfers = { init: init };
+-  document.addEventListener('DOMContentLoaded', init);
+-})();
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index da95762..711b15a 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -415,8 +415,9 @@
+       '  <div class="card-body py-2">' +
+       '    <div class="d-flex justify-content-between align-items-start gap-2">' +
+       '      <div class="card-eq-title"><strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') + '</div>' +
+-      // D61: единицу в пути убрать нельзя — кнопки нет (API тоже отвечает 409).
+-      (eq.status === 'in_transit' ? '' :
++      // DS-026: единицу в незавершённом документе «Перемещение» убрать нельзя — кнопки нет
++      // (API тоже отвечает 409 EQUIPMENT_IN_TRANSFER).
++      (eq.active_transfer_id != null ? '' :
+       '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>') +
+       '    </div>' +
+       equipmentLocationHtml(eq) +
+@@ -427,13 +428,12 @@
+       '        <input class="form-control form-control-sm" data-field="condition" data-row-key="' + key + '" data-testid="card-equipment-condition" maxlength="1000" value="' + esc(eq.condition) + '"></div>' +
+       '    </div>' +
+       (history ? '<div class="mt-1">' + history + '</div>' : '') +
+-      equipmentMovementsHtml(eq) +
+       equipmentHistoryHtml(eq.equipment_id) +
+       '  </div>' +
+       '</div>';
+   }
+ 
+-  // ---------- Склад оборудования заказа (warehouses DS-008) ----------
++  // ---------- Местоположение оборудования заказа (transfers-core DS-003, DS-008) ----------
+ 
+   function activeWarehouses() {
+     return (card.warehouses || []).filter(function (w) { return w.is_active; });
+@@ -446,82 +446,46 @@
+   }
+ 
+   // equipmentWarehouseHtml — склад приёма для «Добавить оборудование клиента»/«Новое
+-  // оборудование» (обязателен, по умолчанию первый активный).
++  // оборудование» (обязателен, по умолчанию первый активный). Склад пишется на саму единицу
++  // и только если она «у клиента» (transfers-core DS-008) — об этом подпись под select.
+   function equipmentWarehouseHtml() {
+     var cur = currentEquipmentWarehouse();
+-    return '<div class="d-flex align-items-center gap-2 mb-2"><label class="form-label small mb-0 text-nowrap" for="card-equipment-warehouse">Склад приёма *</label>' +
++    return '<div class="mb-2"><div class="d-flex align-items-center gap-2"><label class="form-label small mb-0 text-nowrap" for="card-equipment-warehouse">Склад приёма *</label>' +
+       '<select class="form-select form-select-sm" id="card-equipment-warehouse" data-testid="card-equipment-warehouse" style="max-width:220px">' +
+       activeWarehouses().map(function (w) {
+         return '<option value="' + esc(w.id) + '"' + (w.id === cur ? ' selected' : '') + '>' + esc(w.name) + '</option>';
+-      }).join('') + '</select></div>';
++      }).join('') + '</select></div>' +
++      '<div class="form-text" data-testid="card-equipment-warehouse-hint">Если оборудование уже на складе или в пути, местоположение не изменится</div></div>';
+   }
+ 
+-  // equipmentLocationHtml — бейдж «На складе: X» / «В пути: X → Y» + действия по статусу.
++  // equipmentLocationHtml — бейдж местоположения единицы («у клиента» / «на складе X» /
++  // «в пути → Y», transfers-core DS-008) и «перемещение #N», если единица стоит в
++  // незавершённом документе: ссылка для администратора, текст для исполнителя (экран
++  // /transfers ему недоступен). Оборудование двигается только документом (DS-003) — кнопок
++  // «Отправить / Принять / Отменить отправку» здесь нет.
+   function equipmentLocationHtml(eq) {
+-    var id = esc(eq.equipment_id);
+-    var badge, actions;
+-    if (eq.status === 'in_transit') {
+-      badge = '<span class="badge text-bg-warning" data-testid="card-equipment-location">В пути: ' + esc(eq.transit_from_warehouse_name || '') + ' → ' + esc(eq.transit_to_warehouse_name || '') + '</span>';
+-      actions = '<button type="button" class="btn btn-outline-success btn-sm" data-testid="card-equipment-receive" data-equipment-id="' + id + '">Принять</button>' +
+-        '<button type="button" class="btn btn-outline-secondary btn-sm" data-testid="card-equipment-cancel-transit" data-equipment-id="' + id + '">Отменить отправку</button>';
+-    } else {
+-      badge = '<span class="badge text-bg-light border" data-testid="card-equipment-location">На складе: ' + esc(eq.warehouse_name || '') + '</span>';
+-      actions = '<button type="button" class="btn btn-outline-primary btn-sm" data-testid="card-equipment-send" data-equipment-id="' + id + '">Отправить на склад…</button>';
++    var label, cls;
++    switch (eq.location_status) {
++      case 'at_warehouse':
++        label = 'на складе ' + (eq.warehouse_name || '');
++        cls = 'text-bg-info';
++        break;
++      case 'in_transit':
++        label = 'в пути → ' + (eq.transit_to_name || '');
++        cls = 'text-bg-warning';
++        break;
++      default:
++        label = 'у клиента';
++        cls = 'text-bg-secondary';
+     }
+-    return '<div class="d-flex flex-wrap align-items-center gap-2 mt-1">' + badge + actions + '</div>';
+-  }
+-
+-  function movementText(m) {
+-    var from = m.from_warehouse_name || '', to = m.to_warehouse_name || '';
+-    switch (m.action) {
+-      case 'received': return 'Принято на склад ' + to;
+-      case 'sent': return 'Отправлено: ' + from + ' → ' + to;
+-      case 'arrived': return 'Принято на складе ' + to + ' (из ' + from + ')';
+-      case 'cancelled': return 'Отправка ' + from + ' → ' + to + ' отменена, возврат на ' + from;
++    var html = '<span class="badge ' + cls + '" data-testid="card-equipment-location" data-location-status="' + esc(eq.location_status) + '">' + esc(label) + '</span>';
++    if (eq.active_transfer_id != null) {
++      var text = 'перемещение #' + esc(eq.active_transfer_id);
++      html += host.getData().isAdmin
++        ? '<a class="small" href="/transfers?id=' + encodeURIComponent(eq.active_transfer_id) + '" data-testid="card-equipment-transfer">' + text + '</a>'
++        : '<span class="small text-body-secondary" data-testid="card-equipment-transfer">' + text + '</span>';
+     }
+-    return m.action;
+-  }
+-
+-  // equipmentMovementsHtml — блок «Перемещения» (журнал task_equipment_movements).
+-  function equipmentMovementsHtml(eq) {
+-    var list = eq.movements || [];
+-    if (!list.length) return '';
+-    return '<div class="small mt-1" data-testid="card-equipment-movements"><div class="text-body-secondary">Перемещения:</div>' +
+-      list.map(function (m) {
+-        return '<div class="ps-2" data-testid="card-equipment-movement" data-action="' + esc(m.action) + '">' +
+-          fmtDateTime(m.created_at) + ' · ' + esc(m.user_name) + ': ' + esc(movementText(m)) + '</div>';
+-      }).join('') + '</div>';
+-  }
+-
+-  // equipmentAction — POST send/receive/cancel-transit, ответ — карточка (re-fetch).
+-  function equipmentAction(eqId, action, body, failText) {
+-    var ticket = beginRequest();
+-    return KT.api.post('/api/v1/tasks/' + taskId + '/equipment/' + encodeURIComponent(eqId) + '/' + action, body || {}).then(function (resp) {
+-      if (!applyCard(resp.card, ticket)) return;
+-      host.onChanged();
+-    }).catch(function (err) {
+-      var msg = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return f.message; }).join('; ') : ((err && err.message) || failText);
+-      KT.uiAlert(msg, 'Ошибка');
+-    });
+-  }
+-
+-  function sendEquipment(eqId) {
+-    var eq = card.equipment.filter(function (e) { return e.equipment_id === eqId; })[0];
+-    if (!eq) return;
+-    var options = activeWarehouses().filter(function (w) { return w.id !== eq.warehouse_id; })
+-      .map(function (w) { return { value: w.id, text: w.name }; });
+-    if (!options.length) {
+-      KT.uiAlert('Нет другого активного склада для отправки', 'Нельзя');
+-      return;
+-    }
+-    KT.uiDialog({
+-      title: 'Отправить на склад',
+-      text: (eq.type_name + ' ' + eq.brand + ' ' + eq.model).trim() + '\nСейчас на складе: ' + (eq.warehouse_name || ''),
+-      select: options, ok: 'Отправить'
+-    }).then(function (to) {
+-      if (!to) return;
+-      equipmentAction(eqId, 'send', { to_warehouse_id: to }, 'Не удалось отправить оборудование');
+-    });
++    return '<div class="d-flex flex-wrap align-items-center gap-2 mt-1">' + html + '</div>';
+   }
+ 
+   var SERVICE_STATUS = { 'new': ['Новая', 'text-bg-secondary'], in_progress: ['В работе', 'text-bg-primary'], done: ['Выполнена', 'text-bg-success'] };
+@@ -644,21 +608,6 @@
+ 
+     var whSel = $('#card-equipment-warehouse', container);
+     if (whSel) whSel.addEventListener('change', function () { equipmentWarehouseId = whSel.value; });
+-    $$('[data-testid="card-equipment-send"]', container).forEach(function (btn) {
+-      btn.addEventListener('click', function () { sendEquipment(btn.dataset.equipmentId); });
+-    });
+-    $$('[data-testid="card-equipment-receive"]', container).forEach(function (btn) {
+-      btn.addEventListener('click', function () { equipmentAction(btn.dataset.equipmentId, 'receive', null, 'Не удалось принять оборудование'); });
+-    });
+-    $$('[data-testid="card-equipment-cancel-transit"]', container).forEach(function (btn) {
+-      btn.addEventListener('click', function () {
+-        var eqId = btn.dataset.equipmentId;
+-        KT.uiDialog({ title: 'Отмена отправки', text: 'Отменить отправку? Оборудование вернётся на исходный склад.', ok: 'Отменить отправку', cancel: 'Назад', danger: true }).then(function (ok) {
+-          if (ok) equipmentAction(eqId, 'cancel-transit', null, 'Не удалось отменить отправку');
+-        });
+-      });
+-    });
+-
+     $$('[data-testid="card-equipment-remove"]', container).forEach(function (btn) {
+       btn.addEventListener('click', function () {
+         var eqId = btn.dataset.equipmentId;
+diff --git a/web/ssr/_shared/js/transfers.js b/web/ssr/_shared/js/transfers.js
+new file mode 100644
+index 0000000..6e135af
+--- /dev/null
++++ b/web/ssr/_shared/js/transfers.js
+@@ -0,0 +1,861 @@
++/* KT.transfers — экран «Перемещения» «/transfers» (admin, transfers-core §8.1): master-detail
++   поверх JSON API /api/v1/transfers.
++
++   Слева — список с фильтрами «Статус» и «Склад» ({items,total,limit,offset}, по 50, «Показать
++   ещё»); справа — документ (?id=N в адресе). Документ «склад → склад» со смешанными строками
++   (DS-001): товар с количеством и единица оборудования клиента. Заявка (requested) и новый
++   документ — редактор: склады, примечание, строки; «+ Товар» (комбобокс по каталогу) и
++   «+ Оборудование» (поиск единиц, числящихся на складе отправления: GET /api/v1/equipment).
++   Кнопки: «Сохранить» / «Отправить» / «Отменить»; в пути — «Принять» (модалка с фактом по
++   товарным строкам; единицы принимаются целиком, DS-037) и «Отменить отправку»; «Получено» и
++   «Отменён» — только просмотр.
++
++   UI-конвенции (DS-052): ошибка поля — под полем/в строке (is-invalid), глобальная ошибка и
++   успех — тост справа вверху на 5 секунд, подтверждение — KT.uiDialog, кнопки блокируются
++   на время запроса. Дата и время — только KT.time (пояс пользователя). Числа выводятся как
++   пришли в JSON, весь текст — через esc(). */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  var PAGE = 50;
++  var TOAST_MS = 5000;
++  var SEARCH_DEBOUNCE_MS = 300;
++  var API = '/api/v1/transfers';
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++  function num(v) { return String(v == null ? 0 : v); }
++
++  var STATUS = {
++    requested: { label: 'Заявка', cls: 'text-bg-primary' },
++    in_transit: { label: 'В пути', cls: 'text-bg-warning' },
++    received: { label: 'Получено', cls: 'text-bg-success' },
++    cancelled: { label: 'Отменён', cls: 'text-bg-secondary' }
++  };
++
++  // Тексты ошибок полей (§6.2, §6.4, §6.6): по имени поля, затем по коду.
++  var WAREHOUSE_TEXT = { same_warehouse: 'Склады должны различаться' };
++  var ROW_TEXT = {
++    kind: 'Некорректный тип строки',
++    product_id: 'Проверьте товар',
++    equipment_id: 'Проверьте оборудование',
++    qty_sent: 'Количество должно быть больше нуля'
++  };
++  var ROW_CODE_TEXT = { duplicate: 'уже есть в другой строке', archived: 'товар в архиве', not_found: 'не найдено' };
++  var RECEIVE_TEXT = {
++    exceeds_sent: 'Факт больше отправленного',
++    negative: 'Факт не может быть отрицательным',
++    invalid: 'Факт не может быть отрицательным',
++    invalid_format: 'Факт не может быть отрицательным',
++    required: 'Укажите факт',
++    too_precise: 'Не больше 3 знаков после запятой',
++    too_large: 'Слишком большое число'
++  };
++
++  var state = {
++    list: [],
++    total: 0,
++    status: '',
++    warehouseId: '',
++    warehouses: [], // активные склады: [{id, name}]
++    products: [],
++    current: null, // документ | {new: true}
++    items: [], // строки редактора (модель; количество читается из DOM)
++    warnings: [],
++    busy: false
++  };
++  var receiveModal = null;
++  var searchTimer = null;
++  var searchSeq = 0;
++
++  // ---------- тосты ----------
++  function toast(msg, isError) {
++    var box = $('#st-toasts');
++    if (!box || !msg) return;
++    var el = document.createElement('div');
++    el.className = 'alert ' + (isError ? 'alert-danger' : 'alert-success') + ' shadow py-2 mb-2';
++    el.setAttribute('role', isError ? 'alert' : 'status');
++    el.setAttribute('data-testid', isError ? 'st-toast-error' : 'st-toast');
++    el.textContent = msg;
++    box.appendChild(el);
++    setTimeout(function () { el.remove(); }, TOAST_MS);
++  }
++
++  function failureText(err) {
++    if (err && err.status) return err.message || 'Не удалось выполнить действие';
++    return 'Нет связи'; // fetch отклонён — сети нет; правки формы остаются в полях
++  }
++
++  // ---------- загрузка ----------
++  // Активные товары для «+ Товар» — постранично (API отдаёт не больше 500 за запрос).
++  function loadProducts(offset, acc) {
++    return KT.api.get('/api/v1/products?limit=500&offset=' + offset).then(function (r) {
++      var items = acc.concat(r.items || []);
++      if ((r.items || []).length > 0 && items.length < r.total && items.length < 10000) return loadProducts(items.length, items);
++      return items;
++    });
++  }
++
++  function readWarehouses() {
++    state.warehouses = $$('#st-filter-warehouse option[value]').filter(function (o) {
++      return o.value && o.dataset.active === 'true';
++    }).map(function (o) { return { id: o.value, name: o.dataset.name }; });
++  }
++
++  function listQuery(offset) {
++    var p = new URLSearchParams();
++    if (state.status) p.set('status', state.status);
++    if (state.warehouseId) p.set('warehouse_id', state.warehouseId);
++    p.set('limit', String(PAGE));
++    p.set('offset', String(offset));
++    return API + '?' + p.toString();
++  }
++
++  // loadList — первая страница (reset) либо следующая («Показать ещё»). Список затеняется на
++  // время запроса; 400 фильтра — тост.
++  function loadList(append) {
++    var box = $('#st-list');
++    box.classList.add('opacity-50');
++    return KT.api.get(listQuery(append ? state.list.length : 0)).then(function (r) {
++      state.list = append ? state.list.concat(r.items || []) : (r.items || []);
++      state.total = r.total || 0;
++      renderList();
++    }).catch(function (err) {
++      toast(err && err.status === 400 ? 'Некорректное значение фильтра' : failureText(err), true);
++    }).then(function () { box.classList.remove('opacity-50'); });
++  }
++
++  // reloadList — перечитать столько строк, сколько уже показано (после мутации документа).
++  function reloadList() {
++    var want = Math.max(PAGE, state.list.length);
++    var p = new URLSearchParams();
++    if (state.status) p.set('status', state.status);
++    if (state.warehouseId) p.set('warehouse_id', state.warehouseId);
++    p.set('limit', String(Math.min(want, 500)));
++    p.set('offset', '0');
++    return KT.api.get(API + '?' + p.toString()).then(function (r) {
++      state.list = r.items || [];
++      state.total = r.total || 0;
++      renderList();
++    }).catch(function () { /* список обновится при следующем действии */ });
++  }
++
++  function setCurrent(t) {
++    state.current = t;
++    state.items = (t && t.items ? t.items : []).map(function (it) {
++      return {
++        kind: it.kind, product_id: it.product_id, product_name: it.product_name, unit: it.unit,
++        equipment_id: it.equipment_id, equipment_name: it.equipment_name, equipment_serial: it.equipment_serial,
++        equipment_client_name: it.equipment_client_name, qty: it.qty_sent == null ? '' : num(it.qty_sent)
++      };
++    });
++  }
++
++  function loadTransfer(id) {
++    return KT.api.get(API + '/' + encodeURIComponent(id)).then(function (t) {
++      setCurrent(t);
++      setUrl(t.id);
++      renderCard();
++      renderList();
++    });
++  }
++
++  // openTransfer — выбор документа / ?id=N: 404 → тост, список перезапрашивается.
++  function openTransfer(id) {
++    state.warnings = [];
++    return loadTransfer(id).catch(function (err) {
++      if (err && err.status === 404) {
++        toast('Перемещение не найдено', true);
++        setCurrent(null);
++        setUrl(null);
++        renderCard();
++        return loadList(false);
++      }
++      toast(failureText(err), true);
++    });
++  }
++
++  function setUrl(id) {
++    var u = new URL(window.location.href);
++    if (id) u.searchParams.set('id', id); else u.searchParams.delete('id');
++    window.history.replaceState(null, '', u.pathname + u.search);
++  }
++
++  // ---------- список ----------
++  function fmtDateTime(s) { return KT.time.fmtDateTime(s); }
++  function fmtDate(s) { return KT.time.fmtDate(s); }
++
++  function badge(status) {
++    var s = STATUS[status] || { label: status, cls: 'text-bg-secondary' };
++    return '<span class="badge ' + s.cls + '" data-testid="st-status-badge" data-status="' + esc(status) + '">' + esc(s.label) + '</span>';
++  }
++
++  function renderList() {
++    var box = $('#st-list');
++    var curId = state.current && state.current.id;
++    box.innerHTML = state.list.map(function (t) {
++      var active = t.id === curId;
++      return '<button type="button" class="list-group-item list-group-item-action' + (active ? ' active' : '') + '"' +
++        ' data-testid="st-row" data-id="' + esc(t.id) + '"' + (active ? ' aria-current="true"' : '') + '>' +
++        '<div class="d-flex justify-content-between align-items-center gap-2">' +
++        '<span class="fw-semibold text-break">#' + esc(t.id) + ' · ' + esc(t.from_warehouse_name) + ' → ' + esc(t.to_warehouse_name) + '</span>' +
++        badge(t.status) + '</div>' +
++        '<div class="small' + (active ? '' : ' text-body-secondary') + '">' +
++        '<span data-testid="st-row-date">' + esc(fmtDate(t.created_at)) + '</span> · строк: <span data-testid="st-row-count">' + esc(t.items_count) + '</span>' +
++        (t.note ? ' · ' + esc(t.note) : '') + '</div>' +
++        '</button>';
++    }).join('');
++    $('#st-empty').classList.toggle('d-none', state.list.length > 0);
++    $('#st-more').classList.toggle('d-none', state.list.length >= state.total);
++    var shown = $('#st-shown');
++    shown.textContent = state.list.length + ' из ' + state.total;
++    shown.classList.toggle('d-none', state.total === 0);
++  }
++
++  // ---------- документ ----------
++  function warehouseOptions(selected) {
++    var list = state.warehouses.slice();
++    if (selected && !list.some(function (w) { return w.id === selected; })) {
++      // склад заявки ушёл в архив — показать его, чтобы не потерять значение
++      var cur = state.current || {};
++      var name = cur.from_warehouse_id === selected ? cur.from_warehouse_name : cur.to_warehouse_name;
++      list.push({ id: selected, name: (name || selected) + ' (архив)' });
++    }
++    return '<option value="">— выберите склад —</option>' + list.map(function (w) {
++      return '<option value="' + esc(w.id) + '"' + (w.id === selected ? ' selected' : '') + '>' + esc(w.name) + '</option>';
++    }).join('');
++  }
++
++  function productOptions() {
++    var used = {};
++    state.items.forEach(function (it) { if (it.kind === 'product') used[it.product_id] = true; });
++    return '<option value="">+ Товар</option>' + state.products.filter(function (p) { return !used[p.id]; }).map(function (p) {
++      return '<option value="' + esc(p.id) + '">' + esc(p.name) + (p.unit ? ', ' + esc(p.unit) : '') + '</option>';
++    }).join('');
++  }
++
++  function kindBadge(kind) {
++    return kind === 'equipment'
++      ? '<span class="badge text-bg-info" data-testid="st-item-kind">оборудование</span>'
++      : '<span class="badge text-bg-light border" data-testid="st-item-kind">товар</span>';
++  }
++
++  function itemName(it) {
++    if (it.kind === 'equipment') {
++      var sub = [];
++      if (it.equipment_serial) sub.push('S/N ' + esc(it.equipment_serial));
++      if (it.equipment_client_name) sub.push(esc(it.equipment_client_name));
++      return '<div data-testid="st-item-name">' + esc(it.equipment_name) + '</div>' +
++        (sub.length ? '<div class="small text-body-secondary">' + sub.join(' · ') + '</div>' : '');
++    }
++    return '<div data-testid="st-item-name">' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</div>';
++  }
++
++  function editRowHTML(it, i) {
++    var key = it.kind === 'equipment' ? it.equipment_id : it.product_id;
++    return '<tr data-testid="st-item-row" data-kind="' + esc(it.kind) + '" data-key="' + esc(key) + '" data-index="' + i + '">' +
++      '<td>' + kindBadge(it.kind) + '</td>' +
++      '<td>' + itemName(it) + '<div class="text-danger small d-none" data-testid="st-item-error" data-item-error></div></td>' +
++      '<td style="width:130px">' + (it.kind === 'product'
++        ? '<input type="number" step="any" min="0" class="form-control form-control-sm" data-testid="st-item-qty" aria-label="Количество" value="' + esc(it.qty) + '">'
++        : '<span class="text-body-secondary">—</span>') + '</td>' +
++      '<td style="width:44px" class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-testid="st-item-remove" title="Убрать строку" aria-label="Убрать строку">×</button></td>' +
++      '</tr>';
++  }
++
++  function viewRowHTML(it, showFact) {
++    var loss = showFact && it.kind === 'product' && it.qty_received != null && Number(it.qty_received) < Number(it.qty_sent);
++    return '<tr data-testid="st-view-item" data-kind="' + esc(it.kind) + '" data-key="' + esc(it.kind === 'equipment' ? it.equipment_id : it.product_id) + '">' +
++      '<td>' + kindBadge(it.kind) + '</td>' +
++      '<td>' + itemName(it) + '</td>' +
++      '<td data-testid="st-view-sent">' + (it.kind === 'product' ? esc(num(it.qty_sent)) : '<span class="text-body-secondary">—</span>') + '</td>' +
++      (showFact ? '<td data-testid="st-view-received"' + (loss ? ' class="text-danger fw-semibold" data-loss="true" title="Расхождение с отправленным"' : '') + '>' +
++        (it.kind === 'product' ? esc(num(it.qty_received)) : '<span class="text-body-secondary">—</span>') + '</td>' : '') +
++      '</tr>';
++  }
++
++  // Жёлтый блок (DS-052): app.css перекрашивает .alert-warning в нейтральный серо-синий
++  // (--bs-secondary), поэтому цвета предупреждения заданы родными warning-токенами Bootstrap
++  // 5.3 (bg-subtle / text-emphasis / border-subtle) — они свои у светлой и тёмной темы.
++  function warningsHTML() {
++    if (!state.warnings.length) return '';
++    return '<div class="alert alert-warning bg-warning-subtle text-warning-emphasis border-warning-subtle" data-testid="st-warnings"><div class="fw-semibold mb-1">Остатки на складе отправления:</div><ul class="mb-0">' +
++      state.warnings.map(function (w) {
++        return '<li>' + esc(w.name) + ' (' + esc(w.warehouse_name) + '): ' + esc(num(w.stock)) +
++          (w.kind === 'negative' ? ' — отрицательный остаток' : ' — на минимуме или ниже (' + esc(num(w.min_stock)) + ')') + '</li>';
++      }).join('') + '</ul></div>';
++  }
++
++  function headerHTML(t) {
++    if (t.new) return '<h2 class="fs-5 mb-3" data-testid="st-card-title">Новое перемещение</h2>';
++    return '<div class="d-flex justify-content-between align-items-center gap-2 mb-3">' +
++      '<h2 class="fs-5 mb-0" data-testid="st-card-title">Перемещение #' + esc(t.id) + '</h2>' +
++      '<span data-testid="st-card-status">' + badge(t.status) + '</span></div>';
++  }
++
++  // metaHTML — сведения: создан / отправлен / получен / отменён — кто и когда (§8.1 п.8).
++  function metaHTML(t) {
++    if (t.new) return '';
++    var meta = ['Создан: ' + esc(t.created_by_name) + ', ' + esc(fmtDateTime(t.created_at))];
++    if (t.sent_at) meta.push('Отправлен: ' + esc(t.sent_by_name || '') + ', ' + esc(fmtDateTime(t.sent_at)));
++    if (t.received_at) meta.push('Получен: ' + esc(t.received_by_name || '') + ', ' + esc(fmtDateTime(t.received_at)));
++    if (t.cancelled_at) meta.push('Отменён: ' + esc(t.cancelled_by_name || '') + ', ' + esc(fmtDateTime(t.cancelled_at)));
++    return '<div class="small text-body-secondary mt-3" data-testid="st-card-meta">' + meta.join('<br>') + '</div>';
++  }
++
++  function editorHTML(t) {
++    return '<div class="row g-2 mb-2">' +
++      '<div class="col-sm-6"><label class="form-label" for="st-from">Склад отправления *</label>' +
++      '<select class="form-select" id="st-from" data-testid="st-from">' + warehouseOptions(t.from_warehouse_id) + '</select>' +
++      '<div class="text-danger small d-none" data-field-error="from_warehouse_id" data-testid="st-from-error"></div></div>' +
++      '<div class="col-sm-6"><label class="form-label" for="st-to">Склад назначения *</label>' +
++      '<select class="form-select" id="st-to" data-testid="st-to">' + warehouseOptions(t.to_warehouse_id) + '</select>' +
++      '<div class="text-danger small d-none" data-field-error="to_warehouse_id" data-testid="st-to-error"></div></div>' +
++      '</div>' +
++      '<div class="mb-3"><label class="form-label" for="st-note">Примечание</label>' +
++      '<textarea class="form-control" id="st-note" data-testid="st-note" rows="2" maxlength="1000">' + esc(t.note || '') + '</textarea>' +
++      '<div class="text-danger small d-none" data-field-error="note" data-testid="st-note-error"></div></div>' +
++      '<div class="text-danger small mb-1 d-none" data-field-error="items" data-testid="st-items-error"></div>' +
++      '<div class="table-responsive"><table class="table table-sm align-middle mb-2" data-testid="st-items">' +
++      '<thead><tr><th>Тип</th><th>Наименование</th><th>Кол-во</th><th></th></tr></thead><tbody id="st-items-tbody"></tbody></table></div>' +
++      '<div class="row g-2 mb-3">' +
++      '<div class="col-sm-6"><select class="form-select form-select-sm" id="st-add-product" data-testid="st-add-product" aria-label="Добавить товар"></select></div>' +
++      '<div class="col-sm-6 position-relative" data-testid="st-add-equipment">' +
++      '<input type="search" class="form-control form-control-sm" id="st-equipment-search" data-testid="st-equipment-search" placeholder="+ Оборудование" autocomplete="off" aria-label="Добавить оборудование">' +
++      '<div class="form-text" id="st-equipment-hint" data-testid="st-equipment-hint"></div>' +
++      '<div class="text-danger small d-none" id="st-equipment-error" data-testid="st-equipment-error"></div>' +
++      '<div class="list-group position-absolute shadow d-none" id="st-equipment-results" data-testid="st-equipment-results" style="z-index:1050;left:0;right:0;max-height:260px;overflow:auto"></div>' +
++      '</div></div>' +
++      '<div class="d-flex flex-wrap justify-content-end gap-2">' +
++      (t.new ? '' : '<button type="button" class="btn btn-outline-secondary me-auto" data-testid="st-cancel" data-act="cancel">Отменить</button>') +
++      '<button type="button" class="btn btn-outline-primary" data-testid="st-save" data-act="save">Сохранить</button>' +
++      '<button type="button" class="btn btn-primary" data-testid="st-send" data-act="send">Отправить</button>' +
++      '</div>';
++  }
++
++  function viewHTML(t) {
++    var showFact = t.status === 'received';
++    var html = '<dl class="row mb-2">' +
++      '<dt class="col-sm-4">Склад отправления</dt><dd class="col-sm-8" data-testid="st-view-from">' + esc(t.from_warehouse_name) + '</dd>' +
++      '<dt class="col-sm-4">Склад назначения</dt><dd class="col-sm-8" data-testid="st-view-to">' + esc(t.to_warehouse_name) + '</dd>' +
++      (t.note ? '<dt class="col-sm-4">Примечание</dt><dd class="col-sm-8 text-break" data-testid="st-view-note">' + esc(t.note) + '</dd>' : '') +
++      '</dl>' +
++      '<div class="table-responsive"><table class="table table-sm align-middle" data-testid="st-items">' +
++      '<thead><tr><th>Тип</th><th>Наименование</th><th>Кол-во</th>' + (showFact ? '<th>Факт</th>' : '') + '</tr></thead><tbody>' +
++      t.items.map(function (it) { return viewRowHTML(it, showFact); }).join('') + '</tbody></table></div>';
++    if (t.status === 'in_transit') {
++      html += '<div class="d-flex flex-wrap justify-content-end gap-2">' +
++        '<button type="button" class="btn btn-outline-secondary me-auto" data-testid="st-cancel" data-act="cancel">Отменить отправку</button>' +
++        '<button type="button" class="btn btn-primary" data-testid="st-receive" data-act="receive">Принять</button>' +
++        '</div>';
++    }
++    return html;
++  }
++
++  function renderCard() {
++    var t = state.current;
++    $('#st-placeholder').classList.toggle('d-none', !!t);
++    var card = $('#st-card');
++    card.classList.toggle('d-none', !t);
++    if (!t) { card.innerHTML = ''; return; }
++    var editable = t.new || t.status === 'requested';
++    card.innerHTML = headerHTML(t) + warningsHTML() + (editable ? editorHTML(t) : viewHTML(t)) + metaHTML(t);
++    if (editable) {
++      renderRows();
++      syncEquipmentSearch();
++    }
++  }
++
++  // renderRows — строки редактора из модели + обновление «+ Товар» (без уже добавленных).
++  function renderRows() {
++    var tbody = $('#st-items-tbody');
++    if (!tbody) return;
++    tbody.innerHTML = state.items.map(editRowHTML).join('') ||
++      '<tr data-testid="st-items-empty"><td colspan="4" class="text-body-secondary small">Строк нет — добавьте товар или оборудование</td></tr>';
++    var sel = $('#st-add-product');
++    sel.innerHTML = productOptions();
++    sel.value = '';
++    if (sel._cbSync) sel._cbSync();
++  }
++
++  // readQty — перенести введённые количества из DOM в модель (перед перерисовкой строк).
++  function readQty() {
++    $$('#st-items-tbody tr[data-index]').forEach(function (tr) {
++      var inp = $('[data-testid="st-item-qty"]', tr);
++      var it = state.items[Number(tr.dataset.index)];
++      if (inp && it) it.qty = inp.value.trim();
++    });
++  }
++
++  function addProduct(id) {
++    var p = state.products.filter(function (x) { return x.id === id; })[0];
++    if (!p) return;
++    readQty();
++    state.items.push({ kind: 'product', product_id: p.id, product_name: p.name, unit: p.unit, qty: '' });
++    renderRows();
++    var rows = $$('#st-items-tbody [data-testid="st-item-qty"]');
++    if (rows.length) rows[rows.length - 1].focus();
++  }
++
++  function addEquipment(e) {
++    if (state.items.some(function (it) { return it.kind === 'equipment' && it.equipment_id === e.id; })) return;
++    readQty();
++    state.items.push({
++      kind: 'equipment', equipment_id: e.id,
++      equipment_name: [e.type_name, e.brand, e.model].filter(Boolean).join(' '),
++      equipment_serial: e.serial, equipment_client_name: e.client_name
++    });
++    renderRows();
++  }
++
++  // ---------- «+ Оборудование»: поиск единиц на складе отправления (§8.1, интерактив 3) ----------
++  function syncEquipmentSearch() {
++    var input = $('#st-equipment-search');
++    if (!input) return;
++    var from = $('#st-from').value;
++    input.disabled = !from;
++    $('#st-equipment-hint').textContent = from ? '' : 'Сначала выберите склад отправления';
++    if (!from) { input.value = ''; hideEquipmentResults(); }
++  }
++
++  function hideEquipmentResults() {
++    var box = $('#st-equipment-results');
++    if (box) { box.classList.add('d-none'); box.innerHTML = ''; }
++  }
++
++  function equipmentError(msg) {
++    var el = $('#st-equipment-error');
++    if (!el) return;
++    el.textContent = msg || '';
++    el.classList.toggle('d-none', !msg);
++    $('#st-equipment-search').classList.toggle('is-invalid', !!msg);
++  }
++
++  function searchEquipment() {
++    var input = $('#st-equipment-search');
++    var from = $('#st-from') && $('#st-from').value;
++    if (!input || !from) return;
++    var seq = ++searchSeq;
++    var p = new URLSearchParams();
++    p.set('warehouse_id', from);
++    p.set('location_status', 'at_warehouse');
++    if (input.value.trim()) p.set('q', input.value.trim());
++    p.set('limit', '20');
++    KT.api.get('/api/v1/equipment?' + p.toString()).then(function (r) {
++      if (seq !== searchSeq) return; // пришёл ответ на устаревший ввод
++      equipmentError('');
++      renderEquipmentResults(r.items || []);
++    }).catch(function (err) {
++      if (seq !== searchSeq) return;
++      hideEquipmentResults();
++      var tooLong = err && err.status === 400 && (err.fields || []).some(function (f) { return f.name === 'q' && f.message === 'too_long'; });
++      if (tooLong) equipmentError('Слишком длинный запрос');
++      else toast(failureText(err), true);
++    });
++  }
++
++  function renderEquipmentResults(items) {
++    var box = $('#st-equipment-results');
++    var curId = state.current && state.current.id;
++    var added = {};
++    state.items.forEach(function (it) { if (it.kind === 'equipment') added[it.equipment_id] = true; });
++    box.innerHTML = items.length ? items.map(function (e) {
++      // занятые другим документом — неактивны, с пометкой (DS-019)
++      var busy = e.active_transfer_id != null && e.active_transfer_id !== curId;
++      var off = busy || added[e.id];
++      var label = [e.client_name, [e.type_name, e.brand, e.model].filter(Boolean).join(' '), e.serial].filter(Boolean).join(' · ');
++      return '<button type="button" class="list-group-item list-group-item-action' + (off ? ' disabled' : '') + '"' +
++        ' data-testid="st-equipment-option" data-equipment-id="' + esc(e.id) + '"' + (off ? ' disabled aria-disabled="true"' : '') + '>' +
++        '<div>' + esc(label) + '</div>' +
++        (busy ? '<div class="small" data-testid="st-equipment-busy">в перемещении #' + esc(e.active_transfer_id) + '</div>' : '') +
++        (!busy && added[e.id] ? '<div class="small">уже в документе</div>' : '') +
++        '</button>';
++    }).join('') : '<div class="list-group-item text-body-secondary small" data-testid="st-equipment-none">На складе отправления оборудования нет</div>';
++    box._items = items;
++    box.classList.remove('d-none');
++  }
++
++  // ---------- ошибки ----------
++  function clearErrors() {
++    $$('#st-card .is-invalid').forEach(function (n) { n.classList.remove('is-invalid'); });
++    $$('#st-card [data-field-error], #st-card [data-item-error]').forEach(function (n) {
++      n.textContent = '';
++      n.classList.add('d-none');
++    });
++  }
++
++  function fieldError(name, msg) {
++    var el = $('#st-card [data-field-error="' + name + '"]');
++    if (!el) return false;
++    el.textContent = msg;
++    el.classList.remove('d-none');
++    return true;
++  }
++
++  // rowError — красный текст в строке таблицы (html — уже экранированная разметка).
++  function rowError(tr, html) {
++    if (!tr) return false;
++    var el = $('[data-item-error]', tr);
++    if (!el) return false;
++    el.innerHTML = el.innerHTML ? el.innerHTML + '; ' + html : html;
++    el.classList.remove('d-none');
++    return true;
++  }
++
++  function rowByEquipment(id) {
++    return $$('#st-items-tbody tr[data-kind="equipment"]').filter(function (tr) { return tr.dataset.key === id; })[0];
++  }
++
++  // showFieldErrors — 400 details.fields[]: склады/примечание — под полем, строки — в строке.
++  function showFieldErrors(fields) {
++    var rows = $$('#st-items-tbody tr[data-index]');
++    var rest = [];
++    fields.forEach(function (f) {
++      var m = /^items\[(\d+)\]\.(\w+)$/.exec(f.name);
++      if (m) {
++        var tr = rows[Number(m[1])];
++        var text = ROW_TEXT[m[2]] || 'Проверьте строку';
++        if (ROW_CODE_TEXT[f.message] && m[2] !== 'qty_sent') text += ' (' + ROW_CODE_TEXT[f.message] + ')';
++        if (!rowError(tr, esc(text))) rest.push(text);
++        var inp = tr && m[2] === 'qty_sent' && $('[data-testid="st-item-qty"]', tr);
++        if (inp) inp.classList.add('is-invalid');
++        return;
++      }
++      switch (f.name) {
++        case 'from_warehouse_id':
++        case 'to_warehouse_id':
++          fieldError(f.name, WAREHOUSE_TEXT[f.message] || 'Проверьте склад');
++          $(f.name === 'from_warehouse_id' ? '#st-from' : '#st-to').classList.add('is-invalid');
++          break;
++        case 'note':
++          fieldError('note', 'Слишком длинное примечание');
++          $('#st-note').classList.add('is-invalid');
++          break;
++        case 'items':
++          fieldError('items', 'Добавьте строки (не более 200)');
++          break;
++        case 'version':
++          rest.push('Обновите страницу');
++          break;
++        default:
++          rest.push(f.name + ': ' + f.message);
++      }
++    });
++    if (rest.length) toast(rest.join('; '), true);
++  }
++
++  // handleError — ошибка мутации документа. 409 по версии/статусу — тост и перечитывание
++  // документа и списка; 409 по единице — красный текст в её строке.
++  function handleError(err) {
++    if (err && err.status === 400 && err.fields && err.fields.length) {
++      showFieldErrors(err.fields);
++      return;
++    }
++    var details = (err && err.details) || {};
++    if (err && err.code === 'EQUIPMENT_IN_TRANSFER') {
++      var n = details.transfer_id;
++      var html = 'уже в перемещении <a href="/transfers?id=' + encodeURIComponent(n) + '" data-testid="st-item-transfer-link">#' + esc(n) + '</a>';
++      if (!rowError(rowByEquipment(details.equipment_id), html)) toast(err.message, true);
++      return;
++    }
++    if (err && err.code === 'TRANSFER_EQUIPMENT_NOT_AT_SOURCE') {
++      if (!rowError(rowByEquipment(details.equipment_id), esc('Оборудование находится не на складе отправления'))) toast(err.message, true);
++      return;
++    }
++    toast(failureText(err), true);
++    if (err && (err.status === 409 || err.status === 404) && state.current && !state.current.new) {
++      // документ изменён или уже в другом статусе — показать актуальное состояние
++      var id = state.current.id;
++      state.warnings = [];
++      loadTransfer(id).catch(function () { /* 404 — документ пропал; список ниже */ });
++      reloadList();
++    }
++  }
++
++  // ---------- действия ----------
++  function collectForm() {
++    readQty();
++    return {
++      from_warehouse_id: $('#st-from').value,
++      to_warehouse_id: $('#st-to').value,
++      note: $('#st-note').value,
++      items: state.items.map(function (it) {
++        if (it.kind === 'equipment') return { kind: 'equipment', equipment_id: it.equipment_id };
++        var n = Number(it.qty);
++        var row = { kind: 'product', product_id: it.product_id };
++        // пустое/нечисловое количество не передаётся — сервер ответит qty_sent: required
++        if (it.qty !== '' && !Number.isNaN(n)) row.qty_sent = n;
++        return row;
++      })
++    };
++  }
++
++  function after(t, okText) {
++    state.warnings = t.warnings && t.warnings.length ? t.warnings : [];
++    setCurrent(t);
++    setUrl(t.id);
++    renderCard();
++    if (okText) toast(okText, false);
++    if (KT.refreshNavBadge) KT.refreshNavBadge();
++    return reloadList();
++  }
++
++  function setBusy(on) {
++    state.busy = on;
++    $$('#st-card button, #st-card select, #st-card input, #st-card textarea').forEach(function (b) { b.disabled = on; });
++    $$('#st-card select').forEach(function (s) { if (s._cbSync) s._cbSync(); });
++    if (!on) syncEquipmentSearch();
++  }
++
++  function withBusy(p) {
++    clearErrors();
++    setBusy(true);
++    return p.then(function () { setBusy(false); }, function (err) { setBusy(false); handleError(err); });
++  }
++
++  function save() {
++    var t = state.current;
++    var body = collectForm();
++    if (t.new) return KT.api.post(API, body);
++    body.version = t.version;
++    return KT.api.put(API + '/' + t.id, body);
++  }
++
++  function doSave() {
++    return withBusy(save().then(function (t) { return after(t, 'Сохранено'); }));
++  }
++
++  function doSend() {
++    var t = state.current;
++    var p;
++    if (t.new) {
++      var body = collectForm();
++      body.send = true;
++      p = KT.api.post(API, body);
++    } else {
++      // несохранённые правки заявки сначала сохраняются, затем отправка
++      p = save().then(function (saved) {
++        setCurrent(saved);
++        return KT.api.post(API + '/' + saved.id + '/send', { version: saved.version });
++      });
++    }
++    return withBusy(p.then(function (r) { return after(r, 'Перемещение отправлено'); }));
++  }
++
++  function doCancel() {
++    var t = state.current;
++    return KT.uiDialog({
++      title: 'Отмена перемещения', text: 'Отменить перемещение #' + t.id + '?',
++      ok: t.status === 'in_transit' ? 'Отменить отправку' : 'Отменить перемещение', cancel: 'Отмена', danger: true
++    }).then(function (ok) {
++      if (!ok) return;
++      return withBusy(KT.api.post(API + '/' + t.id + '/cancel', { version: t.version })
++        .then(function (r) { return after(r, 'Перемещение отменено'); }));
++    });
++  }
++
++  // ---------- приёмка ----------
++  function openReceive() {
++    var t = state.current;
++    $('#st-receive-tbody').innerHTML = t.items.map(function (it) {
++      if (it.kind === 'equipment') {
++        return '<tr data-testid="st-receive-row" data-kind="equipment">' +
++          '<td>' + itemName(it) + '</td><td><span class="text-body-secondary">—</span></td>' +
++          '<td class="text-body-secondary small" data-testid="st-receive-whole">принимается целиком</td></tr>';
++      }
++      return '<tr data-testid="st-receive-row" data-kind="product" data-item-id="' + esc(it.id) + '">' +
++        '<td>' + itemName(it) + '</td>' +
++        '<td>' + esc(num(it.qty_sent)) + '</td>' +
++        '<td><input type="number" step="any" min="0" class="form-control form-control-sm" data-testid="st-receive-qty"' +
++        ' data-item-id="' + esc(it.id) + '" value="' + esc(num(it.qty_sent)) + '" aria-label="Факт">' +
++        '<div class="text-danger small d-none" data-testid="st-receive-qty-error" data-receive-error></div></td></tr>';
++    }).join('');
++    var err = $('#st-receive-error');
++    err.classList.add('d-none');
++    err.textContent = '';
++    $('#st-receive-confirm').disabled = false;
++    if (!receiveModal) receiveModal = new bootstrap.Modal($('#st-receive-modal'));
++    receiveModal.show();
++  }
++
++  function receiveFieldError(input, msg) {
++    input.classList.add('is-invalid');
++    var el = $('[data-receive-error]', input.closest('td'));
++    el.textContent = msg;
++    el.classList.remove('d-none');
++  }
++
++  function bindReceive() {
++    var receiving = false;
++    $('#st-receive-form').addEventListener('submit', function (e) {
++      e.preventDefault();
++      if (receiving) return;
++      var t = state.current;
++      var errEl = $('#st-receive-error');
++      errEl.classList.add('d-none');
++      var inputs = $$('#st-receive-tbody input');
++      inputs.forEach(function (inp) {
++        inp.classList.remove('is-invalid');
++        var el = $('[data-receive-error]', inp.closest('td'));
++        el.textContent = '';
++        el.classList.add('d-none');
++      });
++      var bad = false;
++      var items = inputs.map(function (inp) {
++        var raw = inp.value.trim();
++        var n = Number(raw);
++        if (raw === '' || Number.isNaN(n)) { bad = true; receiveFieldError(inp, RECEIVE_TEXT.required); }
++        return { id: inp.dataset.itemId, qty_received: n };
++      });
++      if (bad) return;
++      receiving = true;
++      $('#st-receive-confirm').disabled = true;
++      KT.api.post(API + '/' + t.id + '/receive', { version: t.version, items: items })
++        .then(function (r) {
++          receiveModal.hide();
++          return after(r, 'Перемещение получено');
++        })
++        .catch(function (err) {
++          if (err && err.status === 400 && err.fields && err.fields.length) {
++            var other = [];
++            err.fields.forEach(function (f) {
++              var m = /^items\[(\d+)\]\.(\w+)$/.exec(f.name);
++              var inp = m && inputs[Number(m[1])];
++              if (inp && m[2] === 'qty_received') receiveFieldError(inp, RECEIVE_TEXT[f.message] || f.message);
++              else if (inp) receiveFieldError(inp, 'Проверьте строки приёмки');
++              else other.push(f.name === 'version' ? 'Обновите страницу' : 'Проверьте строки приёмки');
++            });
++            if (other.length) {
++              errEl.textContent = other.join('; ');
++              errEl.classList.remove('d-none');
++            }
++            return;
++          }
++          // 409 (версия, статус, STOCK_OVERFLOW) и сеть — тост; документ перечитывается
++          receiveModal.hide();
++          handleError(err);
++        })
++        .then(function () {
++          receiving = false;
++          $('#st-receive-confirm').disabled = false;
++        });
++    });
++  }
++
++  // ---------- события ----------
++  function newDocument() {
++    state.warnings = [];
++    setCurrent({ new: true, from_warehouse_id: '', to_warehouse_id: '', note: '', items: [] });
++    setUrl(null);
++    renderCard();
++    renderList();
++  }
++
++  function setFilterValue(sel, value) {
++    sel.value = value;
++    if (sel._cbSync) sel._cbSync();
++  }
++
++  function bind() {
++    $('#st-filter-status').addEventListener('change', function (e) {
++      state.status = e.target.value;
++      loadList(false);
++    });
++    $('#st-filter-warehouse').addEventListener('change', function (e) {
++      state.warehouseId = e.target.value;
++      loadList(false);
++    });
++    $('#st-filter-reset').addEventListener('click', function () {
++      state.status = '';
++      state.warehouseId = '';
++      setFilterValue($('#st-filter-status'), '');
++      setFilterValue($('#st-filter-warehouse'), '');
++      loadList(false);
++    });
++    $('#st-more').addEventListener('click', function () { loadList(true); });
++    $('#st-new').addEventListener('click', newDocument);
++    $('#st').addEventListener('click', function (e) {
++      if (e.target.closest('[data-st-new]')) newDocument();
++    });
++    $('#st-list').addEventListener('click', function (e) {
++      var row = e.target.closest('[data-testid="st-row"]');
++      if (row) openTransfer(row.dataset.id);
++    });
++
++    var card = $('#st-card');
++    card.addEventListener('click', function (e) {
++      if (state.busy) return;
++      var opt = e.target.closest('[data-testid="st-equipment-option"]');
++      if (opt) {
++        if (opt.disabled) return;
++        var found = ($('#st-equipment-results')._items || []).filter(function (x) { return x.id === opt.dataset.equipmentId; })[0];
++        if (found) addEquipment(found);
++        $('#st-equipment-search').value = '';
++        hideEquipmentResults();
++        return;
++      }
++      var rm = e.target.closest('[data-testid="st-item-remove"]');
++      if (rm) {
++        readQty();
++        state.items.splice(Number(rm.closest('tr').dataset.index), 1);
++        renderRows();
++        return;
++      }
++      var act = e.target.closest('[data-act]');
++      if (!act) return;
++      switch (act.dataset.act) {
++        case 'save': doSave(); break;
++        case 'send': doSend(); break;
++        case 'cancel': doCancel(); break;
++        case 'receive': openReceive(); break;
++      }
++    });
++    card.addEventListener('change', function (e) {
++      if (e.target.id === 'st-add-product') {
++        if (e.target.value) addProduct(e.target.value);
++        return;
++      }
++      if (e.target.id === 'st-from') {
++        // единицы ищутся на складе отправления — прежняя выдача неактуальна
++        hideEquipmentResults();
++        syncEquipmentSearch();
++      }
++    });
++    card.addEventListener('input', function (e) {
++      if (e.target.id !== 'st-equipment-search') return;
++      clearTimeout(searchTimer);
++      searchTimer = setTimeout(searchEquipment, SEARCH_DEBOUNCE_MS);
++    });
++    card.addEventListener('focusin', function (e) {
++      if (e.target.id === 'st-equipment-search' && !e.target.disabled) searchEquipment();
++    });
++    card.addEventListener('keydown', function (e) {
++      if (e.key === 'Escape' && e.target.id === 'st-equipment-search') hideEquipmentResults();
++    });
++    document.addEventListener('click', function (e) {
++      if (!e.target.closest('[data-testid="st-add-equipment"]')) hideEquipmentResults();
++    });
++    bindReceive();
++  }
++
++  // ---------- инициализация ----------
++  function init() {
++    var root = $('#st');
++    if (!root) return;
++    readWarehouses();
++    bind();
++    var id = new URLSearchParams(window.location.search).get('id');
++    loadProducts(0, []).then(function (items) { state.products = items; }, function () { state.products = []; })
++      .then(function () { return loadList(false); })
++      .then(function () { if (id) return openTransfer(id); });
++  }
++
++  KT.transfers = { init: init };
++  document.addEventListener('DOMContentLoaded', init);
++})();
+diff --git a/web/ssr/clients/templates/pages/equipment-history.html b/web/ssr/clients/templates/pages/equipment-history.html
+index 5e127d5..bc59355 100644
+--- a/web/ssr/clients/templates/pages/equipment-history.html
++++ b/web/ssr/clients/templates/pages/equipment-history.html
+@@ -12,10 +12,32 @@
+         </div>
+         <a href="/equipment/{{ .Equipment.ID }}" class="btn btn-outline-secondary btn-sm ms-auto" data-testid="history-edit">Редактировать</a>
+       </div>
++      <div class="d-flex align-items-center gap-2 flex-wrap mt-2">
++        <span class="badge {{ .Location.BadgeClass }}" data-testid="history-location" data-location-status="{{ .Location.Status }}">{{ .Location.Label }}</span>
++        {{ if .Location.ActiveTransferID }}<a class="small" href="/transfers?id={{ .Location.ActiveTransferID }}" data-testid="history-active-transfer">перемещение #{{ .Location.ActiveTransferID }}</a>{{ end }}
++      </div>
+       <div class="small mt-2" data-testid="history-summary">Заказов: {{ len .Orders }} · услуг: {{ .Services }}</div>
+     </div>
+   </div>
+ 
++  {{ if .Transfers }}
++  <div class="card mb-3" data-testid="history-transfers">
++    <div class="card-body">
++      <h3 class="fs-6 mb-2">Перемещения</h3>
++      <ul class="list-unstyled mb-0 small">
++        {{ range .Transfers }}
++        <li class="d-flex align-items-center gap-2 flex-wrap py-1" data-testid="history-transfer" data-transfer-id="{{ .ID }}">
++          <a href="/transfers?id={{ .ID }}" class="fw-semibold" data-testid="history-transfer-link">#{{ .ID }}</a>
++          <span>{{ .FromName }} → {{ .ToName }}</span>
++          <span class="badge {{ .StatusClass }}" data-testid="history-transfer-status">{{ .StatusLabel }}</span>
++          <span class="text-body-secondary ms-auto" data-testid="history-transfer-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
++        </li>
++        {{ end }}
++      </ul>
++    </div>
++  </div>
++  {{ end }}
++
+   {{ range .Orders }}
+   <div class="card mb-3" data-testid="history-order" data-task-id="{{ .TaskID }}">
+     <div class="card-body">
+@@ -23,7 +45,6 @@
+         <a href="/?task={{ .TaskID }}" class="fw-semibold" data-testid="history-order-link">#{{ .TaskID }} {{ .Title }}</a>
+         <span class="badge" style="background-color: {{ .ColumnColor }}">{{ .ColumnName }}</span>
+         {{ if .IsPaid }}<span class="badge text-bg-success">Оплачен</span>{{ end }}
+-        {{ if .Location }}<span class="badge {{ if eq .EquipmentStatus "in_transit" }}text-bg-warning{{ else }}text-bg-light border{{ end }}" data-testid="history-order-location">{{ .Location }}</span>{{ end }}
+         <span class="text-body-secondary small ms-auto" data-testid="history-order-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
+       </div>
+       {{ if .Accepted }}
+diff --git a/web/ssr/stocktransfers/templates/pages/list.html b/web/ssr/stocktransfers/templates/pages/list.html
+deleted file mode 100644
+index eacddb3..0000000
+--- a/web/ssr/stocktransfers/templates/pages/list.html
++++ /dev/null
+@@ -1,64 +0,0 @@
+-{{ define "content" }}
+-<div id="st" class="row g-3" data-testid="st-root">
+-  <!-- Список перемещений (master) -->
+-  <div class="col-lg-5">
+-    <div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="st-filters">
+-      <select class="form-select form-select-sm" id="st-filter-status" data-testid="st-filter-status" style="max-width:170px" aria-label="Статус">
+-        <option value="">Все статусы</option>
+-        <option value="requested">Заявка</option>
+-        <option value="in_transit">В пути</option>
+-        <option value="received">Принято</option>
+-        <option value="cancelled">Отменено</option>
+-      </select>
+-      <select class="form-select form-select-sm" id="st-filter-warehouse" data-testid="st-filter-warehouse" style="max-width:190px" aria-label="Склад">
+-        <option value="">Все склады</option>
+-      </select>
+-      <button type="button" class="btn btn-primary btn-sm ms-auto" id="st-new" data-testid="st-new">+ Перемещение</button>
+-    </div>
+-    <div class="list-group" id="st-list" data-testid="st-list"></div>
+-    <div class="empty-state d-none" id="st-empty" data-testid="st-empty">Перемещений нет.</div>
+-    <p class="text-body-secondary small d-none mt-2" id="st-shown" data-testid="st-shown"></p>
+-  </div>
+-
+-  <!-- Карточка перемещения (detail) -->
+-  <div class="col-lg-7">
+-    <div class="card" id="st-detail" data-testid="st-detail">
+-      <div class="card-body">
+-        <div class="text-body-secondary" id="st-placeholder" data-testid="st-placeholder">Выберите перемещение в списке или создайте новое.</div>
+-        <div class="d-none" id="st-card"></div>
+-      </div>
+-    </div>
+-    <p class="text-body-secondary small mt-2">При отправке товары списываются со склада-источника и числятся «в пути»; при приёмке — приходуют на склад-получатель по факту, недостача фиксируется в журнале движений как потеря. Отмена отправленного перемещения возвращает товары на источник.</p>
+-  </div>
+-</div>
+-
+-<!-- Модалка приёмки по факту (DS-006) -->
+-<div class="modal fade" id="st-receive-modal" tabindex="-1" aria-hidden="true" data-testid="st-receive-modal">
+-  <div class="modal-dialog modal-lg">
+-    <form class="modal-content" id="st-receive-form" novalidate>
+-      <div class="modal-header">
+-        <h2 class="modal-title fs-5">Приёмка перемещения</h2>
+-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+-      </div>
+-      <div class="modal-body">
+-        <div class="alert alert-danger d-none" id="st-receive-error" data-testid="st-receive-error"></div>
+-        <p class="text-body-secondary small">Укажите фактически полученное количество. Недостача будет списана как потеря при перемещении.</p>
+-        <div class="table-responsive">
+-          <table class="table align-middle mb-0">
+-            <thead><tr><th>Товар</th><th>Отправлено</th><th style="width:160px">Получено *</th></tr></thead>
+-            <tbody id="st-receive-tbody"></tbody>
+-          </table>
+-        </div>
+-      </div>
+-      <div class="modal-footer">
+-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+-        <button type="submit" class="btn btn-primary" id="st-receive-confirm" data-testid="st-receive-confirm">Принять</button>
+-      </div>
+-    </form>
+-  </div>
+-</div>
+-{{ end }}
+-
+-{{ define "scripts" }}
+-<script src="/assets/ssr-shared/js/stock-transfers.js"></script>
+-{{ end }}
+diff --git a/web/ssr/transfers/templates/pages/list.html b/web/ssr/transfers/templates/pages/list.html
+new file mode 100644
+index 0000000..19e6945
+--- /dev/null
++++ b/web/ssr/transfers/templates/pages/list.html
+@@ -0,0 +1,82 @@
++{{ define "content" }}
++<div id="st" data-testid="st-root">
++  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
++    <!-- Панель фильтров (§8.1 п.2): комбинация — «И» -->
++    <div class="d-flex flex-wrap align-items-center gap-2" data-testid="st-filters">
++      <select class="form-select form-select-sm" id="st-filter-status" data-testid="st-filter-status" style="max-width:170px" aria-label="Статус">
++        <option value="">Все статусы</option>
++        <option value="requested">Заявка</option>
++        <option value="in_transit">В пути</option>
++        <option value="received">Получено</option>
++        <option value="cancelled">Отменён</option>
++      </select>
++      <select class="form-select form-select-sm" id="st-filter-warehouse" data-testid="st-filter-warehouse" style="max-width:210px" aria-label="Склад">
++        <option value="">Все склады</option>
++        {{ range .Warehouses }}<option value="{{ .ID }}" data-active="{{ .IsActive }}" data-name="{{ .Name }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>
++        {{ end }}
++      </select>
++      <button type="button" class="btn btn-outline-secondary btn-sm" id="st-filter-reset" data-testid="st-filter-reset">Сбросить</button>
++    </div>
++    <button type="button" class="btn btn-primary btn-sm ms-auto" id="st-new" data-testid="st-new">Новое перемещение</button>
++  </div>
++
++  <div class="row g-3">
++    <!-- Список документов (master) -->
++    <div class="col-lg-5">
++      <div class="list-group" id="st-list" data-testid="st-list"></div>
++      <div class="empty-state d-none" id="st-empty" data-testid="st-empty">
++        <div class="mb-2">Перемещений нет</div>
++        <button type="button" class="btn btn-primary btn-sm" data-st-new data-testid="st-empty-new">Новое перемещение</button>
++      </div>
++      <div class="d-flex align-items-center gap-2 mt-2">
++        <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="st-more" data-testid="st-more">Показать ещё</button>
++        <span class="text-body-secondary small d-none" id="st-shown" data-testid="st-shown"></span>
++      </div>
++    </div>
++
++    <!-- Документ (detail) -->
++    <div class="col-lg-7">
++      <div class="card" id="st-detail" data-testid="st-detail">
++        <div class="card-body">
++          <div class="text-body-secondary" id="st-placeholder" data-testid="st-placeholder">Выберите перемещение</div>
++          <div class="d-none" id="st-card"></div>
++        </div>
++      </div>
++      <p class="text-body-secondary small mt-2">При отправке товары списываются со склада отправления и числятся «в пути», оборудование клиентов — «в пути» по документу; при приёмке товары приходуют на склад назначения по факту (недостача — потеря при перемещении), оборудование принимается целиком. Отмена отправленного перемещения возвращает всё на склад отправления.</p>
++    </div>
++  </div>
++</div>
++
++<!-- Тосты (DS-052): правый верхний угол, 5 секунд -->
++<div class="toast-container position-fixed top-0 end-0 p-3" id="st-toasts" style="z-index:1090;max-width:min(380px,100vw)" aria-live="polite"></div>
++
++<!-- Модалка «Приёмка» (§8.1 п.6): факт — только по товарным строкам (DS-037) -->
++<div class="modal fade" id="st-receive-modal" tabindex="-1" aria-hidden="true" data-testid="st-receive-modal">
++  <div class="modal-dialog modal-lg">
++    <form class="modal-content" id="st-receive-form" novalidate>
++      <div class="modal-header">
++        <h2 class="modal-title fs-5">Приёмка</h2>
++        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++      </div>
++      <div class="modal-body">
++        <div class="alert alert-danger d-none" id="st-receive-error" data-testid="st-receive-error"></div>
++        <p class="text-body-secondary small">Укажите фактически полученное количество товаров. Недостача будет списана как потеря при перемещении. Оборудование принимается целиком.</p>
++        <div class="table-responsive">
++          <table class="table align-middle mb-0">
++            <thead><tr><th>Наименование</th><th>Отправлено</th><th style="width:170px">Факт</th></tr></thead>
++            <tbody id="st-receive-tbody"></tbody>
++          </table>
++        </div>
++      </div>
++      <div class="modal-footer">
++        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
++        <button type="submit" class="btn btn-primary" id="st-receive-confirm" data-testid="st-receive-confirm">Принять</button>
++      </div>
++    </form>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/transfers.js"></script>
++{{ end }}

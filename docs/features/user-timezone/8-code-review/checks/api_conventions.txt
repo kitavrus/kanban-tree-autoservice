@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature user-timezone --repo /Users/igorpotema/mycode/kanban-tree --paths internal/features/users internal/features/auth internal/features/board pkg/timezone internal/ssr internal/server/middleware
+(exit 0)
+
+api-conventions internal/features/users,internal/features/auth,internal/features/board,pkg/timezone,internal/ssr,internal/server/middleware: PASS (проблем: 0)

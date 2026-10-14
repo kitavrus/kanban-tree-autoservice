@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/go_naming_check.py --feature pagination --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae --paths internal/features/board internal/features/catalog
+(exit 0)
+
+go-naming internal/features/board,internal/features/catalog: PASS (проблем: 0)

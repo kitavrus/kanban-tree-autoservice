@@ -1,0 +1,498 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 5edfd89..1e6ce61 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -662,18 +662,20 @@ export class AdminApi {
+ 
+   // ---- мягкое удаление (soft-delete-core §6.1–§6.4; типы — board-types.ts, §TD-6.2) ----
+ 
+-  /** Адрес ресурса вида kind: заказы (часть 1) и документы перемещения (часть 2). */
++  /** Адрес ресурса вида kind: заказы (часть 1), документы перемещения (часть 2), колонки (часть 3). */
+   private softDeletePath(kind: import('./board-types').DeletedKind, id: number | string): string {
+     if (kind === 'tasks') return `/api/v1/tasks/${id}`;
+     if (kind === 'transfers') return `/api/v1/transfers/${id}`;
++    if (kind === 'columns') return `/api/v1/columns/${id}`;
+     throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);
+   }
+ 
+   /** Мягкое удаление записи с причиной: DELETE /api/v1/{ресурс}/:id, тело {reason}; у документа
+    *  перемещения в теле ещё и актуальный version (DS-028). */
+   async softDelete(kind: 'transfers', id: number | string, reason?: string): Promise<TransferDeleteResponse>;
++  async softDelete(kind: 'columns', id: number | string, reason?: string): Promise<import('./board-types').ColumnDeleteResponse>;
+   async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason?: string): Promise<import('./board-types').TaskDeleteResponse>;
+-  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<import('./board-types').TaskDeleteResponse | TransferDeleteResponse> {
++  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<import('./board-types').TaskDeleteResponse | TransferDeleteResponse | import('./board-types').ColumnDeleteResponse> {
+     if (kind === 'transfers') return this.deleteTransfer(Number(id), reason);
+     const data: import('./board-types').DeleteBody = { reason };
+     const res = await this.ctx.delete(this.softDeletePath(kind, id), { data, headers: await this.headers() });
+@@ -739,9 +741,40 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  async deleteColumn(id: string): Promise<void> {
+-    const res = await this.ctx.delete(`/api/v1/columns/${id}`, { headers: await this.headers() });
+-    expect(res.status(), `удаление колонки ${id}: ${await res.text()}`).toBe(204);
++  /** МЯГКОЕ удаление колонки с причиной (soft-delete-board-columns §6.1, TS-F8): DELETE
++   *  /api/v1/columns/:id, тело {reason} → 200 {id, deleted_at}; колонка уходит в раздел
++   *  «Удалённые». Физическая уборка тестовых данных — purgeColumn. */
++  async deleteColumn(id: string, reason = 'e2e: создана по ошибке'): Promise<import('./board-types').ColumnDeleteResponse> {
++    return this.softDelete('columns', id, reason);
++  }
++
++  /** Восстановление колонки: POST /api/v1/columns/:id/restore (§6.2). Статус не проверяется —
++   *  повтор ждёт 409 NOT_DELETED. */
++  async restoreColumn(id: string): Promise<{ status: number; body: import('./board-types').ColumnRestoreResponse | import('./board-types').ColumnRestoreError }> {
++    const res = await this.ctx.post(`/api/v1/columns/${id}/restore`, { headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /**
++   * ФИЗИЧЕСКАЯ уборка колонки — служебный адрес DELETE /api/v1/test/purge/columns/:id
++   * (soft-delete-board-columns §6.3, DS-027, TS-F8; стенд — с TEST_PURGE_ENABLED=true): обычный
++   * DELETE колонки теперь мягкий — тестовые колонки копились бы во вкладке «Колонки» раздела
++   * «Удалённые». Работает и для действующей, и для мягко удалённой колонки. Бросает: 404 «Не
++   * найдено» — колонки уже нет (сообщение содержит COLUMN_NOT_FOUND); 409 — на колонку
++   * ссылаются заказы (сообщение содержит COLUMN_NOT_EMPTY); любой другой 404 — адрес не
++   * зарегистрирован, уборка выключена на стенде (ошибка с подсказкой).
++   */
++  async purgeColumn(id: string): Promise<void> {
++    const del = await this.ctx.delete(`/api/v1/test/purge/columns/${id}`, { headers: await this.headers() });
++    if (del.status() === 200) return;
++    const text = await del.text();
++    const body = (() => { try { return JSON.parse(text) as { code?: string; message?: string }; } catch { return null; } })();
++    if (del.status() === 404) {
++      if (body?.code === 'NOT_FOUND' && body.message === 'Не найдено') throw new Error(`purgeColumn ${id}: COLUMN_NOT_FOUND — колонки уже нет`);
++      throw new Error(`purgeColumn ${id}: служебная уборка выключена — запустите стенд с TEST_PURGE_ENABLED=true (ответ: ${text})`);
++    }
++    if (del.status() === 409 && body?.code === 'COLUMN_NOT_EMPTY') throw new Error(`purgeColumn ${id}: COLUMN_NOT_EMPTY — на колонку ссылаются заказы`);
++    throw new Error(`purgeColumn ${id}: HTTP ${del.status()} ${text}`);
+   }
+ 
+   async listColumns(): Promise<{ items: import('./board-types').Column[] }> {
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index c412b9d..10339a3 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -93,6 +93,12 @@ export type DeleteBody = { reason: string };
+ /** 200 POST /api/v1/tasks/:id/restore (soft-delete-core §6.2). */
+ export type RestoreNotice = { code: 'column_replaced' | 'client_deleted' | 'equipment_deleted'; message: string };
+ export type TaskRestoreResponse = { id: number; warnings: StockWarning[]; notices: RestoreNotice[] };
++/** 200 DELETE /api/v1/columns/:id (board.ColumnDeleteResponse, soft-delete-board-columns §6.1). */
++export type ColumnDeleteResponse = { id: string; deleted_at: string };
++/** 200 POST /api/v1/columns/:id/restore (board.ColumnRestoreResponse, §6.2): колонка — в конце доски. */
++export type ColumnRestoreResponse = { id: string; position: number };
++/** Отказы восстановления колонки (§6.2). */
++export type ColumnRestoreError = { code: 'NOT_DELETED' | 'COLUMN_NOT_FOUND' | 'FORBIDDEN'; message: string };
+ /** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
+ export type PurgeResponse = { id: string };
+ 
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index 6dbb57c..93df39e 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -76,10 +76,12 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+   // общий на воркер (scope: 'worker'), поэтому оборачиваем createTask/createColumn ТОЛЬКО
+   // на время текущего теста, чтобы удалить именно ЕГО заказы/колонки — не чужие и не
+   // seed-demo (у них другой adminApi-логин прогона, через этот wrapper они не проходят).
+-  // Порядок удаления — заказы, ПОТОМ колонки (колонка с заказами не удаляется, 409
+-  // COLUMN_NOT_EMPTY); тест, который сам удаляет то, что создал (напр. BD-006 намеренно
+-  // проверяет 409 и оставляет колонку) — второй раз найдёт нечего удалять (404/409
+-  // «уже удалено»/«ещё не пусто» — ожидаемо и не логируется); любая другая ошибка
++  // Порядок удаления — заказы, ПОТОМ колонки (колонка, на которую ссылаются заказы, не
++  // убирается, 409 COLUMN_NOT_EMPTY); колонки убираются служебным адресом purge
++  // (soft-delete-board-columns TS-F8) — и действующие, и мягко удалённые тестом; тест, который
++  // сам убрал то, что создал, либо оставил колонку с заказом, созданным в обход adminApi, —
++  // «уже нет» / «ещё не пусто» (COLUMN_NOT_FOUND / COLUMN_NOT_EMPTY) ожидаемо и не логируется;
++  // любая другая ошибка
+   // удаления — неожиданная, глотать её молча нельзя (code review MEDIUM/LOW) —
+   // идёт в console.warn, чтобы не потерялась незамеченной.
+   _boardCleanup: [
+@@ -127,7 +129,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+       // Уборка — ФИЗИЧЕСКАЯ, служебным адресом DELETE /api/v1/test/purge/tasks/:id
+       // (soft-delete-core DS-027; стенд — с TEST_PURGE_ENABLED=true): обычный DELETE заказа
+       // теперь мягкий, и тестовые заказы копились бы в разделе «Удалённые» (а мягко удалённый
+-      // заказ по-прежнему держит колонку — 409 COLUMN_NOT_EMPTY ниже). purgeTask сначала убирает
++      // заказ держит колонку от физической уборки — 409 COLUMN_NOT_EMPTY ниже). purgeTask сначала убирает
+       // документы заказа (отмена проведения → отмена → удаление), потом сам заказ — и
+       // действующий, и мягко удалённый тестом. Заказа уже нет (TASK_NOT_FOUND) — молча; всё
+       // остальное (409, выключенная на стенде уборка) — неожиданно и идёт в console.warn.
+@@ -138,10 +140,13 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+           if (!notFound) console.warn(`_boardCleanup: не удалось удалить заказ #${id}: ${msg}`);
+         });
+       }
++      // Колонки — ФИЗИЧЕСКИ, служебным адресом DELETE /api/v1/test/purge/columns/:id
++      // (soft-delete-board-columns DS-027, TS-F8): обычный DELETE колонки теперь мягкий, и
++      // тестовые колонки копились бы во вкладке «Колонки» раздела «Удалённые».
+       for (const id of createdColumns) {
+-        await adminApi.deleteColumn(id).catch((e) => {
++        await adminApi.purgeColumn(id).catch((e) => {
+           const msg = e instanceof Error ? e.message : String(e);
+-          if (!/40[49]/.test(msg)) console.warn(`_boardCleanup: не удалось удалить колонку ${id}: ${msg}`);
++          if (!/COLUMN_NOT_FOUND|COLUMN_NOT_EMPTY/.test(msg)) console.warn(`_boardCleanup: не удалось удалить колонку ${id}: ${msg}`);
+         });
+       }
+     },
+diff --git a/e2e/pages/BoardPage.ts b/e2e/pages/BoardPage.ts
+index 5bf36d6..a63ab34 100644
+--- a/e2e/pages/BoardPage.ts
++++ b/e2e/pages/BoardPage.ts
+@@ -283,6 +283,27 @@ export class BoardPage {
+     }
+   }
+ 
++  // ---- окно «Удаление» колонки (soft-delete-board-columns §8.1; общее KT.uiDeleteDialog) ----
++  get deleteDialog(): Locator { return this.page.locator('[data-testid="ui-dialog"][data-dialog-kind="delete"]'); }
++  get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
++  get deleteDialogText(): Locator { return this.deleteDialog.getByTestId('ui-dialog-text'); }
++  get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
++  get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
++  get deleteDialogError(): Locator { return this.page.getByTestId('delete-dialog-error'); }
++  get deleteDialogOk(): Locator { return this.deleteDialog.getByTestId('ui-dialog-ok'); }
++  get deleteDialogCancel(): Locator { return this.deleteDialog.getByTestId('ui-dialog-cancel'); }
++  get toast(): Locator { return this.page.getByTestId('toast'); }
++  get toastError(): Locator { return this.page.getByTestId('toast-error'); }
++  /** Колонки доски в порядке отображения (слева направо). */
++  get columns(): Locator { return this.page.locator('[data-testid^="board-column-"]'); }
++
++  /** Меню колонки → «Удалить» → открыто окно «Удаление» с причиной. */
++  async openDeleteColumn(columnId: string) {
++    await this.columnMenu(columnId).click();
++    await this.columnDeleteLink(columnId).click();
++    await expect(this.deleteDialog).toBeVisible();
++  }
++
+   /** «Удалить» заказ → окно «Удаление» с обязательной причиной (soft-delete-core §8.2) → «Удалить». */
+   async confirmDeleteTask(reason = 'e2e: создан по ошибке') {
+     await this.taskDelete.click();
+diff --git a/e2e/tests/board.spec.ts b/e2e/tests/board.spec.ts
+index 85efdb4..19fe321 100644
+--- a/e2e/tests/board.spec.ts
++++ b/e2e/tests/board.spec.ts
+@@ -203,12 +203,17 @@ test.describe('BD: управление колонками (admin)', () => {
+     await expect(board.columnForm).toBeHidden();
+     await expect(board.columnByName(renamed)).toBeVisible();
+ 
+-    // удаление пустой колонки — проходит.
++    // удаление пустой колонки — проходит: общее окно «Удаление» с причиной
++    // (soft-delete-board-columns §8.1), удаление мягкое.
+     await board.openColumnEdit(colId);
+     await board.columnDelete.click();
+-    await expect(page.getByTestId('ui-dialog')).toBeVisible();
+-    await page.getByTestId('ui-dialog-ok').click();
++    await expect(board.deleteDialog).toBeVisible();
++    await board.deleteReason.fill('BD-006: колонка больше не нужна');
++    await board.deleteDialogOk.click();
++    await expect(board.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
++    await expect(board.columnForm).toBeHidden();
+     await expect(board.columnByName(renamed)).toHaveCount(0);
++    await adminApi.purgeColumn(colId); // колонка создана через форму — уборка своими руками
+ 
+     // удаление непустой — сообщение, колонка на месте.
+     const busyName = uniq('BD-006 занятая');
+@@ -223,14 +228,14 @@ test.describe('BD: управление колонками (admin)', () => {
+     allowHttpErrors((url, status) => url.includes(`/api/v1/columns/${busyId}`) && status === 409);
+ 
+     // из меню колонки — реальная попытка удаления (сервер отклоняет 409 COLUMN_NOT_EMPTY):
+-    // сначала KT.uiConfirm («Удалить колонку…?»), после подтверждения — KT.uiAlert с
+-    // сообщением сервера (два последовательных диалога).
+-    await board.columnMenu(busyId).click();
+-    await board.columnDeleteLink(busyId).click();
+-    await expect(page.getByTestId('ui-dialog')).toBeVisible();
+-    await page.getByTestId('ui-dialog-ok').click(); // подтвердили попытку удаления
+-    await expect(page.getByTestId('ui-dialog-text')).toContainText('заказы'); // сообщение об ошибке
+-    await page.getByTestId('ui-dialog-ok').click();
++    // окно «Удаление» с причиной; отказ — красным блоком над кнопками, окно остаётся.
++    await board.openDeleteColumn(busyId);
++    await board.deleteReason.fill('BD-006: попытка удалить занятую');
++    await board.deleteDialogOk.click();
++    await expect(board.deleteDialogError).toHaveText('В колонке есть заказы');
++    await expect(board.deleteDialog).toBeVisible();
++    await board.deleteDialogCancel.click();
++    await expect(board.deleteDialog).toBeHidden();
+     await expect(board.column(busyId)).toBeVisible();
+ 
+     // модалка колонки — кнопка «Удалить» тоже заблокирована клиентской проверкой.
+diff --git a/e2e/tests/soft-delete-board-columns.spec.ts b/e2e/tests/soft-delete-board-columns.spec.ts
+new file mode 100644
+index 0000000..8f49e6c
+--- /dev/null
++++ b/e2e/tests/soft-delete-board-columns.spec.ts
+@@ -0,0 +1,139 @@
++import { test, expect } from '../fixtures/board';
++import type { AdminApi } from '../fixtures/auth';
++import { BoardPage } from '../pages/BoardPage';
++import { DeletedPage } from '../pages/DeletedPage';
++
++// Мягкое удаление — колонки доски (docs/features/soft-delete-board-columns/draft-spec.md §8.1,
++// §8.2, §11): удалить колонку с причиной и восстановить из «Удалённых» (TS-042), восстановить
++// заказ удалённой колонки (TS-042, DS-016). Адаптив и темы вкладки «Колонки» — расширением
++// SD-007 / SD-008 (soft-delete-core.spec.ts); управление колонками у исполнителя недоступно —
++// BD-006 (board.spec.ts). Общая dev-БД (§TD-6.2): свои колонки, клиенты и заказы через
++// uniq()+adminApi. Уборка — _boardCleanup: заказы (purgeTask), затем колонки служебным адресом
++// purge — и действующие, и мягко удалённые (стенд с TEST_PURGE_ENABLED=true).
++test.use({ colorScheme: 'light' });
++
++const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
++const TOAST_DELETED = 'Удалено. Восстановить можно в разделе «Удалённые»';
++
++type Uniq = (s: string) => string;
++
++/** Своя колонка теста в конце доски; название — не длиннее 60 символов. */
++async function newColumn(adminApi: AdminApi, uniq: Uniq, label: string, isFinal = false) {
++  const res = await adminApi.createColumn({ name: uniq(label).slice(0, 60), color: '#445566', is_final: isFinal, consumes_stock: false });
++  return res.column;
++}
++
++test.describe('SDC: мягкое удаление колонок доски', () => {
++  test('SDC-001 (TS-042): «Удалить» в меню колонки → окно «Удаление»: пустая причина → «Укажите причину удаления», колонка на месте; с причиной → колонка исчезла с доски, тост «Удалено…»; в «Удалённых» вкладка «Колонки» — название, причина, кто удалил, время; «Восстановить» → тост «Восстановлено. Колонка — в конце доски», колонка последняя на доске; негатив: колонка с заказом — «В колонке есть заказы», окно остаётся', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const empty = await newColumn(adminApi, uniq, 'SDC-001 пустая');
++    const busy = await newColumn(adminApi, uniq, 'SDC-001 занятая');
++    const client = await adminApi.createClient({ company_name: uniq('SDC-001 клиент'), phones: [{ phone: '9990000901', note: '' }] });
++    await adminApi.createTask({ title: uniq('SDC-001 заказ'), client_id: client.id, column_id: busy.id });
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/columns/${empty.id}`) && status === 400);
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/columns/${busy.id}`) && status === 409);
++
++    const board = new BoardPage(page);
++    await board.goto();
++    await expect(board.column(empty.id)).toBeVisible();
++
++    // окно «Удаление»: заголовок с названием, пояснение; пустая причина — ошибка под полем.
++    await board.openDeleteColumn(empty.id);
++    await expect(board.deleteDialogTitle).toHaveText(`Удалить «${empty.name}»?`);
++    await expect(board.deleteDialogText).toHaveText('Колонку можно восстановить в разделе «Удалённые»');
++    await board.deleteDialogOk.click();
++    await expect(board.deleteReasonError).toHaveText('Укажите причину удаления');
++    await expect(board.deleteDialog).toBeVisible();
++    await expect(board.column(empty.id)).toBeVisible();
++
++    // с причиной — колонка уходит с доски.
++    const reason = uniq('SDC-001 лишний этап');
++    await board.deleteReason.fill(reason);
++    await board.deleteDialogOk.click();
++    await expect(board.toast).toHaveText(TOAST_DELETED);
++    await expect(board.deleteDialog).toBeHidden();
++    await expect(board.column(empty.id)).toHaveCount(0);
++
++    // негатив: колонка с действующим заказом — отказ красным блоком, окно остаётся, колонка на месте.
++    await board.openDeleteColumn(busy.id);
++    await board.deleteReason.fill(uniq('SDC-001 попытка'));
++    await board.deleteDialogOk.click();
++    await expect(board.deleteDialogError).toHaveText('В колонке есть заказы');
++    await expect(board.deleteDialog).toBeVisible();
++    await board.deleteDialogCancel.click();
++    await expect(board.deleteDialog).toBeHidden();
++    await expect(board.column(busy.id)).toBeVisible();
++
++    // «Удалённые» → вкладка «Колонки»: строка удалённой колонки.
++    const del = new DeletedPage(page);
++    await del.goto(`kind=columns&q=${encodeURIComponent(empty.name)}`);
++    await expect(del.tab('columns')).toHaveClass(/active/);
++    await expect(del.tab('columns')).toContainText('Колонки');
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.rowTitle(empty.id)).toHaveText(empty.name);
++    await expect(del.rowSubtitle(empty.id)).toHaveCount(0); // нефинальная — без подписи
++    await expect(del.rowReason(empty.id)).toHaveText(reason);
++    await expect(del.rowBy(empty.id)).toHaveText('Админ Прогона');
++    await expect(del.rowAt(empty.id)).toHaveText(DATE_TIME);
++    const summary = await adminApi.deletedSummary();
++    await expect(del.tabCount('columns')).toHaveText(String(summary.counts.columns));
++
++    // «Восстановить» → подтверждение → строка исчезла, счётчик уменьшился, колонка в конце доски.
++    await del.restoreBtn(empty.id).click();
++    await expect(del.dialogText).toHaveText(`Восстановить «${empty.name}»?`);
++    await del.dialogOk.click();
++    await expect(del.toast).toHaveText('Восстановлено. Колонка — в конце доски');
++    await expect(del.row(empty.id)).toHaveCount(0);
++    await expect(del.empty).toBeVisible();
++    await expect(del.tabCount('columns')).toHaveText(String(summary.counts.columns - 1));
++    expect((await adminApi.listDeleted('columns', { q: empty.name })).total).toBe(0);
++
++    const columns = (await adminApi.listColumns()).items;
++    expect(columns[columns.length - 1].id, 'восстановленная колонка — последняя').toBe(empty.id);
++    await board.goto();
++    await expect(board.columns.last()).toHaveAttribute('data-testid', `board-column-${empty.id}`);
++    await expect(board.columnByName(empty.name)).toBeVisible();
++  });
++
++  test('SDC-002 (TS-042): восстановление заказа, колонку которого удалили, — жёлтый блок «Колонка заказа удалена — заказ поставлен в колонку «…»» со ссылкой «Открыть заказ #N», заказ на доске в первой нефинальной колонке; негатив: сама колонка остаётся в «Удалённых» и на доске не появляется', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const col = await newColumn(adminApi, uniq, 'SDC-002 колонка');
++    const client = await adminApi.createClient({ company_name: uniq('SDC-002 клиент'), phones: [{ phone: '9990000902', note: '' }] });
++    const task = await adminApi.createTask({ title: uniq('SDC-002 заказ'), client_id: client.id, column_id: col.id });
++    await adminApi.deleteTask(task.id, uniq('SDC-002 причина заказа'));
++    // удалённый заказ колонку не удерживает (DS-019): колонка удаляется.
++    await adminApi.deleteColumn(col.id, uniq('SDC-002 причина колонки'));
++    const first = (await adminApi.listColumns()).items.find((c) => !c.is_final);
++    expect(first, 'на доске есть нефинальная колонка').toBeTruthy();
++
++    const del = new DeletedPage(page);
++    await del.goto(`kind=tasks&q=${encodeURIComponent(`#${task.id}`)}`);
++    await expect(del.row(task.id)).toBeVisible();
++    await del.restore(task.id);
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.warnings).toBeVisible();
++    await expect(del.warningLines).toHaveText([`Колонка заказа удалена — заказ поставлен в колонку «${first!.name}»`]);
++    await expect(del.warningOpen).toHaveText(`Открыть заказ #${task.id}`);
++    await expect(del.warningOpen).toHaveAttribute('href', `/?task=${task.id}`);
++    await expect(del.row(task.id)).toHaveCount(0);
++
++    // негатив: колонка заказа сама не восстановлена.
++    expect((await adminApi.listDeleted('columns', { q: col.name })).total).toBe(1);
++    await del.tab('columns').click();
++    await del.search(col.name);
++    await expect(del.row(col.id)).toBeVisible();
++
++    // заказ — на доске, в первой нефинальной колонке; удалённой колонки на доске нет.
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await expect(board.column(first!.id).getByTestId(`task-card-${task.id}`)).toBeVisible();
++    await expect(board.column(col.id)).toHaveCount(0);
++  });
++});
+diff --git a/e2e/tests/soft-delete-core.spec.ts b/e2e/tests/soft-delete-core.spec.ts
+index c7c9e4e..e9fa927 100644
+--- a/e2e/tests/soft-delete-core.spec.ts
++++ b/e2e/tests/soft-delete-core.spec.ts
+@@ -439,6 +439,14 @@ test.describe('SD: мягкое удаление заказа и раздел «
+     await expect(del.row(doc.id)).toBeVisible();
+     await del.expectNoHorizontalScroll();
+ 
++    // вкладка «Колонки» (soft-delete-board-columns §8.2, TS-046 расширением): то же на 360×640.
++    const goneCol = (await adminApi.createColumn({ name: uniq('SD-007 колонка').slice(0, 60), color: '#445566', is_final: true, consumes_stock: false })).column;
++    await adminApi.deleteColumn(goneCol.id, uniq('SD-007 ' + 'оченьдлиннаяпричинаколонкибезпробелов'.repeat(5)));
++    await del.goto(`kind=columns&q=${encodeURIComponent(goneCol.name)}`);
++    await expect(del.tab('columns')).toHaveClass(/active/);
++    await expect(del.row(goneCol.id)).toBeVisible();
++    await del.expectNoHorizontalScroll();
++
+     // окно «Удаление» из карточки заказа помещается в экран по ширине, кнопки доступны.
+     const board = new BoardPage(page);
+     const card = new OrderCardPage(page);
+@@ -503,6 +511,16 @@ test.describe('SD: мягкое удаление заказа и раздел «
+       expect(await contrastOf(del.rowSubtitle(doc.id)), `${theme}: направление и статус`).toBeGreaterThanOrEqual(4.5);
+       expect(await contrastOf(del.restoreBtn(doc.id)), `${theme}: «Восстановить» документа`).toBeGreaterThanOrEqual(3);
+ 
++      // вкладка «Колонки» (soft-delete-board-columns §8.2, TS-047 расширением).
++      const goneCol = (await adminApi.createColumn({ name: uniq(`SD-008 колонка ${theme}`).slice(0, 60), color: '#445566', is_final: true, consumes_stock: false })).column;
++      await adminApi.deleteColumn(goneCol.id, uniq(`SD-008 причина колонки ${theme}`));
++      await del.goto(`kind=columns&q=${encodeURIComponent(goneCol.name)}`);
++      await expect(del.rowTitle(goneCol.id)).toHaveText(goneCol.name);
++      expect(await contrastOf(del.tab('columns')), `${theme}: вкладка «Колонки»`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.rowTitle(goneCol.id)), `${theme}: колонка`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.rowSubtitle(goneCol.id)), `${theme}: «финальная»`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.restoreBtn(goneCol.id)), `${theme}: «Восстановить» колонки`).toBeGreaterThanOrEqual(3);
++
+       // окно «Удаление»: пояснение, текст ошибки поля, красная кнопка.
+       await board.goto(`?client_id=${client.id}&task=${task.id}`);
+       await card.waitOpen();
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index 7566231..845b22c 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -704,6 +704,12 @@
+       reloadAndRender();
+       return;
+     }
++    // Колонку удалил другой администратор, пока доска открыта (soft-delete-board-columns §8.1):
++    // тост, карточка уже возвращена на место (rollback); колонка исчезнет после перезагрузки.
++    if (err && err.code === 'COLUMN_NOT_FOUND') {
++      KT.uiToast('Колонка не найдена', true);
++      return;
++    }
+     KT.uiAlert((err && err.message) || 'Не удалось выполнить операцию', 'Ошибка');
+   }
+   function statusLabel(s) {
+@@ -886,20 +892,36 @@
+     });
+   }
+ 
+-  // Возвращает Promise<boolean> — true, если колонка удалена (для закрытия формы вызывающим).
++  // Удаление колонки — мягкое, с причиной (soft-delete-board-columns §8.1): общее окно
++  // «Удаление» (KT.uiDeleteDialog). 400 по причине и 409 (COLUMN_NOT_EMPTY,
++  // LAST_NON_FINAL_COLUMN) окно показывает само и остаётся открытым.
++  // Возвращает Promise<boolean> — true, если колонки на доске больше нет (удалена сейчас либо
++  // уже удалена другим администратором) — для закрытия формы вызывающим.
+   function deleteColumn(id) {
+     var col = columnById(id);
+-    return KT.uiConfirm('Удалить колонку «' + (col ? col.name : '') + '»?').then(function (ok) {
+-      if (!ok) return false;
+-      return KT.api.del('/api/v1/columns/' + id)
+-        .then(function () { return loadStatic(); })
++    function refresh() {
++      return loadStatic()
+         .then(function () { return ensureClientOption(state.filters.client_id); })
+-        .then(function () { fillFilterOptions(); return reloadAndRender(); })
+-        .then(function () { return true; })
+-        .catch(function (err) {
+-          KT.uiAlert((err && err.message) || 'Не удалось удалить колонку', 'Нельзя удалить колонку');
+-          return false;
+-        });
++        .then(function () { fillFilterOptions(); return reloadAndRender(); });
++    }
++    return KT.uiDeleteDialog({
++      title: 'Удалить «' + (col ? col.name : '') + '»?',
++      text: 'Колонку можно восстановить в разделе «Удалённые»',
++      submit: function (reason) { return KT.api.delWith('/api/v1/columns/' + id, { reason: reason }); },
++      onOffline: function () { KT.uiToast('Нет связи с сервером', true); }
++    }).then(function (out) {
++      if (!out) return false; // отмена
++      if (out.error) {
++        var err = out.error;
++        if (err.status === 404) { // колонку удалил другой администратор
++          KT.uiToast('Колонка не найдена', true);
++          return refresh().then(function () { return true; }, function () { return true; });
++        }
++        KT.uiToast(err.status === 403 ? 'Нет доступа' : (err.message || 'Не удалось удалить колонку'), true);
++        return false;
++      }
++      KT.uiToast('Удалено. Восстановить можно в разделе «Удалённые»');
++      return refresh().then(function () { return true; }, function () { return true; });
+     });
+   }
+ 
+diff --git a/web/ssr/_shared/js/deleted.js b/web/ssr/_shared/js/deleted.js
+index 8c02d26..f118ce2 100644
+--- a/web/ssr/_shared/js/deleted.js
++++ b/web/ssr/_shared/js/deleted.js
+@@ -17,7 +17,8 @@
+   var DEBOUNCE_MS = 300;
+ 
+   // Реестр вкладок: вид записей → подпись, ключ счётчика summary, адрес восстановления,
+-  // текст 404 и (если у записи есть экран) ссылка «Открыть».
++  // текст 404, (если у записи есть экран) ссылка «Открыть» и (если отличается от общего) текст
++  // тоста об успешном восстановлении.
+   var TABS = [
+     {
+       kind: 'tasks', label: 'Заказы', countKey: 'tasks',
+@@ -33,6 +34,14 @@
+       restoreUrl: function (id) { return '/api/v1/transfers/' + encodeURIComponent(id) + '/restore'; },
+       notFound: 'Перемещение не найдено',
+       openLink: function (id) { return { href: '/transfers?id=' + encodeURIComponent(id), text: 'Открыть перемещение #' + id }; }
++    },
++    {
++      // часть 3 (soft-delete-board-columns §8.2): колонки доски. Восстановленная колонка встаёт
++      // в конец доски — об этом тост; своего экрана у колонки нет (ссылки «Открыть» нет).
++      kind: 'columns', label: 'Колонки', countKey: 'columns',
++      restoreUrl: function (id) { return '/api/v1/columns/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Колонка не найдена',
++      restored: 'Восстановлено. Колонка — в конце доски'
+     }
+   ];
+ 
+@@ -295,7 +304,7 @@
+       if (!ok) return;
+       btn.disabled = true;
+       KT.api.post(tab.restoreUrl(it.id)).then(function (resp) {
+-        KT.uiToast('Восстановлено');
++        KT.uiToast(tab.restored || 'Восстановлено');
+         showWarnings(tab, it, resp);
+         dropRow();
+       }).catch(function (err) {

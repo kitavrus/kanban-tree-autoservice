@@ -1,0 +1,20 @@
+=== AC-013: executor (роль executor) — глубина авторизации ===
+Логин qa_executor_1/executor через /login (session cookie).
+
+GET /api/v1/clients -> 200 (executor может читать клиентов)
+GET /api/v1/equipment-types?include_archived=true -> 200, total=80, СЕРВЕР ИГНОРИРУЕТ параметр
+  (архивный тип "QA Принтер" НЕ появляется даже с include_archived=true&q=QA -> total=0, items=[])
+  => подтверждает ADR-004 «include_archived — только admin».
+POST /api/v1/clients -> 403 {"code":"FORBIDDEN","message":"admin only"}
+DELETE /api/v1/clients/:id -> 403 FORBIDDEN
+PUT /api/v1/equipment-types/:id -> 403 FORBIDDEN
+GET /api/v1/clients без сессии (нет cookie) -> 401 {"code":"UNAUTHORIZED","message":"no session"}
+
+=== SSR-гварды исполнителя ===
+GET /clients (SSR) -> 403 (страница "Нет доступа", тот же base.html layout с ui-dialog.js/theme.js — не сломан)
+GET /catalog/equipment-types (SSR) -> 403 "Нет доступа"
+GET / (домашняя, executor) -> sidebar пуст: НЕТ пунктов "Клиенты"/"Каталог"/"Сотрудники" в nav (grep app-nav-link/Клиенты/Каталог -> 0 совпадений)
+
+=== Regression: меню admin (ADR-006, NavActive) ===
+GET /users (admin) -> nav: "/" (не active), "/clients" 🏢 Клиенты (не active), "/catalog" 🧰 Каталог (переименовано с "Услуги и товары", не active),
+  "/users" 👥 Сотрудники — class="app-nav-link active" aria-current="page" (корректная точечная подсветка активного пункта, регресс NavActive не найден).

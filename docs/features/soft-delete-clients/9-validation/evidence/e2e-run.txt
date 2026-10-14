@@ -1,0 +1,2 @@
+[2026-10-08 21:22:18] status=passed failedTests=0 counters=220 passed, 1 flaky (TR-014) (8.3m) src=e2e/test-results/.last-run.json cmd="npx playwright test --project=chromium --headed --workers=1 --retries=1 --reporter=list"
+[2026-10-08 21:45:08] status=passed failedTests=0 counters=222 passed (5.9m) src=e2e/test-results/.last-run.json cmd="npx playwright test --project=chromium --headed --workers=1 --retries=1 --reporter=list"

@@ -1,0 +1,190 @@
+diff --git a/migrations/0014_transfers_core.down.sql b/migrations/0014_transfers_core.down.sql
+new file mode 100644
+index 0000000..1e2673a
+--- /dev/null
++++ b/migrations/0014_transfers_core.down.sql
+@@ -0,0 +1,86 @@
++-- Откат ядра перемещений: строка заказа снова хранит склад (берётся со склада единицы, иначе
++-- склад по умолчанию), все единицы — at_warehouse (маршруты «в пути» и занятие документом не
++-- восстанавливаются); журнал task_equipment_movements создаётся пустым; строки-единицы
++-- документов удаляются; таблицы возвращают имена stock_transfers / stock_transfer_items.
++
++-- ---- task_equipment: склад/статус/маршрут + журнал (как 0010) ----
++ALTER TABLE task_equipment
++    ADD COLUMN warehouse_id uuid NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
++    ADD COLUMN status text NOT NULL DEFAULT 'at_warehouse',
++    ADD COLUMN transit_from_warehouse_id uuid NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
++    ADD COLUMN transit_to_warehouse_id uuid NULL REFERENCES warehouses(id) ON DELETE RESTRICT;
++
++UPDATE task_equipment te
++SET warehouse_id = coalesce(e.warehouse_id, default_warehouse_id(),
++    (SELECT id FROM warehouses ORDER BY position, id LIMIT 1))
++FROM equipment e
++WHERE e.id = te.equipment_id;
++
++ALTER TABLE task_equipment ALTER COLUMN warehouse_id SET DEFAULT default_warehouse_id();
++ALTER TABLE task_equipment ADD CONSTRAINT task_equipment_status_check
++    CHECK (status IN ('at_warehouse', 'in_transit'));
++ALTER TABLE task_equipment ADD CONSTRAINT task_equipment_location_check CHECK (
++    (status = 'at_warehouse' AND warehouse_id IS NOT NULL
++        AND transit_from_warehouse_id IS NULL AND transit_to_warehouse_id IS NULL)
++ OR (status = 'in_transit' AND warehouse_id IS NULL
++        AND transit_from_warehouse_id IS NOT NULL AND transit_to_warehouse_id IS NOT NULL
++        AND transit_from_warehouse_id <> transit_to_warehouse_id));
++CREATE INDEX task_equipment_warehouse_id_idx ON task_equipment (warehouse_id);
++CREATE INDEX task_equipment_transit_to_warehouse_id_idx ON task_equipment (transit_to_warehouse_id);
++
++CREATE TABLE task_equipment_movements (
++    id                bigserial PRIMARY KEY,
++    task_id           bigint NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
++    equipment_id      uuid NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
++    action            text NOT NULL CHECK (action IN ('received', 'sent', 'arrived', 'cancelled')),
++    from_warehouse_id uuid NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
++    to_warehouse_id   uuid NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
++    user_id           uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
++    created_at        timestamptz NOT NULL DEFAULT now()
++);
++CREATE INDEX task_equipment_movements_task_equipment_idx ON task_equipment_movements (task_id, equipment_id, id);
++CREATE INDEX task_equipment_movements_equipment_id_idx ON task_equipment_movements (equipment_id);
++
++-- ---- equipment: местоположение и занятие документом снимаются ----
++DROP INDEX IF EXISTS equipment_active_transfer_id_idx;
++DROP INDEX IF EXISTS equipment_warehouse_id_idx;
++ALTER TABLE equipment
++    DROP CONSTRAINT IF EXISTS equipment_location_check,
++    DROP CONSTRAINT IF EXISTS equipment_location_status_check,
++    DROP COLUMN active_transfer_id,
++    DROP COLUMN warehouse_id,
++    DROP COLUMN location_status;
++
++-- ---- transfer_items: только товарные строки ----
++DELETE FROM transfer_items WHERE kind <> 'product';
++DROP INDEX IF EXISTS transfer_items_equipment_id_idx;
++ALTER TABLE transfer_items
++    DROP CONSTRAINT IF EXISTS transfer_items_transfer_id_equipment_id_key,
++    DROP CONSTRAINT IF EXISTS transfer_items_kind_check,
++    DROP COLUMN equipment_id,
++    DROP COLUMN kind,
++    ALTER COLUMN product_id SET NOT NULL,
++    ALTER COLUMN qty_sent SET NOT NULL;
++
++-- ---- имена таблиц, последовательности, индексов, ограничений — обратно ----
++DO $$
++DECLARE r record;
++BEGIN
++    FOR r IN
++        SELECT c.conname, c.conrelid::regclass AS tbl
++        FROM pg_constraint c
++        WHERE c.conrelid IN ('transfers'::regclass, 'transfer_items'::regclass)
++          AND c.conname LIKE 'transfer%'
++    LOOP
++        EXECUTE format('ALTER TABLE %s RENAME CONSTRAINT %I TO %I',
++            r.tbl, r.conname, 'stock_' || r.conname);
++    END LOOP;
++END $$;
++
++ALTER INDEX transfer_items_product_id_idx RENAME TO stock_transfer_items_product_id_idx;
++ALTER INDEX transfers_to_warehouse_id_idx RENAME TO stock_transfers_to_warehouse_id_idx;
++ALTER INDEX transfers_from_warehouse_id_idx RENAME TO stock_transfers_from_warehouse_id_idx;
++ALTER INDEX transfers_status_idx RENAME TO stock_transfers_status_idx;
++ALTER SEQUENCE transfers_id_seq RENAME TO stock_transfers_id_seq;
++ALTER TABLE transfer_items RENAME TO stock_transfer_items;
++ALTER TABLE transfers RENAME TO stock_transfers;
+diff --git a/migrations/0014_transfers_core.up.sql b/migrations/0014_transfers_core.up.sql
+new file mode 100644
+index 0000000..6e83fc2
+--- /dev/null
++++ b/migrations/0014_transfers_core.up.sql
+@@ -0,0 +1,92 @@
++-- Перемещения — ядро (docs/features/transfers-core/draft-spec.md, часть 3 мастер-спеки
++-- transfers): DS-030 переименование stock_transfers → transfers; DS-001 строки-единицы
++-- оборудования (kind, equipment_id); DS-008/DS-041 местоположение и занятие документом —
++-- на самой единице (equipment); DS-029/DS-054 перенос местоположения со строк заказа,
++-- журнал task_equipment_movements удаляется. Режим MVP (DS-027): без переходного периода.
++
++-- ---- DS-030: переименование таблиц, последовательности, индексов, ограничений ----
++ALTER TABLE stock_transfers RENAME TO transfers;
++ALTER TABLE stock_transfer_items RENAME TO transfer_items;
++ALTER SEQUENCE stock_transfers_id_seq RENAME TO transfers_id_seq;
++ALTER INDEX stock_transfers_status_idx RENAME TO transfers_status_idx;
++ALTER INDEX stock_transfers_from_warehouse_id_idx RENAME TO transfers_from_warehouse_id_idx;
++ALTER INDEX stock_transfers_to_warehouse_id_idx RENAME TO transfers_to_warehouse_id_idx;
++ALTER INDEX stock_transfer_items_product_id_idx RENAME TO transfer_items_product_id_idx;
++
++-- Ограничения (PK, FK, CHECK, UNIQUE) — по каталогу: имена авто-CHECK'ов зависят от версии PG.
++DO $$
++DECLARE r record;
++BEGIN
++    FOR r IN
++        SELECT c.conname, c.conrelid::regclass AS tbl
++        FROM pg_constraint c
++        WHERE c.conrelid IN ('transfers'::regclass, 'transfer_items'::regclass)
++          AND c.conname LIKE 'stock\_transfer%'
++    LOOP
++        EXECUTE format('ALTER TABLE %s RENAME CONSTRAINT %I TO %I',
++            r.tbl, r.conname, regexp_replace(r.conname, '^stock_transfer', 'transfer'));
++    END LOOP;
++END $$;
++
++-- ---- DS-001: тип строки и единица оборудования ----
++ALTER TABLE transfer_items
++    ADD COLUMN kind text NOT NULL DEFAULT 'product',
++    ADD COLUMN equipment_id uuid NULL REFERENCES equipment(id) ON DELETE RESTRICT,
++    ALTER COLUMN product_id DROP NOT NULL,
++    ALTER COLUMN qty_sent DROP NOT NULL;
++-- kind — без DEFAULT: код приложения передаёт тип строки явно.
++ALTER TABLE transfer_items ALTER COLUMN kind DROP DEFAULT;
++
++ALTER TABLE transfer_items
++    ADD CONSTRAINT transfer_items_kind_check CHECK (
++        (kind = 'product' AND product_id IS NOT NULL AND qty_sent IS NOT NULL
++            AND equipment_id IS NULL)
++     OR (kind = 'equipment' AND equipment_id IS NOT NULL AND product_id IS NULL
++            AND qty_sent IS NULL AND qty_received IS NULL)),
++    ADD CONSTRAINT transfer_items_transfer_id_equipment_id_key UNIQUE (transfer_id, equipment_id);
++CREATE INDEX transfer_items_equipment_id_idx ON transfer_items (equipment_id);
++
++-- ---- DS-008, DS-041: местоположение и занятие документом — на единице ----
++ALTER TABLE equipment
++    ADD COLUMN location_status text NOT NULL DEFAULT 'at_client',
++    ADD COLUMN warehouse_id uuid NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
++    ADD COLUMN active_transfer_id bigint NULL REFERENCES transfers(id) ON DELETE SET NULL;
++
++-- DS-054: завершённый заказ = заказ в ПОСЛЕДНЕЙ колонке доски (наибольший position, при
++-- равных — больший id; is_final не используется). Единица хотя бы в одном незавершённом
++-- заказе → «на складе»: склад её строки самого свежего незавершённого заказа (больший
++-- tasks.id); для «в пути» — склад отправления (DS-029). Остальные остаются «у клиента».
++UPDATE equipment e
++SET location_status = 'at_warehouse', warehouse_id = src.warehouse_id
++FROM (
++    SELECT DISTINCT ON (te.equipment_id)
++           te.equipment_id,
++           CASE WHEN te.status = 'in_transit' THEN te.transit_from_warehouse_id
++                ELSE te.warehouse_id END AS warehouse_id
++    FROM task_equipment te
++    JOIN tasks t ON t.id = te.task_id
++    WHERE t.column_id <> (SELECT id FROM columns ORDER BY position DESC, id DESC LIMIT 1)
++    ORDER BY te.equipment_id, t.id DESC
++) src
++WHERE e.id = src.equipment_id AND src.warehouse_id IS NOT NULL;
++
++ALTER TABLE equipment
++    ADD CONSTRAINT equipment_location_status_check
++        CHECK (location_status IN ('at_client', 'at_warehouse', 'in_transit')),
++    ADD CONSTRAINT equipment_location_check CHECK (
++        ((location_status = 'at_warehouse') = (warehouse_id IS NOT NULL))
++        AND (location_status <> 'in_transit' OR active_transfer_id IS NOT NULL));
++CREATE INDEX equipment_warehouse_id_idx ON equipment (warehouse_id);
++CREATE INDEX equipment_active_transfer_id_idx ON equipment (active_transfer_id);
++
++-- ---- DS-008, DS-029: строка заказа теряет склад/статус/маршрут, журнал удаляется ----
++DROP TABLE task_equipment_movements;
++DROP INDEX IF EXISTS task_equipment_transit_to_warehouse_id_idx;
++DROP INDEX IF EXISTS task_equipment_warehouse_id_idx;
++ALTER TABLE task_equipment
++    DROP CONSTRAINT IF EXISTS task_equipment_location_check,
++    DROP CONSTRAINT IF EXISTS task_equipment_status_check,
++    DROP COLUMN transit_to_warehouse_id,
++    DROP COLUMN transit_from_warehouse_id,
++    DROP COLUMN status,
++    DROP COLUMN warehouse_id;

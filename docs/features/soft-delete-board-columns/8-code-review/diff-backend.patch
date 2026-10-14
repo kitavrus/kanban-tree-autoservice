@@ -1,0 +1,1804 @@
+diff --git a/internal/features/board/board_http_live_test.go b/internal/features/board/board_http_live_test.go
+index 19c30f7..de97f25 100644
+--- a/internal/features/board/board_http_live_test.go
++++ b/internal/features/board/board_http_live_test.go
+@@ -510,8 +510,27 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_ColumnsCRUD() {
+ 	s.Equal("#445566", found.Color)
+ 	s.Equal(1, found.Position)
+ 
++	// soft-delete-board-columns §6.1: удаление — мягкое, с причиной: 200 {id, deleted_at};
++	// строка остаётся с отметкой, из списка колонка уходит. Без причины — 400.
+ 	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, nil)
+-	s.Equal(http.StatusNoContent, st, string(raw))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["reason"])
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, map[string]any{"reason": "Создана по ошибке"})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var del struct {
++		ID        string `json:"id"`
++		DeletedAt string `json:"deleted_at"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &del), string(raw))
++	s.Equal(col.ID, del.ID)
++	s.NotEmpty(del.DeletedAt)
++	var marked bool
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT deleted_at IS NOT NULL FROM columns WHERE id = $1`, col.ID).Scan(&marked))
++	s.True(marked, "строка колонки на месте, с отметкой удаления")
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/columns", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.NotContains(string(raw), col.ID, "удалённой колонки нет в списке")
+ }
+ 
+ // LV-010/AC-012.
+@@ -847,7 +866,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_NotFound404() {
+ 	for _, id := range []string{"not-uuid", "00000000-0000-0000-0000-000000000000"} {
+ 		st, raw := s.admin.Do(http.MethodPut, "/api/v1/columns/"+id, map[string]any{"name": "x", "color": "#112233"})
+ 		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
+-		st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+id, nil)
++		st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+id, map[string]any{"reason": "Создана по ошибке"})
+ 		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
+ 	}
+ }
+@@ -1022,7 +1041,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_DeleteColumn_NotEmpty() {
+ 	col := s.columnID("Новые")
+ 	s.newTask(c, col)
+ 
+-	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col, nil)
++	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col, map[string]any{"reason": "Создана по ошибке"})
+ 	s.Equal(http.StatusConflict, st, string(raw))
+ 	s.Equal("COLUMN_NOT_EMPTY", s.errOf(raw).Code)
+ }
+@@ -1060,7 +1079,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_DeleteColumn_LastNonFinal() {
+ 		switched = append(switched, c)
+ 	}
+ 
+-	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, nil)
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, map[string]any{"reason": "Создана по ошибке"})
+ 	s.Equal(http.StatusConflict, st, string(raw))
+ 	s.Equal("LAST_NON_FINAL_COLUMN", s.errOf(raw).Code)
+ 
+@@ -1070,7 +1089,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_DeleteColumn_LastNonFinal() {
+ 			"name": c.Name, "color": c.Color, "is_final": false, "consumes_stock": c.ConsumesStock,
+ 		})
+ 	}
+-	_, _ = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, nil)
++	_, _ = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, map[string]any{"reason": "Создана по ошибке"})
+ }
+ 
+ // AC-006 (code review HIGH-1): PUT is_final=true на последней нефинальной колонке
+@@ -1127,7 +1146,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Update_LastNonFinal_Rejected() {
+ 			"name": c.Name, "color": c.Color, "is_final": false, "consumes_stock": c.ConsumesStock,
+ 		})
+ 	}
+-	_, _ = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, nil)
++	_, _ = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col.ID, map[string]any{"reason": "Создана по ошибке"})
+ }
+ 
+ // AC-003 (code review MEDIUM-3, эскалация design): PUT is_final=true на колонке, где есть
+diff --git a/internal/features/board/card_repo.go b/internal/features/board/card_repo.go
+index f4762fd..194c40c 100644
+--- a/internal/features/board/card_repo.go
++++ b/internal/features/board/card_repo.go
+@@ -43,7 +43,7 @@ type subtaskLogRow struct {
+ // Column — запрос 2 (design-sql.md §Card Queries).
+ func (r *CardRepo) Column(ctx context.Context, id string) (*CardColumn, error) {
+ 	var c CardColumn
+-	err := r.pool.QueryRow(ctx, `SELECT id, name, is_final, consumes_stock FROM columns WHERE id = $1`, id).
++	err := r.pool.QueryRow(ctx, `SELECT id, name, is_final, consumes_stock FROM columns WHERE id = $1 AND deleted_at IS NULL`, id).
+ 		Scan(&c.ID, &c.Name, &c.IsFinal, &c.ConsumesStock)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errNotFound
+diff --git a/internal/features/board/columns_dto.go b/internal/features/board/columns_dto.go
+index 984749d..a953a40 100644
+--- a/internal/features/board/columns_dto.go
++++ b/internal/features/board/columns_dto.go
+@@ -1,5 +1,7 @@
+ package board
+ 
++import "time"
++
+ // Wire-типы — JSON только snake_case (§API-1); конверт списка {items,total,limit,offset}
+ // (design-go-layers.md §DTO Column).
+ 
+@@ -37,3 +39,17 @@ type ColumnMutationResponse struct {
+ 	Column   ColumnResponse `json:"column"`
+ 	Warnings []StockWarning `json:"warnings"`
+ }
++
++// ColumnDeleteResponse — ответ DELETE /api/v1/columns/:id (soft-delete-board-columns §6.1):
++// мягкое удаление, deleted_at — UTC (RFC 3339).
++type ColumnDeleteResponse struct {
++	ID        string    `json:"id"`
++	DeletedAt time.Time `json:"deleted_at"`
++}
++
++// ColumnRestoreResponse — ответ POST /api/v1/columns/:id/restore (§6.2): position — новая
++// позиция колонки, последняя на доске.
++type ColumnRestoreResponse struct {
++	ID       string `json:"id"`
++	Position int    `json:"position"`
++}
+diff --git a/internal/features/board/columns_handler.go b/internal/features/board/columns_handler.go
+index 3e3314b..714bc10 100644
+--- a/internal/features/board/columns_handler.go
++++ b/internal/features/board/columns_handler.go
+@@ -1,10 +1,14 @@
+ package board
+ 
+ import (
++	"bytes"
++	"context"
++	"encoding/json"
+ 	"strconv"
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 
++	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+@@ -79,15 +83,38 @@ func (h *ColumnsHandler) Update(c fiber.Ctx) error {
+ 	return c.JSON(resp)
+ }
+ 
+-// Delete — DELETE /api/v1/columns/:id (admin), 204 без тела — удаление колонки склад
+-// не трогает (design-go-layers.md §Handler Columns).
++// Delete — DELETE /api/v1/columns/:id (admin), тело {reason} — мягкое удаление
++// (soft-delete-board-columns §6.1): 200 + id, deleted_at; склад не затрагивается. Тело без
++// reason либо пустое → 400 reason: required (проверяет сервис).
+ func (h *ColumnsHandler) Delete(c fiber.Ctx) error {
+-	if err := h.svc.Delete(c.Context(), c.Params("id")); err != nil {
++	// Тело разбирается как JSON независимо от Content-Type; нечитаемое тело — то же, что
++	// отсутствие причины: единый ответ 400 VALIDATION с details.fields[] (reason: required).
++	var req softdelete.DeleteRequest
++	if body := bytes.TrimSpace(c.Body()); len(body) > 0 {
++		if err := json.Unmarshal(body, &req); err != nil {
++			req = softdelete.DeleteRequest{}
++		}
++	}
++	resp, err := h.svc.Delete(c.Context(), currentActor(c), c.Params("id"), req)
++	if err != nil {
+ 		return err
+ 	}
+-	return c.SendStatus(fiber.StatusNoContent)
++	return c.JSON(resp)
+ }
+ 
++// Restore — POST /api/v1/columns/:id/restore (admin), тела нет (soft-delete-board-columns §6.2).
++func (h *ColumnsHandler) Restore(c fiber.Ctx) error {
++	resp, err := h.svc.Restore(c.Context(), currentActor(c), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Purge — служебная физическая уборка колонки (вид columns адреса
++// DELETE /api/v1/test/purge/:kind/:id, DS-027); подключается TasksHandler.WithPurger.
++func (h *ColumnsHandler) Purge(ctx context.Context, id string) error { return h.svc.Purge(ctx, id) }
++
+ // currentUserID — Actor.ID (design-go-layers.md §Service Interface: middleware.CurrentPrincipal,
+ // эталон catalog/products_handler.go). Роут закрыт RequireAPI — principal всегда не nil.
+ func currentUserID(c fiber.Ctx) string {
+diff --git a/internal/features/board/columns_repo.go b/internal/features/board/columns_repo.go
+index 2a81693..f8378c3 100644
+--- a/internal/features/board/columns_repo.go
++++ b/internal/features/board/columns_repo.go
+@@ -3,6 +3,7 @@ package board
+ import (
+ 	"context"
+ 	"errors"
++	"time"
+ 
+ 	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgconn"
+@@ -18,6 +19,9 @@ type Column struct {
+ 	ConsumesStock bool
+ 	Position      int
+ 	TasksCount    int
++	// Deleted — колонка мягко удалена (soft-delete-board-columns DS-019); заполняет только
++	// LockAllAny — остальные чтения удалённых колонок не возвращают.
++	Deleted bool
+ }
+ 
+ type ColumnRepo struct {
+@@ -30,15 +34,17 @@ const columnColumns = `id, name, color, is_final, consumes_stock, position`
+ 
+ // List — без пагинации по данным (колонок — единицы), но конверт списка §API-1 общий
+ // для всех эндпоинтов; total — реальное число строк (не count(*) OVER(), пагинации нет
+-// в design-sql.md — набор колонок мал).
++// в design-sql.md — набор колонок мал). Только действующие колонки (soft-delete-board-columns
++// DS-026): удалённая колонка в список и в total не входит.
+ func (r *ColumnRepo) List(ctx context.Context, limit, offset int) ([]Column, int, error) {
+ 	var total int
+-	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM columns`).Scan(&total); err != nil {
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM columns WHERE deleted_at IS NULL`).Scan(&total); err != nil {
+ 		return nil, 0, err
+ 	}
+ 	rows, err := r.pool.Query(ctx, `
+ 		SELECT `+columnColumns+`, (SELECT count(*) FROM tasks t WHERE t.column_id = c.id AND t.deleted_at IS NULL) AS tasks_count
+ 		FROM columns c
++		WHERE c.deleted_at IS NULL
+ 		ORDER BY position, id
+ 		LIMIT $1 OFFSET $2`, limit, offset)
+ 	if err != nil {
+@@ -58,10 +64,28 @@ func (r *ColumnRepo) List(ctx context.Context, limit, offset int) ([]Column, int
+ 
+ // LockAll — вся таблица под FOR UPDATE (ADR-104): держит блокировку колонок на время CRUD/
+ // смены флагов, чтобы инвариант «≥1 нефинальная колонка» и перенумерация были устойчивы к
+-// конкурентным запросам.
++// конкурентным запросам. Блокируются ВСЕ строки (и удалённые — их восстановление идёт под той
++// же блокировкой), возвращаются только действующие (soft-delete-board-columns DS-019).
+ func (r *ColumnRepo) LockAll(ctx context.Context, tx pgx.Tx) ([]Column, error) {
++	all, err := r.LockAllAny(ctx, tx)
++	if err != nil {
++		return nil, err
++	}
++	out := make([]Column, 0, len(all))
++	for _, c := range all {
++		if !c.Deleted {
++			out = append(out, c)
++		}
++	}
++	return out, nil
++}
++
++// LockAllAny — все колонки под FOR UPDATE, включая мягко удалённые (Column.Deleted):
++// восстановление колонки и служебная уборка (soft-delete-board-columns DS-019, DS-024).
++func (r *ColumnRepo) LockAllAny(ctx context.Context, tx pgx.Tx) ([]Column, error) {
+ 	rows, err := tx.Query(ctx, `
+-		SELECT `+columnColumns+`, (SELECT count(*) FROM tasks t WHERE t.column_id = c.id AND t.deleted_at IS NULL) AS tasks_count
++		SELECT `+columnColumns+`, (SELECT count(*) FROM tasks t WHERE t.column_id = c.id AND t.deleted_at IS NULL) AS tasks_count,
++		       c.deleted_at IS NOT NULL
+ 		FROM columns c
+ 		ORDER BY id
+ 		FOR UPDATE`)
+@@ -72,7 +96,7 @@ func (r *ColumnRepo) LockAll(ctx context.Context, tx pgx.Tx) ([]Column, error) {
+ 	out := []Column{}
+ 	for rows.Next() {
+ 		var c Column
+-		if err := rows.Scan(&c.ID, &c.Name, &c.Color, &c.IsFinal, &c.ConsumesStock, &c.Position, &c.TasksCount); err != nil {
++		if err := rows.Scan(&c.ID, &c.Name, &c.Color, &c.IsFinal, &c.ConsumesStock, &c.Position, &c.TasksCount, &c.Deleted); err != nil {
+ 			return nil, err
+ 		}
+ 		out = append(out, c)
+@@ -95,12 +119,13 @@ func (r *ColumnRepo) Insert(ctx context.Context, tx pgx.Tx, in ColumnInput, prov
+ }
+ 
+ // Update — карточка колонки без position (позицию двигает Renumber отдельно, вызывающая
+-// сторона знает, менялась ли она). 0 строк → errNotFound.
++// сторона знает, менялась ли она). 0 строк → errNotFound — в том числе для мягко удалённой
++// колонки (soft-delete-board-columns DS-026).
+ func (r *ColumnRepo) Update(ctx context.Context, tx pgx.Tx, id string, in ColumnInput) (*Column, error) {
+ 	var c Column
+ 	err := tx.QueryRow(ctx, `
+ 		UPDATE columns SET name = $2, color = $3, is_final = $4, consumes_stock = $5, updated_at = now()
+-		WHERE id = $1
++		WHERE id = $1 AND deleted_at IS NULL
+ 		RETURNING `+columnColumns,
+ 		id, in.Name, in.Color, in.IsFinal, in.ConsumesStock,
+ 	).Scan(&c.ID, &c.Name, &c.Color, &c.IsFinal, &c.ConsumesStock, &c.Position)
+@@ -112,11 +137,13 @@ func (r *ColumnRepo) Update(ctx context.Context, tx pgx.Tx, id string, in Column
+ 
+ // Renumber — design-sql.md §Column Renumber Query: сдвигает остальные колонки и ставит
+ // movingID на targetPosition (1..N, кэлмп — вызывающая сторона). Два отдельных Exec —
+-// оператора с общими $1/$2 не объединяются в одну команду (pgx extended protocol).
++// оператора с общими $1/$2 не объединяются в одну команду (pgx extended protocol). Только
++// действующие колонки: удалённая хранит прежнюю позицию без смысла (soft-delete-board-columns
++// DS-019).
+ func (r *ColumnRepo) Renumber(ctx context.Context, tx pgx.Tx, movingID string, targetPosition int) error {
+ 	if _, err := tx.Exec(ctx, `
+ 		WITH ordered AS (
+-		    SELECT id, row_number() OVER (ORDER BY position, (id = $1) DESC, id) AS rn FROM columns WHERE id <> $1)
++		    SELECT id, row_number() OVER (ORDER BY position, (id = $1) DESC, id) AS rn FROM columns WHERE id <> $1 AND deleted_at IS NULL)
+ 		UPDATE columns c SET position = CASE WHEN o.rn >= $2 THEN o.rn + 1 ELSE o.rn END
+ 		FROM ordered o WHERE c.id = o.id`, movingID, targetPosition); err != nil {
+ 		return err
+@@ -125,22 +152,24 @@ func (r *ColumnRepo) Renumber(ctx context.Context, tx pgx.Tx, movingID string, t
+ 	return err
+ }
+ 
+-// closeGaps — после удаления колонки перенумеровывает оставшиеся 1..N (design-sql.md:
+-// «position не UNIQUE: перенумерация 1..N в транзакции при create/update/delete»).
++// closeGaps — после удаления колонки перенумеровывает оставшиеся ДЕЙСТВУЮЩИЕ 1..N
++// (design-sql.md: «position не UNIQUE: перенумерация 1..N в транзакции при
++// create/update/delete»; soft-delete-board-columns DS-019 — удалённые не участвуют).
+ func (r *ColumnRepo) closeGaps(ctx context.Context, tx pgx.Tx) error {
+ 	_, err := tx.Exec(ctx, `
+ 		UPDATE columns c SET position = o.rn, updated_at = now()
+-		FROM (SELECT id, row_number() OVER (ORDER BY position, id) AS rn FROM columns) o
++		FROM (SELECT id, row_number() OVER (ORDER BY position, id) AS rn FROM columns WHERE deleted_at IS NULL) o
+ 		WHERE c.id = o.id AND c.position <> o.rn`)
+ 	return err
+ }
+ 
+-// HasTasks — design-sql.md §Delete Column Query, первая строка (EXISTS-проверка ДО DELETE).
+-// Условия «заказ не удалён» здесь НЕТ намеренно (soft-delete-core DS-035): мягко удалённый
+-// заказ по-прежнему удерживает колонку от безвозвратного удаления — до части 3.
++// HasTasks — в колонке есть ДЕЙСТВУЮЩИЕ заказы (EXISTS-проверка до удаления колонки). Мягко
++// удалённые заказы колонку не удерживают (soft-delete-board-columns DS-019; переходное правило
++// части 1 DS-035 для колонок снято). Отдельный оператор после LockAll: видит заказ, созданный
++// или перенесённый транзакцией, которую удаление ждало на блокировке колонки.
+ func (r *ColumnRepo) HasTasks(ctx context.Context, tx pgx.Tx, columnID string) (bool, error) {
+ 	var exists bool
+-	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE column_id = $1)`, columnID).Scan(&exists)
++	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE column_id = $1 AND deleted_at IS NULL)`, columnID).Scan(&exists)
+ 	return exists, err
+ }
+ 
+@@ -192,10 +221,45 @@ func (r *ColumnRepo) OpenSubtasksForColumn(ctx context.Context, tx pgx.Tx, colum
+ 	return out, rows.Err()
+ }
+ 
+-// Delete — design-sql.md §Delete Column Query, третья строка. HasTasks/LAST_NON_FINAL_COLUMN
+-// проверяет сервис (данные уже под FOR UPDATE из LockAll); здесь — сам DELETE + закрытие
+-// пробелов позиций, плюс страховка от гонки: 23503/23001 → errColumnHasTasks.
+-func (r *ColumnRepo) Delete(ctx context.Context, tx pgx.Tx, id string) error {
++// SoftDelete — отметка удаления колонки (soft-delete-board-columns §6.1, DS-024): атомарный
++// UPDATE с условием «ещё не удалена» + уплотнение позиций действующих колонок. 0 строк →
++// errNotFound. HasTasks/LAST_NON_FINAL_COLUMN проверяет сервис (данные под FOR UPDATE из LockAll).
++func (r *ColumnRepo) SoftDelete(ctx context.Context, tx pgx.Tx, id, userID, reason string) (time.Time, error) {
++	var at time.Time
++	err := tx.QueryRow(ctx, `
++		UPDATE columns SET deleted_at = now(), deleted_by = $2::uuid, delete_reason = $3, updated_at = now()
++		WHERE id = $1 AND deleted_at IS NULL
++		RETURNING deleted_at`, id, userID, reason).Scan(&at)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return at, errNotFound
++	}
++	if err != nil {
++		return at, err
++	}
++	return at.UTC(), r.closeGaps(ctx, tx)
++}
++
++// Restore — снятие отметки удаления (soft-delete-board-columns §6.2, DS-024): атомарный UPDATE
++// с условием «удалена»; три поля очищаются, позиция = максимум среди действующих + 1 (колонка
++// встаёт в конец доски, DS-019). 0 строк → errNotFound (не удалена). Вызывается под LockAllAny.
++func (r *ColumnRepo) Restore(ctx context.Context, tx pgx.Tx, id string) (int, error) {
++	var position int
++	err := tx.QueryRow(ctx, `
++		UPDATE columns SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL,
++		       position = (SELECT coalesce(max(position), 0) + 1 FROM columns WHERE deleted_at IS NULL),
++		       updated_at = now()
++		WHERE id = $1 AND deleted_at IS NOT NULL
++		RETURNING position`, id).Scan(&position)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return 0, errNotFound
++	}
++	return position, err
++}
++
++// Purge — ФИЗИЧЕСКОЕ удаление строки колонки: только служебная уборка автотестов
++// (ColumnService.Purge, DS-027) — действующей или мягко удалённой. На колонку ссылается заказ
++// (в том числе удалённый) → 23503/23001 → errColumnHasTasks. 0 строк → errNotFound.
++func (r *ColumnRepo) Purge(ctx context.Context, tx pgx.Tx, id string) error {
+ 	tag, err := tx.Exec(ctx, `DELETE FROM columns WHERE id = $1`, id)
+ 	if err != nil {
+ 		var pgErr *pgconn.PgError
+diff --git a/internal/features/board/columns_service.go b/internal/features/board/columns_service.go
+index 969abcc..0e02539 100644
+--- a/internal/features/board/columns_service.go
++++ b/internal/features/board/columns_service.go
+@@ -3,13 +3,16 @@ package board
+ import (
+ 	"context"
+ 	"errors"
++	"log/slog"
+ 	"sort"
++	"time"
+ 
+ 	"github.com/google/uuid"
+ 	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+ 	"go.opentelemetry.io/otel"
+ 
++	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+@@ -204,13 +207,25 @@ func (s *ColumnService) Update(ctx context.Context, id, userID string, in Column
+ 	return &result, nil
+ }
+ 
+-// Delete — guard'ы COLUMN_NOT_EMPTY/LAST_NON_FINAL_COLUMN под тем же LockAll, что и
+-// сам DELETE (ADR-104: инвариант «≥1 нефинальная колонка» устойчив к гонке).
+-func (s *ColumnService) Delete(ctx context.Context, id string) error {
++// Delete — МЯГКОЕ удаление колонки (soft-delete-board-columns §6.1): только admin (роут +
++// повторная проверка роли в сервисе — первой, до поиска записи, DS-003), причина обязательна
++// (DS-020). Guard'ы COLUMN_NOT_EMPTY/LAST_NON_FINAL_COLUMN под тем же LockAll, что и сам UPDATE
++// (ADR-104: инвариант «≥1 действующая нефинальная колонка» устойчив к гонке). Колонку
++// удерживают только действующие заказы (DS-019). Уже удалена либо не существует → 404 (DS-024).
++func (s *ColumnService) Delete(ctx context.Context, a Actor, id string, in softdelete.DeleteRequest) (*ColumnDeleteResponse, error) {
++	if !a.IsAdmin {
++		return nil, errorspkg.Forbidden("Нет доступа")
++	}
+ 	if uuid.Validate(id) != nil {
+-		return ErrColumnNotFound
++		return nil, ErrColumnNotFound
+ 	}
+-	return withTx(ctx, s.pool, func(tx pgx.Tx) error {
++	reason, fields := softdelete.ValidateReason(in.Reason)
++	if len(fields) > 0 {
++		return nil, errorspkg.Validation(fields...)
++	}
++
++	var deletedAt time.Time
++	err := withTx(ctx, s.pool, func(tx pgx.Tx) error {
+ 		columns, err := s.repo.LockAll(ctx, tx)
+ 		if err != nil {
+ 			return err
+@@ -241,12 +256,90 @@ func (s *ColumnService) Delete(ctx context.Context, id string) error {
+ 			return ErrLastNonFinalColumn
+ 		}
+ 
+-		if err := s.repo.Delete(ctx, tx, id); err != nil {
++		at, err := s.repo.SoftDelete(ctx, tx, id, a.ID, reason)
++		if err != nil {
++			if errors.Is(err, errNotFound) {
++				return ErrColumnNotFound
++			}
++			return err
++		}
++		deletedAt = at
++		return nil
++	})
++	if err != nil {
++		return nil, err
++	}
++	// Аудит (DS-030): факт удаления — в журнал приложения; причина в журнал не пишется.
++	slog.InfoContext(ctx, "soft delete", "kind", "columns", "id", id, "user_id", a.ID, "action", "delete")
++	return &ColumnDeleteResponse{ID: id, DeletedAt: deletedAt}, nil
++}
++
++// Restore — восстановление мягко удалённой колонки (soft-delete-board-columns §6.2): только
++// admin. Одна транзакция под блокировкой всех колонок: три поля очищаются, колонка встаёт в
++// конец доски (позиция = максимум среди действующих + 1, DS-019); название, цвет и признаки —
++// прежние; удалённые заказы колонки остаются удалёнными. Не удалена → 409 NOT_DELETED (DS-024).
++func (s *ColumnService) Restore(ctx context.Context, a Actor, id string) (*ColumnRestoreResponse, error) {
++	if !a.IsAdmin {
++		return nil, errorspkg.Forbidden("Нет доступа")
++	}
++	if uuid.Validate(id) != nil {
++		return nil, ErrColumnNotFound
++	}
++
++	var position int
++	err := withTx(ctx, s.pool, func(tx pgx.Tx) error {
++		columns, err := s.repo.LockAllAny(ctx, tx)
++		if err != nil {
++			return err
++		}
++		var target *Column
++		for i := range columns {
++			if columns[i].ID == id {
++				target = &columns[i]
++				break
++			}
++		}
++		if target == nil {
++			return ErrColumnNotFound
++		}
++		if !target.Deleted {
++			return softdelete.ErrNotDeleted
++		}
++		pos, err := s.repo.Restore(ctx, tx, id)
++		if err != nil {
++			if errors.Is(err, errNotFound) {
++				return softdelete.ErrNotDeleted
++			}
++			return err
++		}
++		position = pos
++		return nil
++	})
++	if err != nil {
++		return nil, err
++	}
++	slog.InfoContext(ctx, "soft delete", "kind", "columns", "id", id, "user_id", a.ID, "action", "restore")
++	return &ColumnRestoreResponse{ID: id, Position: position}, nil
++}
++
++// Purge — служебная ФИЗИЧЕСКАЯ уборка колонки автотестами (soft-delete-board-columns §6.3,
++// DS-027): удаляет колонку, действующую или мягко удалённую, на которую не ссылается ни один
++// заказ; ссылаются заказы (включая удалённые) → 409 COLUMN_NOT_EMPTY. Колонки нет → 404
++// NOT_FOUND (сервис уборки не раскрывает вид записи). Роль проверяет роут (softdelete.AdminOnly).
++func (s *ColumnService) Purge(ctx context.Context, id string) error {
++	if uuid.Validate(id) != nil {
++		return errPurgeNotFound()
++	}
++	return withTx(ctx, s.pool, func(tx pgx.Tx) error {
++		if _, err := s.repo.LockAllAny(ctx, tx); err != nil {
++			return err
++		}
++		if err := s.repo.Purge(ctx, tx, id); err != nil {
+ 			switch {
+ 			case errors.Is(err, errColumnHasTasks):
+ 				return ErrColumnNotEmpty
+ 			case errors.Is(err, errNotFound):
+-				return ErrColumnNotFound
++				return errPurgeNotFound()
+ 			default:
+ 				return err
+ 			}
+diff --git a/internal/features/board/columns_soft_delete_http_live_test.go b/internal/features/board/columns_soft_delete_http_live_test.go
+new file mode 100644
+index 0000000..7e18bfe
+--- /dev/null
++++ b/internal/features/board/columns_soft_delete_http_live_test.go
+@@ -0,0 +1,568 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/google/uuid"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// Мягкое удаление колонок доски (docs/features/soft-delete-board-columns/draft-spec.md §11,
++// часть 3 мастер-спеки soft-delete) — методы OrderCardLiveSuite (§TD-8: боевой бинарь,
++// реальный логин; сьюта запущена с TEST_PURGE_ENABLED=true): TS-012 (CHECK миграции columns),
++// TS-019 (удаление колонки, причина, удалённая колонка для обычных адресов не существует),
++// TS-020 (восстановление заказа удалённой колонки), TS-021 (восстановление колонки), TS-033
++// (права), служебная уборка вида columns (§6.3, DS-027), гонки §3. «Последняя нефинальная →
++// 409 LAST_NON_FINAL_COLUMN» — BoardLiveSuite.TestBoardLiveSuite_DeleteColumn_LastNonFinal.
++
++// ---- wire-типы (1:1 с board.ColumnDeleteResponse / ColumnRestoreResponse / ColumnResponse) ----
++
++type colDeleteDTO struct {
++	ID        string    `json:"id"`
++	DeletedAt time.Time `json:"deleted_at"`
++}
++
++type colRestoreDTO struct {
++	ID       string `json:"id"`
++	Position int    `json:"position"`
++}
++
++type colDTO struct {
++	ID            string `json:"id"`
++	Name          string `json:"name"`
++	Color         string `json:"color"`
++	IsFinal       bool   `json:"is_final"`
++	ConsumesStock bool   `json:"consumes_stock"`
++	Position      int    `json:"position"`
++	TasksCount    int    `json:"tasks_count"`
++}
++
++type colListDTO struct {
++	Items []colDTO `json:"items"`
++	Total int      `json:"total"`
++}
++
++// ---- фикстуры ----
++
++func colPath(id, tail string) string { return "/api/v1/columns/" + id + tail }
++
++func (s *OrderCardLiveSuite) deleteColumn(b *testutil.Browser, id string, reason any) (int, colDeleteDTO, []byte) {
++	var body any
++	if reason != nil {
++		body = map[string]any{"reason": reason}
++	}
++	st, raw := b.Do(http.MethodDelete, colPath(id, ""), body)
++	var out colDeleteDTO
++	if st == http.StatusOK {
++		s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++	}
++	return st, out, raw
++}
++
++func (s *OrderCardLiveSuite) mustDeleteColumn(id string) colDeleteDTO {
++	st, out, raw := s.deleteColumn(s.admin, id, "Создана по ошибке")
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	return out
++}
++
++func (s *OrderCardLiveSuite) restoreColumn(b *testutil.Browser, id string) (int, colRestoreDTO, []byte) {
++	st, raw := b.Do(http.MethodPost, colPath(id, "/restore"), nil)
++	var out colRestoreDTO
++	if st == http.StatusOK {
++		s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++	}
++	return st, out, raw
++}
++
++// boardColumns — действующие колонки доски в порядке API (position, id).
++func (s *OrderCardLiveSuite) boardColumns() colListDTO {
++	var l colListDTO
++	s.sdGet("/api/v1/columns", &l)
++	return l
++}
++
++func findCol(l colListDTO, id string) *colDTO {
++	for i := range l.Items {
++		if l.Items[i].ID == id {
++			return &l.Items[i]
++		}
++	}
++	return nil
++}
++
++// colState — «удалена|причина|кто удалил» строки колонки («» — строки нет).
++func (s *OrderCardLiveSuite) colState(id string) string {
++	return s.sdScalar(`
++		SELECT coalesce((SELECT (deleted_at IS NOT NULL)::text || '|' || coalesce(delete_reason, '') || '|' || coalesce(deleted_by::text, '')
++		                 FROM columns WHERE id = $1), '')`, id)
++}
++
++func (s *OrderCardLiveSuite) purgeColumns(ids ...string) {
++	for _, id := range ids {
++		st, raw := s.purge(s.admin, "columns", id)
++		s.Equal(http.StatusOK, st, "уборка колонки %s: %s", id, raw)
++	}
++}
++
++func (s *OrderCardLiveSuite) purgeTasks(ids ...int64) {
++	for _, id := range ids {
++		st, raw := s.purge(s.admin, "tasks", fmt.Sprint(id))
++		s.Equal(http.StatusOK, st, "уборка заказа %d: %s", id, raw)
++	}
++}
++
++// firstNonFinalColumn — первая по позиции действующая нефинальная колонка доски.
++func (s *OrderCardLiveSuite) firstNonFinalColumn() (id, name string) {
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT id::text, name FROM columns WHERE NOT is_final AND deleted_at IS NULL ORDER BY position, id LIMIT 1`).Scan(&id, &name))
++	return id, name
++}
++
++// ---- TS-012 ----
++
++// TS-012 (DS-022, DS-030): миграция колонок — существующие колонки действующие (три поля
++// NULL), частичный индекс на месте; CHECK «три поля вместе» отклоняет частичное заполнение,
++// причину из пробелов и длиннее 500 символов. Негатив: только deleted_at без deleted_by → CHECK.
++func (s *OrderCardLiveSuite) TestTS012_ColumnsMigrationCheck() {
++	ctx := context.Background()
++	col := s.sdColumn("SD-Миграция-" + uuid.NewString()[:8])
++	defer s.purgeColumns(col)
++	adminID := s.sdScalar(`SELECT id::text FROM users WHERE login = 'card-admin'`)
++
++	s.Equal("0", s.sdScalar(`
++		SELECT count(*)::text FROM columns
++		WHERE name = ANY($1) AND (deleted_at IS NOT NULL OR deleted_by IS NOT NULL OR delete_reason IS NOT NULL)`,
++		[]string{"Новые", "Согласование", "В работе", "Ждёт запчасти", "Готово"}), "колонки, существовавшие до миграции, — действующие")
++	s.Equal("false||", s.colState(col))
++	s.Equal("1", s.sdScalar(`SELECT count(*)::text FROM pg_indexes WHERE tablename = 'columns' AND indexname = 'columns_deleted_at_idx'`))
++
++	for name, q := range map[string]string{
++		"только deleted_at":        `UPDATE columns SET deleted_at = now() WHERE id = $1 AND $2::text <> ''`,
++		"только deleted_by":        `UPDATE columns SET deleted_by = $2::uuid WHERE id = $1`,
++		"только delete_reason":     `UPDATE columns SET delete_reason = 'x' || left($2::text, 0) WHERE id = $1`,
++		"без deleted_by":           `UPDATE columns SET deleted_at = now(), delete_reason = 'x' || left($2::text, 0) WHERE id = $1`,
++		"без delete_reason":        `UPDATE columns SET deleted_at = now(), deleted_by = $2::uuid WHERE id = $1`,
++		"причина из пробелов":      `UPDATE columns SET deleted_at = now(), deleted_by = $2::uuid, delete_reason = '   ' WHERE id = $1`,
++		"причина длиннее 500":      `UPDATE columns SET deleted_at = now(), deleted_by = $2::uuid, delete_reason = repeat('я', 501) WHERE id = $1`,
++		"несуществующий удаливший": `UPDATE columns SET deleted_at = now(), deleted_by = gen_random_uuid(), delete_reason = 'x' || left($2::text, 0) WHERE id = $1`,
++	} {
++		_, err := s.Pool.Exec(ctx, q, col, adminID)
++		s.Require().Error(err, name)
++		want := "columns_deleted_chk"
++		if name == "несуществующий удаливший" {
++			want = "columns_deleted_by_fkey"
++		}
++		s.Contains(err.Error(), want, name)
++	}
++
++	_, err := s.Pool.Exec(ctx, `
++		UPDATE columns SET deleted_at = now(), deleted_by = $2::uuid, delete_reason = repeat('я', 500) WHERE id = $1`, col, adminID)
++	s.Require().NoError(err, "полное заполнение проходит")
++}
++
++// ---- TS-019 ----
++
++// TS-019 (DS-019, DS-020, DS-024, DS-026, DS-028): пустая колонка удаляется мягко — 200 {id,
++// deleted_at}, строка остаётся с отметкой «кто, когда, почему» (причина обрезана), из списка
++// колонка уходит, позиции оставшихся идут подряд 1..N. Причина обязательна (400 required /
++// too_long / invalid_text — колонка не удалена). Колонка с действующим заказом → 409
++// COLUMN_NOT_EMPTY; только с удалённым заказом → 200 (переходное правило DS-035 снято).
++// Удалённая колонка для обычных адресов не существует: повтор удаления и правка → 404.
++// Негатив: создание заказа в удалённой колонке и перенос в неё → 404 COLUMN_NOT_FOUND.
++func (s *OrderCardLiveSuite) TestTS019_DeleteColumn() {
++	c := s.newClient("Клиент-Удаление-Колонки")
++	mark := uuid.NewString()[:8]
++	empty := s.sdColumn("SD-Пустая-" + mark)
++	busy := s.sdColumn("SD-Занятая-" + mark)
++	after := s.sdColumn("SD-После-" + mark) // стоит за удаляемыми: её позиция должна уплотниться
++	adminID := s.sdScalar(`SELECT id::text FROM users WHERE login = 'card-admin'`)
++	taskID, _ := s.newTask(c, busy)
++	other, _ := s.newTask(c, s.columnID("Новые"))
++	defer func() {
++		s.purgeTasks(taskID, other)
++		s.purgeColumns(empty, busy, after)
++	}()
++
++	// причина обязательна; при отказе колонка не удалена.
++	for name, tc := range map[string]struct {
++		reason any
++		want   string
++	}{
++		"без причины":   {nil, "required"},
++		"пустая":        {"", "required"},
++		"из пробелов":   {"  \t ", "required"},
++		"501 символ":    {strings.Repeat("я", 501), "too_long"},
++		"NUL в причине": {"плохо\x00", "invalid_text"},
++	} {
++		st, _, raw := s.deleteColumn(s.admin, empty, tc.reason)
++		s.Equal(http.StatusBadRequest, st, "%s: %s", name, raw)
++		s.Equal("VALIDATION", s.sdErr(raw).Code, name)
++		s.Equal(tc.want, s.sdField(raw, "reason"), name)
++	}
++	s.Equal("false||", s.colState(empty), "отказы колонку не удалили")
++
++	before := s.boardColumns()
++	afterPos := findCol(before, after).Position
++
++	// пустая колонка — 200; причина хранится обрезанной.
++	st, out, raw := s.deleteColumn(s.admin, empty, "  Лишний этап  ")
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(empty, out.ID)
++	s.WithinDuration(time.Now(), out.DeletedAt, time.Minute)
++	s.Equal(time.UTC, out.DeletedAt.Location(), "deleted_at — UTC")
++	s.Equal("true|Лишний этап|"+adminID, s.colState(empty))
++
++	now := s.boardColumns()
++	s.Nil(findCol(now, empty), "удалённой колонки нет в списке")
++	s.Equal(before.Total-1, now.Total, "удалённая колонка не входит в total")
++	for i, cl := range now.Items {
++		s.Equal(i+1, cl.Position, "позиции действующих колонок — подряд 1..N (%s)", cl.Name)
++	}
++	s.Equal(afterPos-1, findCol(now, after).Position, "колонка за удалённой сдвинулась")
++
++	// удалённая колонка для обычных адресов не существует.
++	st, _, raw = s.deleteColumn(s.admin, empty, "Повтор")
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("COLUMN_NOT_FOUND", s.sdErr(raw).Code)
++	st, raw = s.sdUpdateColumn(empty, "Правка удалённой", false, false)
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("COLUMN_NOT_FOUND", s.sdErr(raw).Code)
++	s.Equal("true|Лишний этап|"+adminID, s.colState(empty), "повтор и правка отметку не изменили")
++
++	// негатив: заказ в удалённую колонку не создать и не перенести.
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": "В удалённую", "client_id": c, "column_id": empty})
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("COLUMN_NOT_FOUND", s.sdErr(raw).Code)
++	st, raw = s.admin.Do(http.MethodPost, taskPath(other, "/move"), map[string]any{"column_id": empty})
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("COLUMN_NOT_FOUND", s.sdErr(raw).Code)
++	s.Equal("Колонка не найдена", s.sdErr(raw).Message)
++	s.Equal(s.columnID("Новые"), s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, other), "заказ остался в своей колонке")
++	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE column_id = $1`, empty))
++	// фильтр доски по удалённой колонке — пустой список.
++	var list struct {
++		Items []json.RawMessage `json:"items"`
++		Total int               `json:"total"`
++	}
++	s.sdGet("/api/v1/tasks?column_id="+empty, &list)
++	s.Empty(list.Items)
++	s.Zero(list.Total)
++
++	// колонка с действующим заказом — 409; заказ мягко удалён — колонку больше не удерживает.
++	st, _, raw = s.deleteColumn(s.admin, busy, "Занята")
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("COLUMN_NOT_EMPTY", s.sdErr(raw).Code)
++	s.Equal("В колонке есть заказы", s.sdErr(raw).Message)
++	s.Equal("false||", s.colState(busy))
++	s.mustSoftDelete(taskID)
++	st, _, raw = s.deleteColumn(s.admin, busy, "Только удалённые заказы")
++	s.Equal(http.StatusOK, st, string(raw))
++	s.Equal("true|Только удалённые заказы|"+adminID, s.colState(busy))
++	s.Equal(busy, s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, taskID), "удалённый заказ ссылается на удалённую колонку")
++}
++
++// ---- TS-020 ----
++
++// TS-020 (DS-016): заказ, колонку которого удалили, восстанавливается в конец первой
++// нефинальной действующей колонки: notices содержит column_replaced с её названием, товар
++// списывается по правилу НОВОЙ колонки. Негатив: колонка заказа сама не восстановлена.
++func (s *OrderCardLiveSuite) TestTS020_RestoreTaskOfDeletedColumn() {
++	c := s.newClient("Клиент-Колонка-Удалена")
++	col := s.sdColumn("SD-Уйдёт-" + uuid.NewString()[:8])
++	taskID, _, productID := s.sdTaskWithProduct(c, col, "10", 3)
++	defer func() {
++		s.purgeTasks(taskID)
++		s.purgeColumns(col)
++	}()
++	s.mustSoftDelete(taskID)
++	s.mustDeleteColumn(col)
++
++	firstID, firstName := s.firstNonFinalColumn()
++	lastPos := s.sdScalar(`SELECT coalesce(max(position), 0)::text FROM tasks WHERE column_id = $1 AND deleted_at IS NULL`, firstID)
++
++	out := s.mustRestore(taskID)
++	s.Require().Len(out.Notices, 1)
++	s.Equal("column_replaced", out.Notices[0].Code)
++	s.Equal("Колонка заказа удалена — заказ поставлен в колонку «"+firstName+"»", out.Notices[0].Message)
++	s.Equal(firstID, s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, taskID), "заказ в первой нефинальной действующей колонке")
++	s.Equal("true", s.sdScalar(`SELECT (position > $2::numeric)::text FROM tasks WHERE id = $1`, taskID, lastPos), "в конце колонки")
++	consumes := s.sdScalar(`SELECT consumes_stock::text FROM columns WHERE id = $1`, firstID)
++	wantStock := map[string]string{"true": "7.000", "false": "10.000"}[consumes]
++	s.Equal(wantStock, s.defaultStock(productID), "товар списан по правилу новой колонки (consumes_stock=%s)", consumes)
++	st, card, _ := s.getCard(s.admin, taskID)
++	s.Require().Equal(http.StatusOK, st)
++	s.Equal(firstID, card.Column.ID)
++
++	// негатив: колонка заказа осталась удалённой и на доске не появилась.
++	s.True(strings.HasPrefix(s.colState(col), "true|"), "колонка заказа не восстановлена")
++	s.Nil(findCol(s.boardColumns(), col))
++}
++
++// ---- TS-021 ----
++
++// TS-021 (DS-019, DS-024, DS-030): восстановленная колонка встаёт в конец доски — position =
++// максимум среди действующих + 1; название, цвет и признаки прежние; отметка удаления стёрта;
++// удалённые заказы колонки остаются удалёнными. Негатив: повтор → 409 NOT_DELETED;
++// несуществующая колонка → 404 COLUMN_NOT_FOUND.
++func (s *OrderCardLiveSuite) TestTS021_RestoreColumn() {
++	c := s.newClient("Клиент-Восстановление-Колонки")
++	mark := uuid.NewString()[:8]
++	name := "SD-Вернётся-" + mark
++	col := s.sdColumn(name)
++	tail := s.sdColumn("SD-Хвост-" + mark)
++	taskID, _ := s.newTask(c, col)
++	defer func() {
++		s.purgeTasks(taskID)
++		s.purgeColumns(col, tail)
++	}()
++	st, raw := s.sdUpdateColumn(col, name, true, true) // признаки, которые должны сохраниться
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.mustSoftDelete(taskID)
++	s.mustDeleteColumn(col)
++
++	active := s.boardColumns()
++	maxPos := 0
++	for _, cl := range active.Items {
++		maxPos = max(maxPos, cl.Position)
++	}
++	s.Equal(active.Total, maxPos, "действующие колонки — подряд 1..N")
++	s.Equal(maxPos, findCol(active, tail).Position, "колонка-хвост — последняя")
++
++	st, out, raw := s.restoreColumn(s.admin, col)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(col, out.ID)
++	s.Equal(maxPos+1, out.Position, "позиция — максимум среди действующих + 1")
++
++	now := s.boardColumns()
++	got := findCol(now, col)
++	s.Require().NotNil(got, "колонка снова на доске")
++	s.Equal(colDTO{ID: col, Name: name, Color: "#445566", IsFinal: true, ConsumesStock: true, Position: maxPos + 1, TasksCount: 0}, *got)
++	s.Equal(col, now.Items[len(now.Items)-1].ID, "колонка — в конце доски")
++	s.Equal("false||", s.colState(col), "отметка удаления стёрта")
++	s.Equal("true", s.sdScalar(`SELECT (deleted_at IS NOT NULL)::text FROM tasks WHERE id = $1`, taskID), "удалённый заказ колонки остался удалённым")
++
++	// негатив: повтор и несуществующие идентификаторы.
++	st, _, raw = s.restoreColumn(s.admin, col)
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("NOT_DELETED", s.sdErr(raw).Code)
++	s.Equal("Запись уже восстановлена", s.sdErr(raw).Message)
++	for _, id := range []string{uuid.NewString(), "not-uuid"} {
++		st, _, raw = s.restoreColumn(s.admin, id)
++		s.Equal(http.StatusNotFound, st, "%s: %s", id, raw)
++		s.Equal("COLUMN_NOT_FOUND", s.sdErr(raw).Code, id)
++	}
++	s.Equal(maxPos+1, findCol(s.boardColumns(), col).Position, "повтор позицию не изменил")
++}
++
++// ---- TS-033 ----
++
++// TS-033 (DS-003, abuse case 1): удаление и восстановление колонки — только администратору:
++// исполнитель → 403 «Нет доступа» до поиска записи (включая несуществующий идентификатор) и до
++// проверки причины. Негатив: без сессии → 401; отказы ничего не изменили.
++func (s *OrderCardLiveSuite) TestTS033_ColumnsExecutorForbidden() {
++	mark := uuid.NewString()[:8]
++	live := s.sdColumn("SD-Права-Действует-" + mark)
++	deleted := s.sdColumn("SD-Права-Удалена-" + mark)
++	defer s.purgeColumns(live, deleted)
++	s.mustDeleteColumn(deleted)
++	exec, _ := s.sdExecutor()
++	anon := s.NewBrowser()
++
++	reason := map[string]any{"reason": "Создана по ошибке"}
++	missing := uuid.NewString()
++	for _, tc := range []struct {
++		method, path string
++		body         map[string]any
++	}{
++		{http.MethodDelete, colPath(live, ""), reason},
++		{http.MethodDelete, colPath(missing, ""), reason},
++		{http.MethodDelete, colPath("abc", ""), reason},
++		{http.MethodDelete, colPath(live, ""), nil}, // роль проверяется раньше причины
++		{http.MethodPost, colPath(deleted, "/restore"), nil},
++		{http.MethodPost, colPath(live, "/restore"), nil},
++		{http.MethodPost, colPath(missing, "/restore"), nil},
++		{http.MethodDelete, "/api/v1/test/purge/columns/" + live, nil},
++	} {
++		var body any
++		if tc.body != nil {
++			body = tc.body
++		}
++		st, raw := exec.Do(tc.method, tc.path, body)
++		s.Equal(http.StatusForbidden, st, "%s %s: %s", tc.method, tc.path, raw)
++		s.Equal("FORBIDDEN", s.sdErr(raw).Code, tc.path)
++		s.Equal("Нет доступа", s.sdErr(raw).Message, tc.path)
++
++		st, _ = anon.Do(tc.method, tc.path, body)
++		s.Equal(http.StatusUnauthorized, st, "без сессии: %s %s", tc.method, tc.path)
++	}
++	s.Equal("false||", s.colState(live), "отказы ничего не изменили")
++	s.True(strings.HasPrefix(s.colState(deleted), "true|"), "отказы ничего не изменили")
++}
++
++// ---- служебная уборка вида columns ----
++
++// §6.3 (DS-027): DELETE /api/v1/test/purge/columns/:id физически удаляет колонку — и
++// действующую, и мягко удалённую; позиции оставшихся идут подряд. Колонка, на которую
++// ссылается заказ (в том числе удалённый), → 409 COLUMN_NOT_EMPTY. Негатив: повтор и
++// нечитаемый идентификатор → 404 NOT_FOUND.
++func (s *OrderCardLiveSuite) TestPurge_Columns() {
++	c := s.newClient("Клиент-Уборка-Колонок")
++	mark := uuid.NewString()[:8]
++	live := s.sdColumn("SD-Уборка-Действует-" + mark)
++	deleted := s.sdColumn("SD-Уборка-Удалена-" + mark)
++	held := s.sdColumn("SD-Уборка-С-Заказом-" + mark)
++	taskID, _ := s.newTask(c, held)
++	s.mustSoftDelete(taskID)
++	s.mustDeleteColumn(held) // удалённый заказ колонку не удерживает от мягкого удаления…
++	s.mustDeleteColumn(deleted)
++
++	st, raw := s.purge(s.admin, "columns", held) // …но физически убрать её нельзя
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("COLUMN_NOT_EMPTY", s.sdErr(raw).Code)
++	s.NotEmpty(s.colState(held), "строка колонки на месте")
++
++	for _, id := range []string{live, deleted} {
++		st, raw = s.purge(s.admin, "columns", id)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var out struct {
++			ID string `json:"id"`
++		}
++		s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++		s.Equal(id, out.ID)
++		s.Empty(s.colState(id), "строка колонки физически удалена")
++	}
++	for i, cl := range s.boardColumns().Items {
++		s.Equal(i+1, cl.Position, "позиции действующих колонок — подряд 1..N (%s)", cl.Name)
++	}
++
++	for _, id := range []string{live, "not-uuid"} {
++		st, raw = s.purge(s.admin, "columns", id)
++		s.Equal(http.StatusNotFound, st, "%s: %s", id, raw)
++		s.Equal("NOT_FOUND", s.sdErr(raw).Code, id)
++	}
++
++	s.purgeTasks(taskID)
++	s.purgeColumns(held)
++}
++
++// ---- гонки (§3 «Конкурентность», abuse case 2) ----
++
++// colLockWaiters — число серверных соединений, ждущих блокировку строки.
++func (s *OrderCardLiveSuite) colLockWaiters() int {
++	var n int
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&n))
++	return n
++}
++
++type colRaceResult struct {
++	status int
++	raw    []byte
++}
++
++// §3 п. 2 (DS-019): создание заказа в колонке идёт (колонка под FOR SHARE, заказ ещё не
++// зафиксирован) — в это окно приходит удаление колонки. Удаление обязано дождаться и увидеть
++// действующий заказ: 409 COLUMN_NOT_EMPTY, колонка не удалена. Гонка воспроизводится
++// детерминированно, без sleep: тест сам держит блокировку и ждёт по pg_stat_activity.
++func (s *OrderCardLiveSuite) TestRace_ColumnDeleteWaitsForTaskCreate() {
++	ctx := context.Background()
++	c := s.newClient("Клиент-Гонка-Создание")
++	col := s.sdColumn("SD-Гонка-Создание-" + uuid.NewString()[:8])
++	var taskID int64
++	defer func() {
++		if taskID != 0 {
++			s.purgeTasks(taskID)
++		}
++		s.purgeColumns(col)
++	}()
++
++	// «Создание заказа в полёте»: те же блокировка и INSERT, что делает TaskService.Create.
++	tx, err := s.Pool.Begin(ctx)
++	s.Require().NoError(err)
++	defer func() { _ = tx.Rollback(ctx) }()
++	_, err = tx.Exec(ctx, `SELECT id FROM columns WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, col)
++	s.Require().NoError(err)
++	s.Require().NoError(tx.QueryRow(ctx, `
++		INSERT INTO tasks (column_id, client_id, title, position, created_by)
++		SELECT $1::uuid, $2::uuid, 'Заказ гонки', 1, id FROM users WHERE login = 'card-admin' RETURNING id`, col, c).Scan(&taskID))
++
++	base := s.colLockWaiters()
++	done := make(chan colRaceResult, 1)
++	go func() {
++		st, raw := s.admin.Do(http.MethodDelete, colPath(col, ""), map[string]any{"reason": "Гонка"})
++		done <- colRaceResult{st, raw}
++	}()
++	s.Require().Eventually(func() bool { return s.colLockWaiters() > base }, 10*time.Second, 20*time.Millisecond,
++		"удаление колонки ждёт блокировку")
++	s.Require().NoError(tx.Commit(ctx))
++
++	res := <-done
++	s.Equal(http.StatusConflict, res.status, string(res.raw))
++	s.Equal("COLUMN_NOT_EMPTY", s.sdErr(res.raw).Code)
++	s.Equal("false||", s.colState(col), "колонка не удалена")
++}
++
++// §3 п. 2 (DS-019, DS-026): удаление колонки идёт (все колонки под FOR UPDATE, отметка ещё не
++// зафиксирована) — в это окно приходят создание заказа в этой колонке и перенос в неё. Оба
++// обязаны дождаться удаления и получить 404 COLUMN_NOT_FOUND: действующего заказа в удалённой
++// колонке не появляется.
++func (s *OrderCardLiveSuite) TestRace_TaskWritesWaitForColumnDelete() {
++	ctx := context.Background()
++	c := s.newClient("Клиент-Гонка-Удаление")
++	col := s.sdColumn("SD-Гонка-Удаление-" + uuid.NewString()[:8])
++	other, _ := s.newTask(c, s.columnID("Новые"))
++	defer func() {
++		s.purgeTasks(other)
++		s.purgeColumns(col)
++	}()
++
++	// «Удаление в полёте»: те же блокировка и UPDATE, что делает ColumnService.Delete.
++	tx, err := s.Pool.Begin(ctx)
++	s.Require().NoError(err)
++	defer func() { _ = tx.Rollback(ctx) }()
++	_, err = tx.Exec(ctx, `SELECT id FROM columns ORDER BY id FOR UPDATE`)
++	s.Require().NoError(err)
++	_, err = tx.Exec(ctx, `
++		UPDATE columns SET deleted_at = now(), delete_reason = 'гонка',
++		       deleted_by = (SELECT id FROM users WHERE login = 'card-admin')
++		WHERE id = $1`, col)
++	s.Require().NoError(err)
++
++	writer := s.NewBrowser() // второй клиент: запросы идут параллельно
++	writer.Login("card-admin", "password1")
++	requests := []func() (int, []byte){
++		func() (int, []byte) {
++			return s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": "В удаляемую", "client_id": c, "column_id": col})
++		},
++		func() (int, []byte) {
++			return writer.Do(http.MethodPost, taskPath(other, "/move"), map[string]any{"column_id": col})
++		},
++	}
++	base := s.colLockWaiters()
++	done := make(chan colRaceResult, len(requests))
++	for _, do := range requests {
++		go func() {
++			st, raw := do()
++			done <- colRaceResult{st, raw}
++		}()
++	}
++	s.Require().Eventually(func() bool { return s.colLockWaiters() >= base+len(requests) }, 10*time.Second, 20*time.Millisecond,
++		"создание и перенос ждут блокировку колонки")
++	s.Require().NoError(tx.Commit(ctx))
++
++	for range requests {
++		res := <-done
++		s.Equal(http.StatusNotFound, res.status, string(res.raw))
++		s.Equal("COLUMN_NOT_FOUND", s.sdErr(res.raw).Code)
++	}
++	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE column_id = $1`, col), "заказов в удалённой колонке нет")
++	s.Equal(s.columnID("Новые"), s.sdScalar(`SELECT column_id::text FROM tasks WHERE id = $1`, other))
++}
+diff --git a/internal/features/board/errors.go b/internal/features/board/errors.go
+index 3d4dd3f..5c8a726 100644
+--- a/internal/features/board/errors.go
++++ b/internal/features/board/errors.go
+@@ -75,6 +75,9 @@ var (
+ 	// errColumnHasTasks — 23503/23001 на tasks_column_id_fkey при DELETE columns (в т.ч.
+ 	// гонка: заказ создан между EXISTS-проверкой сервиса и DELETE).
+ 	errColumnHasTasks = errors.New("board: column has tasks")
++	// errColumnDeleted — колонка из тела запроса мягко удалена (TaskRepo.LockTargetColumn):
++	// наружу — 404 COLUMN_NOT_FOUND (soft-delete-board-columns DS-026).
++	errColumnDeleted = errors.New("board: column deleted")
+ 	// errVersionConflict — UPDATE tasks ... WHERE version=$n вернул 0 строк при уже
+ 	// подтверждённом (LockTask) существовании заказа (ErrTaskVersionConflict, AC-010).
+ 	errVersionConflict = errors.New("board: task version conflict")
+diff --git a/internal/features/board/routes.go b/internal/features/board/routes.go
+index 743df29..e2f5325 100644
+--- a/internal/features/board/routes.go
++++ b/internal/features/board/routes.go
+@@ -30,7 +30,11 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handlers,
+ 	col.Get("", h.Columns.List)
+ 	col.Post("", admin, h.Columns.Create)
+ 	col.Put("/:id", admin, h.Columns.Update)
+-	col.Delete("/:id", admin, h.Columns.Delete)
++	// soft-delete-board-columns §6.1, §6.2: удаление — мягкое, с причиной; восстановление — только
++	// admin. Гард softdelete.AdminOnly: executor → 403 «Нет доступа» до поиска записи (DS-003).
++	sdAdmin := softdelete.AdminOnly()
++	col.Delete("/:id", sdAdmin, h.Columns.Delete)
++	col.Post("/:id/restore", sdAdmin, h.Columns.Restore)
+ 
+ 	// D19 — заказы создаёт/правит/переносит и executor; Delete — только admin.
+ 	t := api.Group("/tasks", a.RequireAPI())
+@@ -41,7 +45,6 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handlers,
+ 	t.Post("/:id/move", h.Tasks.Move)
+ 	// soft-delete-core §6.1, §6.2: удаление — мягкое, с причиной; восстановление — только admin.
+ 	// Гард softdelete.AdminOnly: executor → 403 «Нет доступа» до поиска записи (DS-003).
+-	sdAdmin := softdelete.AdminOnly()
+ 	t.Delete("/:id", sdAdmin, h.Tasks.Delete)
+ 	t.Post("/:id/restore", sdAdmin, h.Tasks.Restore)
+ 
+diff --git a/internal/features/board/soft_delete_http_live_test.go b/internal/features/board/soft_delete_http_live_test.go
+index 8307b96..b8c6a0f 100644
+--- a/internal/features/board/soft_delete_http_live_test.go
++++ b/internal/features/board/soft_delete_http_live_test.go
+@@ -22,7 +22,8 @@ import (
+ // TEST_PURGE_ENABLED=true): TS-001 (причина), TS-002 (удаление и возврат товара), TS-003
+ // (повтор и гонка), TS-004 / TS-005 (восстановление, нехватка товара), TS-006 (читатели),
+ // TS-007 (мутации удалённого заказа), TS-012 (CHECK миграции), TS-013 (служебная уборка),
+-// TS-033 (права), TS-049 (удалённый заказ удерживает клиента, единицу и колонку), TS-052
++// TS-033 (права), TS-049 (удалённый заказ удерживает клиента и единицу; колонку — уже нет,
++// soft-delete-board-columns TS-019), TS-052
+ // (колонка стала финальной). TS-048 — TestTS017_DeleteTaskWithTransfers; TS-008 —
+ // AttachmentsLiveSuite.
+ 
+@@ -616,10 +617,10 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
+ 	st, _ = s.admin.Do(http.MethodGet, fmt.Sprintf("/tasks/%d/print/intake", taskID), nil)
+ 	s.Equal(http.StatusOK, st, "печатная форма восстановленного заказа открывается")
+ 
+-	// уборка своей колонки: заказ → в общую колонку, колонка удаляется.
++	// уборка своей колонки: заказ → в общую колонку, колонка убирается служебным адресом.
+ 	s.sdMove(taskID, s.columnID("Новые"))
+-	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col, nil)
+-	s.Equal(http.StatusNoContent, st, string(raw))
++	st, raw = s.purge(s.admin, "columns", col)
++	s.Equal(http.StatusOK, st, string(raw))
+ }
+ 
+ // ---- TS-007 ----
+@@ -859,11 +860,13 @@ func (s *OrderCardLiveSuite) TestTS033_ExecutorForbidden() {
+ 
+ // ---- TS-049 ----
+ 
+-// TS-049 (DS-035, переходное правило): мягко удалённый заказ по-прежнему удерживает клиента,
+-// единицу оборудования и колонку от безвозвратного удаления — 409 CLIENT_HAS_TASKS,
+-// EQUIPMENT_USED_IN_TASKS, COLUMN_NOT_EMPTY. Негатив: строки заказа, клиента, единицы и
+-// колонки физически на месте.
+-func (s *OrderCardLiveSuite) TestTS049_DeletedTaskStillHoldsClientEquipmentColumn() {
++// TS-049 (DS-035, переходное правило): мягко удалённый заказ по-прежнему удерживает клиента и
++// единицу оборудования от безвозвратного удаления — 409 CLIENT_HAS_TASKS,
++// EQUIPMENT_USED_IN_TASKS. Негатив: строки заказа, клиента, единицы и колонки физически на
++// месте. Для колонки правило снято частью 3 (soft-delete-board-columns DS-019): удалённый заказ
++// колонку не удерживает — TestTS019_DeleteColumn; но служебная уборка колонки, на которую
++// ссылается удалённый заказ, — 409 COLUMN_NOT_EMPTY (§6.3, DS-027).
++func (s *OrderCardLiveSuite) TestTS049_DeletedTaskStillHoldsClientEquipment() {
+ 	c := s.newClient("Клиент-Только-Удалённый-Заказ")
+ 	col := s.sdColumn("SD-Держит-" + uuid.NewString()[:8])
+ 	taskID, _ := s.newTask(c, col)
+@@ -874,7 +877,7 @@ func (s *OrderCardLiveSuite) TestTS049_DeletedTaskStillHoldsClientEquipmentColum
+ 	for _, tc := range []struct{ path, code string }{
+ 		{"/api/v1/clients/" + c, "CLIENT_HAS_TASKS"},
+ 		{"/api/v1/equipment/" + eq, "EQUIPMENT_USED_IN_TASKS"},
+-		{"/api/v1/columns/" + col, "COLUMN_NOT_EMPTY"},
++		{"/api/v1/test/purge/columns/" + col, "COLUMN_NOT_EMPTY"},
+ 	} {
+ 		st, raw := s.admin.Do(http.MethodDelete, tc.path, nil)
+ 		s.Equal(http.StatusConflict, st, "%s: %s", tc.path, raw)
+@@ -888,8 +891,8 @@ func (s *OrderCardLiveSuite) TestTS049_DeletedTaskStillHoldsClientEquipmentColum
+ 	// уборка: служебное удаление заказа освобождает колонку.
+ 	st, raw := s.purge(s.admin, "tasks", fmt.Sprint(taskID))
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+-	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col, nil)
+-	s.Equal(http.StatusNoContent, st, string(raw))
++	st, raw = s.purge(s.admin, "columns", col)
++	s.Equal(http.StatusOK, st, string(raw))
+ }
+ 
+ // ---- TS-052 ----
+@@ -925,7 +928,7 @@ func (s *OrderCardLiveSuite) TestTS052_RestoreWhenColumnBecameFinal() {
+ 
+ 	var firstID, firstName string
+ 	s.Require().NoError(s.Pool.QueryRow(ctx,
+-		`SELECT id::text, name FROM columns WHERE NOT is_final ORDER BY position, id LIMIT 1`).Scan(&firstID, &firstName))
++		`SELECT id::text, name FROM columns WHERE NOT is_final AND deleted_at IS NULL ORDER BY position, id LIMIT 1`).Scan(&firstID, &firstName))
+ 	lastPos := s.sdScalar(`SELECT coalesce(max(position), 0)::text FROM tasks WHERE column_id = $1 AND deleted_at IS NULL`, firstID)
+ 
+ 	out := s.mustRestore(open)
+@@ -952,6 +955,6 @@ func (s *OrderCardLiveSuite) TestTS052_RestoreWhenColumnBecameFinal() {
+ 		st, raw = s.purge(s.admin, "tasks", fmt.Sprint(id))
+ 		s.Require().Equal(http.StatusOK, st, string(raw))
+ 	}
+-	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/columns/"+col, nil)
+-	s.Equal(http.StatusNoContent, st, string(raw))
++	st, raw = s.purge(s.admin, "columns", col)
++	s.Equal(http.StatusOK, st, string(raw))
+ }
+diff --git a/internal/features/board/tasks_repo.go b/internal/features/board/tasks_repo.go
+index 608a965..de23571 100644
+--- a/internal/features/board/tasks_repo.go
++++ b/internal/features/board/tasks_repo.go
+@@ -145,17 +145,24 @@ func buildLastLog(text, author sql.NullString, cut sql.NullBool, createdAt sql.N
+ }
+ 
+ // LockTargetColumn — design-sql.md §Lock Target Column Query. 0 строк → errNotFound
+-// (сервис мапит в 400 field column_id, «404 — только id в пути»).
++// (сервис мапит в 400 field column_id, «404 — только id в пути»). Колонка мягко удалена →
++// errColumnDeleted (404 COLUMN_NOT_FOUND, soft-delete-board-columns DS-026). Признак читается
++// после ожидания блокировки: создание/перенос заказа, ждавшие параллельное удаление колонки,
++// получают отказ; удаление, ждавшее FOR SHARE, видит действующий заказ (COLUMN_NOT_EMPTY).
+ func (r *TaskRepo) LockTargetColumn(ctx context.Context, tx pgx.Tx, columnID string) (*columnFlags, error) {
+ 	var f columnFlags
+-	err := tx.QueryRow(ctx, `SELECT id, is_final, consumes_stock FROM columns WHERE id = $1 FOR SHARE`, columnID).
+-		Scan(&f.ID, &f.IsFinal, &f.ConsumesStock)
++	var deleted bool
++	err := tx.QueryRow(ctx, `SELECT id, is_final, consumes_stock, deleted_at IS NOT NULL FROM columns WHERE id = $1 FOR SHARE`, columnID).
++		Scan(&f.ID, &f.IsFinal, &f.ConsumesStock, &deleted)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errNotFound
+ 	}
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	if deleted {
++		return nil, errColumnDeleted
++	}
+ 	return &f, nil
+ }
+ 
+@@ -244,16 +251,19 @@ type restoreColumn struct {
+ 	columnFlags
+ 	Name     string
+ 	Position int
++	// Deleted — колонка мягко удалена (возможна только у колонки самого заказа).
++	Deleted bool
+ }
+ 
+-// LockRestoreColumns — колонка заказа columnID и все нефинальные колонки под FOR SHARE
+-// (soft-delete-core DS-039: кандидаты на подмену колонки, ставшей финальной). Порядок
++// LockRestoreColumns — колонка заказа columnID (в том числе мягко удалённая) и все действующие
++// нефинальные колонки под FOR SHARE (кандидаты на подмену колонки: удалённой —
++// soft-delete-board-columns DS-016, ставшей финальной — soft-delete-core DS-039). Порядок
+ // блокировки — id, как у ColumnRepo.LockAll: восстановление и правка колонок не блокируют
+ // друг друга взаимно.
+ func (r *TaskRepo) LockRestoreColumns(ctx context.Context, tx pgx.Tx, columnID string) ([]restoreColumn, error) {
+ 	rows, err := tx.Query(ctx, `
+-		SELECT id, is_final, consumes_stock, name, position FROM columns
+-		WHERE id = $1 OR NOT is_final ORDER BY id FOR SHARE`, columnID)
++		SELECT id, is_final, consumes_stock, name, position, deleted_at IS NOT NULL FROM columns
++		WHERE id = $1 OR (NOT is_final AND deleted_at IS NULL) ORDER BY id FOR SHARE`, columnID)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -261,7 +271,7 @@ func (r *TaskRepo) LockRestoreColumns(ctx context.Context, tx pgx.Tx, columnID s
+ 	var out []restoreColumn
+ 	for rows.Next() {
+ 		var c restoreColumn
+-		if err := rows.Scan(&c.ID, &c.IsFinal, &c.ConsumesStock, &c.Name, &c.Position); err != nil {
++		if err := rows.Scan(&c.ID, &c.IsFinal, &c.ConsumesStock, &c.Name, &c.Position, &c.Deleted); err != nil {
+ 			return nil, err
+ 		}
+ 		out = append(out, c)
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index 24d8999..c61d9c2 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -482,6 +482,9 @@ const noticeColumnReplaced = "column_replaced"
+ // блокировки с правкой колонок), затем заказ FOR UPDATE. Заказ не удалён → 409 NOT_DELETED
+ // (DS-024). Колонка заказа за время удаления стала финальной, а у заказа есть незавершённые
+ // услуги → заказ встаёт в конец первой нефинальной колонки, notices: column_replaced (DS-039).
++// Колонка заказа мягко удалена → то же: конец первой нефинальной действующей колонки и
++// column_replaced с текстом «Колонка заказа удалена…» (soft-delete-board-columns DS-016); сама
++// колонка не восстанавливается.
+ // Затем товары списываются снова по правилу колонки заказа; нехватка — предупреждения, не
+ // отказ (DS-005).
+ func (s *TaskService) Restore(ctx context.Context, a Actor, idStr string) (*TaskRestoreResponse, error) {
+@@ -526,24 +529,37 @@ func (s *TaskService) Restore(ctx context.Context, a Actor, idStr string) (*Task
+ 		}
+ 
+ 		var newColumn, newPosition *string
+-		if target.IsFinal {
++		var repl *restoreColumn
++		why := ""
++		switch {
++		case target.Deleted:
++			// DS-016: на доске всегда есть действующая нефинальная колонка (инвариант DS-019).
++			if repl = firstNonFinal(cols); repl == nil {
++				return ErrLastNonFinalColumn
++			}
++			why = "Колонка заказа удалена"
++		case target.IsFinal:
+ 			open, err := s.repo.OpenSubtasks(ctx, tx, id)
+ 			if err != nil {
+ 				return err
+ 			}
+-			if repl := firstNonFinal(cols); len(open) > 0 && repl != nil {
+-				pos, err := s.repo.NextPosition(ctx, tx, repl.ID, id, nil, nil)
+-				if err != nil {
+-					return err
+-				}
+-				newColumn, newPosition = &repl.ID, &pos
+-				target = repl
+-				notices = append(notices, RestoreNotice{
+-					Code:    noticeColumnReplaced,
+-					Message: "Колонка заказа стала финальной — заказ поставлен в колонку «" + repl.Name + "»",
+-				})
++			if len(open) > 0 {
++				repl = firstNonFinal(cols)
++				why = "Колонка заказа стала финальной"
+ 			}
+ 		}
++		if repl != nil {
++			pos, err := s.repo.NextPosition(ctx, tx, repl.ID, id, nil, nil)
++			if err != nil {
++				return err
++			}
++			newColumn, newPosition = &repl.ID, &pos
++			target = repl
++			notices = append(notices, RestoreNotice{
++				Code:    noticeColumnReplaced,
++				Message: why + " — заказ поставлен в колонку «" + repl.Name + "»",
++			})
++		}
+ 
+ 		if err := s.repo.Restore(ctx, tx, id, newColumn, newPosition); err != nil {
+ 			if errors.Is(err, errNotFound) {
+@@ -565,12 +581,12 @@ func (s *TaskService) Restore(ctx context.Context, a Actor, idStr string) (*Task
+ 	return &TaskRestoreResponse{ID: id, Warnings: stockWarningsOrEmpty(reconcile.Warnings), Notices: notices}, nil
+ }
+ 
+-// firstNonFinal — первая по позиции (затем id) нефинальная колонка; nil — таких нет.
++// firstNonFinal — первая по позиции (затем id) действующая нефинальная колонка; nil — таких нет.
+ func firstNonFinal(cols []restoreColumn) *restoreColumn {
+ 	var best *restoreColumn
+ 	for i := range cols {
+ 		c := &cols[i]
+-		if c.IsFinal {
++		if c.IsFinal || c.Deleted {
+ 			continue
+ 		}
+ 		if best == nil || c.Position < best.Position || (c.Position == best.Position && c.ID < best.ID) {
+@@ -695,8 +711,12 @@ func samePtr(a, b *string) bool {
+ }
+ 
+ // columnRefError — LockTargetColumn(errNotFound) → 400 field column_id «не найден»
+-// (design-errors.md: «404 — только id в пути», ссылки из тела — VALIDATION).
++// (design-errors.md: «404 — только id в пути», ссылки из тела — VALIDATION). Мягко удалённая
++// колонка (errColumnDeleted) → 404 COLUMN_NOT_FOUND (soft-delete-board-columns §6.3, DS-026).
+ func columnRefError(err error) error {
++	if errors.Is(err, errColumnDeleted) {
++		return ErrColumnNotFound
++	}
+ 	if errors.Is(err, errNotFound) {
+ 		return errorspkg.Validation(errorspkg.Field{Name: "column_id", Message: msgNotFound})
+ 	}
+diff --git a/internal/features/softdelete/columns_source.go b/internal/features/softdelete/columns_source.go
+new file mode 100644
+index 0000000..15f147e
+--- /dev/null
++++ b/internal/features/softdelete/columns_source.go
+@@ -0,0 +1,84 @@
++package softdelete
++
++import (
++	"context"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++// ColumnsSource — удалённые колонки доски (вкладка «Колонки», часть 3
++// soft-delete-board-columns). Читает таблицу columns напрямую: softdelete — reader, отметку
++// удаления пишет пакет board.
++type ColumnsSource struct {
++	pool *pgxpool.Pool
++}
++
++func NewColumnsSource(pool *pgxpool.Pool) *ColumnsSource { return &ColumnsSource{pool: pool} }
++
++// ColumnSubtitle — подзаголовок строки удалённой колонки: «финальная» либо пустая строка
++// (soft-delete-board-columns §6.3).
++func ColumnSubtitle(isFinal bool) string {
++	if isFinal {
++		return "финальная"
++	}
++	return ""
++}
++
++// columnsWhereSQL — фильтр вкладки «Колонки»: $1 — строка поиска (название, причина; уже
++// экранирована), $2/$3 — период [с; по), $4 — кто удалил. Номера у колонки нет — номер из
++// строки поиска не используется. Частичный индекс columns_deleted_at_idx покрывает условие и
++// сортировку.
++const columnsWhereSQL = `
++FROM columns c
++JOIN users u ON u.id = c.deleted_by
++WHERE c.deleted_at IS NOT NULL
++  AND ($1::text IS NULL OR c.name ILIKE '%' || $1 || '%' ESCAPE '\'
++       OR c.delete_reason ILIKE '%' || $1 || '%' ESCAPE '\')
++  AND ($2::timestamptz IS NULL OR c.deleted_at >= $2)
++  AND ($3::timestamptz IS NULL OR c.deleted_at < $3)
++  AND ($4::uuid IS NULL OR c.deleted_by = $4)`
++
++func (s *ColumnsSource) List(ctx context.Context, f Filter) ([]Item, int, error) {
++	var q, by any
++	if f.Q != "" {
++		q = f.Q
++	}
++	if f.DeletedBy != "" {
++		by = f.DeletedBy
++	}
++	args := []any{q, f.DeletedFrom, f.DeletedTo, by}
++
++	var total int
++	if err := s.pool.QueryRow(ctx, `SELECT count(*)`+columnsWhereSQL, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++
++	rows, err := s.pool.Query(ctx, `
++SELECT c.id::text, c.name, c.is_final, c.deleted_at, u.id::text, coalesce(nullif(u.name, ''), u.login), c.delete_reason`+
++		columnsWhereSQL+`
++ORDER BY c.deleted_at DESC, c.id
++LIMIT $5 OFFSET $6`, append(args, f.Limit, f.Offset)...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++
++	out := []Item{}
++	for rows.Next() {
++		var isFinal bool
++		it := Item{Kind: string(KindColumns)}
++		if err := rows.Scan(&it.ID, &it.Title, &isFinal, &it.DeletedAt, &it.DeletedBy.ID, &it.DeletedBy.Name, &it.DeleteReason); err != nil {
++			return nil, 0, err
++		}
++		it.Subtitle = ColumnSubtitle(isFinal)
++		it.DeletedAt = it.DeletedAt.UTC()
++		out = append(out, it)
++	}
++	return out, total, rows.Err()
++}
++
++func (s *ColumnsSource) Count(ctx context.Context) (int, error) {
++	var n int
++	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM columns WHERE deleted_at IS NOT NULL`).Scan(&n)
++	return n, err
++}
+diff --git a/internal/features/softdelete/columns_source_test.go b/internal/features/softdelete/columns_source_test.go
+new file mode 100644
+index 0000000..6efc362
+--- /dev/null
++++ b/internal/features/softdelete/columns_source_test.go
+@@ -0,0 +1,21 @@
++package softdelete
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++)
++
++// soft-delete-board-columns §6.3, §8.2: подзаголовок строки удалённой колонки — «финальная»
++// только у финальной колонки, иначе пустая строка.
++func TestColumnSubtitle(t *testing.T) {
++	assert.Equal(t, "финальная", ColumnSubtitle(true))
++	assert.Equal(t, "", ColumnSubtitle(false))
++}
++
++// Вид columns зарегистрирован в реестре и получает ключ счётчика «columns».
++func TestKindColumnsRegistry(t *testing.T) {
++	assert.True(t, IsKind("columns"))
++	assert.Equal(t, "columns", KindColumns.CountKey())
++	assert.Equal(t, KindColumns, Kinds[2], "вкладка «Колонки» — третья в реестре")
++}
+diff --git a/internal/features/softdelete/softdelete_http_live_test.go b/internal/features/softdelete/softdelete_http_live_test.go
+index 53e9e0b..ae39f5b 100644
+--- a/internal/features/softdelete/softdelete_http_live_test.go
++++ b/internal/features/softdelete/softdelete_http_live_test.go
+@@ -139,7 +139,7 @@ func (s *SoftDeleteLiveSuite) newClient(company string) string {
+ func (s *SoftDeleteLiveSuite) columnID() string {
+ 	var id string
+ 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
+-		`SELECT id FROM columns WHERE NOT is_final ORDER BY position, id LIMIT 1`).Scan(&id))
++		`SELECT id FROM columns WHERE NOT is_final AND deleted_at IS NULL ORDER BY position, id LIMIT 1`).Scan(&id))
+ 	return id
+ }
+ 
+@@ -281,7 +281,7 @@ func (s *SoftDeleteLiveSuite) TestTS009_ListFiltersEnvelopeOrder() {
+ 
+ 	// виды, чья часть мастер-спеки не смержена, — пустой список без ошибки.
+ 	for _, k := range softdelete.Kinds {
+-		if k == softdelete.KindTasks || k == softdelete.KindTransfers { // части 1 и 2 смержены
++		if k == softdelete.KindTasks || k == softdelete.KindTransfers || k == softdelete.KindColumns { // части 1–3 смержены
+ 			continue
+ 		}
+ 		l := s.mustList("kind", string(k))
+@@ -387,6 +387,97 @@ func (s *SoftDeleteLiveSuite) TestTS009_TransfersKind() {
+ 	s.Equal(http.StatusForbidden, st, string(raw))
+ }
+ 
++// ---- TS-009: вид columns (часть 3, soft-delete-board-columns §6.3, §8.2) ----
++
++// newColumn — колонка доски, созданная b через API доски того же сервера.
++func (s *SoftDeleteLiveSuite) newColumn(b *testutil.Browser, name string, isFinal bool) string {
++	st, raw := b.Do(http.MethodPost, "/api/v1/columns", map[string]any{
++		"name": name, "color": "#445566", "is_final": isFinal, "consumes_stock": false,
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var m struct {
++		Column struct {
++			ID string `json:"id"`
++		} `json:"column"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
++	s.Require().NotEmpty(m.Column.ID, string(raw))
++	return m.Column.ID
++}
++
++// TS-009 (DS-011, soft-delete-board-columns §6.3): вид columns отдаёт удалённые колонки —
++// title — название, subtitle «финальная» либо пустая строка, is_archived = false, deleted_with =
++// null; сортировка — deleted_at по убыванию; поиск по названию и причине без учёта регистра,
++// фильтр «кто удалил»; counts.columns = total списка. Восстановленная колонка из списка
++// уходит. Негатив: действующая колонка в список не входит; исполнитель → 403.
++func (s *SoftDeleteLiveSuite) TestTS009_ColumnsKind() {
++	mark := "sdcol" + uuid.NewString()[:8]
++	other, otherID := s.user("sd-col-"+mark, "Второй Удаляющий", "admin")
++	del := func(b *testutil.Browser, id, reason string) {
++		st, raw := b.Do(http.MethodDelete, "/api/v1/columns/"+id, map[string]any{"reason": reason})
++		s.Require().Equal(http.StatusOK, st, string(raw))
++	}
++
++	plain := s.newColumn(s.admin, "Обычная "+mark, false)
++	final := s.newColumn(s.admin, "Итог "+mark, true)
++	live := s.newColumn(s.admin, "Действующая "+mark, false) // в список не входит
++	// уборка фикстур (SQL: сьюта без служебного адреса purge) — колонки теста пустые.
++	defer func() {
++		_, err := s.Pool.Exec(context.Background(), `DELETE FROM columns WHERE id = ANY($1::uuid[])`, []string{plain, final, live})
++		s.NoError(err)
++	}()
++	del(s.admin, plain, "Лишний этап "+mark)
++	del(other, final, "Дубль "+mark)
++
++	l := s.mustList("kind", "columns", "q", mark)
++	s.Equal(2, l.Total)
++	s.Equal([]string{final, plain}, ids(l), "новые удаления сверху")
++	s.NotContains(ids(s.mustList("kind", "columns", "limit", "200")), live)
++	top := l.Items[0]
++	s.Equal("columns", top.Kind)
++	s.Equal("Итог "+mark, top.Title)
++	s.Equal("финальная", top.Subtitle)
++	s.Equal("Дубль "+mark, top.DeleteReason)
++	s.Equal(otherID, top.DeletedBy.ID)
++	s.Equal("Второй Удаляющий", top.DeletedBy.Name)
++	s.False(top.IsArchived)
++	s.Nil(top.DeletedWith)
++	s.WithinDuration(time.Now(), top.DeletedAt, time.Minute)
++	s.Equal("Обычная "+mark, l.Items[1].Title)
++	s.Equal("", l.Items[1].Subtitle)
++
++	// фильтры сочетаются по «И»: название и причина без учёта регистра, кто удалил.
++	s.Equal([]string{plain}, ids(s.mustList("kind", "columns", "q", strings.ToUpper("обычная "+mark))))
++	s.Equal([]string{plain}, ids(s.mustList("kind", "columns", "q", strings.ToUpper("лишний этап "+mark))))
++	s.Equal([]string{final}, ids(s.mustList("kind", "columns", "q", mark, "deleted_by", otherID)))
++	s.Empty(ids(s.mustList("kind", "columns", "q", "Обычная "+mark, "deleted_by", otherID)))
++	// пагинация в конверте.
++	page := s.mustList("kind", "columns", "q", mark, "limit", "1", "offset", "1")
++	s.Equal([]string{plain}, ids(page))
++	s.Equal(2, page.Total)
++	s.Equal(1, page.Limit)
++	s.Equal(1, page.Offset)
++
++	// счётчик вкладки = total списка; восстановление уменьшает оба.
++	count := func() int {
++		st, raw := s.admin.Do(http.MethodGet, api+"/summary", nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var out summaryDTO
++		s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++		return out.Counts["columns"]
++	}
++	before := count()
++	s.Equal(s.mustList("kind", "columns", "limit", "1").Total, before)
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/columns/"+plain+"/restore", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(before-1, count())
++	s.Equal([]string{final}, ids(s.mustList("kind", "columns", "q", mark)))
++
++	exec, _ := s.user("sd-col-exec-"+mark, "Исполнитель", "executor")
++	st, _, raw = s.list(exec, "kind", "columns")
++	s.Equal(http.StatusForbidden, st, string(raw))
++}
++
+ // ---- TS-010 ----
+ 
+ // TS-010 (DS-025): заказ удалён 2026-10-06T23:30:00Z — это 6 октября для пользователя с
+@@ -449,7 +540,7 @@ func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
+ 		s.True(ok, "нет счётчика %s", k.CountKey())
+ 		s.Equal(s.mustList("kind", string(k), "limit", "1").Total, n, "счётчик %s = total списка", k)
+ 	}
+-	for _, key := range []string{"columns", "clients", "equipment", "products", "services",
++	for _, key := range []string{"clients", "equipment", "products", "services",
+ 		"catalog_categories", "equipment_types", "warehouses", "suppliers"} {
+ 		s.Equal(0, sum.Counts[key], key)
+ 	}
+diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
+index a33c259..009928b 100644
+--- a/internal/seeddemo/seeddemo.go
++++ b/internal/seeddemo/seeddemo.go
+@@ -210,6 +210,10 @@ func (s *seeder) run() (Result, error) {
+ 		return Result{}, fmt.Errorf("seeddemo: deleted task: %w", err)
+ 	}
+ 
++	if err := s.seedDeletedColumn(); err != nil {
++		return Result{}, fmt.Errorf("seeddemo: deleted column: %w", err)
++	}
++
+ 	return res, nil
+ }
+ 
+@@ -223,11 +227,30 @@ func (s *seeder) seedDeletedTask(clients []clientRow) error {
+ 		                   deleted_at, deleted_by, delete_reason)
+ 		SELECT c.id, $1::uuid, 'Диагностика кофемашины (дубль)', '', 999424, $2::uuid,
+ 		       now() - interval '2 days', $2::uuid, 'Создан по ошибке — дубль заказа'
+-		FROM columns c WHERE NOT c.is_final ORDER BY c.position, c.id LIMIT 1`,
++		FROM columns c WHERE NOT c.is_final AND c.deleted_at IS NULL ORDER BY c.position, c.id LIMIT 1`,
+ 		clients[0].ID, s.adminID)
+ 	return err
+ }
+ 
++// demoDeletedColumnName — название мягко удалённой демо-колонки.
++const demoDeletedColumnName = "На проверке"
++
++// seedDeletedColumn — одна мягко удалённая колонка доски с причиной (soft-delete-board-columns,
++// DS-011): вкладка «Колонки» раздела «Удалённые» на демо-стенде непустая. Колонка пустая и
++// нефинальная; «кто, когда, почему» заполнены вместе (CHECK columns_deleted_chk); позиция —
++// за последней действующей (у удалённой колонки не используется). Колонки демо-сидом не
++// очищаются (их сеет миграция 0005) — повторный запуск вторую удалённую колонку не создаёт.
++func (s *seeder) seedDeletedColumn() error {
++	_, err := s.tx.Exec(s.ctx, `
++		INSERT INTO columns (name, color, is_final, consumes_stock, position, deleted_at, deleted_by, delete_reason)
++		SELECT $1, '#6c757d', false, false,
++		       (SELECT coalesce(max(position), 0) + 1 FROM columns WHERE deleted_at IS NULL),
++		       now() - interval '1 day', $2::uuid, 'Этап объединён с «Согласованием»'
++		WHERE NOT EXISTS (SELECT 1 FROM columns WHERE name = $1 AND deleted_at IS NOT NULL)`,
++		demoDeletedColumnName, s.adminID)
++	return err
++}
++
+ // clientRow/productRow/serviceRow/columnRow — минимум полей, нужных для построения
+ // демо-заказов ниже.
+ type clientRow struct{ ID string }
+@@ -884,7 +907,7 @@ var demoColumnNames = []string{"Новые", "Согласование", "В р
+ 
+ func (s *seeder) loadColumns() (map[string]columnRow, error) {
+ 	rows, err := s.tx.Query(s.ctx,
+-		`SELECT id, name, is_final, consumes_stock FROM columns WHERE name = ANY($1) ORDER BY id FOR UPDATE`,
++		`SELECT id, name, is_final, consumes_stock FROM columns WHERE name = ANY($1) AND deleted_at IS NULL ORDER BY id FOR UPDATE`,
+ 		demoColumnNames)
+ 	if err != nil {
+ 		return nil, err
+@@ -904,7 +927,7 @@ func (s *seeder) loadColumns() (map[string]columnRow, error) {
+ 		return nil, err
+ 	}
+ 	// DS-054: «завершённый заказ» = заказ в последней колонке доски (наибольший position).
+-	if err := s.tx.QueryRow(s.ctx, `SELECT id FROM columns ORDER BY position DESC, id DESC LIMIT 1`).Scan(&s.lastColumnID); err != nil {
++	if err := s.tx.QueryRow(s.ctx, `SELECT id FROM columns WHERE deleted_at IS NULL ORDER BY position DESC, id DESC LIMIT 1`).Scan(&s.lastColumnID); err != nil {
+ 		return nil, err
+ 	}
+ 	for _, name := range demoColumnNames {
+diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
+index a631e35..7f937b5 100644
+--- a/internal/seeddemo/seeddemo_integration_test.go
++++ b/internal/seeddemo/seeddemo_integration_test.go
+@@ -16,8 +16,9 @@ import (
+ 
+ // SeedDemoSuite (§TD-8/BaseSuite) — AC-019: make seed-demo заливает демо-данные лазерного сервиса
+ // одной командой в пустую БД; повторный вызов — no-op; без активного admin — ошибка.
+-// Колонки (5 дефолтных, Сид D32) сеются миграцией 0005 один раз для всех тестов сьюты —
+-// SetupTest их не трогает, только данные, которые пишет сам seeddemo/тест.
++// Колонки (5 дефолтных, Сид D32) сеет миграция 0005; SetupTest пересоздаёт их перед каждым
++// тестом: TRUNCATE users … CASCADE очищает и columns (columns.deleted_by → users, миграция
++// 0020 soft-delete-board-columns).
+ type SeedDemoSuite struct {
+ 	testutil.BaseSuite
+ }
+@@ -30,10 +31,19 @@ func (s *SeedDemoSuite) SetupTest() {
+ 	ctx := context.Background()
+ 	// CASCADE тянет transitively products/services (FK на catalog_categories),
+ 	// tasks/subtasks/subtask_products/task_stock/stock_movements (FK на users/clients/
+-	// products/services) — columns НЕ трогаем, миграционный сид переиспользуется.
++	// products/services) и columns (FK deleted_by → users) — колонки по умолчанию
++	// восстанавливаются ниже тем же набором, что сеет миграция 0005 (Сид D32).
+ 	_, err := s.Pool.Exec(ctx,
+ 		`TRUNCATE TABLE users, clients, equipment_types, catalog_categories RESTART IDENTITY CASCADE`)
+ 	s.Require().NoError(err)
++	_, err = s.Pool.Exec(ctx, `
++		INSERT INTO columns (name, color, is_final, consumes_stock, position) VALUES
++		    ('Новые',          '#94A3B8', false, false, 1),
++		    ('Согласование',   '#7C3AED', false, false, 2),
++		    ('В работе',       '#2563EB', false, true,  3),
++		    ('Ждёт запчасти',  '#D97706', false, true,  4),
++		    ('Готово',         '#059669', true,  true,  5)`)
++	s.Require().NoError(err)
+ }
+ 
+ func (s *SeedDemoSuite) createAdmin() string {
+@@ -80,6 +90,25 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
+ 	s.Equal(adminID, deletedBy)
+ 	s.Zero(deletedHoldingStock)
+ 
++	// soft-delete-board-columns: ровно одна мягко удалённая колонка с причиной и автором
++	// удаления — вкладка «Колонки» раздела «Удалённые» на демо-стенде непустая; заказов в ней
++	// нет, действующие колонки идут подряд 1..N.
++	var deletedCols, deletedColTasks, activeCols, activeMaxPos int
++	var colReason, colBy string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT count(*) FILTER (WHERE deleted_at IS NOT NULL),
++		       coalesce(min(delete_reason) FILTER (WHERE deleted_at IS NOT NULL), ''),
++		       coalesce(min(deleted_by::text) FILTER (WHERE deleted_at IS NOT NULL), ''),
++		       (SELECT count(*) FROM tasks t JOIN columns d ON d.id = t.column_id WHERE d.deleted_at IS NOT NULL),
++		       count(*) FILTER (WHERE deleted_at IS NULL),
++		       coalesce(max(position) FILTER (WHERE deleted_at IS NULL), 0)
++		FROM columns`).Scan(&deletedCols, &colReason, &colBy, &deletedColTasks, &activeCols, &activeMaxPos))
++	s.Equal(1, deletedCols)
++	s.NotEmpty(colReason)
++	s.Equal(adminID, colBy)
++	s.Zero(deletedColTasks, "в удалённой колонке нет заказов")
++	s.Equal(activeCols, activeMaxPos, "позиции действующих колонок — подряд 1..N")
++
+ 	var distinctColumns int
+ 	s.Require().NoError(s.Pool.QueryRow(ctx,
+ 		`SELECT count(DISTINCT column_id) FROM tasks`).Scan(&distinctColumns))
+@@ -263,7 +292,7 @@ func (s *SeedDemoSuite) assertWarehouses() {
+ 	// «у клиента»; единицы незавершённых заказов — не «у клиента».
+ 	var completedNotAtClient, openAtClient int
+ 	s.Require().NoError(s.Pool.QueryRow(ctx, `
+-		WITH last_col AS (SELECT id FROM columns ORDER BY position DESC, id DESC LIMIT 1),
++		WITH last_col AS (SELECT id FROM columns WHERE deleted_at IS NULL ORDER BY position DESC, id DESC LIMIT 1),
+ 		open_eq AS (
+ 		    SELECT DISTINCT te.equipment_id FROM task_equipment te JOIN tasks t ON t.id = te.task_id
+ 		    WHERE t.column_id <> (SELECT id FROM last_col))
+@@ -345,7 +374,7 @@ func (s *SeedDemoSuite) assertPartners() {
+ 	// единица «у клиента» из заказа последней колонки прошла пару «приём + возврат».
+ 	var withoutPair int
+ 	s.Require().NoError(s.Pool.QueryRow(ctx, `
+-		WITH last_col AS (SELECT id FROM columns ORDER BY position DESC, id DESC LIMIT 1)
++		WITH last_col AS (SELECT id FROM columns WHERE deleted_at IS NULL ORDER BY position DESC, id DESC LIMIT 1)
+ 		SELECT count(*) FROM task_equipment te
+ 		JOIN tasks k ON k.id = te.task_id AND k.column_id = (SELECT id FROM last_col)
+ 		JOIN equipment e ON e.id = te.equipment_id AND e.location_status = 'at_client'
+diff --git a/internal/server/router.go b/internal/server/router.go
+index d2abd4e..919285f 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -207,7 +207,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	// Часть 2 (soft-delete-transfers) — документы перемещения.
+ 	deletedSvc := softdelete.NewService().
+ 		Register(softdelete.KindTasks, softdelete.NewTasksSource(pool)).
+-		Register(softdelete.KindTransfers, softdelete.NewTransfersSource(pool))
++		Register(softdelete.KindTransfers, softdelete.NewTransfersSource(pool)).
++		// Часть 3 (soft-delete-board-columns) — колонки доски.
++		Register(softdelete.KindColumns, softdelete.NewColumnsSource(pool))
+ 	softdelete.Register(app, api, guard, softdelete.NewHandler(deletedSvc), softdelete.NewSSR(deletedR, shell, status))
+ 
+ 	// board — доска заказов занимает корень «/» (ADR-100, снимает home) + «/stock» +
+@@ -220,11 +222,14 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	}
+ 	boardCardSvc := board.NewCardService(pool, boardTaskRepo, boardCardRepo, boardEquipmentRepo, boardEngine,
+ 		boardSubtaskRepo, boardSubtaskProductRepo, boardSubtaskLogRepo).WithFiles(files)
++	boardColumns := board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine))
+ 	board.Register(app, api, guard, &board.Handlers{
+-		Columns: board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine)),
++		Columns: boardColumns,
+ 		// Служебная уборка вида transfers (soft-delete-transfers DS-038) — сервис документов.
+ 		Tasks: board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine, boardEquipmentRepo).WithFiles(files)).
+-			WithPurger(string(softdelete.KindTransfers), transfersSvc.Purge),
++			WithPurger(string(softdelete.KindTransfers), transfersSvc.Purge).
++			// Служебная уборка вида columns (soft-delete-board-columns DS-027).
++			WithPurger(string(softdelete.KindColumns), boardColumns.Purge),
+ 		Assignees:   board.NewAssigneesHandler(pool),
+ 		Stock:       board.NewStockHandler(boardStockSvc),
+ 		Card:        board.NewCardHandler(boardCardSvc),

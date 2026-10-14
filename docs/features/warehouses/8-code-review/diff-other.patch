@@ -1,0 +1,2774 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index efd2b0a..0e63ae0 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -77,6 +77,20 @@ export type CategoryKind = 'service' | 'product';
+ export type NewCategory = { kind: CategoryKind; name: string };
+ export type Category = { id: string; kind: CategoryKind; name: string; is_active: boolean; item_count: number };
+ 
++// Остатки товара — по складам (warehouses DS-002, wire — stocks[]). Короткие поля
++// stock/min_stock/box/place NewProduct — удобство фикстуры: createProduct сворачивает их в
++// строку склада по умолчанию (первый активный, «Алматы»), Product.stock/... — та же строка.
++export type ProductStockInput = { warehouse_id: string; stock?: number; min_stock?: number; box?: string; place?: string };
++export type ProductStock = {
++  warehouse_id: string;
++  warehouse_name: string;
++  is_active: boolean;
++  tracked: boolean;
++  stock: number | string;
++  min_stock: number | string;
++  box: string;
++  place: string;
++};
+ export type NewProduct = {
+   category_id: string;
+   name: string;
+@@ -87,6 +101,7 @@ export type NewProduct = {
+   min_stock?: number;
+   box?: string;
+   place?: string;
++  stocks?: ProductStockInput[];
+ };
+ export type Product = {
+   id: string;
+@@ -96,12 +111,49 @@ export type Product = {
+   unit: string;
+   price: number;
+   is_active: boolean;
++  stocks: ProductStock[];
++  total_stock: number | string;
++  // производные фикстуры — строка склада по умолчанию.
+   stock: number;
+   min_stock: number;
+   box: string;
+   place: string;
+ };
+ 
++// Wire-типы складов (internal/features/warehouses/dto.go, §TD-6.2).
++export type Warehouse = { id: string; name: string; position: number; is_active: boolean };
++export type WarehouseList = { items: Warehouse[]; total: number; limit: number; offset: number };
++
++// Wire-типы перемещений товаров (internal/features/stocktransfers/dto.go, §TD-6.2).
++export type StockTransferStatus = 'requested' | 'in_transit' | 'received' | 'cancelled';
++export type NewStockTransfer = {
++  from_warehouse_id: string;
++  to_warehouse_id: string;
++  note?: string;
++  items: { product_id: string; qty_sent: number }[];
++  send?: boolean;
++};
++export type StockTransferItem = {
++  id: string;
++  product_id: string;
++  product_name: string;
++  unit: string;
++  qty_sent: number | string;
++  qty_received: number | string | null;
++};
++export type StockTransfer = {
++  id: number;
++  from_warehouse_id: string;
++  from_warehouse_name: string;
++  to_warehouse_id: string;
++  to_warehouse_name: string;
++  status: StockTransferStatus;
++  note: string;
++  version: number;
++  items: StockTransferItem[];
++  warnings: { product_id: string; warehouse_id: string; stock: number | string; kind: 'negative' | 'below_min' }[];
++};
++
+ // Wire-типы services (internal/features/catalog/services_dto.go, §TD-6.2). price: null —
+ // «по факту»; products[].qty — дубли product_id объединяются суммой на сервере (D10).
+ export type NewServiceProduct = { product_id: string; qty: number };
+@@ -215,11 +267,80 @@ export class AdminApi {
+   }
+ 
+   async createProduct(p: NewProduct): Promise<Product> {
+-    const res = await this.ctx.post('/api/v1/products', { data: p, headers: await this.headers() });
++    const { stock, min_stock, box, place, ...rest } = p;
++    const data: Record<string, unknown> = { ...rest };
++    if (stock !== undefined || min_stock !== undefined || box !== undefined || place !== undefined) {
++      const def = await this.defaultWarehouse();
++      const row: ProductStockInput = { warehouse_id: def.id, stock, min_stock, box, place };
++      data.stocks = [row, ...(rest.stocks ?? []).filter((s) => s.warehouse_id !== def.id)];
++    }
++    const res = await this.ctx.post('/api/v1/products', { data, headers: await this.headers() });
+     expect(res.status(), `создание товара ${p.name}: ${await res.text()}`).toBe(201);
++    return this.withDefaultStock(await res.json());
++  }
++
++  // ---- warehouses (internal/features/warehouses, DS-011) ----
++
++  async listWarehouses(includeArchived = false): Promise<WarehouseList> {
++    const res = await this.ctx.get(`/api/v1/warehouses${includeArchived ? '?include_archived=true' : ''}`);
++    expect(res.status(), `склады: ${await res.text()}`).toBe(200);
+     return res.json();
+   }
+ 
++  /** Склад по умолчанию — первый активный по position (D49). */
++  async defaultWarehouse(): Promise<Warehouse> {
++    const list = await this.listWarehouses();
++    expect(list.items.length, 'нет активных складов').toBeGreaterThan(0);
++    return list.items[0];
++  }
++
++  async warehouseByName(name: string): Promise<Warehouse> {
++    const list = await this.listWarehouses(true);
++    const w = list.items.find((x) => x.name === name);
++    expect(w, `склад ${name}`).toBeTruthy();
++    return w!;
++  }
++
++  async createWarehouse(name: string): Promise<Warehouse> {
++    const res = await this.ctx.post('/api/v1/warehouses', { data: { name }, headers: await this.headers() });
++    expect(res.status(), `создание склада ${name}: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
++  async updateWarehouse(id: string, w: { name: string; is_active: boolean }): Promise<Warehouse> {
++    const res = await this.ctx.put(`/api/v1/warehouses/${id}`, { data: w, headers: await this.headers() });
++    expect(res.status(), `правка склада ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  // ---- stock transfers (internal/features/stocktransfers, DS-006/DS-011) ----
++
++  async createStockTransfer(t: NewStockTransfer): Promise<StockTransfer> {
++    const res = await this.ctx.post('/api/v1/stock-transfers', { data: t, headers: await this.headers() });
++    expect(res.status(), `создание перемещения: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
++  async getStockTransfer(id: number): Promise<StockTransfer> {
++    const res = await this.ctx.get(`/api/v1/stock-transfers/${id}`);
++    expect(res.status(), `перемещение #${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  /** Действие над перемещением (send/receive/cancel) с актуальным version. */
++  async stockTransferAction(id: number, action: 'send' | 'receive' | 'cancel', extra: Record<string, unknown> = {}): Promise<StockTransfer> {
++    const cur = await this.getStockTransfer(id);
++    const res = await this.ctx.post(`/api/v1/stock-transfers/${id}/${action}`, { data: { version: cur.version, ...extra }, headers: await this.headers() });
++    expect(res.status(), `${action} перемещения #${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  private async withDefaultStock(p: Omit<Product, 'stock' | 'min_stock' | 'box' | 'place'>): Promise<Product> {
++    const def = await this.defaultWarehouse();
++    const row = p.stocks.find((s) => s.warehouse_id === def.id);
++    return { ...p, stock: Number(row?.stock ?? 0), min_stock: Number(row?.min_stock ?? 0), box: row?.box ?? '', place: row?.place ?? '' };
++  }
++
+   async createService(s: NewService): Promise<Service> {
+     const res = await this.ctx.post('/api/v1/services', { data: { products: [], ...s }, headers: await this.headers() });
+     expect(res.status(), `создание услуги ${s.name}: ${await res.text()}`).toBe(201);
+@@ -329,7 +450,7 @@ export class AdminApi {
+ 
+   async createSubtaskProduct(
+     subtaskId: string,
+-    p: { product_id: string; qty: number },
++    p: { product_id: string; qty: number; warehouse_id?: string },
+   ): Promise<import('./board-types').OrderCardMutationResponse> {
+     const res = await this.ctx.post(`/api/v1/subtasks/${subtaskId}/products`, { data: p, headers: await this.headers() });
+     expect(res.status(), `добавление товара услуге ${subtaskId}: ${await res.text()}`).toBe(201);
+@@ -348,15 +469,33 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  async addTaskEquipment(taskId: number, equipmentId: string): Promise<import('./board-types').OrderCardMutationResponse> {
++  /** warehouseId — склад приёма (warehouses DS-008); без него — первый активный склад (D56). */
++  async addTaskEquipment(taskId: number, equipmentId: string, warehouseId?: string): Promise<import('./board-types').OrderCardMutationResponse> {
++    const data: Record<string, string> = { equipment_id: equipmentId };
++    if (warehouseId) data.warehouse_id = warehouseId;
+     const res = await this.ctx.post(`/api/v1/tasks/${taskId}/equipment`, {
+-      data: { equipment_id: equipmentId },
++      data,
+       headers: await this.headers(),
+     });
+     expect(res.status(), `оборудование заказа ${taskId}: ${await res.text()}`).toBe(201);
+     return res.json();
+   }
+ 
++  /** Склад оборудования заказа (DS-008): send {to_warehouse_id} | receive | cancel-transit. */
++  async taskEquipmentAction(
++    taskId: number,
++    equipmentId: string,
++    action: 'send' | 'receive' | 'cancel-transit',
++    toWarehouseId?: string,
++  ): Promise<import('./board-types').OrderCardMutationResponse> {
++    const res = await this.ctx.post(`/api/v1/tasks/${taskId}/equipment/${equipmentId}/${action}`, {
++      data: action === 'send' ? { to_warehouse_id: toWarehouseId } : {},
++      headers: await this.headers(),
++    });
++    expect(res.status(), `${action} оборудования ${equipmentId}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
+   // ---- stock (internal/features/board/stock_dto.go, §TD-6.2 — типы в board-types.ts) ----
+ 
+   async getStockSummary(): Promise<import('./board-types').StockSummaryResponse> {
+@@ -365,18 +504,21 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  async getStock(params: { scope?: import('./board-types').StockScope; q?: string; limit?: number } = {}): Promise<import('./board-types').StockListResponse> {
++  async getStock(params: { scope?: import('./board-types').StockScope; q?: string; limit?: number; warehouse_id?: string } = {}): Promise<import('./board-types').StockListResponse> {
+     const p = new URLSearchParams();
+     if (params.scope) p.set('scope', params.scope);
+     if (params.q) p.set('q', params.q);
++    if (params.warehouse_id) p.set('warehouse_id', params.warehouse_id);
+     p.set('limit', String(params.limit ?? 1000));
+     const res = await this.ctx.get(`/api/v1/stock?${p.toString()}`);
+     expect(res.status(), `stock list: ${await res.text()}`).toBe(200);
+     return res.json();
+   }
+ 
+-  async adjustStock(productId: string, stock: number): Promise<import('./board-types').StockRow> {
+-    const res = await this.ctx.put(`/api/v1/stock/${productId}`, { data: { stock }, headers: await this.headers() });
++  /** Правка остатка пары товар×склад (warehouse_id обязателен на wire; по умолчанию — первый активный склад). */
++  async adjustStock(productId: string, stock: number, warehouseId?: string): Promise<import('./board-types').StockRow> {
++    const warehouse_id = warehouseId ?? (await this.defaultWarehouse()).id;
++    const res = await this.ctx.put(`/api/v1/stock/${productId}`, { data: { stock, warehouse_id }, headers: await this.headers() });
+     expect(res.status(), `правка остатка ${productId}: ${await res.text()}`).toBe(200);
+     return res.json();
+   }
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 3acb04b..3640f5a 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -3,6 +3,9 @@
+ 
+ export type StockWarning = {
+   product_id: string;
++  /** warehouses DS-004: предупреждение — по паре товар×склад. */
++  warehouse_id: string;
++  warehouse_name: string;
+   name: string;
+   stock: number | string;
+   min_stock: number | string;
+@@ -50,6 +53,8 @@ export type TaskCard = {
+   last_log: TaskLastLog | null;
+   // pagination DS-002: заказов колонки под фильтрами GET /tasks (в GET /tasks/:id — 0).
+   column_total: number;
++  // warehouses DS-009: у заказа есть оборудование в пути (бейдж «в пути» на доске).
++  has_in_transit: boolean;
+ };
+ 
+ export type Task = TaskCard & {
+@@ -84,6 +89,15 @@ export type ApiErrorSubtasks = { code: 'SUBTASKS_NOT_DONE'; message: string; det
+ export type StockScope = 'risky' | 'all';
+ export type StockState = 'out' | 'low' | 'will_low' | 'ok';
+ 
++// Пара товар×склад в строке «Остатков» (warehouses DS-004).
++export type StockWarehouseCell = {
++  warehouse_id: string;
++  stock: number | string;
++  min_stock: number | string;
++  pending: number | string;
++  state: StockState;
++};
++
+ export type StockRow = {
+   product_id: string;
+   name: string;
+@@ -95,9 +109,18 @@ export type StockRow = {
+   pending: number;
+   forecast: number;
+   state: StockState;
++  /** «В пути» — перемещения (подфаза B); в подфазе A всегда 0. */
++  in_transit: number | string;
++  by_warehouse: StockWarehouseCell[];
+ };
+ 
+-export type StockListResponse = { items: StockRow[]; total: number; limit: number; offset: number };
++export type StockListResponse = {
++  warehouses: Array<{ id: string; name: string }>;
++  items: StockRow[];
++  total: number;
++  limit: number;
++  offset: number;
++};
+ 
+ export type StockSummaryResponse = {
+   products_total: number;
+@@ -123,6 +146,27 @@ export type CardEquipment = {
+   completeness: string;
+   condition: string;
+   history: EquipmentHistory[];
++  // Склад единицы (warehouses DS-008): null-поля — неприменимо к статусу.
++  status: 'at_warehouse' | 'in_transit';
++  warehouse_id: string | null;
++  warehouse_name: string | null;
++  transit_from_warehouse_id: string | null;
++  transit_from_warehouse_name: string | null;
++  transit_to_warehouse_id: string | null;
++  transit_to_warehouse_name: string | null;
++  movements: CardEquipmentMovement[];
++};
++
++export type CardEquipmentMovement = {
++  id: string;
++  action: 'received' | 'sent' | 'arrived' | 'cancelled';
++  from_warehouse_id: string | null;
++  from_warehouse_name: string | null;
++  to_warehouse_id: string | null;
++  to_warehouse_name: string | null;
++  user_id: string;
++  user_name: string;
++  created_at: string;
+ };
+ 
+ export type CardSubtaskProduct = {
+@@ -134,6 +178,9 @@ export type CardSubtaskProduct = {
+   qty: number | string;
+   price: number | string | null;
+   line_total: number | string;
++  /** warehouses DS-005: склад списания строки. */
++  warehouse_id: string;
++  warehouse_name: string;
+ };
+ 
+ export type CardSubtaskLog = {
+@@ -165,6 +212,7 @@ export type CardSubtask = {
+ 
+ export type CardStock = {
+   product_id: string;
++  warehouse_id: string;
+   stock: number | string;
+   min_stock: number | string;
+   task_reserved: number | string;
+@@ -176,6 +224,8 @@ export type OrderCardResponse = {
+   equipment: CardEquipment[];
+   subtasks: CardSubtask[];
+   stock: CardStock[];
++  /** warehouses DS-005: склады select'а строки товара (активные + архивные, на которые ссылаются строки). */
++  warehouses: Array<{ id: string; name: string; is_active: boolean }>;
+   /** Фаза 7 (D21): вложения заказа, порядок загрузки. */
+   attachments: CardAttachment[];
+ };
+diff --git a/e2e/pages/BoardPage.ts b/e2e/pages/BoardPage.ts
+index cfbab52..b7f5fce 100644
+--- a/e2e/pages/BoardPage.ts
++++ b/e2e/pages/BoardPage.ts
+@@ -13,6 +13,8 @@ export class BoardPage {
+   readonly filterPaid: Locator;
+   readonly filterAssignee: Locator;
+   readonly filterDue: Locator;
++  /** warehouses DS-009: фильтр «Склад» (комбобокс, опции рендерит SSR). */
++  readonly filterWarehouse: Locator;
+   readonly filterReset: Locator;
+   readonly found: Locator;
+ 
+@@ -52,6 +54,7 @@ export class BoardPage {
+     this.filterPaid = page.getByTestId('filter-paid');
+     this.filterAssignee = page.getByTestId('filter-assignee');
+     this.filterDue = page.getByTestId('filter-due');
++    this.filterWarehouse = page.getByTestId('filter-warehouse');
+     this.filterReset = page.getByTestId('filter-reset');
+     this.found = page.getByTestId('board-total'); // pagination DS-004: счётчик «Заказов: M»
+ 
+@@ -124,6 +127,11 @@ export class BoardPage {
+     return this.page.getByTestId(`column-more-${id}`);
+   }
+ 
++  /** Бейдж «в пути» на карточке доски (DS-009). */
++  inTransitBadge(id: number | string): Locator {
++    return this.card(id).getByTestId('task-card-in-transit');
++  }
++
+   card(id: number | string): Locator {
+     return this.page.getByTestId(`task-card-${id}`);
+   }
+diff --git a/e2e/pages/CatalogPage.ts b/e2e/pages/CatalogPage.ts
+index 5962674..a6f842c 100644
+--- a/e2e/pages/CatalogPage.ts
++++ b/e2e/pages/CatalogPage.ts
+@@ -72,10 +72,13 @@ export class CatalogPage {
+     this.category = page.getByTestId('product-category');
+     this.unit = page.getByTestId('product-unit');
+     this.price = page.getByTestId('product-price');
+-    this.stock = page.getByTestId('product-stock');
+-    this.minStock = page.getByTestId('product-min-stock');
+-    this.box = page.getByTestId('product-box');
+-    this.place = page.getByTestId('product-place');
++    // Блок «Склады» (warehouses DS-003): строка на каждый активный склад; короткие поля
++    // формы — строка склада по умолчанию «Алматы», прочие — stockRow(name).
++    const almaty = this.stockRow('Алматы');
++    this.stock = almaty.getByTestId('product-stock');
++    this.minStock = almaty.getByTestId('product-min-stock');
++    this.box = almaty.getByTestId('product-box');
++    this.place = almaty.getByTestId('product-place');
+     this.save = page.getByTestId('product-save');
+     this.formError = page.getByTestId('form-error');
+     this.deleteButton = page.getByTestId('product-delete');
+@@ -193,6 +196,11 @@ export class CatalogPage {
+     await this.chooseInCombobox(this.unit, unit);
+   }
+ 
++  /** Строка блока «Склады» формы товара по названию склада. */
++  stockRow(warehouseName: string): Locator {
++    return this.page.locator(`[data-testid="product-stock-row"][data-warehouse="${warehouseName}"]`);
++  }
++
+   async fill(p: {
+     categoryName?: string;
+     name?: string;
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 9660b97..5296e24 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -36,6 +36,8 @@ export class OrderCardPage {
+   readonly equipmentNewSave: Locator;
+   readonly equipmentNewCancel: Locator;
+   readonly equipmentNewError: Locator;
++  /** Склад приёма оборудования (warehouses DS-008, комбобокс). */
++  readonly equipmentWarehouse: Locator;
+ 
+   readonly subtasks: Locator;
+   readonly subtasksLocked: Locator;
+@@ -86,6 +88,7 @@ export class OrderCardPage {
+     this.equipmentNewSave = page.getByTestId('card-equipment-new-save');
+     this.equipmentNewCancel = page.getByTestId('card-equipment-new-cancel');
+     this.equipmentNewError = page.getByTestId('card-equipment-new-error');
++    this.equipmentWarehouse = page.getByTestId('card-equipment-warehouse');
+ 
+     this.subtasks = page.getByTestId('card-subtasks');
+     this.subtasksLocked = page.getByTestId('card-subtasks-locked');
+@@ -194,6 +197,11 @@ export class OrderCardPage {
+     return this.productRow(productRowId).getByTestId('card-product-hint');
+   }
+ 
++  /** Склад строки товара (warehouses DS-005) — combobox-кнопка (combobox.js переносит testid). */
++  productWarehouse(productRowId: string): Locator {
++    return this.productRow(productRowId).getByTestId('card-product-warehouse');
++  }
++
+   productDelete(productRowId: string): Locator {
+     return this.productRow(productRowId).getByTestId('card-product-delete');
+   }
+@@ -242,6 +250,40 @@ export class OrderCardPage {
+     return this.equipmentRow(equipmentId).getByTestId('card-equipment-history');
+   }
+ 
++  // ---- склад оборудования заказа (warehouses DS-008) ----
++
++  /** Бейдж «На складе: X» / «В пути: X → Y». */
++  equipmentLocation(equipmentId: string): Locator {
++    return this.equipmentRow(equipmentId).getByTestId('card-equipment-location');
++  }
++
++  equipmentSend(equipmentId: string): Locator {
++    return this.equipmentRow(equipmentId).getByTestId('card-equipment-send');
++  }
++
++  equipmentReceive(equipmentId: string): Locator {
++    return this.equipmentRow(equipmentId).getByTestId('card-equipment-receive');
++  }
++
++  equipmentCancelTransit(equipmentId: string): Locator {
++    return this.equipmentRow(equipmentId).getByTestId('card-equipment-cancel-transit');
++  }
++
++  /** Записи блока «Перемещения» (журнал task_equipment_movements), по времени. */
++  equipmentMovements(equipmentId: string): Locator {
++    return this.equipmentRow(equipmentId).getByTestId('card-equipment-movement');
++  }
++
++  /** «Отправить на склад…» → модалка KT.uiDialog с нативным select → «Отправить». */
++  async sendEquipment(equipmentId: string, warehouseName: string) {
++    await this.equipmentSend(equipmentId).click();
++    const dialog = this.page.getByTestId('ui-dialog');
++    await expect(dialog).toBeVisible();
++    await dialog.getByTestId('ui-dialog-select').selectOption({ label: warehouseName });
++    await dialog.getByTestId('ui-dialog-ok').click();
++    await expect(dialog).toHaveCount(0);
++  }
++
+   /** Вложение по имени файла (имена в тестах уникальны через uniq()). */
+   attachmentByName(name: string): Locator {
+     return this.attachmentItems.filter({ has: this.page.getByTestId('card-attachment-name').getByText(name, { exact: true }) });
+diff --git a/e2e/pages/StockPage.ts b/e2e/pages/StockPage.ts
+index 5a7e2a9..a986752 100644
+--- a/e2e/pages/StockPage.ts
++++ b/e2e/pages/StockPage.ts
+@@ -11,12 +11,14 @@ export class StockPage {
+   readonly kpiOut: Locator;
+   readonly kpiWillLow: Locator;
+   readonly scope: Locator;
++  readonly warehouse: Locator;
+   readonly q: Locator;
+   readonly table: Locator;
+   readonly empty: Locator;
+   readonly dropdown: Locator;
+ 
+   readonly form: Locator;
++  readonly modalWarehouse: Locator;
+   readonly value: Locator;
+   readonly save: Locator;
+   readonly error: Locator;
+@@ -28,12 +30,14 @@ export class StockPage {
+     this.kpiOut = page.getByTestId('stock-kpi-out');
+     this.kpiWillLow = page.getByTestId('stock-kpi-will-low');
+     this.scope = page.getByTestId('stock-scope');
++    this.warehouse = page.getByTestId('stock-warehouse');
+     this.q = page.getByTestId('stock-q');
+     this.table = page.getByTestId('stock-table');
+     this.empty = page.getByTestId('stock-empty');
+     this.dropdown = page.getByTestId('combobox-dropdown');
+ 
+     this.form = page.getByTestId('stock-form');
++    this.modalWarehouse = page.getByTestId('stock-modal-warehouse');
+     this.value = page.getByTestId('stock-value');
+     this.save = page.getByTestId('stock-save');
+     this.error = page.getByTestId('stock-error');
+@@ -59,6 +63,18 @@ export class StockPage {
+     await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
+   }
+ 
++  /** Фильтр «Склад» (warehouses DS-004) — тот же combobox, что scope. */
++  async chooseWarehouse(optionText: string) {
++    await this.warehouse.click();
++    await expect(this.dropdown).toBeVisible();
++    await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
++  }
++
++  /** Ячейка склада в строке товара (колонки складов). */
++  cell(productId: string, warehouseName: string): Locator {
++    return this.row(productId).locator(`[data-testid="stock-cell-wh"][data-warehouse="${warehouseName}"]`);
++  }
++
+   async openEdit(productId: string) {
+     await this.editBtn(productId).click();
+     await expect(this.form).toBeVisible();
+diff --git a/e2e/pages/StockTransfersPage.ts b/e2e/pages/StockTransfersPage.ts
+new file mode 100644
+index 0000000..f36a88b
+--- /dev/null
++++ b/e2e/pages/StockTransfersPage.ts
+@@ -0,0 +1,102 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана «Перемещения» «/stock-transfers» (warehouses DS-006, js/stock-transfers.js).
++// Селекты складов/товаров превращаются js/combobox.js в комбобоксы: testid уходит на
++// видимую кнопку, выбор — клик по кнопке, поиск в `.cb-search` и клик по `.cb-opt` в
++// `combobox-dropdown` (эталон — StockPage/CatalogPage).
++export class StockTransfersPage {
++  readonly root: Locator;
++  readonly list: Locator;
++  readonly filterStatus: Locator;
++  readonly filterWarehouse: Locator;
++  readonly newBtn: Locator;
++  readonly cardTitle: Locator;
++  readonly cardStatus: Locator;
++  readonly from: Locator;
++  readonly to: Locator;
++  readonly note: Locator;
++  readonly itemProducts: Locator;
++  readonly itemQtys: Locator;
++  readonly itemAdd: Locator;
++  readonly save: Locator;
++  readonly send: Locator;
++  readonly cancel: Locator;
++  readonly receive: Locator;
++  readonly error: Locator;
++  readonly warnings: Locator;
++  readonly receiveModal: Locator;
++  readonly receiveQtys: Locator;
++  readonly receiveConfirm: Locator;
++  readonly dropdown: Locator;
++
++  constructor(readonly page: Page) {
++    this.root = page.getByTestId('st-root');
++    this.list = page.getByTestId('st-list');
++    this.filterStatus = page.getByTestId('st-filter-status');
++    this.filterWarehouse = page.getByTestId('st-filter-warehouse');
++    this.newBtn = page.getByTestId('st-new');
++    this.cardTitle = page.getByTestId('st-card-title');
++    this.cardStatus = page.getByTestId('st-card-status').getByTestId('st-status-badge');
++    this.from = page.getByTestId('st-from');
++    this.to = page.getByTestId('st-to');
++    this.note = page.getByTestId('st-note');
++    this.itemProducts = page.getByTestId('st-item-product');
++    this.itemQtys = page.getByTestId('st-item-qty');
++    this.itemAdd = page.getByTestId('st-item-add');
++    this.save = page.getByTestId('st-save');
++    this.send = page.getByTestId('st-send');
++    this.cancel = page.getByTestId('st-cancel');
++    this.receive = page.getByTestId('st-receive');
++    this.error = page.getByTestId('st-error');
++    this.warnings = page.getByTestId('st-warnings');
++    this.receiveModal = page.getByTestId('st-receive-modal');
++    this.receiveQtys = page.getByTestId('st-receive-qty');
++    this.receiveConfirm = page.getByTestId('st-receive-confirm');
++    this.dropdown = page.getByTestId('combobox-dropdown');
++  }
++
++  async goto(id?: number) {
++    await this.page.goto(id ? `/stock-transfers?id=${id}` : '/stock-transfers');
++    await expect(this.root).toBeVisible();
++    if (id) await expect(this.cardTitle).toHaveText(`Перемещение #${id}`);
++  }
++
++  row(id: number): Locator {
++    return this.list.locator(`[data-testid="st-row"][data-id="${id}"]`);
++  }
++
++  async choose(button: Locator, label: string) {
++    await button.click();
++    await expect(this.dropdown).toBeVisible();
++    await this.dropdown.locator('.cb-search').fill(label);
++    await this.dropdown.locator('.cb-opt', { hasText: label }).first().click();
++  }
++
++  async chooseStatusFilter(label: string) {
++    await this.filterStatus.click();
++    await expect(this.dropdown).toBeVisible();
++    await this.dropdown.locator('.cb-opt', { hasText: label }).first().click();
++  }
++
++  /** Строка товара редактора: товар + количество. */
++  async setItem(index: number, productName: string, qty: number | string) {
++    await this.choose(this.itemProducts.nth(index), productName);
++    await this.itemQtys.nth(index).fill(String(qty));
++  }
++
++  viewItem(productId: string): Locator {
++    return this.page.locator(`[data-testid="st-view-item"][data-product-id="${productId}"]`);
++  }
++
++  receiveQty(productId: string): Locator {
++    return this.page.locator(`[data-testid="st-receive-row"][data-product-id="${productId}"]`).getByTestId('st-receive-qty');
++  }
++
++  /** Номер перемещения из заголовка карточки «Перемещение #N». */
++  async currentId(): Promise<number> {
++    const text = (await this.cardTitle.textContent()) ?? '';
++    const m = /#(\d+)/.exec(text);
++    expect(m, `номер в заголовке «${text}»`).toBeTruthy();
++    return Number(m![1]);
++  }
++}
+diff --git a/e2e/tests/equipment-warehouses.spec.ts b/e2e/tests/equipment-warehouses.spec.ts
+new file mode 100644
+index 0000000..b1b0b5e
+--- /dev/null
++++ b/e2e/tests/equipment-warehouses.spec.ts
+@@ -0,0 +1,231 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import type { AdminApi } from '../fixtures/auth';
++
++// Склад и перемещения оборудования заказа — warehouses подфаза C (docs/features/warehouses/
++// draft-spec.md DS-005/DS-008/DS-009, TS-006, TS-011…TS-014; D55–D59). Общая dev-БД
++// (§TD-6.2): свои клиенты/оборудование/заказы через uniq()+adminApi, заказы удаляет
++// _boardCleanup (журнал перемещений уходит каскадом).
++test.use({ colorScheme: 'light' });
++
++async function setup(adminApi: AdminApi, uniq: (s: string) => string, tag: string, equipmentCount = 1) {
++  const almaty = await adminApi.warehouseByName('Алматы');
++  const moscow = await adminApi.warehouseByName('Москва');
++  const client = await adminApi.createClient({ company_name: uniq(`${tag} клиент`), phones: [{ phone: '9990000301', note: '' }] });
++  const type = await adminApi.createEquipmentType({ name: uniq(`${tag} тип`) });
++  const equipment = [];
++  for (let i = 0; i < equipmentCount; i++) {
++    equipment.push(await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq(`${tag} модель ${i}`), brand: `Brand${tag}`, serial: `SN-${tag}-${i}` }));
++  }
++  const columns = (await adminApi.listColumns()).items;
++  return { almaty, moscow, client, equipment, columns };
++}
++
++test.describe('EW: склад оборудования заказа', () => {
++  test('EW-001 (TS-011): склад приёма → «На складе: Москва»; отправить на Алматы → «В пути»; принять; история из 3 записей', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW001');
++    const eq = equipment[0];
++    const task = await adminApi.createTask({ title: uniq('EW-001 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++
++    await card.chooseCombobox(card.equipmentWarehouse, 'Москва');
++    await card.chooseCombobox(card.equipmentAdd, 'BrandEW001');
++    await expect(card.equipmentRows).toHaveCount(1);
++    await expect(card.equipmentLocation(eq.id)).toHaveText('На складе: Москва');
++    await expect(card.equipmentMovements(eq.id)).toHaveCount(1);
++    await expect(card.equipmentMovements(eq.id).first()).toContainText('Принято на склад Москва');
++    await expect(card.equipmentReceive(eq.id)).toHaveCount(0);
++
++    // модалка выбора склада: текущий склад не предлагается.
++    await card.equipmentSend(eq.id).click();
++    const dialog = page.getByTestId('ui-dialog');
++    await expect(dialog).toBeVisible();
++    const options = await dialog.getByTestId('ui-dialog-select').locator('option').allTextContents();
++    expect(options).toContain('Алматы');
++    expect(options).not.toContain('Москва');
++    await dialog.getByTestId('ui-dialog-select').selectOption({ label: 'Алматы' });
++    await dialog.getByTestId('ui-dialog-ok').click();
++
++    await expect(card.equipmentLocation(eq.id)).toHaveText('В пути: Москва → Алматы');
++    await expect(card.equipmentSend(eq.id)).toHaveCount(0);
++    await expect(card.equipmentMovements(eq.id)).toHaveCount(2);
++
++    await card.equipmentReceive(eq.id).click();
++    await expect(card.equipmentLocation(eq.id)).toHaveText('На складе: Алматы');
++    await expect(card.equipmentMovements(eq.id)).toHaveCount(3);
++    await expect(card.equipmentMovements(eq.id).nth(2)).toContainText('Принято на складе Алматы (из Москва)');
++    expect(await card.equipmentMovements(eq.id).evaluateAll((els) => els.map((e) => e.getAttribute('data-action')))).toEqual([
++      'received',
++      'sent',
++      'arrived',
++    ]);
++
++    const data = await adminApi.getCard(task.id);
++    const row = data.equipment.find((e) => e.equipment_id === eq.id)!;
++    expect(row.status).toBe('at_warehouse');
++    expect(row.warehouse_id).toBe(almaty.id);
++    expect(row.movements.map((m) => m.action)).toEqual(['received', 'sent', 'arrived']);
++    expect(row.movements[1].from_warehouse_id).toBe(moscow.id);
++  });
++
++  test('EW-002 (TS-012): «Отменить отправку» → обратно на исходный склад; устаревшая карточка — «Принять» → 409 с понятным текстом', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/equipment/') && url.endsWith('/receive') && status === 409);
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW002', 2);
++    const [eqCancel, eqStale] = equipment;
++    const task = await adminApi.createTask({ title: uniq('EW-002 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    await adminApi.addTaskEquipment(task.id, eqCancel.id, almaty.id);
++    await adminApi.addTaskEquipment(task.id, eqStale.id, almaty.id);
++    await adminApi.taskEquipmentAction(task.id, eqCancel.id, 'send', moscow.id);
++    await adminApi.taskEquipmentAction(task.id, eqStale.id, 'send', moscow.id);
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++    await expect(card.equipmentLocation(eqCancel.id)).toHaveText('В пути: Алматы → Москва');
++
++    // отмена — через подтверждение KT.uiDialog.
++    await card.equipmentCancelTransit(eqCancel.id).click();
++    await card.confirmUiDialog();
++    await expect(card.equipmentLocation(eqCancel.id)).toHaveText('На складе: Алматы');
++    await expect(card.equipmentMovements(eqCancel.id).nth(2)).toContainText('отменена, возврат на Алматы');
++
++    // единицу уже принял кто-то другой (API) — кнопка в открытой карточке устарела → 409.
++    await adminApi.taskEquipmentAction(task.id, eqStale.id, 'receive');
++    await card.equipmentReceive(eqStale.id).click();
++    const dialog = page.getByTestId('ui-dialog');
++    await expect(dialog).toBeVisible();
++    await expect(dialog.getByTestId('ui-dialog-text')).toContainText('не в пути');
++    await dialog.getByTestId('ui-dialog-ok').click();
++
++    const data = await adminApi.getCard(task.id);
++    expect(data.equipment.find((e) => e.equipment_id === eqCancel.id)!.movements.map((m) => m.action)).toEqual(['received', 'sent', 'cancelled']);
++    expect(data.equipment.find((e) => e.equipment_id === eqStale.id)!.movements.filter((m) => m.action === 'arrived')).toHaveLength(1);
++  });
++
++  test('EW-003 (TS-006): склад по умолчанию строки товара — склад оборудования услуги', async ({ adminPage: page, adminApi, uniq }) => {
++    const { moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW003');
++    const eq = equipment[0];
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('EW-003 категория товаров') });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('EW-003 категория услуг') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('EW-003 товар'), stock: 5, min_stock: 0 });
++    const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('EW-003 услуга'), price: null, products: [] });
++    const task = await adminApi.createTask({ title: uniq('EW-003 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    await adminApi.addTaskEquipment(task.id, eq.id, moscow.id);
++    const created = await adminApi.createSubtask(task.id, service.id);
++    const subtaskId = created.card.subtasks[0].id;
++    await adminApi.updateSubtask(subtaskId, { status: 'new', equipment_id: eq.id });
++    const withProduct = await adminApi.createSubtaskProduct(subtaskId, { product_id: product.id, qty: 1 });
++    const productRowId = withProduct.card.subtasks[0].products[0].id;
++    expect(withProduct.card.subtasks[0].products[0].warehouse_id).toBe(moscow.id);
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++    await expect(card.productWarehouse(productRowId)).toContainText('Москва');
++  });
++
++  test('EW-004 (TS-013): доска — фильтр «Склад» (на складе/едет на склад) и бейдж «в пути»; фильтр в URL переживает reload', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW004', 3);
++    const col = columnByName(columns, 'Новые').id;
++    const atMoscow = await adminApi.createTask({ title: uniq('EW-004 в Москве'), client_id: client.id, column_id: col });
++    const toMoscow = await adminApi.createTask({ title: uniq('EW-004 едет в Москву'), client_id: client.id, column_id: col });
++    const atAlmaty = await adminApi.createTask({ title: uniq('EW-004 в Алматы'), client_id: client.id, column_id: col });
++    await adminApi.addTaskEquipment(atMoscow.id, equipment[0].id, moscow.id);
++    await adminApi.addTaskEquipment(toMoscow.id, equipment[1].id, almaty.id);
++    await adminApi.taskEquipmentAction(toMoscow.id, equipment[1].id, 'send', moscow.id);
++    await adminApi.addTaskEquipment(atAlmaty.id, equipment[2].id, almaty.id);
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await expect(board.card(atAlmaty.id)).toBeVisible();
++    await expect(board.inTransitBadge(toMoscow.id)).toBeVisible();
++    await expect(board.inTransitBadge(atMoscow.id)).toHaveCount(0);
++
++    await board.chooseCombobox(board.filterWarehouse, 'Москва');
++    await expect(page).toHaveURL(new RegExp(`warehouse_id=${moscow.id}`));
++    await expect(board.card(atMoscow.id)).toBeVisible();
++    await expect(board.card(toMoscow.id)).toBeVisible();
++    await expect(board.card(atAlmaty.id)).toHaveCount(0);
++
++    await page.reload();
++    await expect(board.card(toMoscow.id)).toBeVisible();
++    await expect(board.card(atAlmaty.id)).toHaveCount(0);
++    await expect(board.filterWarehouse).toContainText('Москва');
++
++    await board.chooseCombobox(board.filterWarehouse, 'Алматы');
++    await expect(board.card(atAlmaty.id)).toBeVisible();
++    await expect(board.card(toMoscow.id)).toHaveCount(0);
++
++    await board.filterReset.click();
++    await expect(page).not.toHaveURL(/warehouse_id=/);
++    await expect(board.card(atMoscow.id)).toBeVisible();
++    await expect(board.card(atAlmaty.id)).toBeVisible();
++  });
++
++  test('EW-005 (TS-014): executor отправляет и принимает оборудование своего заказа', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++  }) => {
++    const { almaty, client, equipment, columns } = await setup(adminApi, uniq, 'EW005');
++    const eq = equipment[0];
++    const exec = await makeUser({ login: uniq('ew005-exec'), name: uniq('EW-005 Исполнитель') });
++    const task = await adminApi.createTask({
++      title: uniq('EW-005 заказ'),
++      client_id: client.id,
++      column_id: columnByName(columns, 'Новые').id,
++      assignee_id: exec.id,
++    });
++    await adminApi.addTaskEquipment(task.id, eq.id, almaty.id);
++
++    await loginAs(page, exec.login, exec.password);
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++
++    await card.sendEquipment(eq.id, 'Москва');
++    await expect(card.equipmentLocation(eq.id)).toHaveText('В пути: Алматы → Москва');
++    await card.equipmentReceive(eq.id).click();
++    await expect(card.equipmentLocation(eq.id)).toHaveText('На складе: Москва');
++    await expect(card.equipmentMovements(eq.id).nth(2)).toContainText(exec.name);
++  });
++
++  test('EW-006: история оборудования — склад единицы в каждом заказе', async ({ adminPage: page, adminApi, uniq }) => {
++    const { almaty, moscow, client, equipment, columns } = await setup(adminApi, uniq, 'EW006');
++    const eq = equipment[0];
++    const task = await adminApi.createTask({ title: uniq('EW-006 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    await adminApi.addTaskEquipment(task.id, eq.id, almaty.id);
++    await adminApi.taskEquipmentAction(task.id, eq.id, 'send', moscow.id);
++
++    await page.goto(`/equipment/${eq.id}/history`);
++    const order = page.locator(`[data-testid="history-order"][data-task-id="${task.id}"]`);
++    await expect(order.getByTestId('history-order-location')).toHaveText('В пути: Алматы → Москва');
++  });
++});
+diff --git a/e2e/tests/order-card.spec.ts b/e2e/tests/order-card.spec.ts
+index 7e418d7..28e32ae 100644
+--- a/e2e/tests/order-card.spec.ts
++++ b/e2e/tests/order-card.spec.ts
+@@ -195,6 +195,9 @@ test.describe('OC: оборудование заказа', () => {
+ 
+     await card.chooseCombobox(card.equipmentAdd, 'BrandOC006');
+     await expect(card.equipmentRows).toHaveCount(1);
++    // warehouses DS-008: склад приёма по умолчанию — первый активный склад.
++    const defaultWh = await adminApi.defaultWarehouse();
++    await expect(card.equipmentLocation(eq.id)).toHaveText(`На складе: ${defaultWh.name}`);
+ 
+     await card.equipmentCompleteness(eq.id).fill('Полный комплект');
+     await card.equipmentCompleteness(eq.id).blur();
+diff --git a/e2e/tests/stock-transfers.spec.ts b/e2e/tests/stock-transfers.spec.ts
+new file mode 100644
+index 0000000..7cf7677
+--- /dev/null
++++ b/e2e/tests/stock-transfers.spec.ts
+@@ -0,0 +1,237 @@
++import { test, expect } from '../fixtures/board';
++import { StockTransfersPage } from '../pages/StockTransfersPage';
++import { StockPage } from '../pages/StockPage';
++import { ShellPage } from '../pages/ShellPage';
++import type { AdminApi } from '../fixtures/auth';
++
++// Перемещения товаров между складами — подфаза B (docs/features/warehouses/draft-spec.md
++// DS-006/DS-007/DS-010, TS-007 «В пути», TS-008, TS-009, TS-010, TS-014). Общая dev-БД
++// (§TD-6.2): свои товары через uniq()+adminApi, склады — сид «Алматы»/«Москва».
++test.use({ colorScheme: 'light' });
++
++function csrfToken(page: import('@playwright/test').Page): Promise<string> {
++  return page.locator('meta[name="csrf-token"]').getAttribute('content').then((v) => v ?? '');
++}
++
++async function pairStock(adminApi: AdminApi, productName: string, warehouseId: string): Promise<number> {
++  const list = await adminApi.getStock({ q: productName, scope: 'all' });
++  const cell = list.items[0]?.by_warehouse.find((c) => c.warehouse_id === warehouseId);
++  return Number(cell?.stock ?? NaN);
++}
++
++async function newProduct(adminApi: AdminApi, uniq: (s: string) => string, label: string, stock: number) {
++  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${label} категория`) });
++  return adminApi.createProduct({ category_id: cat.id, name: uniq(`${label} товар`), stock }); // остаток — на «Алматы»
++}
++
++test.describe('ST: перемещения товаров', () => {
++  test('ST-001 (TS-008, TS-007): заявка → правка строк → отправка («В пути») → приёмка с недостачей', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p1 = await newProduct(adminApi, uniq, 'ST-001 a', 10);
++    const p2 = await newProduct(adminApi, uniq, 'ST-001 b', 1);
++
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await shell.navLink('Перемещения').click();
++    await expect(page).toHaveURL(/\/stock-transfers$/);
++
++    const st = new StockTransfersPage(page);
++    await st.newBtn.click();
++    await expect(st.cardTitle).toHaveText('Новое перемещение');
++    await st.choose(st.from, 'Алматы');
++    await st.choose(st.to, 'Москва');
++    await st.note.fill('ST-001 под заказ');
++    await st.setItem(0, p1.name, 4);
++    await st.itemAdd.click();
++    await st.setItem(1, p2.name, 2);
++    await st.save.click();
++
++    await expect(st.cardTitle).toHaveText(/Перемещение #\d+/);
++    await expect(st.cardStatus).toHaveText('Заявка');
++    const id = await st.currentId();
++    await expect(page).toHaveURL(new RegExp(`id=${id}`));
++    await expect(st.row(id)).toBeVisible();
++    expect(await pairStock(adminApi, p1.name, almaty.id)).toBe(10); // заявка не двигает остатки
++
++    // правка строки заявки.
++    await st.itemQtys.nth(0).fill('6');
++    await st.save.click();
++    await expect.poll(async () => Number((await adminApi.getStockTransfer(id)).items[0].qty_sent)).toBe(6);
++    await expect(st.cardStatus).toHaveText('Заявка');
++
++    // отправка: минус на источнике; p2 уходит в минус — предупреждение.
++    await st.send.click();
++    await expect(st.cardStatus).toHaveText('В пути');
++    await expect(st.warnings).toContainText(p2.name);
++    await expect(st.warnings).toContainText('отрицательный');
++    await expect(st.viewItem(p1.id).getByTestId('st-view-sent')).toHaveText('6');
++    expect(await pairStock(adminApi, p1.name, almaty.id)).toBe(4);
++    expect(await pairStock(adminApi, p2.name, almaty.id)).toBe(-1);
++
++    // «В пути» на экране «Остатки» (TS-007): все склады и фильтр склада-получателя.
++    const stock = new StockPage(page);
++    await stock.goto();
++    await stock.chooseScope('Все товары');
++    await stock.q.fill(p1.name);
++    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('6');
++    await stock.chooseWarehouse('Москва');
++    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('6');
++    await stock.chooseWarehouse('Алматы');
++    await expect(stock.row(p1.id).getByTestId('stock-cell-transit')).toHaveText('0');
++
++    // приёмка по факту: p1 — 5 из 6, p2 — по умолчанию = отправлено.
++    await st.goto(id);
++    await st.receive.click();
++    await expect(st.receiveModal).toBeVisible();
++    await expect(st.receiveQty(p2.id)).toHaveValue('2');
++    await st.receiveQty(p1.id).fill('5');
++    await st.receiveConfirm.click();
++    await expect(st.receiveModal).toBeHidden();
++    await expect(st.cardStatus).toHaveText('Принято');
++    await expect(st.viewItem(p1.id).getByTestId('st-view-received')).toHaveText('5');
++    await expect(st.viewItem(p1.id).getByTestId('st-view-received')).toHaveClass(/text-danger/);
++    await expect(st.viewItem(p2.id).getByTestId('st-view-received')).toHaveText('2');
++    await expect(st.receive).toHaveCount(0);
++    await expect(st.cancel).toHaveCount(0);
++
++    expect(await pairStock(adminApi, p1.name, moscow.id)).toBe(5);
++    expect(await pairStock(adminApi, p2.name, moscow.id)).toBe(2);
++    const after = await adminApi.getStock({ q: p1.name, scope: 'all' });
++    expect(Number(after.items[0].in_transit)).toBe(0);
++  });
++
++  test('ST-002 (TS-009): отмена в пути — возврат на источник; отмена заявки; from = to → ошибка', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/api/v1/stock-transfers') && status === 400);
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p = await newProduct(adminApi, uniq, 'ST-002', 10);
++    const sent = await adminApi.createStockTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ product_id: p.id, qty_sent: 3 }],
++    });
++    const req = await adminApi.createStockTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ product_id: p.id, qty_sent: 1 }],
++    });
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(7);
++
++    const st = new StockTransfersPage(page);
++    await st.goto(sent.id);
++    await expect(st.cardStatus).toHaveText('В пути');
++
++    // «Назад» в диалоге — ничего не происходит.
++    await st.cancel.click();
++    await expect(page.getByTestId('ui-dialog-text')).toContainText('вернутся на склад «Алматы»');
++    await page.getByTestId('ui-dialog-cancel').click();
++    await expect(page.getByTestId('ui-dialog')).toHaveCount(0);
++    await expect(st.cardStatus).toHaveText('В пути');
++
++    await st.cancel.click();
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(st.cardStatus).toHaveText('Отменено');
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(10);
++    expect((await adminApi.getStockTransfer(sent.id)).status).toBe('cancelled');
++
++    // отмена заявки — без движений.
++    await st.row(req.id).click();
++    await expect(st.cardTitle).toHaveText(`Перемещение #${req.id}`);
++    await st.cancel.click();
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(st.cardStatus).toHaveText('Отменено');
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(10);
++
++    // from = to → ошибка под формой.
++    await st.newBtn.click();
++    await st.choose(st.from, 'Алматы');
++    await st.choose(st.to, 'Алматы');
++    await st.setItem(0, p.name, 1);
++    await st.save.click();
++    await expect(st.error).toContainText('совпадает с источником');
++  });
++
++  test('ST-003 (TS-010): устаревшая карточка — 409, показано актуальное состояние', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/api/v1/stock-transfers') && status === 409);
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p = await newProduct(adminApi, uniq, 'ST-003', 5);
++    const req = await adminApi.createStockTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ product_id: p.id, qty_sent: 2 }],
++    });
++
++    const st = new StockTransfersPage(page);
++    await st.goto(req.id);
++    await expect(st.cardStatus).toHaveText('Заявка');
++
++    // пока карточка открыта, перемещение отправили в другом месте.
++    await adminApi.stockTransferAction(req.id, 'send');
++
++    await st.send.click();
++    await expect(st.error).toContainText('обновите страницу');
++    await expect(st.cardStatus).toHaveText('В пути');
++    expect(await pairStock(adminApi, p.name, almaty.id)).toBe(3); // списано один раз
++  });
++
++  test('ST-004: фильтр списка по статусу', async ({ adminPage: page, adminApi, uniq }) => {
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const p = await newProduct(adminApi, uniq, 'ST-004', 5);
++    const inTransit = await adminApi.createStockTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, send: true, items: [{ product_id: p.id, qty_sent: 1 }],
++    });
++    const req = await adminApi.createStockTransfer({
++      from_warehouse_id: moscow.id, to_warehouse_id: almaty.id, items: [{ product_id: p.id, qty_sent: 1 }],
++    });
++
++    const st = new StockTransfersPage(page);
++    await st.goto();
++    await expect(st.row(inTransit.id)).toBeVisible();
++    await expect(st.row(req.id)).toBeVisible();
++    await st.chooseStatusFilter('В пути');
++    await expect(st.row(req.id)).toHaveCount(0);
++    await expect(st.row(inTransit.id)).toBeVisible();
++    await expect(st.row(inTransit.id).getByTestId('st-status-badge')).toHaveText('В пути');
++  });
++
++  test('ST-005 (TS-014): executor не видит «Перемещения» — нет пункта меню, страница и API 403', async ({
++    page,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const login = uniq('exec-st005');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await expect(shell.navLink('Остатки')).toBeVisible();
++    await expect(shell.navLink('Перемещения')).toHaveCount(0);
++
++    allowHttpErrors((url, status) => (url.endsWith('/stock-transfers') || url.includes('/api/v1/stock-transfers')) && status === 403);
++    const resp = await page.goto('/stock-transfers');
++    expect(resp?.status()).toBe(403);
++
++    const api = await page.request.get('/api/v1/stock-transfers', { failOnStatusCode: false });
++    expect(api.status()).toBe(403);
++    const post = await page.request.post('/api/v1/stock-transfers', {
++      data: { from_warehouse_id: '', to_warehouse_id: '', items: [] },
++      headers: { 'X-Csrf-Token': await csrfToken(page) },
++      failOnStatusCode: false,
++    });
++    expect(post.status()).toBe(403);
++  });
++});
+diff --git a/e2e/tests/warehouses.spec.ts b/e2e/tests/warehouses.spec.ts
+new file mode 100644
+index 0000000..75500ad
+--- /dev/null
++++ b/e2e/tests/warehouses.spec.ts
+@@ -0,0 +1,225 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { StockPage } from '../pages/StockPage';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { ShellPage } from '../pages/ShellPage';
++import { CatalogPage } from '../pages/CatalogPage';
++import type { AdminApi } from '../fixtures/auth';
++
++// Склады — подфаза A (docs/features/warehouses/draft-spec.md DS-001…DS-005, TS-002, TS-003,
++// TS-005, TS-007, TS-014). Общая dev-БД (§TD-6.2): свои товары/клиенты через uniq()+adminApi;
++// созданные тестом склады в конце отправляются в архив (не мешают колонкам других спек).
++test.use({ colorScheme: 'light' });
++
++function csrfToken(page: import('@playwright/test').Page): Promise<string> {
++  return page.locator('meta[name="csrf-token"]').getAttribute('content').then((v) => v ?? '');
++}
++
++async function pairStock(adminApi: AdminApi, productName: string, warehouseId: string): Promise<number> {
++  const list = await adminApi.getStock({ q: productName, scope: 'all' });
++  const cell = list.items[0]?.by_warehouse.find((c) => c.warehouse_id === warehouseId);
++  return Number(cell?.stock ?? NaN);
++}
++
++test.describe('WH: справочник складов', () => {
++  test('WH-001 (TS-002): admin — пункт «Склады», добавить, дубль имени, переименовать, в архив', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    // дубль имени — форма перерисовывается с 422 (ожидаемо).
++    allowHttpErrors((url, status) => url.endsWith('/warehouses') && status === 422);
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await shell.navLink('Склады').click();
++    await expect(page).toHaveURL(/\/warehouses$/);
++    await expect(page.getByTestId('warehouses-table')).toBeVisible();
++    await expect(page.locator('[data-testid="warehouse-row"][data-name="Алматы"]')).toBeVisible();
++    await expect(page.locator('[data-testid="warehouse-row"][data-name="Москва"]')).toBeVisible();
++
++    const name = uniq('WH-001 склад');
++    await page.getByTestId('warehouse-new-name').fill(name);
++    await page.getByTestId('warehouse-add').click();
++    await expect(page.getByTestId('flash')).toHaveText('Склад добавлен');
++    const row = page.locator(`[data-testid="warehouse-row"][data-name="${name}"]`);
++    await expect(row).toBeVisible();
++
++    // дубль: другой регистр + пробелы → ошибка под полем.
++    await page.getByTestId('warehouse-new-name').fill(`  ${name.toUpperCase()}  `);
++    await page.getByTestId('warehouse-add').click();
++    await expect(page.getByTestId('error-name')).toHaveText('Такой склад уже есть');
++
++    // переименование.
++    await page.goto('/warehouses');
++    await page.locator(`[data-testid="warehouse-row"][data-name="${name}"]`).getByTestId('warehouse-edit-link').click();
++    const renamed = `${name} (2)`;
++    await page.getByTestId('warehouse-name').fill(renamed);
++    await page.getByTestId('warehouse-save').click();
++    await expect(page.getByTestId('flash')).toHaveText('Изменения сохранены');
++    const renamedRow = page.locator(`[data-testid="warehouse-row"][data-name="${renamed}"]`);
++    await expect(renamedRow).toBeVisible();
++
++    // в архив: пропадает из списка, виден с «Показать архивные» с бейджем.
++    await renamedRow.getByTestId('warehouse-toggle-active').click();
++    await expect(page.getByTestId('flash')).toHaveText('Склад отправлен в архив');
++    await expect(page.locator(`[data-testid="warehouse-row"][data-name="${renamed}"]`)).toHaveCount(0);
++    await page.goto('/warehouses?archived=1');
++    await expect(page.locator(`[data-testid="warehouse-row"][data-name="${renamed}"]`).getByTestId('warehouse-archived-badge')).toBeVisible();
++
++    // дубль архивного имени — тоже ошибка (уникальность вкл. архивные).
++    await page.getByTestId('warehouse-new-name').fill(renamed);
++    await page.getByTestId('warehouse-add').click();
++    await expect(page.getByTestId('error-name')).toContainText('в архиве');
++
++    const w = await adminApi.warehouseByName(renamed);
++    expect(w.is_active).toBe(false);
++  });
++
++  test('WH-002 (TS-014): executor не видит «Склады» — нет пункта меню, страница и API 403', async ({
++    page,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const login = uniq('exec-wh002');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await expect(shell.navLink('Остатки')).toBeVisible();
++    await expect(shell.navLink('Склады')).toHaveCount(0);
++
++    allowHttpErrors((url, status) => (url.endsWith('/warehouses') || url.includes('/api/v1/warehouses')) && status === 403);
++    const resp = await page.goto('/warehouses');
++    expect(resp?.status()).toBe(403);
++
++    const api = await page.request.get('/api/v1/warehouses', { failOnStatusCode: false });
++    expect(api.status()).toBe(403);
++    const post = await page.request.post('/api/v1/warehouses', {
++      data: { name: 'чужой склад' },
++      headers: { 'X-Csrf-Token': await csrfToken(page) },
++      failOnStatusCode: false,
++    });
++    expect(post.status()).toBe(403);
++  });
++});
++
++test.describe('WH: остатки по складам', () => {
++  test('WH-003 (TS-003, TS-007): «Остатки» — колонки складов, «Итого», «В пути», фильтр склада, правка на «Москве»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('WH-003 категория') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('WH-003 товар'), stock: 10, min_stock: 2 });
++    await adminApi.adjustStock(product.id, 1, moscow.id); // Москва: 1 при минимуме 0 → норма
++
++    const stock = new StockPage(page);
++    await stock.goto();
++    await stock.chooseScope('Все товары');
++    await stock.q.fill(product.name);
++    const row = stock.row(product.id);
++    await expect(row).toBeVisible();
++    await expect(page.locator('[data-testid="stock-col-wh"]', { hasText: 'Алматы' })).toBeVisible();
++    await expect(page.locator('[data-testid="stock-col-wh"]', { hasText: 'Москва' })).toBeVisible();
++    await expect(stock.cell(product.id, 'Алматы')).toHaveText('10');
++    await expect(stock.cell(product.id, 'Москва')).toHaveText('1');
++    await expect(row.getByTestId('stock-cell-total')).toContainText('11');
++    await expect(row.getByTestId('stock-cell-transit')).toHaveText('0');
++
++    // правка остатка на «Москве» через модалку — «Алматы» не меняется.
++    await stock.openEdit(product.id);
++    await stock.modalWarehouse.click();
++    await stock.dropdown.locator('.cb-opt', { hasText: 'Москва' }).first().click();
++    await expect(stock.value).toHaveValue('1');
++    await stock.submitValue(7);
++    await expect(stock.form).toBeHidden();
++    await expect(stock.cell(product.id, 'Москва')).toHaveText('7');
++    await expect(stock.cell(product.id, 'Алматы')).toHaveText('10');
++    await expect(row.getByTestId('stock-cell-total')).toContainText('17');
++    await expect.poll(() => pairStock(adminApi, product.name, moscow.id)).toBe(7);
++    await expect.poll(() => pairStock(adminApi, product.name, almaty.id)).toBe(10);
++
++    // фильтр «Москва»: «Итого» — только выбранный склад.
++    await stock.chooseWarehouse('Москва');
++    await expect(row.getByTestId('stock-cell-total')).toContainText('7');
++    await expect(row.getByTestId('stock-cell-total')).not.toContainText('17');
++
++    // ниже минимума — по паре: Алматы 10 → 1 при минимуме 2 → рисковый на «Алматы», не на «Москве».
++    await adminApi.adjustStock(product.id, 1, almaty.id);
++    const risky = await adminApi.getStock({ scope: 'risky', q: product.name, warehouse_id: almaty.id });
++    expect(risky.items.map((i) => i.product_id)).toContain(product.id);
++    const riskyMsk = await adminApi.getStock({ scope: 'risky', q: product.name, warehouse_id: moscow.id });
++    expect(riskyMsk.items.map((i) => i.product_id)).not.toContain(product.id);
++  });
++
++  test('WH-004 (DS-003): карточка товара — блок «Склады», остаток на «Москве» из формы', async ({ adminPage: page, adminApi, uniq }) => {
++    const moscow = await adminApi.warehouseByName('Москва');
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('WH-004 категория') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('WH-004 товар'), stock: 3, min_stock: 1, place: 'Полка A' });
++
++    const catalog = new CatalogPage(page);
++    await page.goto(`/catalog/products/${product.id}`);
++    await expect(page.getByTestId('product-stocks')).toBeVisible();
++    await expect(catalog.stock).toHaveValue('3.000');
++    await expect(catalog.place).toHaveValue('Полка A');
++    const msk = catalog.stockRow('Москва');
++    await msk.getByTestId('product-stock').fill('4');
++    await msk.getByTestId('product-place').fill('Москва, стеллаж 2');
++    await page.getByTestId('product-save').click();
++    await expect(page).toHaveURL(/\/catalog\/products\?flash=saved/);
++
++    await expect.poll(() => pairStock(adminApi, product.name, moscow.id)).toBe(4);
++    const row = page.locator(`[data-testid="product-row"][data-name="${product.name}"]`);
++    await page.goto(`/catalog/products?q=${encodeURIComponent(product.name)}`);
++    await expect(row.getByTestId('product-stock')).toContainText('7');
++    await expect(row.locator('[data-testid="product-stock-wh"][data-warehouse="Москва"]')).toContainText('4');
++  });
++
++  test('WH-005 (TS-005): склад строки товара в карточке заказа — смена у списанной строки переносит списание', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++  }) => {
++    const almaty = await adminApi.warehouseByName('Алматы');
++    const moscow = await adminApi.warehouseByName('Москва');
++    const client = await adminApi.createClient({ company_name: uniq('WH-005 клиент'), phones: [{ phone: '9990000051', note: '' }] });
++    const columns = (await adminApi.listColumns()).items;
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('WH-005 категория товаров') });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('WH-005 категория услуг') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('WH-005 товар'), stock: 10, min_stock: 0 });
++    await adminApi.adjustStock(product.id, 10, moscow.id);
++    const service = await adminApi.createService({ category_id: svcCat.id, name: uniq('WH-005 услуга'), price: null, products: [] });
++    const task = await adminApi.createTask({ title: uniq('WH-005 заказ'), client_id: client.id, column_id: columnByName(columns, 'В работе').id });
++    const subtaskId = await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 3 }] });
++
++    // строка без склада — склад по умолчанию (первый активный — «Алматы»), списано с него.
++    await expect.poll(() => pairStock(adminApi, product.name, almaty.id)).toBe(7);
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++
++    const row = card.subtaskRow(subtaskId).getByTestId('card-product-row');
++    await expect(row).toHaveCount(1);
++    const productRowId = (await row.getAttribute('data-product-id'))!;
++    await expect(card.productWarehouse(productRowId)).toContainText('Алматы');
++
++    await card.chooseCombobox(card.productWarehouse(productRowId), 'Москва');
++    await expect(card.productWarehouse(productRowId)).toContainText('Москва');
++    await expect(card.productHint(productRowId)).toContainText('в наличии 10');
++
++    await expect.poll(() => pairStock(adminApi, product.name, almaty.id)).toBe(10); // возврат на старый склад
++    await expect.poll(() => pairStock(adminApi, product.name, moscow.id)).toBe(7); // списание с нового
++    const cardData = await adminApi.getCard(task.id);
++    expect(cardData.subtasks[0].products[0].warehouse_id).toBe(moscow.id);
++  });
++});
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index 59a87c1..8a63501 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -104,7 +104,8 @@
+       category_id: p.get('category_id') || '',
+       paid: p.get('paid') || 'all',
+       assignee: p.get('assignee') || assigneeDefault(),
+-      due: p.get('due') || 'all'
++      due: p.get('due') || 'all',
++      warehouse_id: p.get('warehouse_id') || ''
+     };
+   }
+ 
+@@ -116,6 +117,7 @@
+     if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
+     if (f.assignee && f.assignee !== assigneeDefault()) p.set('assignee', f.assignee);
+     if (f.due && f.due !== 'all') p.set('due', f.due);
++    if (f.warehouse_id) p.set('warehouse_id', f.warehouse_id);
+     var s = p.toString();
+     return s ? '?' + s : '';
+   }
+@@ -128,6 +130,8 @@
+     if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
+     p.set('assignee', f.assignee || assigneeDefault());
+     if (f.due && f.due !== 'all') p.set('due', f.due);
++    // warehouses DS-009: фильтр «Склад» (оборудование на складе/едет на склад X).
++    if (f.warehouse_id) p.set('warehouse_id', f.warehouse_id);
+     // pagination DS-001: окно per_column — не более PER_COLUMN первых (position,id)
+     // карточек каждой колонки ОДНИМ запросом (глобальная постраничность по колонкам слева
+     // направо оставляла бы правые колонки пустыми); остальное — «Показать ещё» по колонке.
+@@ -319,10 +323,14 @@
+     $('#filter-paid').value = f.paid;
+     $('#filter-assignee').value = f.assignee;
+     $('#filter-due').value = f.due;
++    // DS-009: опции склада рендерит сервер; неизвестный id из URL → «Все склады».
++    var wSel = $('#filter-warehouse');
++    wSel.value = f.warehouse_id;
++    if (wSel.value !== f.warehouse_id) { wSel.value = ''; f.warehouse_id = ''; }
+     // Все 5 select-фильтров превращены в комбобоксы (js/combobox.js) — после программной
+     // смены .value видимая кнопка не обновляется сама, нужен ручной _cbSync() на каждом
+     // (баг фазы 06: filter-paid/filter-due не синхронизировались после reload — BD-013).
+-    ['#filter-client', '#filter-category', '#filter-paid', '#filter-assignee', '#filter-due'].forEach(function (sel) {
++    ['#filter-client', '#filter-category', '#filter-paid', '#filter-assignee', '#filter-due', '#filter-warehouse'].forEach(function (sel) {
+       var el = $(sel);
+       if (el && el._cbSync) el._cbSync();
+     });
+@@ -341,6 +349,7 @@
+     onChange('#filter-paid', 'paid');
+     onChange('#filter-assignee', 'assignee');
+     onChange('#filter-due', 'due');
++    onChange('#filter-warehouse', 'warehouse_id');
+ 
+     var qTimer = null;
+     $('#filter-q').addEventListener('input', function (e) {
+@@ -354,7 +363,7 @@
+     });
+ 
+     $('#filter-reset').addEventListener('click', function () {
+-      state.filters = { client_id: '', q: '', category_id: '', paid: 'all', assignee: assigneeDefault(), due: 'all' };
++      state.filters = { client_id: '', q: '', category_id: '', paid: 'all', assignee: assigneeDefault(), due: 'all', warehouse_id: '' };
+       applyFiltersToForm();
+       pushFiltersToUrl();
+       reloadAndRender();
+@@ -408,6 +417,8 @@
+       '      <ul class="dropdown-menu dropdown-menu-end" data-task-move-menu="' + t.id + '"></ul>' +
+       '    </div>' +
+       '  </div>' +
++      // warehouses DS-009: бейдж «в пути» — у заказа есть оборудование in_transit.
++      (t.has_in_transit ? '<div class="mb-1"><span class="badge text-bg-warning" data-testid="task-card-in-transit">🚚 в пути</span></div>' : '') +
+       '  <div class="task-card-client">🏢 <span class="name">' + esc(t.client_name) + '</span><span class="pay ' + (t.is_paid ? 'pay-yes' : 'pay-no') + '">' + (t.is_paid ? '✓ Оплачен' : 'Не оплачен') + '</span></div>' +
+       (t.subtasks_total ? '<div class="small text-body-secondary mb-1">☑ ' + t.subtasks_done + '/' + t.subtasks_total + (late ? ' · <span class="text-danger">⚠ ' + late + '</span>' : '') + '</div>' : '') +
+       // total_amount показываем, только если >0 (AC-013) — заказ без услуг/цен не засоряет
+diff --git a/web/ssr/_shared/js/stock-transfers.js b/web/ssr/_shared/js/stock-transfers.js
+new file mode 100644
+index 0000000..1a11855
+--- /dev/null
++++ b/web/ssr/_shared/js/stock-transfers.js
+@@ -0,0 +1,508 @@
++/* KT.stockTransfers — экран «Перемещения» «/stock-transfers» (admin, warehouses DS-006/
++   DS-011): master-detail поверх JSON API /api/v1/stock-transfers.
++
++   Слева — список с фильтром по статусу/складу ({items,total,limit,offset}); справа —
++   карточка выбранного перемещения (?id=N в адресе). Заявка (requested) и новое
++   перемещение — редактор: склады, примечание, строки товаров; кнопки «Сохранить заявку» /
++   «Отправить» / «Отменить». В пути (in_transit) — «Принять» (модалка с фактом по строкам,
++   по умолчанию = отправлено) и «Отменить». Принято/отменено — только просмотр.
++   Подтверждение отмены — KT.uiDialog (нативные confirm/prompt не используются).
++   Числа выводятся как пришли в JSON (String()), весь текст — через esc(). */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++  function num(v) { return String(v == null ? 0 : v); }
++
++  var STATUS = {
++    requested: { label: 'Заявка', cls: 'text-bg-secondary' },
++    in_transit: { label: 'В пути', cls: 'text-bg-warning' },
++    received: { label: 'Принято', cls: 'text-bg-success' },
++    cancelled: { label: 'Отменено', cls: 'text-bg-light border' }
++  };
++
++  var FIELD_TEXT = {
++    required: 'обязательное поле',
++    invalid: 'недопустимое значение',
++    invalid_format: 'введите число',
++    too_precise: 'не больше 3 знаков после запятой',
++    too_large: 'слишком большое число',
++    too_long: 'слишком длинное значение',
++    invalid_text: 'недопустимые символы',
++    too_many: 'слишком много строк',
++    same_warehouse: 'склад-получатель совпадает с источником',
++    duplicate: 'товар уже есть в другой строке',
++    exceeds_sent: 'больше отправленного'
++  };
++  var FIELD_LABEL = {
++    from_warehouse_id: 'Откуда',
++    to_warehouse_id: 'Куда',
++    note: 'Примечание',
++    items: 'Товары',
++    version: 'Версия'
++  };
++
++  var state = {
++    list: [],
++    total: 0,
++    status: '',
++    warehouseId: '',
++    warehouses: [],
++    products: [],
++    current: null, // TransferResponse | {new: true}
++    warnings: [],
++    busy: false
++  };
++  var receiveModal = null;
++
++  // ---------- загрузка ----------
++  // Активные товары для строк — постранично (API отдаёт не больше 500 за запрос).
++  function loadProducts(offset, acc) {
++    return KT.api.get('/api/v1/products?limit=500&offset=' + offset).then(function (r) {
++      var items = acc.concat(r.items || []);
++      if ((r.items || []).length > 0 && items.length < r.total && items.length < 10000) return loadProducts(items.length, items);
++      return items;
++    });
++  }
++
++  function loadRefs() {
++    return Promise.all([
++      KT.api.get('/api/v1/warehouses'),
++      loadProducts(0, [])
++    ]).then(function (r) {
++      state.warehouses = r[0].items || [];
++      state.products = r[1];
++      var sel = $('#st-filter-warehouse');
++      sel.innerHTML = '<option value="">Все склады</option>' + state.warehouses.map(function (w) {
++        return '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>';
++      }).join('');
++      if (sel._cbSync) sel._cbSync();
++    });
++  }
++
++  function loadList() {
++    var p = new URLSearchParams();
++    if (state.status) p.set('status', state.status);
++    if (state.warehouseId) p.set('warehouse_id', state.warehouseId);
++    p.set('limit', '500');
++    return KT.api.get('/api/v1/stock-transfers?' + p.toString()).then(function (r) {
++      state.list = r.items || [];
++      state.total = r.total || 0;
++      renderList();
++    });
++  }
++
++  function loadTransfer(id) {
++    return KT.api.get('/api/v1/stock-transfers/' + id).then(function (t) {
++      state.current = t;
++      setUrl(t.id);
++      renderCard();
++      renderList();
++    });
++  }
++
++  function setUrl(id) {
++    var u = new URL(window.location.href);
++    if (id) u.searchParams.set('id', id); else u.searchParams.delete('id');
++    window.history.replaceState(null, '', u.pathname + u.search);
++  }
++
++  // ---------- список ----------
++  function fmtDate(s) {
++    if (!s) return '';
++    var d = new Date(s);
++    return isNaN(d) ? '' : d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
++  }
++
++  function badge(status) {
++    var s = STATUS[status] || { label: status, cls: 'text-bg-secondary' };
++    return '<span class="badge ' + s.cls + '" data-testid="st-status-badge" data-status="' + esc(status) + '">' + esc(s.label) + '</span>';
++  }
++
++  function renderList() {
++    var box = $('#st-list');
++    var curId = state.current && state.current.id;
++    box.innerHTML = state.list.map(function (t) {
++      return '<button type="button" class="list-group-item list-group-item-action' + (t.id === curId ? ' active' : '') + '"' +
++        ' data-testid="st-row" data-id="' + esc(t.id) + '">' +
++        '<div class="d-flex justify-content-between align-items-center gap-2">' +
++        '<span class="fw-semibold">#' + esc(t.id) + ' · ' + esc(t.from_warehouse_name) + ' → ' + esc(t.to_warehouse_name) + '</span>' +
++        badge(t.status) + '</div>' +
++        '<div class="small' + (t.id === curId ? '' : ' text-body-secondary') + '">' +
++        esc(fmtDate(t.created_at)) + ' · позиций: ' + esc(t.items_count) + (t.note ? ' · ' + esc(t.note) : '') + '</div>' +
++        '</button>';
++    }).join('');
++    $('#st-empty').classList.toggle('d-none', state.list.length > 0);
++    var shown = $('#st-shown');
++    if (state.total > state.list.length) {
++      shown.textContent = 'Показано ' + state.list.length + ' из ' + state.total;
++      shown.classList.remove('d-none');
++    } else {
++      shown.classList.add('d-none');
++    }
++  }
++
++  // ---------- карточка ----------
++  function warehouseOptions(selected, withEmpty) {
++    var list = state.warehouses.slice();
++    if (selected && !list.some(function (w) { return w.id === selected; })) {
++      // склад заявки ушёл в архив — показать его, чтобы не потерять значение
++      var cur = state.current || {};
++      var name = cur.from_warehouse_id === selected ? cur.from_warehouse_name : cur.to_warehouse_name;
++      list.push({ id: selected, name: (name || selected) + ' (архив)' });
++    }
++    return (withEmpty ? '<option value="">— выберите склад —</option>' : '') + list.map(function (w) {
++      return '<option value="' + esc(w.id) + '"' + (w.id === selected ? ' selected' : '') + '>' + esc(w.name) + '</option>';
++    }).join('');
++  }
++
++  function productOptions(selected, fallbackName) {
++    var list = state.products.slice();
++    if (selected && !list.some(function (p) { return p.id === selected; })) {
++      list.push({ id: selected, name: (fallbackName || selected) + ' (архив)', unit: '' });
++    }
++    return '<option value="">— выберите товар —</option>' + list.map(function (p) {
++      return '<option value="' + esc(p.id) + '"' + (p.id === selected ? ' selected' : '') + '>' + esc(p.name) + (p.unit ? ', ' + esc(p.unit) : '') + '</option>';
++    }).join('');
++  }
++
++  function itemRowHTML(it) {
++    it = it || {};
++    return '<tr data-testid="st-item-row">' +
++      '<td><select class="form-select form-select-sm" data-testid="st-item-product" aria-label="Товар">' + productOptions(it.product_id, it.product_name) + '</select></td>' +
++      '<td style="width:140px"><input type="number" step="any" min="0" class="form-control form-control-sm" data-testid="st-item-qty" aria-label="Количество" value="' + esc(it.qty_sent == null ? '' : num(it.qty_sent)) + '"></td>' +
++      '<td style="width:44px" class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-testid="st-item-remove" title="Убрать строку" aria-label="Убрать строку">×</button></td>' +
++      '</tr>';
++  }
++
++  function warningsHTML() {
++    if (!state.warnings.length) return '';
++    return '<div class="alert alert-warning" data-testid="st-warnings"><div class="fw-semibold mb-1">Остатки на складе-источнике:</div><ul class="mb-0">' +
++      state.warnings.map(function (w) {
++        return '<li>' + esc(w.name) + ' (' + esc(w.warehouse_name) + '): ' + esc(num(w.stock)) +
++          (w.kind === 'negative' ? ' — отрицательный остаток' : ' — на минимуме или ниже (' + esc(num(w.min_stock)) + ')') + '</li>';
++      }).join('') + '</ul></div>';
++  }
++
++  function headerHTML(t) {
++    if (t.new) return '<h2 class="fs-5 mb-3" data-testid="st-card-title">Новое перемещение</h2>';
++    var meta = ['Создал: ' + esc(t.created_by_name) + ', ' + esc(fmtDate(t.created_at))];
++    if (t.sent_at) meta.push('Отправил: ' + esc(t.sent_by_name || '') + ', ' + esc(fmtDate(t.sent_at)));
++    if (t.received_at) meta.push('Принял: ' + esc(t.received_by_name || '') + ', ' + esc(fmtDate(t.received_at)));
++    if (t.cancelled_at) meta.push('Отменил: ' + esc(t.cancelled_by_name || '') + ', ' + esc(fmtDate(t.cancelled_at)));
++    return '<div class="d-flex justify-content-between align-items-center mb-2">' +
++      '<h2 class="fs-5 mb-0" data-testid="st-card-title">Перемещение #' + esc(t.id) + '</h2>' +
++      '<span data-testid="st-card-status">' + badge(t.status) + '</span></div>' +
++      '<div class="small text-body-secondary mb-3">' + meta.join('<br>') + '</div>';
++  }
++
++  function renderCard() {
++    var t = state.current;
++    $('#st-placeholder').classList.toggle('d-none', !!t);
++    var card = $('#st-card');
++    card.classList.toggle('d-none', !t);
++    if (!t) { card.innerHTML = ''; return; }
++    var editable = t.new || t.status === 'requested';
++    var html = headerHTML(t) + warningsHTML() +
++      '<div class="alert alert-danger d-none" data-testid="st-error" id="st-error"></div>';
++    if (editable) {
++      html += '<div class="row g-2 mb-2">' +
++        '<div class="col-sm-6"><label class="form-label" for="st-from">Откуда *</label>' +
++        '<select class="form-select" id="st-from" data-testid="st-from">' + warehouseOptions(t.from_warehouse_id, true) + '</select></div>' +
++        '<div class="col-sm-6"><label class="form-label" for="st-to">Куда *</label>' +
++        '<select class="form-select" id="st-to" data-testid="st-to">' + warehouseOptions(t.to_warehouse_id, true) + '</select></div>' +
++        '</div>' +
++        '<div class="mb-3"><label class="form-label" for="st-note">Примечание</label>' +
++        '<textarea class="form-control" id="st-note" data-testid="st-note" rows="2" maxlength="1000">' + esc(t.note || '') + '</textarea></div>' +
++        '<div class="table-responsive"><table class="table table-sm align-middle mb-2" data-testid="st-items">' +
++        '<thead><tr><th>Товар *</th><th>Количество *</th><th></th></tr></thead><tbody id="st-items-tbody">' +
++        ((t.items && t.items.length) ? t.items.map(itemRowHTML).join('') : itemRowHTML()) +
++        '</tbody></table></div>' +
++        '<button type="button" class="btn btn-sm btn-outline-secondary mb-3" data-testid="st-item-add" id="st-item-add">+ Товар</button>' +
++        '<div class="d-flex flex-wrap gap-2">' +
++        '<button type="button" class="btn btn-outline-primary" data-testid="st-save" data-act="save">' + (t.new ? 'Сохранить заявку' : 'Сохранить') + '</button>' +
++        '<button type="button" class="btn btn-primary" data-testid="st-send" data-act="send">Отправить</button>' +
++        (t.new ? '' : '<button type="button" class="btn btn-outline-danger ms-auto" data-testid="st-cancel" data-act="cancel">Отменить перемещение</button>') +
++        '</div>';
++    } else {
++      var showReceived = t.status === 'received';
++      html += '<dl class="row mb-2">' +
++        '<dt class="col-sm-3">Откуда</dt><dd class="col-sm-9" data-testid="st-view-from">' + esc(t.from_warehouse_name) + '</dd>' +
++        '<dt class="col-sm-3">Куда</dt><dd class="col-sm-9" data-testid="st-view-to">' + esc(t.to_warehouse_name) + '</dd>' +
++        (t.note ? '<dt class="col-sm-3">Примечание</dt><dd class="col-sm-9" data-testid="st-view-note">' + esc(t.note) + '</dd>' : '') +
++        '</dl>' +
++        '<div class="table-responsive"><table class="table table-sm align-middle" data-testid="st-items">' +
++        '<thead><tr><th>Товар</th><th>Отправлено</th>' + (showReceived ? '<th>Получено</th>' : '') + '</tr></thead><tbody>' +
++        t.items.map(function (it) {
++          var loss = showReceived && it.qty_received != null && Number(it.qty_received) < Number(it.qty_sent);
++          return '<tr data-testid="st-view-item" data-product-id="' + esc(it.product_id) + '">' +
++            '<td>' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</td>' +
++            '<td data-testid="st-view-sent">' + esc(num(it.qty_sent)) + '</td>' +
++            (showReceived ? '<td data-testid="st-view-received"' + (loss ? ' class="text-danger" title="Недостача"' : '') + '>' + esc(num(it.qty_received)) + '</td>' : '') +
++            '</tr>';
++        }).join('') + '</tbody></table></div>';
++      if (t.status === 'in_transit') {
++        html += '<div class="d-flex flex-wrap gap-2">' +
++          '<button type="button" class="btn btn-primary" data-testid="st-receive" data-act="receive">Принять</button>' +
++          '<button type="button" class="btn btn-outline-danger ms-auto" data-testid="st-cancel" data-act="cancel">Отменить перемещение</button>' +
++          '</div>';
++      }
++    }
++    card.innerHTML = html;
++  }
++
++  function showError(msg) {
++    var el = $('#st-error');
++    if (!el) return;
++    el.textContent = msg;
++    el.classList.toggle('d-none', !msg);
++  }
++
++  function fieldMessage(f) {
++    var text = FIELD_TEXT[f.message] || f.message;
++    var m = /^items\[(\d+)\]\.(\w+)$/.exec(f.name);
++    if (m) return 'Строка ' + (Number(m[1]) + 1) + ': ' + text;
++    return (FIELD_LABEL[f.name] || f.name) + ': ' + text;
++  }
++
++  function markFields(fields) {
++    $$('#st-card .is-invalid').forEach(function (n) { n.classList.remove('is-invalid'); });
++    var rows = $$('#st-items-tbody tr');
++    fields.forEach(function (f) {
++      var target = null;
++      var m = /^items\[(\d+)\]\.(\w+)$/.exec(f.name);
++      if (m && rows[Number(m[1])]) {
++        target = m[2] === 'qty_sent' ? $('input', rows[Number(m[1])]) : $('select', rows[Number(m[1])]);
++      } else if (f.name === 'from_warehouse_id') target = $('#st-from');
++      else if (f.name === 'to_warehouse_id') target = $('#st-to');
++      else if (f.name === 'note') target = $('#st-note');
++      if (target) target.classList.add('is-invalid');
++    });
++  }
++
++  function handleError(err) {
++    if (err && err.fields && err.fields.length) {
++      markFields(err.fields);
++      showError(err.fields.map(fieldMessage).join('; '));
++      return;
++    }
++    showError((err && err.message) || 'Не удалось выполнить действие');
++    if (err && err.status === 409 && state.current && !state.current.new) {
++      // перемещение изменилось или уже в другом статусе — показать актуальное состояние
++      var msg = err.message;
++      var id = state.current.id;
++      Promise.all([loadList(), loadTransfer(id)]).then(function () { showError(msg); });
++    }
++  }
++
++  function collectForm() {
++    var items = $$('#st-items-tbody tr').map(function (tr) {
++      var raw = $('input', tr).value.trim();
++      var n = Number(raw);
++      return { product_id: $('select', tr).value, qty_sent: raw === '' || Number.isNaN(n) ? null : n };
++    });
++    return {
++      from_warehouse_id: $('#st-from').value,
++      to_warehouse_id: $('#st-to').value,
++      note: $('#st-note').value,
++      items: items
++    };
++  }
++
++  function after(t, keepWarnings) {
++    state.warnings = keepWarnings && t.warnings ? t.warnings : [];
++    state.current = t;
++    setUrl(t.id);
++    renderCard();
++    if (KT.refreshNavBadge) KT.refreshNavBadge();
++    return loadList();
++  }
++
++  function withBusy(p) {
++    state.busy = true;
++    $$('#st-card button').forEach(function (b) { b.disabled = true; });
++    return p.catch(handleError).then(function () {
++      state.busy = false;
++      $$('#st-card button').forEach(function (b) { b.disabled = false; });
++    });
++  }
++
++  function save() {
++    var t = state.current;
++    var body = collectForm();
++    if (t.new) return KT.api.post('/api/v1/stock-transfers', body);
++    body.version = t.version;
++    return KT.api.put('/api/v1/stock-transfers/' + t.id, body);
++  }
++
++  function doSave() {
++    return withBusy(save().then(function (t) { return after(t, false); }));
++  }
++
++  function doSend() {
++    var t = state.current;
++    var p;
++    if (t.new) {
++      var body = collectForm();
++      body.send = true;
++      p = KT.api.post('/api/v1/stock-transfers', body);
++    } else {
++      // несохранённые правки заявки уходят вместе с отправкой
++      p = save().then(function (saved) {
++        state.current = saved;
++        return KT.api.post('/api/v1/stock-transfers/' + saved.id + '/send', { version: saved.version });
++      });
++    }
++    return withBusy(p.then(function (r) { return after(r, true); }));
++  }
++
++  function doCancel() {
++    var t = state.current;
++    var text = t.status === 'in_transit'
++      ? 'Отменить перемещение #' + t.id + '? Товары вернутся на склад «' + t.from_warehouse_name + '».'
++      : 'Отменить заявку на перемещение #' + t.id + '?';
++    return KT.uiDialog({ title: 'Отмена перемещения', text: text, ok: 'Отменить перемещение', cancel: 'Назад', danger: true })
++      .then(function (ok) {
++        if (!ok) return;
++        return withBusy(KT.api.post('/api/v1/stock-transfers/' + t.id + '/cancel', { version: t.version })
++          .then(function (r) { return after(r, false); }));
++      });
++  }
++
++  // ---------- приёмка ----------
++  function openReceive() {
++    var t = state.current;
++    $('#st-receive-tbody').innerHTML = t.items.map(function (it) {
++      return '<tr data-testid="st-receive-row" data-product-id="' + esc(it.product_id) + '">' +
++        '<td>' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</td>' +
++        '<td>' + esc(num(it.qty_sent)) + '</td>' +
++        '<td><input type="number" step="any" min="0" class="form-control form-control-sm" data-testid="st-receive-qty"' +
++        ' data-item-id="' + esc(it.id) + '" value="' + esc(num(it.qty_sent)) + '" aria-label="Получено"></td></tr>';
++    }).join('');
++    var err = $('#st-receive-error');
++    err.classList.add('d-none');
++    err.textContent = '';
++    $('#st-receive-confirm').disabled = false;
++    if (!receiveModal) receiveModal = new bootstrap.Modal($('#st-receive-modal'));
++    receiveModal.show();
++  }
++
++  function bindReceive() {
++    var receiving = false;
++    $('#st-receive-form').addEventListener('submit', function (e) {
++      e.preventDefault();
++      if (receiving) return;
++      var t = state.current;
++      var errEl = $('#st-receive-error');
++      var bad = false;
++      var items = $$('#st-receive-tbody input').map(function (inp) {
++        var raw = inp.value.trim();
++        var n = Number(raw);
++        if (raw === '' || Number.isNaN(n)) bad = true;
++        return { id: inp.dataset.itemId, qty_received: n };
++      });
++      if (bad) {
++        errEl.textContent = 'Введите число в каждой строке';
++        errEl.classList.remove('d-none');
++        return;
++      }
++      receiving = true;
++      $('#st-receive-confirm').disabled = true;
++      KT.api.post('/api/v1/stock-transfers/' + t.id + '/receive', { version: t.version, items: items })
++        .then(function (r) {
++          receiveModal.hide();
++          return after(r, false);
++        })
++        .catch(function (err) {
++          var rows = $$('#st-receive-tbody tr');
++          var msg = err && err.fields && err.fields.length
++            ? err.fields.map(function (f) {
++              var m = /^items\[(\d+)\]/.exec(f.name);
++              if (m && rows[Number(m[1])]) $('input', rows[Number(m[1])]).classList.add('is-invalid');
++              return fieldMessage(f);
++            }).join('; ')
++            : (err && err.message) || 'Не удалось принять перемещение';
++          errEl.textContent = msg;
++          errEl.classList.remove('d-none');
++          if (err && err.status === 409) {
++            receiveModal.hide();
++            handleError(err);
++          }
++        })
++        .then(function () {
++          receiving = false;
++          $('#st-receive-confirm').disabled = false;
++        });
++    });
++  }
++
++  // ---------- события ----------
++  function bind() {
++    $('#st-filter-status').addEventListener('change', function (e) {
++      state.status = e.target.value;
++      loadList();
++    });
++    $('#st-filter-warehouse').addEventListener('change', function (e) {
++      state.warehouseId = e.target.value;
++      loadList();
++    });
++    $('#st-new').addEventListener('click', function () {
++      state.warnings = [];
++      state.current = { new: true, from_warehouse_id: '', to_warehouse_id: '', note: '', items: [] };
++      setUrl(null);
++      renderCard();
++      renderList();
++    });
++    $('#st-list').addEventListener('click', function (e) {
++      var row = e.target.closest('[data-testid="st-row"]');
++      if (!row) return;
++      state.warnings = [];
++      loadTransfer(row.dataset.id).catch(function (err) { showError(err && err.message); });
++    });
++    $('#st-card').addEventListener('click', function (e) {
++      if (state.busy) return;
++      if (e.target.closest('#st-item-add')) {
++        $('#st-items-tbody').insertAdjacentHTML('beforeend', itemRowHTML());
++        return;
++      }
++      var rm = e.target.closest('[data-testid="st-item-remove"]');
++      if (rm) {
++        rm.closest('tr').remove();
++        return;
++      }
++      var act = e.target.closest('[data-act]');
++      if (!act) return;
++      switch (act.dataset.act) {
++        case 'save': doSave(); break;
++        case 'send': doSend(); break;
++        case 'cancel': doCancel(); break;
++        case 'receive': openReceive(); break;
++      }
++    });
++    bindReceive();
++  }
++
++  // ---------- инициализация ----------
++  function init() {
++    var root = $('#st');
++    if (!root) return;
++    bind();
++    var id = new URLSearchParams(window.location.search).get('id');
++    loadRefs()
++      .then(function () { return loadList(); })
++      .then(function () { if (id) return loadTransfer(id); })
++      .catch(function (err) {
++        $('#st-list').innerHTML = '<div class="empty-state">Не удалось загрузить перемещения' + (err && err.message ? ': ' + esc(err.message) : '') + '</div>';
++      });
++  }
++
++  KT.stockTransfers = { init: init };
++  document.addEventListener('DOMContentLoaded', init);
++})();
+diff --git a/web/ssr/_shared/js/stock.js b/web/ssr/_shared/js/stock.js
+index eb39290..065f3f4 100644
+--- a/web/ssr/_shared/js/stock.js
++++ b/web/ssr/_shared/js/stock.js
+@@ -2,9 +2,10 @@
+    renderStock в prototype/index.html, переложенный на Bootstrap 5 + KT.api/KT.enhanceSelect
+    этого проекта).
+ 
+-   Данные — GET /api/v1/stock/summary (KPI-плитки) + GET /api/v1/stock?scope=&q= (таблица,
+-   переключатель «рисковые/все», design-go-layers.md §Enum StockScope). Правка остатка —
+-   PUT /api/v1/stock/:product_id, доступна только admin (кнопка правки не рендерится
++   Данные — GET /api/v1/stock/summary?warehouse_id= (KPI-плитки по парам товар×склад) +
++   GET /api/v1/stock?scope=&q=&warehouse_id= (таблица: колонки складов, «Итого», «В пути»;
++   склады — r.warehouses, warehouses DS-004). Правка остатка — PUT /api/v1/stock/:product_id
++   {stock, warehouse_id}, доступна только admin (кнопка правки не рендерится
+    в DOM для executor — testid отсутствует, а не просто скрыт, тот же приём, что и
+    task-delete в board.js). После успешной правки — KT.refreshNavBadge() (ADR-004).
+ 
+@@ -27,13 +28,16 @@
+     summary: null,
+     scope: 'risky',
+     q: '',
++    warehouseId: '',
++    warehouses: [],
+     isAdmin: false,
+     editingProductId: null
+   };
+ 
+   // ---------- загрузка ----------
+   function loadSummary() {
+-    return KT.api.get('/api/v1/stock/summary').then(function (r) {
++    var q = state.warehouseId ? '?warehouse_id=' + encodeURIComponent(state.warehouseId) : '';
++    return KT.api.get('/api/v1/stock/summary' + q).then(function (r) {
+       state.summary = r;
+       renderKpis();
+     });
+@@ -43,10 +47,12 @@
+     var p = new URLSearchParams();
+     p.set('scope', state.scope);
+     if (state.q) p.set('q', state.q);
++    if (state.warehouseId) p.set('warehouse_id', state.warehouseId);
+     p.set('limit', '1000');
+     return KT.api.get('/api/v1/stock?' + p.toString()).then(function (r) {
+       state.rows = r.items;
+       state.rowsTotal = r.total;
++      setWarehouses(r.warehouses || []);
+       renderTable();
+     });
+   }
+@@ -65,6 +71,41 @@
+     $('#stock-kpi-will-low').textContent = s.will_low_count;
+   }
+ 
++  // ---------- склады: фильтр + колонки ----------
++  function setWarehouses(list) {
++    var same = list.length === state.warehouses.length && list.every(function (w, i) { return w.id === state.warehouses[i].id && w.name === state.warehouses[i].name; });
++    state.warehouses = list;
++    if (same) return;
++    var sel = $('#stock-warehouse');
++    sel.innerHTML = '<option value="">Все склады</option>' + list.map(function (w) {
++      return '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>';
++    }).join('');
++    sel.value = state.warehouseId;
++    if (sel._cbSync) sel._cbSync(); // combobox.js: подпись кнопки — по выбранной опции
++    var anchor = $('[data-wh-cols]');
++    $$('th[data-wh-col]').forEach(function (th) { th.remove(); });
++    list.forEach(function (w) {
++      var th = document.createElement('th');
++      th.setAttribute('data-wh-col', w.id);
++      th.setAttribute('data-testid', 'stock-col-wh');
++      th.textContent = w.name;
++      anchor.parentNode.insertBefore(th, anchor);
++    });
++    anchor.classList.add('d-none');
++  }
++
++  function cellState(c) {
++    if (Number(c.stock) < 0) return 'stock-out';
++    if (c.state === 'out') return 'stock-out';
++    if (c.state === 'low') return 'stock-low';
++    return '';
++  }
++
++  function warehouseName(id) {
++    var w = state.warehouses.filter(function (x) { return x.id === id; })[0];
++    return w ? w.name : '';
++  }
++
+   // ---------- таблица ----------
+   function stateBadge(row) {
+     switch (row.state) {
+@@ -79,11 +120,17 @@
+     var whereabouts = [r.place, r.box ? ('коробка ' + r.box) : ''].filter(Boolean).join(' · ') || '—';
+     var stockCls = Number(r.stock) < 0 ? 'stock-out' : (r.state === 'low' ? 'stock-low' : '');
+     var forecastCls = r.state === 'will_low' ? 'stock-low' : '';
++    var whCells = (r.by_warehouse || []).map(function (c) {
++      var dim = state.warehouseId && state.warehouseId !== c.warehouse_id ? ' text-body-tertiary' : '';
++      return '  <td class="' + cellState(c) + dim + '" data-testid="stock-cell-wh" data-warehouse="' + esc(warehouseName(c.warehouse_id)) + '">' + esc(String(c.stock)) + '</td>';
++    }).join('');
+     return '' +
+       '<tr data-testid="stock-row-' + esc(r.product_id) + '">' +
+       '  <td><b>' + esc(r.name) + '</b></td>' +
+       '  <td class="d-none d-md-table-cell text-body-secondary small">' + esc(whereabouts) + '</td>' +
+-      '  <td class="' + stockCls + '">' + esc(String(r.stock)) + ' ' + esc(r.unit) + (Number(r.stock) < 0 ? ' (долг)' : '') + '</td>' +
++      whCells +
++      '  <td class="' + stockCls + '" data-testid="stock-cell-total">' + esc(String(r.stock)) + ' ' + esc(r.unit) + (Number(r.stock) < 0 ? ' (долг)' : '') + '</td>' +
++      '  <td class="d-none d-md-table-cell" data-testid="stock-cell-transit">' + esc(String(r.in_transit == null ? 0 : r.in_transit)) + '</td>' +
+       '  <td>' + esc(String(r.min_stock)) + '</td>' +
+       '  <td class="d-none d-md-table-cell">' + esc(String(r.pending)) + '</td>' +
+       '  <td class="d-none d-md-table-cell ' + forecastCls + '">' + esc(String(r.forecast)) + '</td>' +
+@@ -124,6 +171,13 @@
+     });
+   }
+ 
++  function bindWarehouse() {
++    $('#stock-warehouse').addEventListener('change', function (e) {
++      state.warehouseId = e.target.value;
++      reloadAll();
++    });
++  }
++
+   function bindSearch() {
+     var timer = null;
+     $('#stock-q').addEventListener('input', function (e) {
+@@ -145,7 +199,21 @@
+     if (!row) return;
+     state.editingProductId = productId;
+     $('#stock-modal-title').textContent = 'Остаток «' + row.name + '»';
+-    $('#stock-value').value = row.stock;
++    var whSel = $('#stock-modal-warehouse');
++    whSel.innerHTML = state.warehouses.map(function (w) {
++      return '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>';
++    }).join('');
++    whSel.value = state.warehouseId || (state.warehouses[0] && state.warehouses[0].id) || '';
++    var cellOf = function (whId) {
++      return (row.by_warehouse || []).filter(function (c) { return c.warehouse_id === whId; })[0];
++    };
++    var syncValue = function () {
++      var c = cellOf(whSel.value);
++      $('#stock-value').value = c ? c.stock : 0;
++    };
++    whSel.onchange = syncValue;
++    if (whSel._cbSync) whSel._cbSync();
++    syncValue();
+     $('#stock-error').classList.add('d-none');
+     $('#stock-error').textContent = '';
+     $('#stock-save-btn').disabled = false;
+@@ -175,7 +243,7 @@
+       stockSaving = true;
+       $('#stock-save-btn').disabled = true;
+ 
+-      KT.api.put('/api/v1/stock/' + state.editingProductId, { stock: n })
++      KT.api.put('/api/v1/stock/' + state.editingProductId, { stock: n, warehouse_id: $('#stock-modal-warehouse').value })
+         .then(function () {
+           stockModal.hide();
+           // строка могла выйти из scope=risky (перестала быть рисковой) или наоборот —
+@@ -204,6 +272,7 @@
+     state.isAdmin = root.dataset.isAdmin === 'true';
+ 
+     bindScope();
++    bindWarehouse();
+     bindSearch();
+     bindForm();
+ 
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 0139f4c..4ccdbaa 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -34,6 +34,9 @@
+   var defaultColumnId = null;
+   var saving = false;        // защита от двойного submit шапки
+   var newEquipmentOpen = false;
++  // equipmentWarehouseId — выбранный склад приёма оборудования (warehouses DS-008); '' —
++  // первый активный склад карточки (activeWarehouses()[0]).
++  var equipmentWarehouseId = '';
+   var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
+   // upload (фаза 7) — идущая загрузка вложения {gen, name, percent} либо null; переживает
+   // renderAll (секция перерисовывается после любой row-мутации), кнопка заблокирована.
+@@ -173,6 +176,7 @@
+     card = null;
+     rowQueue = {};
+     newEquipmentOpen = false;
++    equipmentWarehouseId = '';
+     eqHistory = {};
+     headerDirty = false;
+     upload = null;
+@@ -393,6 +397,7 @@
+     var addOptions = clientEquipment.filter(function (e) { return !already[e.id]; });
+     var html = '<div>' +
+       card.equipment.map(equipmentRowHtml).join('') +
++      equipmentWarehouseHtml() +
+       equipmentAddHtml(addOptions) +
+       (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новое оборудование</button>') +
+       '</div>';
+@@ -412,6 +417,7 @@
+       '      <div class="card-eq-title"><strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') + '</div>' +
+       '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>' +
+       '    </div>' +
++      equipmentLocationHtml(eq) +
+       '    <div class="row g-2 mt-1">' +
+       '      <div class="col-6"><label class="form-label small mb-0">Комплектность</label>' +
+       '        <input class="form-control form-control-sm" data-field="completeness" data-row-key="' + key + '" data-testid="card-equipment-completeness" maxlength="1000" value="' + esc(eq.completeness) + '"></div>' +
+@@ -419,11 +425,103 @@
+       '        <input class="form-control form-control-sm" data-field="condition" data-row-key="' + key + '" data-testid="card-equipment-condition" maxlength="1000" value="' + esc(eq.condition) + '"></div>' +
+       '    </div>' +
+       (history ? '<div class="mt-1">' + history + '</div>' : '') +
++      equipmentMovementsHtml(eq) +
+       equipmentHistoryHtml(eq.equipment_id) +
+       '  </div>' +
+       '</div>';
+   }
+ 
++  // ---------- Склад оборудования заказа (warehouses DS-008) ----------
++
++  function activeWarehouses() {
++    return (card.warehouses || []).filter(function (w) { return w.is_active; });
++  }
++
++  function currentEquipmentWarehouse() {
++    var list = activeWarehouses();
++    var found = list.filter(function (w) { return w.id === equipmentWarehouseId; })[0];
++    return found ? found.id : (list[0] ? list[0].id : '');
++  }
++
++  // equipmentWarehouseHtml — склад приёма для «Добавить оборудование клиента»/«Новое
++  // оборудование» (обязателен, по умолчанию первый активный).
++  function equipmentWarehouseHtml() {
++    var cur = currentEquipmentWarehouse();
++    return '<div class="d-flex align-items-center gap-2 mb-2"><label class="form-label small mb-0 text-nowrap" for="card-equipment-warehouse">Склад приёма *</label>' +
++      '<select class="form-select form-select-sm" id="card-equipment-warehouse" data-testid="card-equipment-warehouse" style="max-width:220px">' +
++      activeWarehouses().map(function (w) {
++        return '<option value="' + esc(w.id) + '"' + (w.id === cur ? ' selected' : '') + '>' + esc(w.name) + '</option>';
++      }).join('') + '</select></div>';
++  }
++
++  // equipmentLocationHtml — бейдж «На складе: X» / «В пути: X → Y» + действия по статусу.
++  function equipmentLocationHtml(eq) {
++    var id = esc(eq.equipment_id);
++    var badge, actions;
++    if (eq.status === 'in_transit') {
++      badge = '<span class="badge text-bg-warning" data-testid="card-equipment-location">В пути: ' + esc(eq.transit_from_warehouse_name || '') + ' → ' + esc(eq.transit_to_warehouse_name || '') + '</span>';
++      actions = '<button type="button" class="btn btn-outline-success btn-sm" data-testid="card-equipment-receive" data-equipment-id="' + id + '">Принять</button>' +
++        '<button type="button" class="btn btn-outline-secondary btn-sm" data-testid="card-equipment-cancel-transit" data-equipment-id="' + id + '">Отменить отправку</button>';
++    } else {
++      badge = '<span class="badge text-bg-light border" data-testid="card-equipment-location">На складе: ' + esc(eq.warehouse_name || '') + '</span>';
++      actions = '<button type="button" class="btn btn-outline-primary btn-sm" data-testid="card-equipment-send" data-equipment-id="' + id + '">Отправить на склад…</button>';
++    }
++    return '<div class="d-flex flex-wrap align-items-center gap-2 mt-1">' + badge + actions + '</div>';
++  }
++
++  function movementText(m) {
++    var from = m.from_warehouse_name || '', to = m.to_warehouse_name || '';
++    switch (m.action) {
++      case 'received': return 'Принято на склад ' + to;
++      case 'sent': return 'Отправлено: ' + from + ' → ' + to;
++      case 'arrived': return 'Принято на складе ' + to + ' (из ' + from + ')';
++      case 'cancelled': return 'Отправка ' + from + ' → ' + to + ' отменена, возврат на ' + from;
++    }
++    return m.action;
++  }
++
++  // equipmentMovementsHtml — блок «Перемещения» (журнал task_equipment_movements).
++  function equipmentMovementsHtml(eq) {
++    var list = eq.movements || [];
++    if (!list.length) return '';
++    return '<div class="small mt-1" data-testid="card-equipment-movements"><div class="text-body-secondary">Перемещения:</div>' +
++      list.map(function (m) {
++        return '<div class="ps-2" data-testid="card-equipment-movement" data-action="' + esc(m.action) + '">' +
++          fmtDateTime(m.created_at) + ' · ' + esc(m.user_name) + ': ' + esc(movementText(m)) + '</div>';
++      }).join('') + '</div>';
++  }
++
++  // equipmentAction — POST send/receive/cancel-transit, ответ — карточка (re-fetch).
++  function equipmentAction(eqId, action, body, failText) {
++    var ticket = beginRequest();
++    return KT.api.post('/api/v1/tasks/' + taskId + '/equipment/' + encodeURIComponent(eqId) + '/' + action, body || {}).then(function (resp) {
++      if (!applyCard(resp.card, ticket)) return;
++      host.onChanged();
++    }).catch(function (err) {
++      var msg = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return f.message; }).join('; ') : ((err && err.message) || failText);
++      KT.uiAlert(msg, 'Ошибка');
++    });
++  }
++
++  function sendEquipment(eqId) {
++    var eq = card.equipment.filter(function (e) { return e.equipment_id === eqId; })[0];
++    if (!eq) return;
++    var options = activeWarehouses().filter(function (w) { return w.id !== eq.warehouse_id; })
++      .map(function (w) { return { value: w.id, text: w.name }; });
++    if (!options.length) {
++      KT.uiAlert('Нет другого активного склада для отправки', 'Нельзя');
++      return;
++    }
++    KT.uiDialog({
++      title: 'Отправить на склад',
++      text: (eq.type_name + ' ' + eq.brand + ' ' + eq.model).trim() + '\nСейчас на складе: ' + (eq.warehouse_name || ''),
++      select: options, ok: 'Отправить'
++    }).then(function (to) {
++      if (!to) return;
++      equipmentAction(eqId, 'send', { to_warehouse_id: to }, 'Не удалось отправить оборудование');
++    });
++  }
++
+   var SERVICE_STATUS = { 'new': ['Новая', 'text-bg-secondary'], in_progress: ['В работе', 'text-bg-primary'], done: ['Выполнена', 'text-bg-success'] };
+ 
+   function fmtDateTime(iso) {
+@@ -474,6 +572,7 @@
+     return '<div class="small mb-2" data-testid="card-equipment-history-order">' +
+       '<a href="/?task=' + o.task_id + '" data-testid="card-equipment-history-link">#' + o.task_id + ' ' + esc(o.title) + '</a>' +
+       ' <span class="badge" style="background-color:' + esc(o.column_color) + '">' + esc(o.column_name) + '</span>' +
++      (o.location ? ' <span class="badge text-bg-light border" data-testid="card-equipment-history-location">' + esc(o.location) + '</span>' : '') +
+       ' <span class="text-body-secondary">от ' + fmtDate(o.created_at) + '</span>' +
+       intake + (services || '<div class="text-body-secondary">Услуг по этому оборудованию не было</div>') + '</div>';
+   }
+@@ -551,6 +650,23 @@
+       btn.addEventListener('click', function () { toggleEquipmentHistory(btn.dataset.equipmentId); });
+     });
+ 
++    var whSel = $('#card-equipment-warehouse', container);
++    if (whSel) whSel.addEventListener('change', function () { equipmentWarehouseId = whSel.value; });
++    $$('[data-testid="card-equipment-send"]', container).forEach(function (btn) {
++      btn.addEventListener('click', function () { sendEquipment(btn.dataset.equipmentId); });
++    });
++    $$('[data-testid="card-equipment-receive"]', container).forEach(function (btn) {
++      btn.addEventListener('click', function () { equipmentAction(btn.dataset.equipmentId, 'receive', null, 'Не удалось принять оборудование'); });
++    });
++    $$('[data-testid="card-equipment-cancel-transit"]', container).forEach(function (btn) {
++      btn.addEventListener('click', function () {
++        var eqId = btn.dataset.equipmentId;
++        KT.uiDialog({ title: 'Отмена отправки', text: 'Отменить отправку? Оборудование вернётся на исходный склад.', ok: 'Отменить отправку', cancel: 'Назад', danger: true }).then(function (ok) {
++          if (ok) equipmentAction(eqId, 'cancel-transit', null, 'Не удалось отменить отправку');
++        });
++      });
++    });
++
+     $$('[data-testid="card-equipment-remove"]', container).forEach(function (btn) {
+       btn.addEventListener('click', function () {
+         var eqId = btn.dataset.equipmentId;
+@@ -574,7 +690,7 @@
+         var eqId = addSel.value;
+         if (!eqId) return;
+         var ticket = beginRequest();
+-        KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: eqId, completeness: '', condition: '' }).then(function (resp) {
++        KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: eqId, completeness: '', condition: '', warehouse_id: currentEquipmentWarehouse() }).then(function (resp) {
+           if (!applyCard(resp.card, ticket)) return;
+           host.onChanged();
+         }).catch(function (err) {
+@@ -620,7 +736,7 @@
+       var ticket = beginRequest();
+       KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { type_id: typeId, brand: brand, model: model, sku: '', serial: serial, specs: [], note: '' })
+         .then(function (equipment) {
+-          return KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: equipment.id, completeness: '', condition: '' });
++          return KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: equipment.id, completeness: '', condition: '', warehouse_id: currentEquipmentWarehouse() });
+         }).then(function (resp) {
+           newEquipmentOpen = false;
+           clientEquipmentCache = null; // новая единица появилась у клиента — перечитать список
+@@ -641,17 +757,18 @@
+ 
+   var SUBTASK_STATUSES = [{ v: 'new', t: 'Новая' }, { v: 'in_progress', t: 'В работе' }, { v: 'done', t: 'Выполнена' }];
+ 
+-  function stockOf(productId) {
+-    return (card.stock || []).filter(function (s) { return s.product_id === productId; })[0] || { stock: 0, min_stock: 0, task_reserved: 0 };
++  // Остаток — по паре товар × склад строки (warehouses DS-005).
++  function stockOf(productId, warehouseId) {
++    return (card.stock || []).filter(function (s) { return s.product_id === productId && s.warehouse_id === warehouseId; })[0] || { stock: 0, min_stock: 0, task_reserved: 0 };
+   }
+   // stockHint — AC-009: avail = stock + task_reserved (этого заказа), need = Σ qty ЭТОГО
+-  // товара по ВСЕМ услугам карточки (включая текущую строку — она уже часть суммы).
+-  function stockHint(productId) {
+-    var st = stockOf(productId);
++  // товара с ЭТОГО склада по ВСЕМ услугам карточки (включая текущую строку).
++  function stockHint(productId, warehouseId) {
++    var st = stockOf(productId, warehouseId);
+     var avail = num(st.stock) + num(st.task_reserved);
+     var need = 0;
+     card.subtasks.forEach(function (s) {
+-      s.products.forEach(function (p) { if (p.product_id === productId) need += num(p.qty); });
++      s.products.forEach(function (p) { if (p.product_id === productId && p.warehouse_id === warehouseId) need += num(p.qty); });
+     });
+     var rest = avail - need;
+     if (rest < 0) return 'в наличии только ' + avail;
+@@ -720,14 +837,19 @@
+         '    <div class="invalid-feedback d-block d-none small" data-testid="card-warning"></div>' +
+         '  </td>' +
+         '  <td style="max-width:100px"><input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + pkey + '" data-testid="card-product-price" value="' + (p.price == null ? '' : esc(p.price)) + '"></td>' +
+-        '  <td class="small text-body-secondary" data-testid="card-product-hint">' + esc(stockHint(p.product_id)) + '</td>' +
++        '  <td style="min-width:110px"><select class="form-select form-select-sm" data-field="warehouse_id" data-row-key="' + pkey + '" data-testid="card-product-warehouse" aria-label="Склад">' +
++             (card.warehouses || []).map(function (w) {
++               return '<option value="' + esc(w.id) + '"' + (w.id === p.warehouse_id ? ' selected' : '') + (!w.is_active && w.id !== p.warehouse_id ? ' disabled' : '') + '>' + esc(w.name) + (w.is_active ? '' : ' (архив)') + '</option>';
++             }).join('') +
++        '  </select></td>' +
++        '  <td class="small text-body-secondary" data-testid="card-product-hint">' + esc(stockHint(p.product_id, p.warehouse_id)) + '</td>' +
+         '  <td data-testid="card-subtask-product-total">' + money(p.line_total) + '</td>' +
+         '  <td><button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-product-delete" data-product-row-id="' + esc(p.id) + '">×</button></td>' +
+         '</tr>';
+     }).join('');
+     return '' +
+       '<div class="table-responsive"><table class="table table-sm align-middle mb-1">' +
+-      '  <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Остаток</th><th>Сумма</th><th></th></tr></thead>' +
++      '  <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Склад</th><th>Остаток</th><th>Сумма</th><th></th></tr></thead>' +
+       '  <tbody>' + rows + '</tbody>' +
+       '</table></div>' +
+       '<select class="form-select form-select-sm" data-testid="card-product-add" data-subtask-id="' + esc(sub.id) + '"><option value="">+ Добавить товар…</option></select>';
+@@ -868,7 +990,7 @@
+         rowWarning.classList.add('d-none');
+         enqueueRow(reqKeyProduct(prodRowId), { qty: n }, function (source) {
+           var p = currentProduct(subId, prodRowId, source) || {};
+-          return { qty: num(p.qty), price: p.price == null ? null : num(p.price) };
++          return { qty: num(p.qty), price: p.price == null ? null : num(p.price), warehouse_id: p.warehouse_id || '' };
+         }, function (body) {
+           return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
+         });
+@@ -894,7 +1016,18 @@
+         rowWarning.classList.add('d-none');
+         enqueueRow(reqKeyProduct(prodRowId), { price: value }, function (source) {
+           var p = currentProduct(subId, prodRowId, source) || {};
+-          return { qty: num(p.qty), price: p.price == null ? null : num(p.price) };
++          return { qty: num(p.qty), price: p.price == null ? null : num(p.price), warehouse_id: p.warehouse_id || '' };
++        }, function (body) {
++          return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
++        });
++      });
++
++      // Склад строки (DS-005): смена у списанной строки — сервер пересчитывает списание.
++      var whSelect = $('[data-testid="card-product-warehouse"]', rowEl);
++      whSelect.addEventListener('change', function () {
++        enqueueRow(reqKeyProduct(prodRowId), { warehouse_id: whSelect.value }, function (source) {
++          var p = currentProduct(subId, prodRowId, source) || {};
++          return { qty: num(p.qty), price: p.price == null ? null : num(p.price), warehouse_id: p.warehouse_id || '' };
+         }, function (body) {
+           return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
+         });
+diff --git a/web/ssr/_shared/js/ui-dialog.js b/web/ssr/_shared/js/ui-dialog.js
+index 88fa6db..6919b5a 100644
+--- a/web/ssr/_shared/js/ui-dialog.js
++++ b/web/ssr/_shared/js/ui-dialog.js
+@@ -2,6 +2,8 @@
+    нативные подавляются (эталон — uiDialog в prototype/index.html). Разметка и фокус —
+    Bootstrap Modal. Все функции возвращают Promise:
+      KT.uiDialog({title, text, input, ok, cancel, danger}) → true|false | строка|null
++     KT.uiDialog({title, text, select: [{value, text}], value}) → value выбранной опции|null
++       (нативный <select data-native>, не комбобокс; warehouses DS-008 — выбор склада)
+      KT.uiPrompt(title, value) → строка|null
+      KT.uiConfirm(text, ok='Удалить') → true|false
+      KT.uiAlert(text, title='Нельзя') → true
+@@ -30,7 +32,7 @@
+   }
+ 
+   function showDialog(opts) {
+-    var o = Object.assign({ text: '', input: null, ok: 'OK', cancel: 'Отмена', danger: false }, opts);
++    var o = Object.assign({ text: '', input: null, select: null, ok: 'OK', cancel: 'Отмена', danger: false }, opts);
+     return new Promise(function (resolve) {
+       var root = el('div', 'modal fade');
+       root.tabIndex = -1;
+@@ -58,6 +60,17 @@
+         inp.value = o.input;
+         inp.setAttribute('data-testid', 'ui-dialog-input');
+         body.append(inp);
++      } else if (o.select) {
++        inp = el('select', 'form-select' + (o.text ? ' mt-3' : ''));
++        inp.setAttribute('data-native', '1');
++        inp.setAttribute('data-testid', 'ui-dialog-select');
++        o.select.forEach(function (opt) {
++          var op = el('option', null, opt.text);
++          op.value = opt.value;
++          inp.append(op);
++        });
++        if (o.value != null) inp.value = o.value;
++        body.append(inp);
+       }
+ 
+       var foot = el('div', 'modal-footer');
+@@ -83,7 +96,7 @@
+       var finish = function () { result = inp ? inp.value : true; modal.hide(); };
+       ok.addEventListener('click', finish);
+       if (inp) inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); finish(); } });
+-      root.addEventListener('shown.bs.modal', function () { if (inp) { inp.focus(); inp.select(); } else ok.focus(); });
++      root.addEventListener('shown.bs.modal', function () { if (inp) { inp.focus(); if (inp.select && inp.tagName === 'INPUT') inp.select(); } else ok.focus(); });
+       root.addEventListener('hidden.bs.modal', function () { modal.dispose(); root.remove(); resolve(result); });
+       if (KT.closeCombobox) KT.closeCombobox();
+       modal.show();
+diff --git a/web/ssr/board/templates/pages/board.html b/web/ssr/board/templates/pages/board.html
+index 98605e1..e9d2fc5 100644
+--- a/web/ssr/board/templates/pages/board.html
++++ b/web/ssr/board/templates/pages/board.html
+@@ -29,6 +29,11 @@
+     <option value="soon">Горит (сегодня/завтра, просрочено)</option>
+     <option value="overdue">Только просроченные</option>
+   </select>
++  <select class="form-select form-select-sm" id="filter-warehouse" data-testid="filter-warehouse" style="max-width:200px"
++          title="Заказы, у которых оборудование на складе или едет на склад">
++    <option value="">Все склады</option>
++    {{ range .Warehouses }}<option value="{{ .ID }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++  </select>
+   <button type="button" class="btn btn-outline-secondary btn-sm" id="filter-reset" data-testid="filter-reset">Сбросить</button>
+   <span class="text-body-secondary small ms-auto" id="board-total" data-testid="board-total"></span>{{/* pagination DS-004 */}}
+ </div>
+diff --git a/web/ssr/board/templates/pages/stock.html b/web/ssr/board/templates/pages/stock.html
+index cec0ac4..b9c584f 100644
+--- a/web/ssr/board/templates/pages/stock.html
++++ b/web/ssr/board/templates/pages/stock.html
+@@ -5,7 +5,7 @@
+       <span>Товаров</span>
+       <b id="stock-kpi-total" data-testid="stock-kpi-total">0</b>
+     </div>
+-    <div class="stock-kpi">
++    <div class="stock-kpi" title="Пары товар × склад">
+       <span>На минимуме</span>
+       <b class="stock-low" id="stock-kpi-low" data-testid="stock-kpi-low">0</b>
+     </div>
+@@ -20,6 +20,9 @@
+   </div>
+ 
+   <div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="stock-filters">
++    <select class="form-select form-select-sm" id="stock-warehouse" data-testid="stock-warehouse" style="max-width:220px" aria-label="Склад">
++      <option value="">Все склады</option>
++    </select>
+     <select class="form-select form-select-sm" id="stock-scope" data-testid="stock-scope" style="max-width:220px">
+       <option value="risky">Только рисковые</option>
+       <option value="all">Все товары</option>
+@@ -31,10 +34,12 @@
+   <div class="table-responsive">
+     <table class="table table-hover align-middle" data-testid="stock-table">
+       <thead>
+-        <tr>
++        <tr id="stock-thead-row">
+           <th>Товар</th>
+           <th class="d-none d-md-table-cell">Где лежит</th>
+-          <th>В наличии</th>
++          <th data-wh-cols></th>
++          <th data-testid="stock-col-total">Итого</th>
++          <th class="d-none d-md-table-cell" data-testid="stock-col-transit" title="Товары в перемещениях между складами">В пути</th>
+           <th>Минимум</th>
+           <th class="d-none d-md-table-cell" title="Товары в заказах, которые ещё не взяты в работу">В новых заказах</th>
+           <th class="d-none d-md-table-cell">Прогноз</th>
+@@ -47,7 +52,7 @@
+   </div>
+   <p class="text-body-secondary small d-none" id="stock-shown" data-testid="stock-shown"></p>
+   <div class="empty-state d-none" id="stock-empty" data-testid="stock-empty">Все товары выше минимального остатка 👍</div>
+-  <p class="text-body-secondary small">Товары списываются со склада, когда заказ попадает в колонку с признаком «Списывать товары». «Прогноз» — остаток после списания товаров из заказов, которые ещё не взяты в работу.</p>
++  <p class="text-body-secondary small">Товары списываются со склада, когда заказ попадает в колонку с признаком «Списывать товары». «Прогноз» — остаток после списания товаров из заказов, которые ещё не взяты в работу. Остатки ведутся по складам; «Итого» — сумма по выбранным складам, «На минимуме»/«Нет в наличии» считаются по парам товар × склад.</p>
+ </div>
+ 
+ <!-- Модалка правки остатка (admin, ADR-004) -->
+@@ -60,6 +65,10 @@
+       </div>
+       <div class="modal-body">
+         <div class="alert alert-danger d-none" id="stock-error" data-testid="stock-error"></div>
++        <div class="mb-3">
++          <label class="form-label" for="stock-modal-warehouse">Склад *</label>
++          <select class="form-select" id="stock-modal-warehouse" data-testid="stock-modal-warehouse"></select>
++        </div>
+         <div class="mb-3">
+           <label class="form-label" for="stock-value">Остаток *</label>
+           <input type="number" step="any" class="form-control" id="stock-value" data-testid="stock-value" required>
+diff --git a/web/ssr/catalog/templates/pages/products-form.html b/web/ssr/catalog/templates/pages/products-form.html
+index d747a61..27a0098 100644
+--- a/web/ssr/catalog/templates/pages/products-form.html
++++ b/web/ssr/catalog/templates/pages/products-form.html
+@@ -39,30 +39,42 @@
+         {{ with index .Errors "price" }}<div class="invalid-feedback" data-testid="error-price">{{ . }}</div>{{ end }}
+       </div>
+     </div>
+-    <div class="section-title text-body-secondary small text-uppercase mb-2">Наличие и хранение</div>
+-    <div class="row g-3 mb-3">
+-      <div class="col-md-6">
+-        <label for="stock" class="form-label">Количество в наличии</label>
+-        <input id="stock" name="stock" type="number" step="0.001" class="form-control{{ if index .Errors "stock" }} is-invalid{{ end }}" value="{{ .Stock }}" data-testid="product-stock">
+-        {{ with index .Errors "stock" }}<div class="invalid-feedback" data-testid="error-stock">{{ . }}</div>{{ end }}
+-      </div>
+-      <div class="col-md-6">
+-        <label for="min_stock" class="form-label">Минимальный остаток</label>
+-        <input id="min_stock" name="min_stock" type="number" min="0" step="0.001" class="form-control{{ if index .Errors "min_stock" }} is-invalid{{ end }}" value="{{ .MinStock }}" data-testid="product-min-stock">
+-        {{ with index .Errors "min_stock" }}<div class="invalid-feedback" data-testid="error-min_stock">{{ . }}</div>{{ end }}
+-      </div>
+-    </div>
+-    <div class="row g-3 mb-4">
+-      <div class="col-md-6">
+-        <label for="box" class="form-label">Коробка</label>
+-        <input id="box" name="box" class="form-control{{ if index .Errors "box" }} is-invalid{{ end }}" value="{{ .Box }}" maxlength="100" autocomplete="off" data-testid="product-box">
+-        {{ with index .Errors "box" }}<div class="invalid-feedback" data-testid="error-box">{{ . }}</div>{{ end }}
+-      </div>
+-      <div class="col-md-6">
+-        <label for="place" class="form-label">Место хранения</label>
+-        <input id="place" name="place" class="form-control{{ if index .Errors "place" }} is-invalid{{ end }}" value="{{ .Place }}" maxlength="100" autocomplete="off" data-testid="product-place">
+-        {{ with index .Errors "place" }}<div class="invalid-feedback" data-testid="error-place">{{ . }}</div>{{ end }}
+-      </div>
++    <div class="section-title text-body-secondary small text-uppercase mb-2">Склады</div>
++    <div class="table-responsive mb-4">
++    <table class="table table-sm align-middle" data-testid="product-stocks">
++      <thead><tr><th>Склад</th><th>Остаток</th><th>Минимум</th><th>Коробка</th><th>Место</th></tr></thead>
++      <tbody>
++      {{ range $i, $s := .Stocks }}
++        {{ $eStock := index $.Errors (printf "stocks[%d].stock" $i) }}{{ $eMin := index $.Errors (printf "stocks[%d].min_stock" $i) }}{{ $eBox := index $.Errors (printf "stocks[%d].box" $i) }}{{ $ePlace := index $.Errors (printf "stocks[%d].place" $i) }}{{ $eWh := index $.Errors (printf "stocks[%d].warehouse_id" $i) }}
++        <tr data-testid="product-stock-row" data-warehouse="{{ $s.WarehouseName }}">
++          <td class="fw-semibold">
++            <input type="hidden" name="wh_id" value="{{ $s.WarehouseID }}">
++            <input type="hidden" name="wh_name" value="{{ $s.WarehouseName }}">
++            {{ $s.WarehouseName }}
++            {{ with $eWh }}<div class="text-danger small" data-testid="error-warehouse">{{ . }}</div>{{ end }}
++          </td>
++          <td style="min-width:110px">
++            <input name="wh_stock" type="number" step="0.001" class="form-control form-control-sm{{ if $eStock }} is-invalid{{ end }}" value="{{ $s.Stock }}" aria-label="Остаток {{ $s.WarehouseName }}" data-testid="product-stock">
++            {{ with $eStock }}<div class="invalid-feedback" data-testid="error-stock">{{ . }}</div>{{ end }}
++          </td>
++          <td style="min-width:110px">
++            <input name="wh_min_stock" type="number" min="0" step="0.001" class="form-control form-control-sm{{ if $eMin }} is-invalid{{ end }}" value="{{ $s.MinStock }}" aria-label="Минимум {{ $s.WarehouseName }}" data-testid="product-min-stock">
++            {{ with $eMin }}<div class="invalid-feedback" data-testid="error-min_stock">{{ . }}</div>{{ end }}
++          </td>
++          <td style="min-width:110px">
++            <input name="wh_box" class="form-control form-control-sm{{ if $eBox }} is-invalid{{ end }}" value="{{ $s.Box }}" maxlength="100" autocomplete="off" aria-label="Коробка {{ $s.WarehouseName }}" data-testid="product-box">
++            {{ with $eBox }}<div class="invalid-feedback" data-testid="error-box">{{ . }}</div>{{ end }}
++          </td>
++          <td style="min-width:130px">
++            <input name="wh_place" class="form-control form-control-sm{{ if $ePlace }} is-invalid{{ end }}" value="{{ $s.Place }}" maxlength="100" autocomplete="off" aria-label="Место {{ $s.WarehouseName }}" data-testid="product-place">
++            {{ with $ePlace }}<div class="invalid-feedback" data-testid="error-place">{{ . }}</div>{{ end }}
++          </td>
++        </tr>
++      {{ else }}
++        <tr><td colspan="5" class="text-body-secondary">Нет активных складов.</td></tr>
++      {{ end }}
++      </tbody>
++    </table>
+     </div>
+     <div class="d-flex gap-2">
+       <button type="submit" class="btn btn-primary" data-testid="product-save">Сохранить</button>
+diff --git a/web/ssr/catalog/templates/pages/products-list.html b/web/ssr/catalog/templates/pages/products-list.html
+index 3fa6d67..cfbc8eb 100644
+--- a/web/ssr/catalog/templates/pages/products-list.html
++++ b/web/ssr/catalog/templates/pages/products-list.html
+@@ -66,12 +66,14 @@
+         <td class="text-body-secondary">{{ .SKU }}</td>
+         <td class="d-none d-md-table-cell">{{ .Unit }}</td>
+         <td>{{ .Price }} ₽</td>
++        {{ $unit := .Unit }}
+         <td data-testid="product-stock">
+-          {{ if .IsDebt }}<span class="stock-out" data-testid="stock-debt">долг {{ .Stock }} {{ .Unit }}</span>
+-          {{ else if .IsLow }}<span class="stock-low" data-testid="stock-low">{{ .Stock }} {{ .Unit }} ⚠</span>
+-          {{ else }}{{ .Stock }} {{ .Unit }}{{ end }}
++          {{ if .IsDebt }}<span class="stock-out" data-testid="stock-debt">{{ .TotalStock }} {{ .Unit }} · долг</span>
++          {{ else if .IsLow }}<span class="stock-low" data-testid="stock-low">{{ .TotalStock }} {{ .Unit }} ⚠</span>
++          {{ else }}{{ .TotalStock }} {{ .Unit }}{{ end }}
++          <div class="small text-body-secondary" data-testid="product-stock-by-warehouse">{{ range $i, $s := .Stocks }}{{ if $i }} · {{ end }}<span data-testid="product-stock-wh" data-warehouse="{{ $s.WarehouseName }}"{{ if $s.IsDebt }} class="stock-out"{{ else if $s.IsLow }} class="stock-low"{{ end }}>{{ $s.WarehouseName }}: {{ $s.Stock }}</span>{{ end }}</div>
+         </td>
+-        <td class="d-none d-md-table-cell text-body-secondary small">{{ .Place }}{{ if .Box }} · коробка {{ .Box }}{{ end }}</td>
++        <td class="d-none d-md-table-cell text-body-secondary small">{{ range .Stocks }}{{ if or .Place .Box }}<div>{{ .WarehouseName }}: {{ .Place }}{{ if .Box }} · коробка {{ .Box }}{{ end }}</div>{{ end }}{{ end }}</td>
+         <td class="text-end">
+           <form method="post" action="/catalog/products/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-inline">
+             <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
+diff --git a/web/ssr/clients/templates/pages/equipment-history.html b/web/ssr/clients/templates/pages/equipment-history.html
+index 2868101..b210f48 100644
+--- a/web/ssr/clients/templates/pages/equipment-history.html
++++ b/web/ssr/clients/templates/pages/equipment-history.html
+@@ -23,6 +23,7 @@
+         <a href="/?task={{ .TaskID }}" class="fw-semibold" data-testid="history-order-link">#{{ .TaskID }} {{ .Title }}</a>
+         <span class="badge" style="background-color: {{ .ColumnColor }}">{{ .ColumnName }}</span>
+         {{ if .IsPaid }}<span class="badge text-bg-success">Оплачен</span>{{ end }}
++        {{ if .Location }}<span class="badge {{ if eq .EquipmentStatus "in_transit" }}text-bg-warning{{ else }}text-bg-light border{{ end }}" data-testid="history-order-location">{{ .Location }}</span>{{ end }}
+         <span class="text-body-secondary small ms-auto">{{ .CreatedAt.Format "02.01.2006" }}</span>
+       </div>
+       {{ if .Accepted }}
+diff --git a/web/ssr/stocktransfers/templates/pages/list.html b/web/ssr/stocktransfers/templates/pages/list.html
+new file mode 100644
+index 0000000..eacddb3
+--- /dev/null
++++ b/web/ssr/stocktransfers/templates/pages/list.html
+@@ -0,0 +1,64 @@
++{{ define "content" }}
++<div id="st" class="row g-3" data-testid="st-root">
++  <!-- Список перемещений (master) -->
++  <div class="col-lg-5">
++    <div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="st-filters">
++      <select class="form-select form-select-sm" id="st-filter-status" data-testid="st-filter-status" style="max-width:170px" aria-label="Статус">
++        <option value="">Все статусы</option>
++        <option value="requested">Заявка</option>
++        <option value="in_transit">В пути</option>
++        <option value="received">Принято</option>
++        <option value="cancelled">Отменено</option>
++      </select>
++      <select class="form-select form-select-sm" id="st-filter-warehouse" data-testid="st-filter-warehouse" style="max-width:190px" aria-label="Склад">
++        <option value="">Все склады</option>
++      </select>
++      <button type="button" class="btn btn-primary btn-sm ms-auto" id="st-new" data-testid="st-new">+ Перемещение</button>
++    </div>
++    <div class="list-group" id="st-list" data-testid="st-list"></div>
++    <div class="empty-state d-none" id="st-empty" data-testid="st-empty">Перемещений нет.</div>
++    <p class="text-body-secondary small d-none mt-2" id="st-shown" data-testid="st-shown"></p>
++  </div>
++
++  <!-- Карточка перемещения (detail) -->
++  <div class="col-lg-7">
++    <div class="card" id="st-detail" data-testid="st-detail">
++      <div class="card-body">
++        <div class="text-body-secondary" id="st-placeholder" data-testid="st-placeholder">Выберите перемещение в списке или создайте новое.</div>
++        <div class="d-none" id="st-card"></div>
++      </div>
++    </div>
++    <p class="text-body-secondary small mt-2">При отправке товары списываются со склада-источника и числятся «в пути»; при приёмке — приходуют на склад-получатель по факту, недостача фиксируется в журнале движений как потеря. Отмена отправленного перемещения возвращает товары на источник.</p>
++  </div>
++</div>
++
++<!-- Модалка приёмки по факту (DS-006) -->
++<div class="modal fade" id="st-receive-modal" tabindex="-1" aria-hidden="true" data-testid="st-receive-modal">
++  <div class="modal-dialog modal-lg">
++    <form class="modal-content" id="st-receive-form" novalidate>
++      <div class="modal-header">
++        <h2 class="modal-title fs-5">Приёмка перемещения</h2>
++        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++      </div>
++      <div class="modal-body">
++        <div class="alert alert-danger d-none" id="st-receive-error" data-testid="st-receive-error"></div>
++        <p class="text-body-secondary small">Укажите фактически полученное количество. Недостача будет списана как потеря при перемещении.</p>
++        <div class="table-responsive">
++          <table class="table align-middle mb-0">
++            <thead><tr><th>Товар</th><th>Отправлено</th><th style="width:160px">Получено *</th></tr></thead>
++            <tbody id="st-receive-tbody"></tbody>
++          </table>
++        </div>
++      </div>
++      <div class="modal-footer">
++        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
++        <button type="submit" class="btn btn-primary" id="st-receive-confirm" data-testid="st-receive-confirm">Принять</button>
++      </div>
++    </form>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/stock-transfers.js"></script>
++{{ end }}
+diff --git a/web/ssr/warehouses/templates/pages/form.html b/web/ssr/warehouses/templates/pages/form.html
+new file mode 100644
+index 0000000..a2eaedc
+--- /dev/null
++++ b/web/ssr/warehouses/templates/pages/form.html
+@@ -0,0 +1,22 @@
++{{ define "content" }}
++<form class="card mw-760" method="post" action="/warehouses/{{ .ID }}" data-testid="warehouse-form" novalidate>
++  <div class="card-body">
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
++    <div class="mb-3">
++      <label for="name" class="form-label">Название *</label>
++      <input id="name" name="name" class="form-control{{ if index .Errors "name" }} is-invalid{{ end }}" value="{{ .Name }}" maxlength="100" autocomplete="off" data-testid="warehouse-name">
++      {{ with index .Errors "name" }}<div class="invalid-feedback" data-testid="error-name">{{ . }}</div>{{ end }}
++    </div>
++    {{ if not .IsActive }}<p class="text-body-secondary small" data-testid="warehouse-archived-note">Склад в архиве.</p>{{ end }}
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-primary" data-testid="warehouse-save">Сохранить</button>
++      <a href="/warehouses" class="btn btn-outline-secondary">Отмена</a>
++      <button type="submit" form="warehouse-archive-form" class="btn btn-outline-secondary ms-auto" data-testid="warehouse-archive">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++    </div>
++  </div>
++</form>
++<form id="warehouse-archive-form" method="post" action="/warehouses/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-none" aria-hidden="true">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++</form>
++{{ end }}
+diff --git a/web/ssr/warehouses/templates/pages/list.html b/web/ssr/warehouses/templates/pages/list.html
+new file mode 100644
+index 0000000..5d5eb7b
+--- /dev/null
++++ b/web/ssr/warehouses/templates/pages/list.html
+@@ -0,0 +1,46 @@
++{{ define "content" }}
++{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="list-error">{{ .Error }}</div>{{ end }}
++<form class="d-flex flex-wrap align-items-start gap-2 mb-3" method="post" action="/warehouses" data-testid="warehouse-create-form" novalidate>
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <div style="min-width:260px">
++    <input class="form-control{{ if .NewError }} is-invalid{{ end }}" name="name" value="{{ .NewName }}" maxlength="100" placeholder="Название нового склада" aria-label="Название склада" autocomplete="off" data-testid="warehouse-new-name">
++    {{ if .NewError }}<div class="invalid-feedback" data-testid="error-name">{{ .NewError }}</div>{{ end }}
++  </div>
++  <button type="submit" class="btn btn-primary" data-testid="warehouse-add">+ Склад</button>
++</form>
++<form class="mb-3" method="get" action="/warehouses">
++  <div class="form-check">
++    <input class="form-check-input" type="checkbox" id="archived" name="archived" value="1"{{ if .Archived }} checked{{ end }} onchange="this.form.submit()" data-testid="filter-archived">
++    <label class="form-check-label" for="archived">Показать архивные</label>
++  </div>
++</form>
++{{ if .Items }}
++<div class="table-responsive">
++<table class="table table-hover align-middle" data-testid="warehouses-table">
++  <thead><tr><th>#</th><th>Название</th><th></th></tr></thead>
++  <tbody>
++  {{ range .Items }}
++    <tr data-testid="warehouse-row" data-name="{{ .Name }}">
++      <td class="text-body-secondary">{{ .Position }}</td>
++      <td>
++        <a href="/warehouses/{{ .ID }}" class="fw-semibold" data-testid="warehouse-edit-link">{{ .Name }}</a>
++        {{ if not .IsActive }}<span class="badge-off" data-testid="warehouse-archived-badge">в архиве</span>{{ end }}
++      </td>
++      <td class="text-end">
++        <form method="post" action="/warehouses/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-inline">
++          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++          {{ if $.Archived }}<input type="hidden" name="archived" value="1">{{ end }}
++          <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="warehouse-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++        </form>
++      </td>
++    </tr>
++  {{ end }}
++  </tbody>
++</table>
++</div>
++{{ else }}
++<div class="empty-state" data-testid="warehouses-empty">Складов нет.</div>
++{{ end }}
++<p class="text-body-secondary small mt-3">Остатки товаров ведутся по каждому складу. Архивный склад не предлагается в новых строках, его остатки сохраняются.</p>
++{{ end }}

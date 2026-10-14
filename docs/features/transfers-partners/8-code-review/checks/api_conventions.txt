@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature transfers-partners --repo /Users/igorpotema/mycode/kanban-tree --paths internal/features/transfers internal/features/board internal/features/clients internal/seeddemo pkg/timezone
+(exit 0)
+
+api-conventions internal/features/transfers,internal/features/board,internal/features/clients,internal/seeddemo,pkg/timezone: PASS (проблем: 0)

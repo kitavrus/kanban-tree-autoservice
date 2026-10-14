@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature phase-8-polish --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9
+(exit 0)
+
+E2E-MODE: PASS (прогонов сверено 1/1, полных 1; источник режима — самоотчёт оркестратора (cmd в улике); из конфига машинно проверен только запрет `headless: true`)

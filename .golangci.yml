@@ -1,0 +1,41 @@
+version: "2"
+run:
+  build-tags:
+    - integration
+linters:
+  enable:
+    - misspell
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -ST1000 # комментарий пакета не обязателен
+        - -ST1003 # имена — по §GO-1 проекта, не по эвристике staticcheck
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # S1016: явный маппинг модель → DTO — идиома проекта (wire-формат §API-1 не
+        # привязан к доменной модели; конверсия типа сломается при первом новом поле).
+        - -S1016
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

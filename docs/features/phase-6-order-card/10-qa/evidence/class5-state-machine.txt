@@ -1,0 +1,23 @@
+Класс 5 — state machine & lifecycle: финальная колонка блокирует создание/возврат услуги (AC-011).
+
+$ curl POST /api/v1/tasks/1862/move {"column_id": FINALCOL} (subtasks status=new, есть незавершённые)
+-> 409 {"code":"SUBTASKS_NOT_DONE","message":"Есть незавершённые услуги — в финальную колонку нельзя",
+   "details":{"subtasks":[{"id":...,"service_name":"qa-oc-service-1","status":"new"},{"id":...,"service_name":"qa-oc-service-2","status":"new"}]}}
+(регресс фазы 5, LV-150 — подтверждено)
+
+$ PUT /api/v1/subtasks/{sub1} {"status":"done",...}; PUT /api/v1/subtasks/{sub2} {"status":"done",...}
+-> 200 (обе услуги done)
+
+$ curl POST /api/v1/tasks/1862/move {"column_id": FINALCOL}
+-> 200 (все услуги done — перенос разрешён)
+
+$ curl POST /api/v1/tasks/1862/subtasks {"service_id":S1} (в финальной колонке)
+-> 409 {"code":"SUBTASK_FINAL_COLUMN","message":"Заказ в финальной колонке: нельзя добавить услугу или вернуть её из «Выполнена»"}
+
+$ curl PUT /api/v1/subtasks/{sub1} {"status":"in_progress",...} (done->in_progress в финальной колонке)
+-> 409 SUBTASK_FINAL_COLUMN
+
+$ curl PUT /api/v1/subtasks/{sub1} {"status":"done","price":350,...} (done->done, правка цены)
+-> 200, price обновлена (350.00), total пересчитан (353.50)
+
+Все сценарии LV-140/141/150 воспроизведены живьём 1:1 с design-errors.md/design-tests.md.

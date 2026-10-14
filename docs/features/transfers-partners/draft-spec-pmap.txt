@@ -1,0 +1,514 @@
+# draft-spec.md → draft-spec.html: карта пунктов p-N (генерится md2html.py, руками не править)
+# формат: p-N<TAB>секция<TAB>строка MD<TAB>текст пункта
+p-1	§1	17	Принимает оборудование клиента в ремонт документом «клиент → склад», всегда по заказу; если клиент принёс сам — создаёт 
+p-2	§1	18	Возвращает оборудование клиенту документом «склад → клиент» по заказу; «Принять» нажимает наш сотрудник, когда клиент по
+p-3	§1	19	Администратор заказывает товары у поставщика документом «поставщик → склад» и принимает по факту: меньше или больше зака
+p-4	§1	20	Исполнитель создаёт и проводит документы с клиентом и видит в списке только их (§8.1) — DS-018.
+p-5	§1	21	Ищет документы за период по дате создания (§8.1) — DS-034.
+p-6	§1	24	Четыре направления direction: client_to_warehouse, warehouse_to_client, warehouse_to_warehouse, supplier_to_warehouse; п
+p-7	§1	25	Состав строк по направлениям — DS-004:
+p-8	§1	26	client_to_warehouse: только единицы оборудования этого заказа;
+p-9	§1	27	warehouse_to_client: только единицы оборудования этого заказа (товар с ценой добавит часть 5, DS-011);
+p-10	§1	28	warehouse_to_warehouse: единицы оборудования любых клиентов + товары (как в ядре);
+p-11	§1	29	supplier_to_warehouse: только товары, без цен — DS-016.
+p-12	§1	30	Для направлений с клиентом заказ обязателен; клиент документа выводится сервером из заказа; единица строки должна входит
+p-13	§1	31	Три шага «Заявка → В пути → Получено» для всех направлений — DS-013.
+p-14	§1	32	При добавлении единицы в заказ склад больше не выбирается: единица остаётся там, где числится; на склад её приводит доку
+p-15	§1	33	Приход от поставщика: остаток растёт на факт при приёмке; при отправке движений нет; на «Остатках» в колонке «в пути» уч
+p-16	§1	34	Документ чужого направления для исполнителя — «не найдено» (404) — DS-042.
+p-17	§1	35	Время: хранение UTC; границы дня фильтра «период» — по часовому поясу пользователя (users.timezone, часть 2), сервер пер
+p-18	§1	36	Конкурентный доступ (краткий дубль §3):
+p-19	§1	37	правка и переходы документа → optimistic lock version + 409, как в ядре (DS-048 — контекст, реализуется в transfers-core
+p-20	§1	38	отправка «клиент → склад» → guard «единица у клиента» под FOR NO KEY UPDATE строки equipment (as-built, D75; не FOR UPDA
+p-21	§1	39	приход от поставщика → FOR UPDATE строк product_stock склада назначения в порядке product_id — DS-040;
+p-22	§1	40	удаление заказа при существующих документах → 409, заказ не удаляется — DS-012.
+p-23	§1	43	transfers: новые direction, task_id, client_id, supplier_id; from_warehouse_id и to_warehouse_id становятся необязательн
+p-24	§1	44	stock_movements.reason: три новых значения (§4.3).
+p-25	§1	45	API /api/v1/transfers: дельты семи endpoint'ов ядра (§6.1–§6.7); дельта карточки заказа (§6.8); прочие дельты (§6.9).
+p-26	§1	46	Пакет internal/features/transfers; читает suppliers, task_equipment, users.timezone.
+p-27	§1	49	«Перемещения» (/transfers): виден исполнителю; меню выбора направления; поля «Заказ» и «Поставщик»; фильтры «Направление
+p-28	§1	50	Карточка заказа: блок «Перемещения заказа» с кнопками «Принять от клиента» и «Вернуть клиенту»; из формы добавления един
+p-29	§1	53	Товар с ценой в документе «склад → клиент», сумма накладной, итог заказа — часть 5 transfers-sales (DS-011, DS-014, DS-0
+p-30	§1	54	«Отменить проведение», удаление документа, человеческое сообщение при удалении заказа с документами и удаление отменённы
+p-31	§1	55	Статус товара заказа «ждёт поставку» и заказ у поставщика под заказ клиента — отдельная задача после мастер-спеки; связь
+p-32	§1	56	Закупочные цены; создание товара каталога из документа — нет (DS-016).
+p-33	§1	57	Возврат товара от клиента — нет: от клиента принимается только его оборудование (DS-004).
+p-34	§2	65	Поставщики (suppliers) | часть 1 suppliers, ведёт администратор | нет | supplier_id документа «поставщик → склад»; архив
+p-35	§2	66	Заказы (tasks) | фича board | нет | task_id документов с клиентом
+p-36	§2	67	Клиенты (clients) | фича clients | нет | client_id (выводится из заказа)
+p-37	§2	68	Оборудование заказа (task_equipment) | фича board | нет | проверка «единица входит в оборудование заказа»
+p-38	§2	69	Склады (warehouses) | фича warehouses | нет | from_warehouse_id, to_warehouse_id
+p-39	§2	70	Часовой пояс (users.timezone) | часть 2 user-timezone | нет | границы дня фильтра «период»
+p-40	§3	75	Правка и переходы документа: без изменений относительно ядра — обязательный version, сверка до статуса, 409 TRANSFER_VER
+p-41	§3	76	Отправка документа с клиентом:
+p-42	§3	77	client_to_warehouse: под FOR NO KEY UPDATE (as-built, D75; не FOR UPDATE) строки equipment — единица at_client; иначе 40
+p-43	§3	78	warehouse_to_client: единица at_warehouse на складе отправления; иначе тот же 409 — DS-013
+p-44	§3	79	Создание и приём одним действием (receive: true): создание, отправка и приёмка — одна транзакция; при любой ошибке не со
+p-45	§3	80	Приход от поставщика: при приёмке Lock Order — transfers FOR UPDATE → строки product_stock склада назначения FOR UPDATE 
+p-46	§3	81	Удаление заказа с документами: проверка в транзакции удаления; есть хоть один документ заказа → 409 CONFLICT, ничего не 
+p-47	§3	82	Добавление единицы в заказ: местоположение больше не пишется — гонки с документом нет — DS-045
+p-48	§3	83	as-built (D75) — блокировки и их порядок: документ (FOR UPDATE) → заказ (FOR KEY SHARE — при создании/правке документа с
+p-49	§3	84	as-built (D84) — смена клиента заказа: пока у заказа есть хотя бы один документ в любом статусе (включая «Получено» и «О
+p-50	§3	87	как в ядре: created_by, sent_by, received_by, cancelled_by + *_at; движения — stock_movements с transfer_id
+p-51	§3	90	хранение: UTC, timestamptz
+p-52	§3	91	фильтр «период»: created_from / created_to — календарные даты в поясе пользователя; сервер вычисляет границы [начало дня
+p-53	§3	92	показ времени — по поясу пользователя (DS-031 — контекст, реализуется в user-timezone)
+p-54	§3	93	источник времени: сервер БД (now()); as-built (D76): received_at = clock_timestamp()
+p-55	§3	94	as-built (D81): единый формат показа «ДД.ММ.ГГГГ ЧЧ:ММ» на всех экранах
+p-56	§3	97	новых нет
+p-57	§3	100	как в ядре; параметры new, direction, task_id в URL позволяют после reload снова открыть форму нового документа из карто
+p-58	§3	103	slog: мутации документа (id, направление, действие, пользователь); чувствительных данных нет
+p-59	§3	106	только pkg/errorspkg: {code, message, details}; 400 → details.fields[]
+p-60	§3	109	Исполнитель открывает по прямому id документ «склад → склад» или «поставщик → склад» → 404; создаёт такой документ → 403
+p-61	§3	110	Исполнитель передаёт фильтр direction=supplier_to_warehouse → пустой список, не чужие документы — DS-018.
+p-62	§3	111	В теле передан client_id чужого клиента → игнорируется, клиент выводится из заказа — DS-012.
+p-63	§3	112	В документ заказа подставлена единица другого заказа или другого клиента → 400 not_in_task — DS-035.
+p-64	§3	113	В документ «поставщик → склад» подставлена строка-единица, в «клиент → склад» — товарная строка → 400 not_allowed — DS-0
+p-65	§3	114	created_from=2026-13-40, created_to раньше created_from → 400 — DS-034.
+p-66	§3	117	404 / 403 / 409 — стандартные статусы; ошибки только pkg/errorspkg (zap)
+p-67	§3	118	синхронная обработка (zap)
+p-68	§3	119	миграции — только make migrate-up (zap)
+p-69	§4.1	131	id | bigserial | нет | sequence | авто | PK, сквозной номер #N (без изменений) | DS-002
+p-70	§4.1	132	direction | text | нет | — | да | НОВОЕ. Направление: client_to_warehouse, warehouse_to_client, warehouse_to_warehouse, 
+p-71	§4.1	133	from_warehouse_id | uuid | да | — | условно | ИЗМЕНЕНО: было NOT NULL. FK → warehouses(id) ON DELETE RESTRICT. Обязателе
+p-72	§4.1	134	to_warehouse_id | uuid | да | — | условно | ИЗМЕНЕНО: было NOT NULL. FK → warehouses(id) ON DELETE RESTRICT. Обязателен 
+p-73	§4.1	135	task_id | bigint | да | — | условно | НОВОЕ. FK → tasks(id) ON DELETE RESTRICT. Обязателен для client_to_warehouse, ware
+p-74	§4.1	136	client_id | uuid | да | — | авто | НОВОЕ. FK → clients(id) ON DELETE RESTRICT. Сервер выводит из заказа (tasks.client_id
+p-75	§4.1	137	supplier_id | uuid | да | — | условно | НОВОЕ. FK → suppliers(id) ON DELETE RESTRICT. Обязателен для supplier_to_warehou
+p-76	§4.1	138	status | text | нет | requested | авто | requested, in_transit, received, cancelled (без изменений) | DS-013
+p-77	§4.1	139	note | text | нет | '' | нет | Примечание, 0–1000 символов (без изменений) | DS-002
+p-78	§4.1	140	created_by | uuid | нет | — | авто | FK → users(id) ON DELETE RESTRICT, из сессии (без изменений) | DS-018
+p-79	§4.1	141	sent_by | uuid | да | — | авто | FK → users(id) ON DELETE RESTRICT (без изменений) | DS-018
+p-80	§4.1	142	sent_at | timestamptz | да | — | авто | Момент отправки (без изменений) | DS-013
+p-81	§4.1	143	received_by | uuid | да | — | авто | FK → users(id) ON DELETE RESTRICT (без изменений) | DS-018
+p-82	§4.1	144	received_at | timestamptz | да | — | авто | Момент приёмки (без изменений) | DS-013
+p-83	§4.1	145	cancelled_by | uuid | да | — | авто | FK → users(id) ON DELETE RESTRICT (без изменений) | DS-018
+p-84	§4.1	146	cancelled_at | timestamptz | да | — | авто | Момент отмены (без изменений) | DS-013
+p-85	§4.1	147	created_at | timestamptz | нет | now() | авто | Используется фильтром «период» | DS-034
+p-86	§4.1	148	updated_at | timestamptz | нет | now() | авто | (без изменений) | DS-034
+p-87	§4.1	149	version | int | нет | 1 | авто | Optimistic lock (без изменений) | DS-013
+p-88	§4.1	152	PK: id
+p-89	§4.1	153	UNIQUE: нет
+p-90	§4.1	154	transfers_status_idx, transfers_from_warehouse_id_idx, transfers_to_warehouse_id_idx — без изменений
+p-91	§4.1	155	transfers_direction_idx (direction) — НОВОЕ: фильтр списка и скоуп исполнителя
+p-92	§4.1	156	transfers_task_id_idx (task_id) — НОВОЕ: блок «Перемещения заказа», проверка при удалении заказа
+p-93	§4.1	157	transfers_supplier_id_idx (supplier_id) — НОВОЕ: фильтр «поставщик»
+p-94	§4.1	158	transfers_created_at_idx (created_at) — НОВОЕ: фильтр «период»
+p-95	§4.1	159	CHECK transfers_route_check — НОВОЕ, заменяет transfers_distinct_warehouses: набор заполненных from_warehouse_id / to_wa
+p-96	§4.1	162	N→1 tasks (task_id) — RESTRICT — заказ с документами не удалить
+p-97	§4.1	163	N→1 clients (client_id) — RESTRICT
+p-98	§4.1	164	N→1 suppliers (supplier_id) — RESTRICT
+p-99	§4.1	165	остальные связи (transfer_items, stock_movements, equipment, warehouses, users) — без изменений
+p-100	§4.1	168	Создание: admin — любое направление; executor — только client_to_warehouse, warehouse_to_client — DS-018
+p-101	§4.1	169	Изменение: только в requested; direction и task_id не меняются — DS-002, DS-012
+p-102	§4.1	170	Отправка: client_to_warehouse — единицы at_client → in_transit; warehouse_to_client — единицы со склада отправления → in
+p-103	§4.1	171	Приёмка: client_to_warehouse — единицы → at_warehouse на складе назначения; warehouse_to_client — единицы → at_client, с
+p-104	§4.1	172	Отмена «в пути»: client_to_warehouse — единицы → at_client; warehouse_to_client — единицы → склад отправления; supplier_
+p-105	§4.1	173	Удаление заказа при существующих документах: запрещено (409) — DS-012
+p-106	§4.1	176	маршрут соответствует направлению → CHECK transfers_route_check + валидатор → DS-002
+p-107	§4.1	177	документ с клиентом всегда по заказу, клиент = клиент заказа → валидатор сервиса + вывод client_id сервером → DS-012
+p-108	§4.1	178	единица строки документа с клиентом входит в оборудование заказа → проверка по task_equipment (400 items[i].equipment_id
+p-109	§4.1	179	состав строк соответствует направлению → валидатор сервиса (400 items[i].kind: not_allowed) → DS-004
+p-110	§4.1	180	исполнитель не видит и не меняет документы без клиента → скоуп в запросах сервиса (404 / 403) → DS-018, DS-042
+p-111	§4.2	187	id | uuid | нет | gen_random_uuid() | авто | PK (без изменений) | DS-004
+p-112	§4.2	188	transfer_id | bigint | нет | — | авто | FK → transfers(id) ON DELETE CASCADE (без изменений) | DS-004
+p-113	§4.2	189	position | int | нет | — | авто | Порядок строки (без изменений) | DS-004
+p-114	§4.2	190	kind | text | нет | — | да | product, equipment; допустимость — по направлению документа (§1 Логика п.2) | DS-004
+p-115	§4.2	191	product_id | uuid | да | — | условно | FK → products(id) ON DELETE RESTRICT; при product (без изменений) | DS-004
+p-116	§4.2	192	equipment_id | uuid | да | — | условно | FK → equipment(id) ON DELETE RESTRICT; при equipment; для документов с клиентом
+p-117	§4.2	193	qty_sent | numeric(12,3) | да | — | условно | Количество (для прихода от поставщика — заказанное), > 0; при product (без
+p-118	§4.2	194	qty_received | numeric(12,3) | да | — | условно | ИЗМЕНЕНО (правило): факт ≥ 0; для supplier_to_warehouse может превышат
+p-119	§4.2	197	PK, оба UNIQUE, transfer_items_product_id_idx, transfer_items_equipment_id_idx, CHECK transfer_items_kind_check — без из
+p-120	§4.2	198	CHECK qty_received <= qty_sent (остался от migrations/0009_stock_transfers.up.sql:32) — УДАЛЯЕТСЯ; остаётся qty_received
+p-121	§4.2	201	факт ≤ отправленного вне прихода от поставщика → валидатор сервиса (400 exceeds_sent) → DS-015
+p-122	§4.3	208	id | uuid | нет | gen_random_uuid() | авто | PK (as-is) | DS-040
+p-123	§4.3	209	product_id | uuid | нет | — | авто | FK → products(id) ON DELETE RESTRICT (as-is) | DS-040
+p-124	§4.3	210	task_id | bigint | да | — | авто | Заказ движения списания/возврата услуги (as-is; тип — по миграции 0005_board) | DS-04
+p-125	§4.3	211	warehouse_id | uuid | нет | default_warehouse_id() | авто | FK → warehouses(id) ON DELETE RESTRICT (as-is) | DS-040
+p-126	§4.3	212	transfer_id | bigint | да | — | авто | FK → transfers(id) ON DELETE SET NULL (as-is) | DS-040
+p-127	§4.3	213	qty_delta | numeric(12,3) | нет | — | авто | Дельта остатка, ≠ 0 (as-is) | DS-040
+p-128	§4.3	214	reason | text | нет | — | авто | Причина. As-is: task_consume, task_return (board), manual (board, «Остатки»), transfer_
+p-129	§4.3	215	user_id | uuid | нет | — | авто | FK → users(id) ON DELETE RESTRICT (as-is) | DS-040
+p-130	§4.3	216	created_at | timestamptz | нет | now() | авто | (as-is) | DS-040
+p-131	§4.3	219	PK: id; stock_movements_product_id_idx, stock_movements_warehouse_id_idx, stock_movements_transfer_id_idx — as-is; CHECK
+p-132	§4.3	222	Отправка supplier_to_warehouse: движений нет (товар ещё не наш)
+p-133	§4.3	223	Приёмка supplier_to_warehouse: supplier_in +qty_received на складе назначения; при факте 0 движение не пишется
+p-134	§4.3	224	Отмена supplier_to_warehouse (заявка или «в пути»): движений нет
+p-135	§4.3	225	Документы с клиентом в этой части товарных строк не содержат — движений нет
+p-136	§4.3	226	warehouse_to_warehouse — без изменений (ядро)
+p-137	§4.3	231	transfers (эта часть) | reason = supplier_in | writer | приход от поставщика | internal/features/transfers
+p-138	§4.3	232	transfers (ядро) | reason ∈ transfer_out, transfer_in, transfer_loss, transfer_return | writer | склад → склад | interna
+p-139	§4.3	233	board (StockEngine, «Остатки») | reason ∈ task_consume, task_return, manual | writer | списание услугами, ручная коррект
+p-140	§4.3	234	seeddemo | все | writer | демо-движения | internal/seeddemo/seeddemo.go
+p-141	§4.4	237	equipment (структура — transfers-core): новые переходы местоположения at_client → in_transit → at_warehouse (приём) и at
+p-142	§4.4	238	task_equipment: читается для проверки DS-035; не меняется
+p-143	§4.4	239	suppliers: читается (is_active, name); не меняется
+p-144	§4.4	240	users: читается timezone запрашивающего для фильтра «период»; не меняется
+p-145	§5	250	— | requested | POST /api/v1/transfers | admin — любое направление; executor — client_to_warehouse, warehouse_to_client 
+p-146	§5	251	requested | in_transit | POST /api/v1/transfers/:id/send либо send: true | как создание | версия + статус; client_to_war
+p-147	§5	252	in_transit | received | POST /api/v1/transfers/:id/receive либо receive: true при создании client_to_warehouse | как соз
+p-148	§5	253	requested | cancelled | POST /api/v1/transfers/:id/cancel | как создание | версия + статус | единицы освобождаются
+p-149	§5	254	in_transit | cancelled | POST /api/v1/transfers/:id/cancel | как создание | версия + статус | единицы возвращаются в ист
+p-150	§6.1	264	Назначение: список документов.
+p-151	§6.1	265	Authz: ИЗМЕНЕНО — admin видит все документы; executor — только client_to_warehouse, warehouse_to_client (скоуп накладыва
+p-152	§6.1	266	Идемпотентность/повтор: чтение, безопасно.
+p-153	§6.1	267	Side effects: нет.
+p-154	§6.1	273	status | query | string | нет | requested, in_transit, received, cancelled; иное → 400 (без изменений)
+p-155	§6.1	274	warehouse_id | query | uuid | нет | склад отправления ИЛИ назначения; не uuid → 400 (без изменений)
+p-156	§6.1	275	direction | query | string | нет | НОВОЕ. client_to_warehouse, warehouse_to_client, warehouse_to_warehouse, supplier_to_
+p-157	§6.1	276	task_id | query | integer | нет | НОВОЕ. 1–9223372036854775807; иное → 400
+p-158	§6.1	277	supplier_id | query | uuid | нет | НОВОЕ. не uuid → 400
+p-159	§6.1	278	created_from | query | date | нет | НОВОЕ. YYYY-MM-DD; начало дня в поясе пользователя; иное → 400
+p-160	§6.1	279	created_to | query | date | нет | НОВОЕ. YYYY-MM-DD; конец дня включительно в поясе пользователя; раньше created_from → 
+p-161	§6.1	280	limit | query | integer | нет | 1–500, по умолчанию 50 (без изменений)
+p-162	§6.1	281	offset | query | integer | нет | ≥ 0, по умолчанию 0 (без изменений)
+p-163	§6.1	289	items | array | элементы списка
+p-164	§6.1	290	items[].id | integer | номер документа
+p-165	§6.1	291	items[].direction | string | НОВОЕ: направление
+p-166	§6.1	292	items[].status | string | статус
+p-167	§6.1	293	items[].from_warehouse_id | uuid | null | ИЗМЕНЕНО: может быть null
+p-168	§6.1	294	items[].from_warehouse_name | string | null | ИЗМЕНЕНО: может быть null
+p-169	§6.1	295	items[].to_warehouse_id | uuid | null | ИЗМЕНЕНО: может быть null
+p-170	§6.1	296	items[].to_warehouse_name | string | null | ИЗМЕНЕНО: может быть null
+p-171	§6.1	297	items[].task_id | integer | null | НОВОЕ: заказ
+p-172	§6.1	298	items[].client_id | uuid | null | НОВОЕ: клиент
+p-173	§6.1	299	items[].client_name | string | null | НОВОЕ: название клиента
+p-174	§6.1	300	items[].supplier_id | uuid | null | НОВОЕ: поставщик
+p-175	§6.1	301	items[].supplier_name | string | null | НОВОЕ: название поставщика
+p-176	§6.1	302	items[].note | string | примечание
+p-177	§6.1	303	items[].items_count | integer | число строк
+p-178	§6.1	304	items[].created_by_name | string | автор
+p-179	§6.1	305	items[].created_at | datetime (UTC, RFC 3339) | создан
+p-180	§6.1	306	items[].updated_at | datetime (UTC, RFC 3339) | изменён
+p-181	§6.1	307	items[].version | integer | версия
+p-182	§6.1	308	total | integer | всего под фильтрами
+p-183	§6.1	309	limit | integer | применённый лимит
+p-184	§6.1	310	offset | integer | применённое смещение
+p-185	§6.1	316	400 VALIDATION | status: invalid | «Некорректный статус»
+p-186	§6.1	317	400 VALIDATION | direction: invalid | «Некорректное направление»
+p-187	§6.1	318	400 VALIDATION | warehouse_id: invalid, supplier_id: invalid, task_id: invalid | «Некорректное значение фильтра»
+p-188	§6.1	319	400 VALIDATION | created_from: invalid, created_to: invalid, created_to: before_from | «Некорректный период»
+p-189	§6.1	320	401 UNAUTHORIZED | нет сессии | переход на вход
+p-190	§6.2	354	Назначение: создать документ любого из четырёх направлений; опционально сразу отправить и (для приёма от клиента) принят
+p-191	§6.2	355	Authz: ИЗМЕНЕНО — admin — любое direction; executor — только client_to_warehouse, warehouse_to_client, иначе 403 — DS-01
+p-192	§6.2	356	Спец-механика: send: true — создать и отправить; НОВОЕ receive: true — создать, отправить и принять одной транзакцией, т
+p-193	§6.2	357	Идемпотентность/повтор: как в ядре; повтор документа с единицами → 409 EQUIPMENT_IN_TRANSFER.
+p-194	§6.2	358	Side effects: одна транзакция — transfers, transfer_items, equipment.active_transfer_id; при send / receive — эффекты §6
+p-195	§6.2	364	direction | body | string | да | НОВОЕ. client_to_warehouse, warehouse_to_client, warehouse_to_warehouse, supplier_to_wa
+p-196	§6.2	365	from_warehouse_id | body | uuid | условно | ИЗМЕНЕНО. Обязателен для warehouse_to_client, warehouse_to_warehouse; активн
+p-197	§6.2	366	to_warehouse_id | body | uuid | условно | ИЗМЕНЕНО. Обязателен для client_to_warehouse, warehouse_to_warehouse, supplier
+p-198	§6.2	367	task_id | body | integer | условно | НОВОЕ. Обязателен для client_to_warehouse, warehouse_to_client; существующий заказ 
+p-199	§6.2	368	supplier_id | body | uuid | условно | НОВОЕ. Обязателен для supplier_to_warehouse; существующий активный поставщик (нет 
+p-200	§6.2	369	note | body | string | нет | 0–1000 символов (без изменений)
+p-201	§6.2	370	items | body | array | да | 1–200 строк (без изменений)
+p-202	§6.2	371	items[].kind | body | string | да | product, equipment; ИЗМЕНЕНО: недопустимый для направления → 400 not_allowed (товар 
+p-203	§6.2	372	items[].product_id | body | uuid | условно | при product; активный товар; дубль → 400 duplicate (без изменений)
+p-204	§6.2	373	items[].equipment_id | body | uuid | условно | при equipment; дубль → 400 duplicate; НОВОЕ: для документов с клиентом — 
+p-205	§6.2	374	items[].qty_sent | body | decimal | условно | при product; > 0, до 3 знаков, ≤ 999999999.999 (без изменений)
+p-206	§6.2	375	send | body | boolean | нет | по умолчанию false (без изменений)
+p-207	§6.2	376	receive | body | boolean | нет | НОВОЕ. По умолчанию false; true допустим только для client_to_warehouse → иначе 400 not
+p-208	§6.2	384	direction | string | НОВОЕ: направление
+p-209	§6.2	385	from_warehouse_id | uuid | null | ИЗМЕНЕНО: может быть null
+p-210	§6.2	386	from_warehouse_name | string | null | ИЗМЕНЕНО: может быть null
+p-211	§6.2	387	to_warehouse_id | uuid | null | ИЗМЕНЕНО: может быть null
+p-212	§6.2	388	to_warehouse_name | string | null | ИЗМЕНЕНО: может быть null
+p-213	§6.2	389	task_id | integer | null | НОВОЕ: заказ
+p-214	§6.2	390	task_title | string | null | НОВОЕ: название заказа
+p-215	§6.2	391	client_id | uuid | null | НОВОЕ: клиент
+p-216	§6.2	392	client_name | string | null | НОВОЕ: название клиента
+p-217	§6.2	393	supplier_id | uuid | null | НОВОЕ: поставщик
+p-218	§6.2	394	supplier_name | string | null | НОВОЕ: название поставщика
+p-219	§6.2	400	400 VALIDATION | direction: required / invalid | «Укажите направление»
+p-220	§6.2	401	400 VALIDATION | from_warehouse_id / to_warehouse_id: required, invalid, not_found, archived | «Проверьте склад»
+p-221	§6.2	402	400 VALIDATION | from_warehouse_id / to_warehouse_id: not_allowed | «Этот склад не указывается для выбранного направлени
+p-222	§6.2	403	400 VALIDATION | task_id: required, not_found | «Укажите заказ»
+p-223	§6.2	404	400 VALIDATION | task_id: not_allowed | «Заказ указывается только для документов с клиентом»
+p-224	§6.2	405	400 VALIDATION | supplier_id: required, not_found | «Укажите поставщика»
+p-225	§6.2	406	400 VALIDATION | supplier_id: archived | «Поставщик в архиве»
+p-226	§6.2	407	400 VALIDATION | supplier_id: not_allowed | «Поставщик указывается только для прихода от поставщика»
+p-227	§6.2	408	400 VALIDATION | items[i].kind: not_allowed | «Этот тип строки недопустим для направления»
+p-228	§6.2	409	400 VALIDATION | items[i].equipment_id: not_in_task | «Оборудование не из этого заказа»
+p-229	§6.2	410	400 VALIDATION | receive: not_allowed | «Принять сразу можно только приём от клиента»
+p-230	§6.2	411	403 FORBIDDEN | executor создаёт warehouse_to_warehouse / supplier_to_warehouse | «Нет доступа»
+p-231	§6.2	412	409 EQUIPMENT_IN_TRANSFER | единица уже в незавершённом документе | «Оборудование уже в перемещении #N»
+p-232	§6.2	413	409 TRANSFER_EQUIPMENT_NOT_AT_SOURCE | при send / receive, client_to_warehouse: единица не «у клиента» | «Оборудование у
+p-233	§6.2	414	409 TRANSFER_EQUIPMENT_NOT_AT_SOURCE | при send, warehouse_to_client: единица не на складе отправления | «Оборудование н
+p-234	§6.3	459	Назначение: один документ со строками.
+p-235	§6.3	460	Authz: ИЗМЕНЕНО — admin — любой; executor — только client_to_warehouse, warehouse_to_client; документ другого направлени
+p-236	§6.3	461	Идемпотентность/повтор: чтение, безопасно.
+p-237	§6.3	462	Side effects: нет.
+p-238	§6.3	468	id | path | integer | да | 1–9223372036854775807; не число → 404 (без изменений)
+p-239	§6.3	476	404 TRANSFER_NOT_FOUND | нет документа / id не число | «Перемещение не найдено»
+p-240	§6.3	477	404 TRANSFER_NOT_FOUND | executor запрашивает warehouse_to_warehouse / supplier_to_warehouse | «Перемещение не найдено»
+p-241	§6.4	499	Назначение: изменить заявку.
+p-242	§6.4	500	Authz: ИЗМЕНЕНО — как создание (§6.2); чужое направление для executor → 404.
+p-243	§6.4	501	Идемпотентность/повтор: без изменений (повтор с той же версией → 409).
+p-244	§6.4	502	Side effects: без изменений (шапка, полная замена строк, занятие/освобождение единиц).
+p-245	§6.4	508	id | path | integer | да | существующий документ (без изменений)
+p-246	§6.4	509	version | body | integer | да | ≥ 1 (без изменений)
+p-247	§6.4	510	from_warehouse_id | body | uuid | условно | ИЗМЕНЕНО: правила §6.2 для направления документа
+p-248	§6.4	511	to_warehouse_id | body | uuid | условно | ИЗМЕНЕНО: правила §6.2 для направления документа
+p-249	§6.4	512	supplier_id | body | uuid | условно | НОВОЕ. Обязателен для supplier_to_warehouse; активный либо уже стоящий в документе
+p-250	§6.4	513	note | body | string | нет | 0–1000 символов (без изменений)
+p-251	§6.4	514	items | body | array | да | 1–200 строк (без изменений)
+p-252	§6.4	515	items[].kind | body | string | да | ИЗМЕНЕНО: допустимость по направлению документа (§6.2)
+p-253	§6.4	516	items[].product_id | body | uuid | условно | при product (без изменений)
+p-254	§6.4	517	items[].equipment_id | body | uuid | условно | при equipment; НОВОЕ: для документов с клиентом — из оборудования заказа
+p-255	§6.4	518	items[].qty_sent | body | decimal | условно | при product (без изменений)
+p-256	§6.4	528	400 VALIDATION | direction: not_allowed, task_id: not_allowed | «Направление и заказ изменить нельзя»
+p-257	§6.4	529	400 VALIDATION | supplier_id: required, not_found, archived, not_allowed | по полю, тексты §6.2
+p-258	§6.4	530	400 VALIDATION | items[i].kind: not_allowed | «Этот тип строки недопустим для направления»
+p-259	§6.4	531	400 VALIDATION | items[i].equipment_id: not_in_task | «Оборудование не из этого заказа»
+p-260	§6.4	532	404 TRANSFER_NOT_FOUND | чужое направление для executor | «Перемещение не найдено»
+p-261	§6.5	555	Назначение: отправить заявку.
+p-262	§6.5	556	Authz: ИЗМЕНЕНО — как создание (§6.2); чужое направление для executor → 404.
+p-263	§6.5	557	Идемпотентность/повтор: без изменений (повтор → 409).
+p-264	§6.5	558	Side effects: ИЗМЕНЕНО по направлениям — client_to_warehouse: единицы at_client → in_transit; warehouse_to_client: едини
+p-265	§6.5	564	id | path | integer | да | существующий документ (без изменений)
+p-266	§6.5	565	version | body | integer | да | ≥ 1 (без изменений)
+p-267	§6.5	573	404 TRANSFER_NOT_FOUND | чужое направление для executor | «Перемещение не найдено»
+p-268	§6.5	574	409 TRANSFER_EQUIPMENT_NOT_AT_SOURCE | client_to_warehouse: единица не «у клиента» (details.equipment_id) | «Оборудовани
+p-269	§6.5	575	409 TRANSFER_EQUIPMENT_NOT_AT_SOURCE | warehouse_to_client: единица не на складе отправления | «Оборудование находится н
+p-270	§6.6	598	Назначение: принять документ.
+p-271	§6.6	599	Authz: ИЗМЕНЕНО — как создание (§6.2); чужое направление для executor → 404.
+p-272	§6.6	600	Спец-механика: НОВОЕ — для supplier_to_warehouse факт может быть больше заказанного (DS-015); для документов с клиентом 
+p-273	§6.6	601	Идемпотентность/повтор: без изменений (повтор → 409; остаток дважды не растёт).
+p-274	§6.6	602	Side effects: ИЗМЕНЕНО по направлениям — client_to_warehouse: единицы → at_warehouse на складе назначения; warehouse_to_
+p-275	§6.6	608	id | path | integer | да | существующий документ (без изменений)
+p-276	§6.6	609	version | body | integer | да | ≥ 1 (без изменений)
+p-277	§6.6	610	items | body | array | нет | факт по товарным строкам; строка без записи — факт = qty_sent; ИЗМЕНЕНО: для client_to_ware
+p-278	§6.6	611	items[].id | body | uuid | да | id товарной строки документа (без изменений)
+p-279	§6.6	612	items[].qty_received | body | decimal | да | ≥ 0, до 3 знаков; ИЗМЕНЕНО: для warehouse_to_warehouse ≤ qty_sent (иначе 40
+p-280	§6.6	620	400 VALIDATION | items: not_allowed | «Для этого направления факт не вводится»
+p-281	§6.6	621	400 VALIDATION | items[i].qty_received: exceeds_sent (только warehouse_to_warehouse) | «Факт больше отправленного»
+p-282	§6.6	622	404 TRANSFER_NOT_FOUND | чужое направление для executor | «Перемещение не найдено»
+p-283	§6.7	645	Назначение: отменить заявку или документ «в пути».
+p-284	§6.7	646	Authz: ИЗМЕНЕНО — как создание (§6.2); чужое направление для executor → 404.
+p-285	§6.7	647	Идемпотентность/повтор: без изменений (повтор → 409).
+p-286	§6.7	648	Side effects: ИЗМЕНЕНО по направлениям, из «В пути» — client_to_warehouse: единицы → at_client; warehouse_to_client: еди
+p-287	§6.7	654	id | path | integer | да | существующий документ (без изменений)
+p-288	§6.7	655	version | body | integer | да | ≥ 1 (без изменений)
+p-289	§6.7	663	404 TRANSFER_NOT_FOUND | чужое направление для executor | «Перемещение не найдено»
+p-290	§6.8	685	Назначение: карточка заказа; дельта — документы заказа.
+p-291	§6.8	686	Authz: без изменений — любой авторизованный.
+p-292	§6.8	687	Идемпотентность/повтор: чтение, безопасно.
+p-293	§6.8	688	Side effects: нет.
+p-294	§6.8	694	id | path | integer | да | существующий заказ; иначе 404
+p-295	§6.8	700	transfers | array | НОВОЕ: документы заказа, новые сверху (всегда массив)
+p-296	§6.8	701	transfers[].id | integer | номер документа
+p-297	§6.8	702	transfers[].direction | string | client_to_warehouse | warehouse_to_client
+p-298	§6.8	703	transfers[].status | string | статус
+p-299	§6.8	704	transfers[].warehouse_name | string | склад назначения (приём) либо отправления (возврат)
+p-300	§6.8	705	transfers[].items_count | integer | число строк
+p-301	§6.8	706	transfers[].created_at | datetime | создан
+p-302	§6.8	707	equipment[].transit_to_name | string | null | ИЗМЕНЕНО: название склада назначения либо «клиент»
+p-303	§6.8	708	equipment[].active_transfer_direction | string | null | as-built: направление незавершённого документа единицы (null — д
+p-304	§6.8	709	transfers[].amount | number | as-built (часть 5): сумма документа
+p-305	§6.8	715	404 TASK_NOT_FOUND | нет заказа | «Заказ не найден»
+p-306	§6.9	745	POST /api/v1/tasks/:id/equipment | параметр warehouse_id удаляется (передан — игнорируется); местоположение единицы не м
+p-307	§6.9	746	DELETE /api/v1/tasks/:id | запрет, пока у заказа есть хоть один документ (в любом статусе); временное общее сообщение — 
+p-308	§6.9	747	PUT /api/v1/tasks/:id | as-built (D84): смена client_id запрещена, пока у заказа есть документ в любом статусе (details.
+p-309	§6.9	748	GET /api/v1/stock («Остатки») | «в пути» = qty_sent товарных строк документов in_transit направлений warehouse_to_wareho
+p-310	§6.9	749	GET /api/v1/tasks | фильтр warehouse_id: единица «в пути» учитывается для склада назначения документа; единица в пути к 
+p-311	§6.9	750	SSR /transfers и пункт меню «Перемещения» | доступны исполнителю (снять AdminOnly) | — | DS-018
+p-312	§7	766	GET /api/v1/transfers | §8.1
+p-313	§7	767	POST /api/v1/transfers | §8.1, §8.2
+p-314	§7	768	GET /api/v1/transfers/:id | §8.1, §8.2
+p-315	§7	769	PUT /api/v1/transfers/:id | §8.1
+p-316	§7	770	POST /api/v1/transfers/:id/send | §8.1
+p-317	§7	771	POST /api/v1/transfers/:id/receive | §8.1
+p-318	§7	772	POST /api/v1/transfers/:id/cancel | §8.1
+p-319	§7	773	GET /api/v1/tasks/:id/card | §8.2; §8.1 (поле «Заказ» и список оборудования заказа)
+p-320	§7	774	GET /api/v1/suppliers (часть 1) | §8.1 (select «Поставщик», только admin)
+p-321	§8	779	Работа → Перемещения (/transfers) → список + документ → модалки «Приёмка», «Отмена» — §8.1
+p-322	§8	780	Доска → Карточка заказа → блок «Перемещения заказа» — §8.2
+p-323	§8.1	785	Маршрут: /transfers, /transfers?id=N, НОВОЕ /transfers?new=1&direction=…&task_id=… (новый документ из карточки заказа)
+p-324	§8.1	788	Путь: меню «Работа → Перемещения» (ИЗМЕНЕНО: пункт виден исполнителю); ссылка «#N» и кнопки «Принять от клиента» / «Верн
+p-325	§8.1	789	URL: /transfers, параметры id, new, direction, task_id
+p-326	§8.1	790	Роли: admin, executor · Устройство: десктоп; телефон — без горизонтальной прокрутки
+p-327	§8.1	791	При открытии: GET §6.1 → /api/v1/transfers?limit=50&offset=0; при ?id=N — GET §6.3 → /api/v1/transfers/N; при ?new=1&tas
+p-328	§8.1	792	200: список и документ либо форма нового документа · Пусто: «Перемещений нет» · 4xx: 404 по ?id — тост «Перемещение не н
+p-329	§8.1	795	Кнопка «Новое перемещение» открывает меню выбора направления: admin — «Приём от клиента», «Возврат клиенту», «Склад → ск
+p-330	§8.1	796	Панель фильтров; комбинация — «И»; «Сбросить» справа:
+p-331	§8.1	800	Статус | select | enum §5 (без изменений) | status | in_transit
+p-332	§8.1	801	Склад | select | SSR-список складов (без изменений) | warehouse_id | uuid
+p-333	§8.1	802	Направление | select | enum direction; executor видит два значения | direction | warehouse_to_client
+p-334	§8.1	803	Поставщик | select (только admin) | GET /api/v1/suppliers?limit=500 — все, архивные с пометкой | supplier_id | uuid
+p-335	§8.1	804	Заказ | текстовый инпут, номер | ввод | task_id | 37
+p-336	§8.1	805	Период с | date | ввод | created_from | 2026-10-01
+p-337	§8.1	806	Период по | date | ввод | created_to | 2026-10-07
+p-338	§8.1	807	Строка списка: добавлен бейдж направления; маршрут — «Клиент → Алматы», «Алматы → Клиент», «Алматы → Москва», «Поставщик
+p-339	§8.1	808	Шапка документа — поля по направлению, сверху вниз:
+p-340	§8.1	809	Направление (direction) — текст, только чтение.
+p-341	§8.1	810	Заказ (task_id) — только документы с клиентом: поле номера; под ним название заказа и клиент; после создания — только чт
+p-342	§8.1	811	Поставщик (supplier_id) — только «приход от поставщика»: select активных поставщиков.
+p-343	§8.1	812	Склад отправления (from_warehouse_id) — «возврат клиенту», «склад → склад».
+p-344	§8.1	813	Склад назначения (to_warehouse_id) — «приём от клиента», «склад → склад», «приход от поставщика».
+p-345	§8.1	814	Примечание (note).
+p-346	§8.1	815	Под таблицей строк: «+ Товар» — только «склад → склад» и «приход от поставщика»; «+ Оборудование» — для документов с кли
+p-347	§8.1	816	Кнопки действий: для «приёма от клиента» в «Заявке» добавлена «Принять сразу» (основная, рядом с «Отправить»).
+p-348	§8.1	817	Колонка «Кол-во» в «приходе от поставщика» подписана «Заказано».
+p-349	§8.1	820	Смена фильтра
+p-350	§8.1	821	Элемент: select / date / текстовый инпут в панели фильтров
+p-351	§8.1	822	UI: debounce 300 мс для номера заказа; список затеняется
+p-352	§8.1	823	Вызов: GET §6.1 → /api/v1/transfers?status=…&warehouse_id=…&direction=…&supplier_id=…&task_id=…&created_from=…&created_t
+p-353	§8.1	824	200: { items, total, limit, offset } → список перерисован
+p-354	§8.1	825	400 (период): красный текст под полями периода — «Некорректный период»
+p-355	§8.1	826	400 (остальные фильтры): тост «Некорректное значение фильтра»
+p-356	§8.1	827	Ввод номера заказа (новый документ с клиентом)
+p-357	§8.1	828	Элемент: текстовый инпут «Заказ» в шапке
+p-358	§8.1	829	UI: debounce 300 мс; до ответа «+ Оборудование» недоступна
+p-359	§8.1	830	Вызов: GET §6.8 → /api/v1/tasks/37/card
+p-360	§8.1	831	200: { task, equipment, transfers } → под полем название заказа и клиент; «+ Оборудование» показывает единицы заказа
+p-361	§8.1	832	404: под полем — «Заказ не найден»
+p-362	§8.1	833	Выбор поставщика
+p-363	§8.1	834	Элемент: select «Поставщик» в шапке (только admin)
+p-364	§8.1	835	UI: список загружается при открытии формы
+p-365	§8.1	836	Вызов: GET → /api/v1/suppliers?is_active=true&limit=500 (часть 1)
+p-366	§8.1	837	200: { items, total, limit, offset } → опции select
+p-367	§8.1	838	403: не возникает — executor этого направления не создаёт
+p-368	§8.1	839	«Сохранить» / «Отправить»
+p-369	§8.1	840	Элемент: кнопки внизу справа (как в ядре)
+p-370	§8.1	841	UI: кнопки заблокированы
+p-371	§8.1	842	Вызов: POST §6.2 → /api/v1/transfers, body: { direction, from_warehouse_id, to_warehouse_id, task_id, supplier_id, note,
+p-372	§8.1	843	200/201: { id, direction, status, version, … } → тост «Сохранено» либо бейдж «В пути»
+p-373	§8.1	844	400 (task_id): под полем «Заказ» — «Укажите заказ»
+p-374	§8.1	845	400 (supplier_id: required / not_found): под select — «Укажите поставщика»
+p-375	§8.1	846	400 (supplier_id: archived): под select — «Поставщик в архиве»
+p-376	§8.1	847	400 (items[i].kind: not_allowed): в строке — «Этот тип строки недопустим для направления»
+p-377	§8.1	848	400 (items[i].equipment_id: not_in_task): в строке — «Оборудование не из этого заказа»
+p-378	§8.1	849	403: тост «Нет доступа»
+p-379	§8.1	850	409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE, приём): в строке единицы — «Оборудование уже не у клиента»
+p-380	§8.1	851	409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE, возврат): в строке единицы — «Оборудование находится не на складе отправления»
+p-381	§8.1	852	409 (версия, статус, EQUIPMENT_IN_TRANSFER): как в ядре
+p-382	§8.1	853	«Принять сразу» (приём от клиента)
+p-383	§8.1	854	Элемент: кнопка основная, внизу справа, только новая заявка «приём от клиента»
+p-384	§8.1	855	UI: кнопки заблокированы
+p-385	§8.1	856	Вызов: POST §6.2 → /api/v1/transfers, body: { direction: "client_to_warehouse", to_warehouse_id, task_id, note, items, r
+p-386	§8.1	857	201: { id, status: "received" } → документ «Получено»; в карточке заказа единицы «на складе …»
+p-387	§8.1	858	400 (поля): как у «Сохранить»
+p-388	§8.1	859	409 (EQUIPMENT_IN_TRANSFER): в строке единицы — «уже в перемещении #N»
+p-389	§8.1	860	409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE): в строке единицы — «Оборудование уже не у клиента»
+p-390	§8.1	861	«Принять»
+p-391	§8.1	862	Элемент: кнопка основная; «приход от поставщика» и «склад → склад» — модалка «Приёмка» с полем «Факт» по товарным строка
+p-392	§8.1	863	UI: кнопка модалки заблокирована
+p-393	§8.1	864	Вызов: POST §6.6 → /api/v1/transfers/N/receive, body: { version, items: [{ id, qty_received }] } (для документов с клиен
+p-394	§8.1	865	200: { status: "received", items, … } → бейдж «Получено»; в «приходе от поставщика» строка «заказано 10 / получено 12», 
+p-395	§8.1	866	400 (exceeds_sent, только склад → склад): под полем «Факт» — «Факт больше отправленного»
+p-396	§8.1	867	400 (negative / invalid): под полем «Факт» — «Факт не может быть отрицательным»
+p-397	§8.1	868	409 (версия, статус, STOCK_OVERFLOW): как в ядре
+p-398	§8.2	873	Маршрут: карточка заказа на доске (существующая), дельта
+p-399	§8.2	876	Путь: доска → клик по заказу
+p-400	§8.2	877	URL: существующий URL карточки заказа
+p-401	§8.2	878	Роли: admin, executor · Устройство: десктоп; телефон — без горизонтальной прокрутки
+p-402	§8.2	879	При открытии: GET §6.8 → /api/v1/tasks/37/card
+p-403	§8.2	880	200: карточка с блоком «Перемещения заказа» · Пусто: в блоке — «Перемещений нет» · 4xx: 404 — «Заказ не найден»
+p-404	§8.2	883	Блок «Оборудование»:
+p-405	§8.2	884	Из формы добавления единицы убран select «Склад приёма» и подпись под ним (DS-045).
+p-406	§8.2	885	Бейдж местоположения получает значение «в пути → клиент».
+p-407	§8.2	886	«перемещение #N» — теперь ссылка и для исполнителя.
+p-408	§8.2	887	НОВЫЙ блок «Перемещения заказа» (под «Оборудованием»):
+p-409	§8.2	888	Кнопки справа в заголовке блока: «Принять от клиента» (основная), «Вернуть клиенту» (второстепенная).
+p-410	§8.2	889	Список документов: «#N» (ссылка), направление, склад, бейдж статуса, число строк, дата.
+p-411	§8.2	892	«Принять от клиента»
+p-412	§8.2	893	Элемент: кнопка основная, в заголовке блока «Перемещения заказа»
+p-413	§8.2	894	UI: переход на /transfers?new=1&direction=client_to_warehouse&task_id=37; в форме предвыбраны единицы заказа со статусом
+p-414	§8.2	895	Вызов: на экране §8.1 — POST §6.2 → /api/v1/transfers, body: { direction: "client_to_warehouse", to_warehouse_id, task_i
+p-415	§8.2	896	201: { id, status: "received" } → в карточке единицы «на складе …», документ в блоке
+p-416	§8.2	897	409 (EQUIPMENT_IN_TRANSFER): в форме, в строке единицы — «уже в перемещении #N»
+p-417	§8.2	898	409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE): в строке единицы — «Оборудование уже не у клиента»
+p-418	§8.2	899	«Вернуть клиенту»
+p-419	§8.2	900	Элемент: кнопка второстепенная, в заголовке блока
+p-420	§8.2	901	UI: переход на /transfers?new=1&direction=warehouse_to_client&task_id=37; предвыбраны единицы заказа, числящиеся на скла
+p-421	§8.2	902	Вызов: на экране §8.1 — POST §6.2 → /api/v1/transfers, body: { direction: "warehouse_to_client", from_warehouse_id, task
+p-422	§8.2	903	201: { id, status: "in_transit" } → в карточке единицы «в пути → клиент»
+p-423	§8.2	904	409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE): в строке единицы — «Оборудование находится не на складе отправления»
+p-424	§8.2	905	Ссылка «#N»
+p-425	§8.2	906	Элемент: ссылка в строке документа и у единицы
+p-426	§8.2	907	UI: переход на /transfers?id=N
+p-427	§8.2	908	Вызов: GET §6.3 → /api/v1/transfers/N
+p-428	§8.2	909	200: документ открыт на экране §8.1
+p-429	§8.2	910	404: тост «Перемещение не найдено» (в т.ч. исполнитель открыл документ «склад → склад»)
+p-430	§8.2	911	Удаление заказа (admin)
+p-431	§8.2	912	Элемент: существующая кнопка карточки
+p-432	§8.2	913	UI: без изменений
+p-433	§8.2	914	Вызов: DELETE → /api/v1/tasks/37 (§6.9)
+p-434	§8.2	915	200: без изменений
+p-435	§8.2	916	409 (CONFLICT): тост «У заказа есть перемещения — удалить нельзя»
+p-436	§8.2	917	as-built: отказ удаления показывается в шапке карточки заказа (#task-error), не тостом; с части 6 — код TASK_HAS_TRANSFE
+p-437	§8.2	918	Смена клиента заказа (as-built, D84)
+p-438	§8.2	919	Элемент: существующий выбор клиента в карточке
+p-439	§8.2	920	Вызов: PUT → /api/v1/tasks/37 (§6.9)
+p-440	§8.2	921	409 (TASK_CLIENT_LOCKED_BY_TRANSFERS): ошибка в шапке карточки со ссылками на документы, выбранный клиент возвращается к
+p-441	§9	928	DS-002 | Контрагент — точка маршрута; направления: клиент → склад, склад → клиент, склад → склад, поставщик → склад | ма
+p-442	§9	929	DS-004 | Состав строк по направлениям: от клиента — только присланное клиентом; клиенту — его оборудование (+ товар — в 
+p-443	§9	930	DS-012 | Для направлений с клиентом заказ обязателен; клиент документа выводится сервером из заказа; заказ с документами
+p-444	§9	931	DS-013 | Три шага «Заявка → В пути → Получено» для всех направлений; «Принять» у «склад → клиент» нажимает наш сотрудник
+p-445	§9	932	DS-015 | Приход от поставщика: приёмка по факту; недопоставка закрывает документ, довоз — новым документом; факт больше 
+p-446	§9	933	DS-016 | В документе от поставщика цен нет; товары только из каталога | мастер, батч 3 | closed
+p-447	§9	934	DS-018 | Исполнитель создаёт и проводит документы с клиентом и видит в списке только их; «склад → склад», «поставщик → с
+p-448	§9	935	DS-024 | «Ждёт поставку» — отдельная задача; связь прихода от поставщика со строками товаров заказа не закладывается | м
+p-449	§9	936	DS-034 | В списке перемещений фильтр «период» (дата создания, с — по); границы дня — по поясу пользователя, в SQL — в UT
+p-450	§9	937	DS-035 | Единица в документе с клиентом должна входить в оборудование заказа документа | мастер, inferred | closed
+p-451	§9	938	DS-040 | Новые причины движений остатка: supplier_in (пишется здесь), client_out (часть 5), transfer_unreceive (часть 6)
+p-452	§9	939	DS-042 | Документ чужого направления для исполнителя → 404; удаление документа — только администратор (endpoint удаления
+p-453	§9	940	DS-045 | При добавлении единицы в заказ склад не выбирается; единица остаётся там, где числится | мастер, inferred | clo
+p-454	§9	941	DS-047 | «В пути» на «Остатках» включает приход от поставщика в статусе «В пути» | мастер, inferred | closed
+p-455	§9	942	DS-007 | Справочник «Поставщики» | мастер, батч 1 | closed — контекст, реализуется в suppliers
+p-456	§9	943	DS-011 | Товар с ценой в документе «склад → клиент» | мастер, батч 2 | closed — контекст, реализуется в transfers-sales
+p-457	§9	944	DS-017 | «Отменить проведение» | мастер, батч 3 | closed — контекст, реализуется в transfers-revert
+p-458	§9	945	DS-025 | Удаление документа; сообщение с номерами при удалении заказа с документами | мастер, батч 5 | closed — контекст
+p-459	§9	946	DS-050 | Отменённые документы удаляются вместе с заказом | мастер, батч 7 | closed — контекст, реализуется в transfers-r
+p-460	§9	947	DS-027 | Совместимость — MVP | мастер, батч 6 | closed — контекст, реализуется в transfers-core
+p-461	§9	948	DS-028 | UI-scope: swagger:no, adaptive:min, themes:both | мастер, батч 6 | closed — контекст, реализуется в transfers-c
+p-462	§9	949	DS-031 | Показ времени по поясу пользователя | мастер, батч 6 | closed — контекст, реализуется в user-timezone
+p-463	§9	950	DS-048 | Конкурентность документа: version, 409 | мастер, as-is | closed — контекст, реализуется в transfers-core
+p-464	§9	951	DS-052 | UI-конвенции | мастер, inferred | closed — контекст, реализуется в transfers-core
+p-465	§11	960	TS-001. Валидатор создания документа: direction required/enum; набор from_warehouse_id / to_warehouse_id / task_id / sup
+p-466	§11	961	негатив: client_to_warehouse без task_id → 400 task_id: required
+p-467	§11	962	TS-002. Валидатор строк: матрица «направление × kind» (товар в client_to_warehouse и в warehouse_to_client → not_allowed
+p-468	§11	963	негатив: items[0].kind: not_allowed
+p-469	§11	964	TS-004. Единица не из заказа документа → 400 items[i].equipment_id: not_in_task; единица другого клиента → 400 — DS-035
+p-470	§11	965	негатив: client_id в теле игнорируется, берётся из заказа (DS-012)
+p-471	§11	966	TS-007. Движения остатка (integration): приход от поставщика — при отправке движений нет, при приёмке supplier_in +факт 
+p-472	§11	967	негатив: факт 0 — движение не пишется, документ «Получено»
+p-473	§11	968	не входит в эту часть: client_out — transfers-sales (TS-030); transfer_unreceive — transfers-revert (TS-010)
+p-474	§11	969	TS-008. Приёмка: warehouse_to_warehouse факт > отправленного → 400 exceeds_sent; supplier_to_warehouse факт > заказанног
+p-475	§11	970	негатив: отрицательный факт → 400; двойной параллельный receive прихода → остаток вырос один раз
+p-476	§11	971	TS-015. Права: executor — POST warehouse_to_warehouse / supplier_to_warehouse → 403; GET, PUT, send, receive, cancel док
+p-477	§11	972	негатив: executor создаёт и проводит client_to_warehouse → 201 / 200
+p-478	§11	973	не входит в эту часть: unreceive, DELETE → 403 — transfers-revert; /suppliers → 403 — suppliers (TS-020)
+p-479	§11	974	TS-023. Фильтр «период», граница суток: документ создан 2026-10-06T19:30:00Z (00:30 7 октября по Алматы, 22:30 6 октября
+p-480	§11	975	негатив: created_to раньше created_from → 400; 2026-13-40 → 400
+p-481	§11	976	TS-025. «Остатки»: «в пути» включает supplier_to_warehouse в in_transit для склада назначения — DS-047
+p-482	§11	977	негатив: заявка от поставщика (requested) в «в пути» не входит
+p-483	§11	980	TS-006 (ядро): отправка client_to_warehouse, когда единица не «у клиента» → 409 TRANSFER_EQUIPMENT_NOT_AT_SOURCE.
+p-484	§11	981	TS-027 (ядро): POST /tasks/:id/equipment с warehouse_id — поле игнорируется, единица остаётся «у клиента».
+p-485	§11	982	TS-020 (suppliers): архивный поставщик в новом документе → 400 supplier_id: archived; в уже созданном остаётся.
+p-486	§11	983	Удаление заказа с документом → 409 CONFLICT, заказ и документ на месте (DS-012).
+p-487	§11	986	TS-029. Приём в ремонт из карточки заказа — экран §8.2 → §8.1 — DS-012, DS-013
+p-488	§11	987	шаги: исполнитель → карточка заказа → «Принять от клиента» → склад → «Принять сразу»; проверка: документ «Получено» в бл
+p-489	§11	988	TS-032. Приход от поставщика — экран §8.1 — DS-015
+p-490	§11	989	шаги: admin → «Приход от поставщика» → поставщик, товар 10 → «Отправить» → «Принять», факт 12; проверка: «Получено», «за
+p-491	§11	990	TS-034. Права исполнителя — экран §8.1 — DS-018
+p-492	§11	991	шаги: executor → «Перемещения»; проверка: в меню «Новое перемещение» два направления, в списке только документы с клиент
+p-493	§11	992	TS-039. Фильтры списка, включая «период» — экран §8.1 — DS-034
+p-494	§11	993	шаги: статус + направление + период; проверка: список соответствует, «Сбросить» возвращает всё; негатив: «по» раньше «с»
+p-495	§11	998	seed-demo (internal/seeddemo/seeddemo.go, владелец TS-F1 — transfers-core): дополнить в той же фазе, что миграция — два 
+p-496	§11	999	e2e (e2e/fixtures/board-types.ts, владелец TS-F2 — transfers-core): wire-типы — transfers[] карточки, direction, task_id
+p-497	§11	1000	Фикстура времени TS-F5 (владелец — user-timezone) переиспользуется для TS-023.
+p-498	§11	1007	1 | SHARED-DEP | internal/features/transfers/* (после ядра; сейчас internal/features/stocktransfers) | направления, конт
+p-499	§11	1008	2 | ENUMERATION | internal/features/transfers/routes.go (сейчас stocktransfers/routes.go:12,24 — RequireAdmin на группе 
+p-500	§11	1009	3 | ENUMERATION | internal/ssr/menu.go:25 | снять AdminOnly у «Перемещения» | править | DS-018
+p-501	§11	1010	4 | SHARED-DEP | internal/features/board/task_equipment_service.go, task_equipment_validate.go, DTO добавления единицы |
+p-502	§11	1011	5 | SHARED-DEP | internal/features/board/card_repo.go, card_dto.go | transfers[], transit_to_name = «клиент» | править |
+p-503	§11	1012	6 | SHARED-DEP | internal/features/board/tasks_service.go:332 (Delete) | 409 при наличии документов заказа | править | D
+p-504	§11	1013	7 | SHARED-DEP | internal/features/board/stock_repo.go (CTE «в пути»), tasks_repo.go (фильтр доски) | приход от поставщи
+p-505	§11	1014	8 | SHARED-DEP | internal/features/suppliers (часть 1) | чтение поставщика, проверка is_active | использовать | DS-002
+p-506	§11	1015	9 | SHARED-DEP | users.timezone (часть 2), internal/server/middleware/auth.go (Viewer) | пояс запрашивающего для фильтра
+p-507	§11	1016	10 | FRONTEND | web/ssr/_shared/js/transfers.js (после ядра), шаблон страницы | меню направлений, поля шапки, фильтры, «
+p-508	§11	1017	11 | FRONTEND | web/ssr/_shared/js/task-card.js | блок «Перемещения заказа», кнопки; убрать select «Склад приёма» | прав
+p-509	§11	1018	12 | FK | migrations/ | новая миграция: колонки и CHECK маршрута transfers, DROP CHECK qty_received <= qty_sent, расшире
+p-510	§11	1019	13 | ENUMERATION | internal/seeddemo/seeddemo.go, e2e/fixtures/board-types.ts, e2e/fixtures/board.ts:8 (addTaskEquipment
+p-511	§11	1020	14 | CONFIG | env-ключи | не задеваются | — | —
+p-512	§11	1021	15 | MONITORING | дашборды/алерты | не задеваются | — | —

@@ -1,0 +1,20 @@
+Класс 9.1 — Go native fuzz (design-tests.md §Fuzzing, FZ-001…003), -fuzztime=30s каждый.
+
+$ go test ./internal/features/board/... -run=^$ -fuzz=FuzzSubtaskUpdateBody -fuzztime=30s
+fuzz: elapsed: 30s, execs: 1366247 (134531/sec), new interesting: 41 (total: 211)
+PASS
+ok  	github.com/kitavrus/kanban-tree/internal/features/board	32.075s
+
+$ go test ./internal/features/board/... -run=^$ -fuzz=FuzzSubtaskProductBody -fuzztime=30s
+fuzz: elapsed: 30s, execs: 694388 (222927/sec), new interesting: 22 (total: 209)
+PASS
+ok  	github.com/kitavrus/kanban-tree/internal/features/board	31.853s
+
+$ go test ./internal/features/board/... -run=^$ -fuzz=FuzzSubtaskLogAndEquipmentBody -fuzztime=30s
+fuzz: elapsed: 30s, execs: 454145 (1532/sec), new interesting: 52 (total: 203)
+PASS
+ok  	github.com/kitavrus/kanban-tree/internal/features/board	31.848s
+
+Итог: все три таргета — PASS, крашей нет, internal/features/board/testdata/fuzz/ не создан
+(проверено `ls` после прогона — пусто/директория отсутствует). Инварианты (no panic,
+только 400/404/409/2xx, никогда 5xx) не нарушены за >2.5М execs суммарно.

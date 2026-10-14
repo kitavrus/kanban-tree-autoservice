@@ -1,0 +1,1311 @@
+diff --git a/internal/features/suppliers/dto.go b/internal/features/suppliers/dto.go
+new file mode 100644
+index 0000000..3c57e40
+--- /dev/null
++++ b/internal/features/suppliers/dto.go
+@@ -0,0 +1,44 @@
++package suppliers
++
++import "time"
++
++// Wire-типы — JSON только snake_case (§API-1); конверт списка {items,total,limit,offset}.
++
++type SupplierResponse struct {
++	ID          string    `json:"id"`
++	Name        string    `json:"name"`
++	ContactName string    `json:"contact_name"`
++	Phone       string    `json:"phone"`
++	Address     string    `json:"address"`
++	Note        string    `json:"note"`
++	IsActive    bool      `json:"is_active"`
++	CreatedAt   time.Time `json:"created_at"`
++	UpdatedAt   time.Time `json:"updated_at"`
++}
++
++type SupplierListResponse struct {
++	Items  []SupplierResponse `json:"items"`
++	Total  int                `json:"total"`
++	Limit  int                `json:"limit"`
++	Offset int                `json:"offset"`
++}
++
++// SupplierCreateRequest — POST /api/v1/suppliers. Новый поставщик активен.
++type SupplierCreateRequest struct {
++	Name        string `json:"name"`
++	ContactName string `json:"contact_name"`
++	Phone       string `json:"phone"`
++	Address     string `json:"address"`
++	Note        string `json:"note"`
++}
++
++// SupplierUpdateRequest — PUT /api/v1/suppliers/:id: правка полей + архив/возврат.
++// is_active не передан (nil) — 400 is_active: required (как warehouses).
++type SupplierUpdateRequest struct {
++	Name        string `json:"name"`
++	ContactName string `json:"contact_name"`
++	Phone       string `json:"phone"`
++	Address     string `json:"address"`
++	Note        string `json:"note"`
++	IsActive    *bool  `json:"is_active"`
++}
+diff --git a/internal/features/suppliers/handler.go b/internal/features/suppliers/handler.go
+new file mode 100644
+index 0000000..a7a70bc
+--- /dev/null
++++ b/internal/features/suppliers/handler.go
+@@ -0,0 +1,60 @@
++package suppliers
++
++import (
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Handler — JSON API /api/v1/suppliers (только admin, DS-007; гарды — routes.go).
++type Handler struct {
++	svc *Service
++}
++
++func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
++
++// List — GET /api/v1/suppliers?is_active=&q=&limit=&offset=.
++func (h *Handler) List(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	resp, err := h.svc.List(c.Context(), ListQuery{IsActive: c.Query("is_active"), Q: c.Query("q"), Limit: limit, Offset: offset})
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Create — POST /api/v1/suppliers.
++func (h *Handler) Create(c fiber.Ctx) error {
++	var req SupplierCreateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Create(c.Context(), Input{
++		Name: req.Name, ContactName: req.ContactName, Phone: req.Phone, Address: req.Address, Note: req.Note, IsActive: true,
++	})
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// Update — PUT /api/v1/suppliers/:id (правка/архив; is_active обязателен).
++func (h *Handler) Update(c fiber.Ctx) error {
++	var req SupplierUpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	if req.IsActive == nil {
++		return errorspkg.Validation(errorspkg.Field{Name: "is_active", Message: msgRequired})
++	}
++	resp, err := h.svc.Update(c.Context(), c.Params("id"), Input{
++		Name: req.Name, ContactName: req.ContactName, Phone: req.Phone, Address: req.Address, Note: req.Note, IsActive: *req.IsActive,
++	})
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
+diff --git a/internal/features/suppliers/migration_integration_test.go b/internal/features/suppliers/migration_integration_test.go
+new file mode 100644
+index 0000000..7bb93c6
+--- /dev/null
++++ b/internal/features/suppliers/migration_integration_test.go
+@@ -0,0 +1,149 @@
++//go:build integration
++
++package suppliers_test
++
++import (
++	"context"
++	"errors"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	_ "github.com/golang-migrate/migrate/v4/database/postgres"
++	_ "github.com/golang-migrate/migrate/v4/source/file"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// SuppliersMigrationSuite — миграция 0012 (docs/features/suppliers/draft-spec.md §4.1,
++// DS-007; часть TS-020 — «уникальность без регистра и с пробелами по краям, включая
++// архивные» держит индекс suppliers_name_lower_uq). down → таблицы нет; up → таблица,
++// дефолты, уникальный индекс, CHECK'и длины; повторный down/up чистый.
++type SuppliersMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestSuppliersMigrationSuite(t *testing.T) {
++	suite.Run(t, new(SuppliersMigrationSuite))
++}
++
++func migrationsURL() string {
++	_, f, _, _ := runtime.Caller(0)
++	return "file://" + filepath.Join(filepath.Dir(f), "..", "..", "..", "migrations")
++}
++
++func (s *SuppliersMigrationSuite) tableExists() bool {
++	var ok bool
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT to_regclass('suppliers') IS NOT NULL`).Scan(&ok))
++	return ok
++}
++
++func (s *SuppliersMigrationSuite) pgCode(err error) string {
++	var pgErr *pgconn.PgError
++	s.Require().True(errors.As(err, &pgErr), "ожидалась ошибка PostgreSQL: %v", err)
++	return pgErr.Code
++}
++
++func (s *SuppliersMigrationSuite) TestTS020_Migration0012_UpDown() {
++	ctx := context.Background()
++	mig, err := migrate.New(migrationsURL(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(11))
++	// Вернуть схему на последнюю версию; пока 0012 — последняя, Up() отвечает ErrNoChange.
++	defer func() {
++		if err := mig.Up(); !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	s.False(s.tableExists(), "до 0012 таблицы suppliers нет")
++
++	// --- up 0012 ---
++	s.Require().NoError(mig.Migrate(12))
++	s.True(s.tableExists())
++
++	// колонки и типы — §4.1.
++	rows, err := s.Pool.Query(ctx, `
++		SELECT column_name, data_type, is_nullable FROM information_schema.columns
++		WHERE table_name = 'suppliers' ORDER BY ordinal_position`)
++	s.Require().NoError(err)
++	type col struct{ name, typ, nullable string }
++	var cols []col
++	for rows.Next() {
++		var c col
++		s.Require().NoError(rows.Scan(&c.name, &c.typ, &c.nullable))
++		cols = append(cols, c)
++	}
++	rows.Close()
++	s.Require().NoError(rows.Err())
++	s.Equal([]col{
++		{"id", "uuid", "NO"},
++		{"name", "text", "NO"},
++		{"contact_name", "text", "NO"},
++		{"phone", "text", "NO"},
++		{"address", "text", "NO"},
++		{"note", "text", "NO"},
++		{"is_active", "boolean", "NO"},
++		{"created_at", "timestamp with time zone", "NO"},
++		{"updated_at", "timestamp with time zone", "NO"},
++	}, cols)
++
++	// дефолты: только название — остальное заполняет БД.
++	var id, contact, phone, address, note string
++	var active, stamped bool
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO suppliers (name) VALUES ('ООО Миграция')
++		 RETURNING id::text, contact_name, phone, address, note, is_active, created_at IS NOT NULL AND updated_at IS NOT NULL`).
++		Scan(&id, &contact, &phone, &address, &note, &active, &stamped))
++	s.Len(id, 36)
++	s.Equal("", contact)
++	s.Equal("", phone)
++	s.Equal("", address)
++	s.Equal("", note)
++	s.True(active)
++	s.True(stamped)
++
++	// уникальность названия: регистр + пробелы по краям, включая архивные.
++	_, err = s.Pool.Exec(ctx, `INSERT INTO suppliers (name) VALUES ('  ооо МИГРАЦИЯ ')`)
++	s.Equal("23505", s.pgCode(err))
++	_, err = s.Pool.Exec(ctx, `UPDATE suppliers SET is_active = false WHERE id = $1::uuid`, id)
++	s.Require().NoError(err)
++	_, err = s.Pool.Exec(ctx, `INSERT INTO suppliers (name) VALUES ('ооо миграция')`)
++	s.Equal("23505", s.pgCode(err), "архивный поставщик тоже занимает название")
++	var idx string
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`SELECT indexdef FROM pg_indexes WHERE tablename = 'suppliers' AND indexname = 'suppliers_name_lower_uq'`).Scan(&idx))
++	s.Contains(idx, "UNIQUE")
++
++	// CHECK'и: пустое название и превышение длины не проходят мимо сервиса.
++	for _, q := range []struct {
++		sql string
++		arg string
++	}{
++		{`INSERT INTO suppliers (name) VALUES ($1)`, "   "},
++		{`INSERT INTO suppliers (name) VALUES ($1)`, strings.Repeat("я", 201)},
++		{`INSERT INTO suppliers (name, contact_name) VALUES ('CHK-1', $1)`, strings.Repeat("я", 201)},
++		{`INSERT INTO suppliers (name, phone) VALUES ('CHK-2', $1)`, strings.Repeat("1", 51)},
++		{`INSERT INTO suppliers (name, address) VALUES ('CHK-3', $1)`, strings.Repeat("я", 501)},
++		{`INSERT INTO suppliers (name, note) VALUES ('CHK-4', $1)`, strings.Repeat("я", 1001)},
++	} {
++		_, err = s.Pool.Exec(ctx, q.sql, q.arg)
++		s.Equal("23514", s.pgCode(err), q.sql)
++	}
++	_, err = s.Pool.Exec(ctx, `INSERT INTO suppliers (name, contact_name, phone, address, note) VALUES ($1, $2, $3, $4, $5)`,
++		strings.Repeat("я", 200), strings.Repeat("я", 200), strings.Repeat("1", 50), strings.Repeat("я", 500), strings.Repeat("я", 1000))
++	s.Require().NoError(err, "границы длины валидны")
++
++	// --- down → 0011: таблица удалена; up снова поднимается чисто (пустой) ---
++	s.Require().NoError(mig.Migrate(11))
++	s.False(s.tableExists())
++	s.Require().NoError(mig.Migrate(12))
++	var cnt int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM suppliers`).Scan(&cnt))
++	s.Equal(0, cnt)
++}
+diff --git a/internal/features/suppliers/repo.go b/internal/features/suppliers/repo.go
+new file mode 100644
+index 0000000..67077be
+--- /dev/null
++++ b/internal/features/suppliers/repo.go
+@@ -0,0 +1,124 @@
++package suppliers
++
++import (
++	"context"
++	"errors"
++	"strconv"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Supplier — поставщик (repo-модель, DS-007).
++type Supplier struct {
++	ID          string
++	Name        string
++	ContactName string
++	Phone       string
++	Address     string
++	Note        string
++	IsActive    bool
++	CreatedAt   time.Time
++	UpdatedAt   time.Time
++}
++
++type Repo struct {
++	pool *pgxpool.Pool
++}
++
++func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
++
++var (
++	ErrNotFound      = pgx.ErrNoRows
++	errNameDuplicate = errors.New("suppliers: name duplicate")
++)
++
++const columns = `id, name, contact_name, phone, address, note, is_active, created_at, updated_at`
++
++func scan(row pgx.Row) (*Supplier, error) {
++	var s Supplier
++	if err := row.Scan(&s.ID, &s.Name, &s.ContactName, &s.Phone, &s.Address, &s.Note,
++		&s.IsActive, &s.CreatedAt, &s.UpdatedAt); err != nil {
++		return nil, err
++	}
++	return &s, nil
++}
++
++// ListParams — фильтры списка: IsActive == nil — все; Q — подстрока названия без регистра.
++type ListParams struct {
++	IsActive      *bool
++	Q             string
++	Limit, Offset int
++}
++
++// List — активные раньше архивных, затем по названию (§6.1).
++func (r *Repo) List(ctx context.Context, p ListParams) ([]Supplier, int, error) {
++	where := " WHERE true"
++	var args []any
++	if p.IsActive != nil {
++		args = append(args, *p.IsActive)
++		where += " AND is_active = $" + strconv.Itoa(len(args))
++	}
++	if p.Q != "" {
++		args = append(args, "%"+sqlutil.EscapeLike(p.Q)+"%")
++		where += " AND name ILIKE $" + strconv.Itoa(len(args))
++	}
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM suppliers`+where, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++	args = append(args, p.Limit, p.Offset)
++	rows, err := r.pool.Query(ctx, `SELECT `+columns+` FROM suppliers`+where+
++		` ORDER BY is_active DESC, lower(name), id LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++	out := []Supplier{}
++	for rows.Next() {
++		s, err := scan(rows)
++		if err != nil {
++			return nil, 0, err
++		}
++		out = append(out, *s)
++	}
++	return out, total, rows.Err()
++}
++
++// Create — 23505 (suppliers_name_lower_uq) → errNameDuplicate.
++func (r *Repo) Create(ctx context.Context, in Input) (*Supplier, error) {
++	s, err := scan(r.pool.QueryRow(ctx,
++		`INSERT INTO suppliers (name, contact_name, phone, address, note)
++		 VALUES ($1, $2, $3, $4, $5) RETURNING `+columns,
++		in.Name, in.ContactName, in.Phone, in.Address, in.Note))
++	if err != nil {
++		return nil, mapNameConflict(err)
++	}
++	return s, nil
++}
++
++// Update — все поля + is_active, last-write-wins (DS-043); ErrNoRows → ErrNotFound
++// (сервис маппит).
++func (r *Repo) Update(ctx context.Context, id string, in Input) (*Supplier, error) {
++	s, err := scan(r.pool.QueryRow(ctx,
++		`UPDATE suppliers SET name = $2, contact_name = $3, phone = $4, address = $5, note = $6,
++		        is_active = $7, updated_at = now()
++		 WHERE id = $1::uuid RETURNING `+columns,
++		id, in.Name, in.ContactName, in.Phone, in.Address, in.Note, in.IsActive))
++	if err != nil {
++		return nil, mapNameConflict(err)
++	}
++	return s, nil
++}
++
++func mapNameConflict(err error) error {
++	var pgErr *pgconn.PgError
++	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
++		return errNameDuplicate
++	}
++	return err
++}
+diff --git a/internal/features/suppliers/routes.go b/internal/features/suppliers/routes.go
+new file mode 100644
+index 0000000..8af050c
+--- /dev/null
++++ b/internal/features/suppliers/routes.go
+@@ -0,0 +1,23 @@
++package suppliers
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++)
++
++// Register — JSON API /api/v1/suppliers (§6.1–§6.3) + SSR-экран /suppliers; всё — только
++// admin (DS-007: executor → 403). Удаления нет — архив через PUT is_active.
++// s == nil — SSR не регистрируется.
++func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
++	g := api.Group("/suppliers", a.RequireAPI(), middleware.RequireAdmin(nil))
++	g.Get("", h.List)
++	g.Post("", h.Create)
++	g.Put("/:id", h.Update)
++
++	if s == nil {
++		return
++	}
++	p := app.Group("/suppliers", a.RequireSSR(), middleware.RequireAdmin(s.status.Forbidden))
++	p.Get("", s.page)
++}
+diff --git a/internal/features/suppliers/service.go b/internal/features/suppliers/service.go
+new file mode 100644
+index 0000000..085b89d
+--- /dev/null
++++ b/internal/features/suppliers/service.go
+@@ -0,0 +1,122 @@
++package suppliers
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++var ErrSupplierNotFound = errorspkg.New("SUPPLIER_NOT_FOUND", http.StatusNotFound, "Поставщик не найден")
++
++const (
++	defaultLimit = 50
++	maxLimit     = 500
++)
++
++type Service struct {
++	repo *Repo
++}
++
++func NewService(pool *pgxpool.Pool) *Service {
++	return &Service{repo: NewRepo(pool)}
++}
++
++// ListQuery — сырые параметры списка (§6.1). IsActive: "" — все, "true"/"false" — фильтр,
++// иное → 400 is_active: invalid.
++type ListQuery struct {
++	IsActive      string
++	Q             string
++	Limit, Offset int
++}
++
++func (s *Service) List(ctx context.Context, q ListQuery) (*SupplierListResponse, error) {
++	p := ListParams{Q: strings.TrimSpace(q.Q)}
++	var f []errorspkg.Field
++	switch q.IsActive {
++	case "":
++	case "true", "false":
++		active := q.IsActive == "true"
++		p.IsActive = &active
++	default:
++		f = append(f, errorspkg.Field{Name: "is_active", Message: msgInvalid})
++	}
++	switch {
++	case sqlutil.HasInvalidText(p.Q):
++		f = append(f, errorspkg.Field{Name: "q", Message: msgInvalidText})
++	case utf8.RuneCountInString(p.Q) > queryMax:
++		f = append(f, errorspkg.Field{Name: "q", Message: msgTooLong})
++	}
++	if len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	p.Limit, p.Offset = q.Limit, max(q.Offset, 0)
++	if p.Limit <= 0 {
++		p.Limit = defaultLimit
++	}
++	p.Limit = min(p.Limit, maxLimit)
++
++	items, total, err := s.repo.List(ctx, p)
++	if err != nil {
++		return nil, err
++	}
++	resp := &SupplierListResponse{Items: make([]SupplierResponse, len(items)), Total: total, Limit: p.Limit, Offset: p.Offset}
++	for i, it := range items {
++		resp.Items[i] = toResponse(it)
++	}
++	return resp, nil
++}
++
++func (s *Service) Create(ctx context.Context, in Input) (*SupplierResponse, error) {
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	sup, err := s.repo.Create(ctx, in)
++	if err != nil {
++		return nil, mapErr(err)
++	}
++	resp := toResponse(*sup)
++	return &resp, nil
++}
++
++// Update — правка полей и архив/возврат одним запросом; last-write-wins (DS-043).
++func (s *Service) Update(ctx context.Context, id string, in Input) (*SupplierResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrSupplierNotFound
++	}
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	sup, err := s.repo.Update(ctx, id, in)
++	if err != nil {
++		return nil, mapErr(err)
++	}
++	resp := toResponse(*sup)
++	return &resp, nil
++}
++
++func mapErr(err error) error {
++	switch {
++	case errors.Is(err, ErrNotFound):
++		return ErrSupplierNotFound
++	case errors.Is(err, errNameDuplicate):
++		return errorspkg.Validation(errorspkg.Field{Name: "name", Message: msgDuplicate})
++	}
++	return err
++}
++
++func toResponse(s Supplier) SupplierResponse {
++	return SupplierResponse{
++		ID: s.ID, Name: s.Name, ContactName: s.ContactName, Phone: s.Phone, Address: s.Address,
++		Note: s.Note, IsActive: s.IsActive, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
++	}
++}
+diff --git a/internal/features/suppliers/ssr.go b/internal/features/suppliers/ssr.go
+new file mode 100644
+index 0000000..40ec274
+--- /dev/null
++++ b/internal/features/suppliers/ssr.go
+@@ -0,0 +1,33 @@
++package suppliers
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++)
++
++// Root — шаблоны экрана «Поставщики» относительно корня модуля.
++const Root = "web/ssr/suppliers/templates"
++
++// SSR — экран «Поставщики» (admin, DS-007, §8.1): таблица, поиск, toggle архивных и форма
++// рисует js/suppliers.js поверх JSON API (как экран «Перемещения»); открытая форма —
++// ?id=<uuid> (правка) либо ?new=1 (создание).
++type SSR struct {
++	r      *ssr.Renderer
++	shell  ssr.ShellBuilder
++	status *ssr.StatusPages
++}
++
++func NewSSR(r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages) *SSR {
++	return &SSR{r: r, shell: shell, status: status}
++}
++
++// PageVM — только оболочка: данные грузит JS.
++type PageVM struct {
++	Shell ssr.Shell
++}
++
++// page — GET /suppliers.
++func (h *SSR) page(c fiber.Ctx) error {
++	return h.r.Page(c, "list", PageVM{Shell: h.shell.Build(c, "Поставщики")})
++}
+diff --git a/internal/features/suppliers/suppliers_http_live_test.go b/internal/features/suppliers/suppliers_http_live_test.go
+new file mode 100644
+index 0000000..9cd1f0f
+--- /dev/null
++++ b/internal/features/suppliers/suppliers_http_live_test.go
+@@ -0,0 +1,422 @@
++//go:build integration
++
++package suppliers_test
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/url"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// SuppliersLiveSuite (§TD-8): справочник «Поставщики» (docs/features/suppliers/draft-spec.md
++// DS-007/DS-043) — TS-020: валидация полей, уникальность названия (регистр/пробелы, вкл.
++// архивные), is_active обязателен в PUT, параллельное создание, executor → 403, фильтры
++// списка и конверт {items,total,limit,offset}, 404 SUPPLIER_NOT_FOUND; SSR-оболочка экрана.
++type SuppliersLiveSuite struct {
++	testutil.LiveSuite
++	admin *testutil.Browser
++}
++
++func TestSuppliersLiveSuite(t *testing.T) {
++	suite.Run(t, &SuppliersLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *SuppliersLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("sup-admin", "password1", "Поставщики Админ", "admin", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("sup-admin", "password1")
++}
++
++type supplierDTO struct {
++	ID          string `json:"id"`
++	Name        string `json:"name"`
++	ContactName string `json:"contact_name"`
++	Phone       string `json:"phone"`
++	Address     string `json:"address"`
++	Note        string `json:"note"`
++	IsActive    bool   `json:"is_active"`
++	CreatedAt   string `json:"created_at"`
++	UpdatedAt   string `json:"updated_at"`
++}
++
++type supplierListDTO struct {
++	Items  []supplierDTO `json:"items"`
++	Total  int           `json:"total"`
++	Limit  int           `json:"limit"`
++	Offset int           `json:"offset"`
++}
++
++const supAPI = "/api/v1/suppliers"
++
++func (s *SuppliersLiveSuite) fields(body []byte) map[string]string {
++	var e struct {
++		Code    string `json:"code"`
++		Details *struct {
++			Fields []struct{ Name, Message string } `json:"fields"`
++		} `json:"details"`
++	}
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	s.Require().NotNil(e.Details, string(body))
++	m := map[string]string{}
++	for _, f := range e.Details.Fields {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func (s *SuppliersLiveSuite) list(query url.Values) supplierListDTO {
++	path := supAPI
++	if len(query) > 0 {
++		path += "?" + query.Encode()
++	}
++	st, raw := s.admin.Do(http.MethodGet, path, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var l supplierListDTO
++	s.Require().NoError(json.Unmarshal(raw, &l), string(raw))
++	return l
++}
++
++func (s *SuppliersLiveSuite) create(body map[string]any) supplierDTO {
++	st, raw := s.admin.Do(http.MethodPost, supAPI, body)
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var d supplierDTO
++	s.Require().NoError(json.Unmarshal(raw, &d), string(raw))
++	return d
++}
++
++func (s *SuppliersLiveSuite) update(id string, body map[string]any) supplierDTO {
++	st, raw := s.admin.Do(http.MethodPut, supAPI+"/"+id, body)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var d supplierDTO
++	s.Require().NoError(json.Unmarshal(raw, &d), string(raw))
++	return d
++}
++
++func names(l supplierListDTO) []string {
++	out := make([]string, len(l.Items))
++	for i, it := range l.Items {
++		out[i] = it.Name
++	}
++	return out
++}
++
++func rep(n int) string { return strings.Repeat("я", n) }
++
++// TS-020: создание со всеми полями (trim), правка, архив и возврат одним PUT; уникальность
++// названия без регистра и с пробелами по краям, включая архивные и кроме самого себя.
++func (s *SuppliersLiveSuite) TestTS020_CRUD_DuplicateArchiveRestore() {
++	d := s.create(map[string]any{
++		"name": "  ООО Картридж  ", "contact_name": " Иван Петров ", "phone": " +7 700 123-45-67 ",
++		"address": " Алматы, Абая 1 ", "note": " оптовик ",
++	})
++	s.NotEmpty(d.ID)
++	s.Equal("ООО Картридж", d.Name, "trim")
++	s.Equal("Иван Петров", d.ContactName)
++	s.Equal("+7 700 123-45-67", d.Phone)
++	s.Equal("Алматы, Абая 1", d.Address)
++	s.Equal("оптовик", d.Note)
++	s.True(d.IsActive, "новый поставщик активен")
++	s.NotEmpty(d.CreatedAt)
++	s.NotEmpty(d.UpdatedAt)
++
++	// только обязательное поле — остальные пустые строки.
++	bare := s.create(map[string]any{"name": "Минимальный поставщик"})
++	s.Equal("", bare.ContactName)
++	s.Equal("", bare.Phone)
++	s.Equal("", bare.Address)
++	s.Equal("", bare.Note)
++
++	// дубль: другой регистр + пробелы по краям → 400 name: duplicate, запись не создана.
++	before := s.list(nil).Total
++	st, raw := s.admin.Do(http.MethodPost, supAPI, map[string]any{"name": "  ооо КАРТРИДЖ  "})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"name": "duplicate"}, s.fields(raw))
++	s.Equal(before, s.list(nil).Total, "дубль не создан")
++
++	// правка всех полей; своё же название (в другом регистре) — не дубль.
++	upd := s.update(d.ID, map[string]any{
++		"name": "ооо картридж", "contact_name": "Пётр", "phone": "87001234567", "address": "Астана", "note": "", "is_active": true,
++	})
++	s.Equal(d.ID, upd.ID)
++	s.Equal("ооо картридж", upd.Name)
++	s.Equal("Пётр", upd.ContactName)
++	s.Equal("87001234567", upd.Phone)
++	s.Equal("Астана", upd.Address)
++	s.Equal("", upd.Note)
++	s.True(upd.IsActive)
++
++	// повтор того же PUT безопасен (то же итоговое состояние).
++	again := s.update(d.ID, map[string]any{
++		"name": "ооо картридж", "contact_name": "Пётр", "phone": "87001234567", "address": "Астана", "note": "", "is_active": true,
++	})
++	s.Equal(upd.Name, again.Name)
++	s.Equal(upd.IsActive, again.IsActive)
++
++	// архив.
++	arch := s.update(d.ID, map[string]any{"name": "ооо картридж", "is_active": false})
++	s.False(arch.IsActive)
++	s.Equal("", arch.ContactName, "необязательные поля, не переданные в PUT, очищаются")
++
++	// дубль архивного названия — тоже 400 (уникальность включает архивные).
++	st, raw = s.admin.Do(http.MethodPost, supAPI, map[string]any{"name": "ООО КАРТРИДЖ"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"name": "duplicate"}, s.fields(raw))
++
++	// переименование в чужое название (в т.ч. архивное) — 400.
++	st, raw = s.admin.Do(http.MethodPut, supAPI+"/"+bare.ID, map[string]any{"name": " ООО картридж ", "is_active": true})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"name": "duplicate"}, s.fields(raw))
++
++	// возврат из архива.
++	back := s.update(d.ID, map[string]any{"name": "ооо картридж", "is_active": true})
++	s.True(back.IsActive)
++}
++
++// TS-020: name required / 201 символ; phone без цифр и 51 символ; длины contact_name (200),
++// address (500), note (1000); мусор → 400 (не 500), запись не создаётся.
++func (s *SuppliersLiveSuite) TestTS020_Validation() {
++	before := s.list(nil).Total
++
++	for _, c := range []struct {
++		why  string
++		body map[string]any
++		want map[string]string
++	}{
++		{"нет name", map[string]any{}, map[string]string{"name": "required"}},
++		{"name из пробелов", map[string]any{"name": "   "}, map[string]string{"name": "required"}},
++		{"name 201", map[string]any{"name": rep(201)}, map[string]string{"name": "too_long"}},
++		{"name NUL", map[string]any{"name": "Поставщик\u0000"}, map[string]string{"name": "invalid_text"}},
++		{"phone без цифр", map[string]any{"name": "V1", "phone": "нет телефона"}, map[string]string{"phone": "invalid"}},
++		{"phone 51", map[string]any{"name": "V1", "phone": strings.Repeat("1", 51)}, map[string]string{"phone": "too_long"}},
++		{"contact_name 201", map[string]any{"name": "V1", "contact_name": rep(201)}, map[string]string{"contact_name": "too_long"}},
++		{"address 501", map[string]any{"name": "V1", "address": rep(501)}, map[string]string{"address": "too_long"}},
++		{"note 1001", map[string]any{"name": "V1", "note": rep(1001)}, map[string]string{"note": "too_long"}},
++		{"всё сразу", map[string]any{"name": "", "contact_name": rep(201), "phone": "abc", "address": rep(501), "note": rep(1001)},
++			map[string]string{"name": "required", "contact_name": "too_long", "phone": "invalid", "address": "too_long", "note": "too_long"}},
++	} {
++		st, raw := s.admin.Do(http.MethodPost, supAPI, c.body)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", c.why, raw)
++		s.Equal(c.want, s.fields(raw), c.why)
++	}
++
++	// мусорное тело, null, неизвестное поле, неверный тип — 400, не 500.
++	for _, body := range []any{`{`, `null`, `[]`, `{"name":"X","extra":1}`, `{"name":123}`, `{"name":"X","phone":7}`} {
++		st, raw := s.admin.Do(http.MethodPost, supAPI, body)
++		s.Equal(http.StatusBadRequest, st, "%v → %s", body, raw)
++	}
++	s.Equal(before, s.list(nil).Total, "невалидные запросы ничего не создали")
++
++	// границы валидны: 200 / 200 / 50 / 500 / 1000.
++	ok := s.create(map[string]any{
++		"name": rep(200), "contact_name": rep(200), "phone": strings.Repeat("1", 50), "address": rep(500), "note": rep(1000),
++	})
++	s.Equal(rep(200), ok.Name)
++	s.Equal(rep(1000), ok.Note)
++
++	// те же правила в PUT.
++	st, raw := s.admin.Do(http.MethodPut, supAPI+"/"+ok.ID, map[string]any{"name": " ", "phone": "---", "is_active": true})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"name": "required", "phone": "invalid"}, s.fields(raw))
++	st, raw = s.admin.Do(http.MethodPut, supAPI+"/"+ok.ID, map[string]any{"name": rep(201), "note": rep(1001), "is_active": true})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"name": "too_long", "note": "too_long"}, s.fields(raw))
++}
++
++// TS-020: is_active обязателен в PUT; несуществующий и битый id → 404 SUPPLIER_NOT_FOUND
++// (не 500); удаления нет (DS-007).
++func (s *SuppliersLiveSuite) TestTS020_PutIsActiveRequired_NotFound_NoDelete() {
++	d := s.create(map[string]any{"name": "Поставщик-PUT"})
++
++	st, raw := s.admin.Do(http.MethodPut, supAPI+"/"+d.ID, map[string]any{"name": "Поставщик-PUT"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"is_active": "required"}, s.fields(raw))
++	st, raw = s.admin.Do(http.MethodPut, supAPI+"/"+d.ID, `{"name":"Поставщик-PUT","is_active":null}`)
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"is_active": "required"}, s.fields(raw))
++	st, raw = s.admin.Do(http.MethodPut, supAPI+"/"+d.ID, `{"name":"Поставщик-PUT","is_active":"yes"}`)
++	s.Equal(http.StatusBadRequest, st, string(raw))
++
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
++		st, raw := s.admin.Do(http.MethodPut, supAPI+"/"+id, map[string]any{"name": "X", "is_active": true})
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		s.Contains(string(raw), "SUPPLIER_NOT_FOUND", id)
++	}
++
++	st, _ = s.admin.Do(http.MethodDelete, supAPI+"/"+d.ID, nil)
++	s.Contains([]int{http.StatusNotFound, http.StatusMethodNotAllowed}, st, "удаления поставщика нет")
++	l := s.list(url.Values{"q": {"Поставщик-PUT"}})
++	s.Equal(1, l.Total, "поставщик на месте")
++}
++
++// TS-020 (DS-007, §3 К-3): параллельное создание с одним названием → ровно один 201,
++// остальные — 400 name: duplicate (уникальный индекс), в БД одна запись.
++func (s *SuppliersLiveSuite) TestTS020_ConcurrentCreate_ExactlyOne201() {
++	const n = 8
++	for round := 0; round < 3; round++ {
++		name := "Гонка-" + string(rune('A'+round))
++		codes := make([]int, n)
++		bodies := make([][]byte, n)
++		var wg sync.WaitGroup
++		for i := 0; i < n; i++ {
++			wg.Add(1)
++			go func(i int) {
++				defer wg.Done()
++				// варианты регистра/пробелов — одно и то же название для индекса.
++				v := name
++				if i%2 == 1 {
++					v = "  " + strings.ToLower(name) + " "
++				}
++				codes[i], bodies[i] = s.admin.Do(http.MethodPost, supAPI, map[string]any{"name": v})
++			}(i)
++		}
++		wg.Wait()
++
++		created := 0
++		for i, c := range codes {
++			switch c {
++			case http.StatusCreated:
++				created++
++			case http.StatusBadRequest:
++				s.Equal(map[string]string{"name": "duplicate"}, s.fields(bodies[i]), "раунд %d", round)
++			default:
++				s.Failf("неожиданный статус", "раунд %d: %d %s", round, c, bodies[i])
++			}
++		}
++		s.Equal(1, created, "раунд %d: ровно один 201", round)
++		s.Equal(1, s.list(url.Values{"q": {name}}).Total, "раунд %d: одна запись", round)
++	}
++}
++
++// TS-020: фильтры списка q (подстрока без регистра, спецсимволы LIKE — буквально) и
++// is_active; сортировка «активные раньше архивных, затем по названию»; конверт
++// {items,total,limit,offset}, limit по умолчанию 50, максимум 500; is_active=maybe → 400.
++func (s *SuppliersLiveSuite) TestTS020_ListFilters_Envelope() {
++	b := s.create(map[string]any{"name": "Фильтр-Бета"})
++	a := s.create(map[string]any{"name": "фильтр-альфа"})
++	g := s.create(map[string]any{"name": "ФИЛЬТР-Гамма"})
++	s.create(map[string]any{"name": "Фильтр100%_скидка"})
++	s.update(a.ID, map[string]any{"name": a.Name, "is_active": false})
++
++	// конверт и дефолты.
++	st, raw := s.admin.Do(http.MethodGet, supAPI, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var env map[string]json.RawMessage
++	s.Require().NoError(json.Unmarshal(raw, &env))
++	s.Len(env, 4, "конверт — ровно items,total,limit,offset: %s", raw)
++	for _, k := range []string{"items", "total", "limit", "offset"} {
++		s.Contains(env, k)
++	}
++	all := s.list(nil)
++	s.Equal(50, all.Limit, "limit по умолчанию")
++	s.Equal(0, all.Offset)
++	s.GreaterOrEqual(all.Total, 4)
++
++	// q: подстрока без регистра; активные раньше архивных, затем по названию.
++	l := s.list(url.Values{"q": {"фИЛЬТР-"}})
++	s.Equal(3, l.Total)
++	s.Equal([]string{b.Name, g.Name, a.Name}, names(l), "активные (Бета, Гамма) раньше архивного (альфа)")
++
++	// is_active.
++	l = s.list(url.Values{"q": {"фильтр-"}, "is_active": {"true"}})
++	s.Equal([]string{b.Name, g.Name}, names(l))
++	s.Equal(2, l.Total)
++	l = s.list(url.Values{"q": {"фильтр-"}, "is_active": {"false"}})
++	s.Equal([]string{a.Name}, names(l))
++	s.False(l.Items[0].IsActive)
++
++	// спецсимволы LIKE ищутся буквально.
++	s.Equal([]string{"Фильтр100%_скидка"}, names(s.list(url.Values{"q": {"100%_"}})))
++	s.Equal(0, s.list(url.Values{"q": {"Фильтр_Бета"}}).Total, "_ — не «любой символ»")
++	s.Equal(0, s.list(url.Values{"q": {"нет-такого-поставщика"}}).Total)
++	s.Empty(s.list(url.Values{"q": {"нет-такого-поставщика"}}).Items)
++
++	// limit / offset: total — под фильтрами, а не размер страницы.
++	l = s.list(url.Values{"q": {"фильтр-"}, "limit": {"2"}, "offset": {"1"}})
++	s.Equal(3, l.Total)
++	s.Equal(2, l.Limit)
++	s.Equal(1, l.Offset)
++	s.Equal([]string{g.Name, a.Name}, names(l))
++	s.Equal(500, s.list(url.Values{"limit": {"100000"}}).Limit, "limit не больше 500")
++
++	// негатив: is_active=maybe → 400 is_active: invalid; q длиннее 200 → 400.
++	for _, v := range []string{"maybe", "1", "TRUE"} {
++		st, raw = s.admin.Do(http.MethodGet, supAPI+"?is_active="+v, nil)
++		s.Equal(http.StatusBadRequest, st, "is_active=%s → %s", v, raw)
++		s.Equal(map[string]string{"is_active": "invalid"}, s.fields(raw), v)
++	}
++	st, raw = s.admin.Do(http.MethodGet, supAPI+"?"+url.Values{"q": {rep(201)}}.Encode(), nil)
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"q": "too_long"}, s.fields(raw))
++}
++
++// TS-020 (DS-007, abuse case 1): executor → 403 на все три endpoint'а и на SSR-экран, пункта
++// меню нет; аноним → 401.
++func (s *SuppliersLiveSuite) TestTS020_ExecutorForbidden() {
++	target := s.create(map[string]any{"name": "Поставщик-для-прав"})
++	s.SeedUser("sup-exec", "password1", "Поставщики Исп", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("sup-exec", "password1")
++
++	for _, cs := range []struct {
++		method, path string
++		body         any
++	}{
++		{http.MethodGet, supAPI, nil},
++		{http.MethodPost, supAPI, map[string]any{"name": "Чужой поставщик"}},
++		{http.MethodPut, supAPI + "/" + target.ID, map[string]any{"name": "Взлом", "is_active": false}},
++		{http.MethodPut, supAPI + "/00000000-0000-0000-0000-000000000000", map[string]any{"name": "X", "is_active": true}},
++	} {
++		st, raw := exec.Do(cs.method, cs.path, cs.body)
++		s.Equal(http.StatusForbidden, st, "%s %s → %s", cs.method, cs.path, raw)
++	}
++	l := s.list(url.Values{"q": {"Поставщик-для-прав"}})
++	s.Require().Len(l.Items, 1)
++	s.True(l.Items[0].IsActive, "executor ничего не изменил")
++	s.Equal(0, s.list(url.Values{"q": {"Чужой поставщик"}}).Total, "executor ничего не создал")
++
++	resp := exec.Request(http.MethodGet, "/suppliers", nil, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode)
++
++	resp = exec.Request(http.MethodGet, "/", nil, nil)
++	body, err := io.ReadAll(resp.Body)
++	resp.Body.Close()
++	s.Require().NoError(err)
++	s.NotContains(string(body), `href="/suppliers"`, "executor не видит пункт «Поставщики»")
++
++	anon := s.NewBrowser()
++	st, raw := anon.Do(http.MethodGet, supAPI, nil)
++	s.Equal(http.StatusUnauthorized, st, string(raw))
++}
++
++// SSR: оболочка экрана «Поставщики» для admin — пункт сайдбара, корень экрана, форма и
++// скрипт; данные грузит js/suppliers.js через API.
++func (s *SuppliersLiveSuite) TestSSR_PageShell() {
++	for _, path := range []string{"/suppliers", "/suppliers?new=1", "/suppliers?id=00000000-0000-0000-0000-000000000000"} {
++		resp := s.admin.Request(http.MethodGet, path, nil, nil)
++		body, err := io.ReadAll(resp.Body)
++		resp.Body.Close()
++		s.Require().NoError(err)
++		s.Equal(http.StatusOK, resp.StatusCode, path)
++		html := string(body)
++		s.Contains(html, `data-testid="suppliers-root"`, path)
++		s.Contains(html, `data-testid="supplier-form"`, path)
++		s.Contains(html, `data-testid="supplier-add"`, path)
++		s.Contains(html, `/assets/ssr-shared/js/suppliers.js`, path)
++		s.Contains(html, `href="/suppliers"`, "пункт «Поставщики» в сайдбаре admin")
++		s.Contains(html, "Поставщики")
++	}
++
++	resp := s.admin.Request(http.MethodGet, "/assets/ssr-shared/js/suppliers.js", nil, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusOK, resp.StatusCode)
++}
+diff --git a/internal/features/suppliers/validate.go b/internal/features/suppliers/validate.go
+new file mode 100644
+index 0000000..aba5cef
+--- /dev/null
++++ b/internal/features/suppliers/validate.go
+@@ -0,0 +1,89 @@
++package suppliers
++
++import (
++	"strings"
++	"unicode"
++	"unicode/utf8"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Коды ошибок полей (details.fields[].message) — экран переводит их в текст
++// (web/ssr/_shared/js/suppliers.js).
++const (
++	msgRequired    = "required"
++	msgTooLong     = "too_long"
++	msgInvalid     = "invalid"
++	msgInvalidText = "invalid_text"
++	// msgDuplicate — название занято другим поставщиком, включая архивных (DS-007).
++	msgDuplicate = "duplicate"
++)
++
++// Лимиты длины в символах (§4.1).
++const (
++	nameMax        = 200
++	contactNameMax = 200
++	phoneMax       = 50
++	addressMax     = 500
++	noteMax        = 1000
++	queryMax       = 200
++)
++
++// Input — нормализованные поля поставщика.
++type Input struct {
++	Name        string
++	ContactName string
++	Phone       string
++	Address     string
++	Note        string
++	IsActive    bool
++}
++
++func (in Input) normalize() Input {
++	in.Name = strings.TrimSpace(in.Name)
++	in.ContactName = strings.TrimSpace(in.ContactName)
++	in.Phone = strings.TrimSpace(in.Phone)
++	in.Address = strings.TrimSpace(in.Address)
++	in.Note = strings.TrimSpace(in.Note)
++	return in
++}
++
++// validate — ошибки полей после normalize(); на поле — не больше одной ошибки.
++func (in Input) validate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	switch n := utf8.RuneCountInString(in.Name); {
++	case sqlutil.HasInvalidText(in.Name):
++		add("name", msgInvalidText)
++	case n == 0:
++		add("name", msgRequired)
++	case n > nameMax:
++		add("name", msgTooLong)
++	}
++	optional := func(name, v string, limit int) {
++		switch {
++		case sqlutil.HasInvalidText(v):
++			add(name, msgInvalidText)
++		case utf8.RuneCountInString(v) > limit:
++			add(name, msgTooLong)
++		}
++	}
++	optional("contact_name", in.ContactName, contactNameMax)
++	switch {
++	case sqlutil.HasInvalidText(in.Phone):
++		add("phone", msgInvalidText)
++	case utf8.RuneCountInString(in.Phone) > phoneMax:
++		add("phone", msgTooLong)
++	case in.Phone != "" && !hasDigit(in.Phone):
++		add("phone", msgInvalid)
++	}
++	optional("address", in.Address, addressMax)
++	optional("note", in.Note, noteMax)
++	return f
++}
++
++func hasDigit(s string) bool {
++	return strings.IndexFunc(s, unicode.IsDigit) >= 0
++}
+diff --git a/internal/features/suppliers/validate_test.go b/internal/features/suppliers/validate_test.go
+new file mode 100644
+index 0000000..870d47d
+--- /dev/null
++++ b/internal/features/suppliers/validate_test.go
+@@ -0,0 +1,131 @@
++package suppliers
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/stretchr/testify/assert"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++func fieldsOf(f []errorspkg.Field) map[string]string {
++	out := map[string]string{}
++	for _, x := range f {
++		out[x.Name] = x.Message
++	}
++	return out
++}
++
++func check(in Input) map[string]string { return fieldsOf(in.normalize().validate()) }
++
++// TS-020: name required / 200 символов после trim.
++func TestTS020_Input_Name(t *testing.T) {
++	in := Input{Name: "  ООО Картридж  ", ContactName: " Иван ", Phone: " +7 700 ", Address: " Алматы ", Note: " прим "}.normalize()
++	assert.Equal(t, Input{Name: "ООО Картридж", ContactName: "Иван", Phone: "+7 700", Address: "Алматы", Note: "прим"}, in, "trim всех полей")
++	assert.Empty(t, fieldsOf(in.validate()))
++
++	assert.Equal(t, map[string]string{"name": msgRequired}, check(Input{}))
++	assert.Equal(t, map[string]string{"name": msgRequired}, check(Input{Name: "   "}))
++	assert.Empty(t, check(Input{Name: strings.Repeat("я", nameMax)}), "граница 200 — валидно")
++	assert.Empty(t, check(Input{Name: " " + strings.Repeat("я", nameMax) + " "}), "длина считается после trim")
++	assert.Equal(t, map[string]string{"name": msgTooLong}, check(Input{Name: strings.Repeat("я", nameMax+1)}))
++	assert.Equal(t, map[string]string{"name": msgInvalidText}, check(Input{Name: "Поставщик\u0000"}))
++}
++
++// TS-020: phone — строка; без цифр → invalid, 51 символ → too_long, пустой — допустим.
++func TestTS020_Input_Phone(t *testing.T) {
++	for _, ok := range []string{"", "   ", "+7 (700) 123-45-67", "8", "доб. 5", strings.Repeat("1", phoneMax)} {
++		assert.Empty(t, check(Input{Name: "X", Phone: ok}), "phone %q", ok)
++	}
++	for _, bad := range []string{"нет", "+-()", "abc"} {
++		assert.Equal(t, map[string]string{"phone": msgInvalid}, check(Input{Name: "X", Phone: bad}), "phone %q", bad)
++	}
++	assert.Equal(t, map[string]string{"phone": msgTooLong}, check(Input{Name: "X", Phone: strings.Repeat("1", phoneMax+1)}))
++	assert.Equal(t, map[string]string{"phone": msgTooLong}, check(Input{Name: "X", Phone: strings.Repeat("я", phoneMax+1)}),
++		"длина важнее отсутствия цифр")
++	assert.Equal(t, map[string]string{"phone": msgInvalidText}, check(Input{Name: "X", Phone: "1\u0000"}))
++}
++
++// TS-020: длины contact_name (200), address (500), note (1000) — граница валидна, +1 → too_long.
++func TestTS020_Input_OptionalLengths(t *testing.T) {
++	cases := []struct {
++		field string
++		limit int
++		set   func(*Input, string)
++	}{
++		{"contact_name", contactNameMax, func(in *Input, v string) { in.ContactName = v }},
++		{"address", addressMax, func(in *Input, v string) { in.Address = v }},
++		{"note", noteMax, func(in *Input, v string) { in.Note = v }},
++	}
++	for _, c := range cases {
++		in := Input{Name: "X"}
++		c.set(&in, strings.Repeat("я", c.limit))
++		assert.Empty(t, check(in), "%s: граница %d — валидно", c.field, c.limit)
++
++		c.set(&in, strings.Repeat("я", c.limit+1))
++		assert.Equal(t, map[string]string{c.field: msgTooLong}, check(in), "%s: %d символ", c.field, c.limit+1)
++
++		c.set(&in, "текст\u0000")
++		assert.Equal(t, map[string]string{c.field: msgInvalidText}, check(in), "%s: NUL", c.field)
++	}
++
++	// Все поля невалидны разом — по одной ошибке на поле.
++	all := Input{
++		ContactName: strings.Repeat("я", contactNameMax+1), Phone: "нет",
++		Address: strings.Repeat("я", addressMax+1), Note: strings.Repeat("я", noteMax+1),
++	}
++	assert.Equal(t, map[string]string{
++		"name": msgRequired, "contact_name": msgTooLong, "phone": msgInvalid, "address": msgTooLong, "note": msgTooLong,
++	}, check(all))
++}
++
++// TS-020: дубль названия — 400 по полю name (duplicate), не 409; нет строки → SUPPLIER_NOT_FOUND.
++func TestTS020_MapErr(t *testing.T) {
++	var app *errorspkg.AppError
++	assert.True(t, errors.As(mapErr(errNameDuplicate), &app))
++	assert.Equal(t, 400, app.HTTP)
++	assert.Equal(t, map[string]string{"name": msgDuplicate}, fieldsOf(app.Fields))
++
++	assert.ErrorIs(t, mapErr(ErrNotFound), ErrSupplierNotFound)
++	assert.Equal(t, 404, ErrSupplierNotFound.HTTP)
++	assert.Equal(t, "SUPPLIER_NOT_FOUND", ErrSupplierNotFound.Code)
++
++	assert.ErrorIs(t, mapNameConflict(&pgconn.PgError{Code: "23505"}), errNameDuplicate)
++	other := &pgconn.PgError{Code: "23514"}
++	assert.Equal(t, error(other), mapNameConflict(other), "прочие ошибки БД не маскируются")
++}
++
++// TS-020: фильтры списка валидируются до обращения к БД — is_active=maybe → 400
++// is_active: invalid; q длиннее 200 → 400; не-uuid id в PUT → 404 (сервис с nil-репозиторием
++// до БД не доходит).
++func TestTS020_Service_RejectsBeforeDB(t *testing.T) {
++	svc := &Service{}
++	ctx := context.Background()
++
++	var app *errorspkg.AppError
++	_, err := svc.List(ctx, ListQuery{IsActive: "maybe"})
++	assert.True(t, errors.As(err, &app))
++	assert.Equal(t, 400, app.HTTP)
++	assert.Equal(t, map[string]string{"is_active": msgInvalid}, fieldsOf(app.Fields))
++
++	for _, v := range []string{"1", "0", "TRUE", "yes"} {
++		_, err = svc.List(ctx, ListQuery{IsActive: v})
++		assert.True(t, errors.As(err, &app), "is_active=%q", v)
++		assert.Equal(t, map[string]string{"is_active": msgInvalid}, fieldsOf(app.Fields), "is_active=%q", v)
++	}
++
++	_, err = svc.List(ctx, ListQuery{Q: strings.Repeat("я", queryMax+1)})
++	assert.True(t, errors.As(err, &app))
++	assert.Equal(t, map[string]string{"q": msgTooLong}, fieldsOf(app.Fields))
++
++	_, err = svc.Update(ctx, "not-a-uuid", Input{Name: "X", IsActive: true})
++	assert.ErrorIs(t, err, ErrSupplierNotFound)
++
++	_, err = svc.Create(ctx, Input{Name: "   "})
++	assert.True(t, errors.As(err, &app))
++	assert.Equal(t, map[string]string{"name": msgRequired}, fieldsOf(app.Fields))
++}
+diff --git a/internal/server/router.go b/internal/server/router.go
+index 7f691b2..095f938 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -22,6 +22,7 @@ import (
+ 	"github.com/kitavrus/kanban-tree/internal/features/equipmenttypes"
+ 	"github.com/kitavrus/kanban-tree/internal/features/executorpayouts"
+ 	"github.com/kitavrus/kanban-tree/internal/features/stocktransfers"
++	"github.com/kitavrus/kanban-tree/internal/features/suppliers"
+ 	"github.com/kitavrus/kanban-tree/internal/features/users"
+ 	"github.com/kitavrus/kanban-tree/internal/features/warehouses"
+ 	"github.com/kitavrus/kanban-tree/internal/filestore"
+@@ -123,7 +124,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	boardSubtaskLogRepo := board.NewSubtaskLogRepo(pool)
+ 
+ 	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
+-	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/warehouses", "/stock-transfers", "/executor-payouts").WithBadges(boardStockSvc)
++	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/warehouses", "/suppliers", "/stock-transfers", "/executor-payouts").WithBadges(boardStockSvc)
+ 
+ 	sharedR, err := ssr.NewRenderer(ssr.SharedRoot)
+ 	if err != nil {
+@@ -166,6 +167,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	suppliersR, err := ssr.NewRenderer(suppliers.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	api := app.Group("/api/v1")
+ 	auth.Register(app, api, auth.NewHandler(authSvc, guard, authR, shell), guard)
+@@ -182,6 +187,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 		catalog.NewSSR(catCatSvc, catProdSvc, catSvcSvc, pool, catalogR, shell, status))
+ 	whSvc := warehouses.NewService(pool)
+ 	warehouses.Register(app, api, guard, warehouses.NewHandler(whSvc), warehouses.NewSSR(whSvc, warehousesR, shell, status))
++	// Справочник «Поставщики» (suppliers DS-007): только admin.
++	suppliers.Register(app, api, guard, suppliers.NewHandler(suppliers.NewService(pool)),
++		suppliers.NewSSR(suppliersR, shell, status))
+ 	stocktransfers.Register(app, api, guard, stocktransfers.NewHandler(stocktransfers.NewService(pool)),
+ 		stocktransfers.NewSSR(transfersR, shell, status))
+ 	// Выплаты исполнителям (D62–D70): отчёт и массовая отметка — и admin, и executor.
+diff --git a/internal/ssr/menu.go b/internal/ssr/menu.go
+index 576ee8f..1dafca4 100644
+--- a/internal/ssr/menu.go
++++ b/internal/ssr/menu.go
+@@ -29,6 +29,7 @@ var menu = []NavGroup{
+ 		{Title: "Клиенты", Icon: "🏢", URL: "/clients", AdminOnly: true},
+ 		{Title: "Каталог", Icon: "🧰", URL: "/catalog", AdminOnly: true},
+ 		{Title: "Склады", Icon: "🏬", URL: "/warehouses", AdminOnly: true},
++		{Title: "Поставщики", Icon: "🚛", URL: "/suppliers", AdminOnly: true},
+ 	}},
+ 	{Label: "Администрирование", Items: []NavItem{
+ 		{Title: "Сотрудники", Icon: "👥", URL: "/users", AdminOnly: true},

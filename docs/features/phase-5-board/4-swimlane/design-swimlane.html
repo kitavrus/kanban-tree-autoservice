@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Swimlane: Доска заказов и Остатки (фаза 5)</title>
+    <style>
+        :root {
+            --color-gray: #6b7280;
+            --color-blue: #3b82f6;
+            --color-purple: #8b5cf6;
+            --color-teal: #14b8a6;
+            --color-amber: #f59e0b;
+            --bg-light: #f9fafb;
+            --border: #e5e7eb;
+            --text: #1f2937;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --color-gray: #d1d5db;
+                --color-blue: #60a5fa;
+                --color-purple: #a78bfa;
+                --color-teal: #2dd4bf;
+                --color-amber: #fbbf24;
+                --bg-light: #1f2937;
+                --border: #374151;
+                --text: #f3f4f6;
+            }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: white;
+            color: var(--text);
+            padding: 40px 20px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #111827;
+            }
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        .subtitle { color: var(--color-gray); font-size: 14px; margin-bottom: 24px; }
+
+        .goals {
+            background: var(--bg-light);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 32px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .swimlane-grid {
+            display: grid;
+            grid-template-columns: 160px repeat(5, 1fr);
+            gap: 0;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            background: white;
+            margin-bottom: 32px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .swimlane-grid {
+                background: #1f2937;
+            }
+        }
+
+        .lane-corner {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+        }
+
+        .phase-header {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .lane-name {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+        }
+
+        .lane-row-last .lane-name {
+            border-bottom: none;
+        }
+
+        .cell {
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-size: 12px;
+            line-height: 1.5;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            background: white;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .cell {
+                background: #111827;
+            }
+        }
+
+        .lane-row-last .cell {
+            border-bottom: none;
+        }
+
+        .cell-content {
+            padding: 8px;
+            border-radius: 4px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-weight: 500;
+            word-wrap: break-word;
+        }
+
+        .cell-gray { background: var(--color-gray); }
+        .cell-blue { background: var(--color-blue); }
+        .cell-purple { background: var(--color-purple); }
+        .cell-teal { background: var(--color-teal); }
+        .cell-amber { background: var(--color-amber); }
+        .cell-empty { background: transparent; }
+
+        .flows-section {
+            margin-top: 32px;
+            padding: 24px;
+            background: var(--bg-light);
+            border-radius: 6px;
+        }
+
+        .flows-section h2 { font-size: 16px; margin-bottom: 16px; }
+
+        .flow-item {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .flow-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .flow-title {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 8px;
+            color: var(--text);
+        }
+
+        .flow-meta {
+            font-size: 12px;
+            color: var(--color-gray);
+            margin-bottom: 8px;
+        }
+
+        .flow-section {
+            margin-bottom: 12px;
+        }
+
+        .flow-section-title {
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 4px;
+            color: var(--text);
+        }
+
+        .flow-items {
+            font-size: 11px;
+            line-height: 1.6;
+            color: #4b5563;
+            margin-left: 16px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .flow-items {
+                color: #9ca3af;
+            }
+        }
+
+        .flow-items li {
+            margin-bottom: 4px;
+        }
+
+        svg {
+            margin-top: 24px;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Swimlane: Доска заказов и Остатки</h1>
+        <p class="subtitle">Фаза 5 — управление заказами через колонки (Kanban), транзакционное списание товаров со склада, прогноз остатков</p>
+
+        <div class="goals">
+            <strong>Цели:</strong> Kanban-доска с перемещением заказов между колонками с дробной позицией; автоматическое списание товаров при смене статуса; инвариант склада при гонках и откатах; экран «Остатки» с прогнозом по незавершённым заказам; KPI рисковых товаров с бейджем в меню.
+        </div>
+
+        <div class="swimlane-grid">
+            <div class="lane-corner"></div>
+            <div class="phase-header">Запрос</div>
+            <div class="phase-header">Валидация</div>
+            <div class="phase-header">Бизнес-логика</div>
+            <div class="phase-header">Сохранение</div>
+            <div class="phase-header">Ответ</div>
+
+            <div class="lane-name">Администратор</div>
+            <div class="cell"><div class="cell-content cell-blue">POST /api/v1/columns (новая), PUT (изменить consumes_stock)</div></div>
+            <div class="cell"><div class="cell-content cell-purple">RequireAdmin, normalize input</div></div>
+            <div class="cell"><div class="cell-content cell-teal">Проверка уникальности имени, состояния</div></div>
+            <div class="cell"><div class="cell-content cell-amber">TX: INSERT/UPDATE columns, Reconcile всех заказов (toggle consumes_stock)</div></div>
+            <div class="cell"><div class="cell-content cell-blue">201/200 ColumnMutationResponse (столбец + warnings)</div></div>
+
+            <div class="lane-name">Исполнитель</div>
+            <div class="cell"><div class="cell-content cell-blue">POST /api/v1/tasks/:id/move (перенос карточки в колонку)</div></div>
+            <div class="cell"><div class="cell-content cell-purple">ParseForm, validate column_id (uuid), prev_id/next_id (int64 | null)</div></div>
+            <div class="cell"><div class="cell-content cell-teal">Проверка D11 (незавершённые услуги → 409 SUBTASKS_NOT_DONE со списком), рассчёт позиции</div></div>
+            <div class="cell"><div class="cell-content cell-amber">TX: FOR UPDATE на task, column, продукты; Reconcile stock (consume/return)</div></div>
+            <div class="cell"><div class="cell-content cell-blue">200 TaskMutationResponse + warnings (kind: negative | below_min)</div></div>
+
+            <div class="lane-name">Браузер (board.js/SSR)</div>
+            <div class="cell"><div class="cell-content cell-blue">GET / (SSR), GET /api/v1/columns, GET /api/v1/tasks?filter…</div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-blue">Рендер доску + JS board.js, DnD, GET /api/v1/stock/summary для бейджа</div></div>
+
+            <div class="lane-name">Сервер (board service)</div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-teal">StockEngine.Reconcile: идемпотентный пересчёт task_stock (что должно быть), stock_movements (дельта); проверка D11 (status), D17/D34 (consume_stock); ADR-002 forecast = stock − pending</div></div>
+            <div class="cell"><div class="cell-content cell-amber">TX: вставка/обновление stock_movements, task_stock; блокировка: columns FOR UPDATE → tasks FOR UPDATE → products FOR UPDATE (ADR-104)</div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+
+            <div class="lane-name lane-row-last">PostgreSQL (tasks, columns, stock_movements, task_stock, products)</div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-gray">CHECK на status enum, NUMERIC position (дробная), FK RESTRICT; 23503 → 409 CLIENT_HAS_TASKS / EQUIPMENT_USED_IN_TASKS (D26-гарда)</div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+        </div>
+
+        <div class="flows-section">
+            <h2>Ключевые потоки данных</h2>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-001: Загрузка доски (GET /api/v1/columns + GET /api/v1/tasks)</div>
+                <div class="flow-meta">GET /api/v1/columns (любой) → ColumnListResponse; GET /api/v1/tasks?client_id&q&paid&due&assignee&limit=500&offset=0 → TaskListResponse</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Columns (ответ):</div>
+                    <ul class="flow-items">
+                        <li>id, name, position, color, consumes_stock, is_final, tasks_count</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Tasks (TaskCard, см. design-go-layers.md):</div>
+                    <ul class="flow-items">
+                        <li>id (bigserial), column_id, title, client_id, client_name, assignee_id, assignee_name, due_date, is_paid, version, subtasks_total, subtasks_done, subtasks_late</li>
+                        <li>position (numeric строкой для отладки/сортировки)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-002/AC-004/AC-005: Перенос заказа между колонками (POST /api/v1/tasks/:id/move)</div>
+                <div class="flow-meta">POST /api/v1/tasks/:id/move (любой) → 200 TaskMutationResponse | 409 SUBTASKS_NOT_DONE | 400</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Request (ADR-001: дробная позиция):</div>
+                    <ul class="flow-items">
+                        <li>column_id (uuid, целевая колонка)</li>
+                        <li>prev_id (int64 | null, задача выше; может быть из другой колонки → игнорируется)</li>
+                        <li>next_id (int64 | null, задача ниже)</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Валидация и рассчёт позиции:</div>
+                    <ul class="flow-items">
+                        <li>Проверка D11: если target column is_final AND есть незавершённые услуги (subtask.status<>'done') → 409 SUBTASKS_NOT_DONE + details.subtasks[{id, service_name, status}]</li>
+                        <li>Position: trim_scale((prev.position + next.position) / 2) или edge-case (только prev, только next, ни одного)</li>
+                        <li>Ребалансировка при scale>20: UPDATE tasks SET position=row_number()*1024 WHERE column_id=target</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Reconcile (ADR-004, D17/D34):</div>
+                    <ul class="flow-items">
+                        <li>Определить old_consumes, new_consumes по старой и новой column.consumes_stock</li>
+                        <li>Для каждого product в subtasks заказа: dq = old_consumes ? −qty : +qty; new_dq = new_consumes ? −qty : +qty</li>
+                        <li>INSERT stock_movements (reason=task_consume, qty_delta=dq) + UPDATE task_stock, products.stock</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Response (warnings, ADR-006):</div>
+                    <ul class="flow-items">
+                        <li>warnings: [{product_id, name, stock (после изменения), min_stock, kind: 'negative'|'below_min'}]</li>
+                        <li>Только товары, где qty_delta≠0; negative = stock<0, below_min = 0≤stock≤min_stock</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-003: Проверка незавершённых услуг перед финальной колонкой (D11, D22)</div>
+                <div class="flow-meta">POST /tasks/:id/move → 409 SUBTASKS_NOT_DONE {details: {subtasks: [{id, service_name, status}]}}</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Логика (ADR-102: Extra в errorspkg):</div>
+                    <ul class="flow-items">
+                        <li>SELECT s.id, sv.name AS service_name, s.status WHERE task_id=id AND status<>'done' → если не пусто И column.is_final, отказ</li>
+                        <li>Ошибка содержит Extra.subtasks[] (не Validation fields)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-007: Переключение «списывать товары» на колонке (PUT /api/v1/columns/:id с consumes_stock)</div>
+                <div class="flow-meta">PUT /api/v1/columns/:id (Admin) → 200 ColumnMutationResponse + warnings</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Действие:</div>
+                    <ul class="flow-items">
+                        <li>UPDATE column SET consumes_stock=true/false</li>
+                        <li>SELECT all tasks in column → для каждого вызвать StockEngine.Reconcile</li>
+                        <li>Результат: warnings + пересчёт stock для всех заказов в колонке</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-009: Создание заказа (POST /api/v1/tasks)</div>
+                <div class="flow-meta">POST /api/v1/tasks (любой) → 201 TaskMutationResponse</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Request (TaskCreateRequest):</div>
+                    <ul class="flow-items">
+                        <li>title (required, 1..200), client_id (uuid, required), column_id (uuid, required)</li>
+                        <li>assignee_id (uuid | null), due_date (YYYY-MM-DD | null), is_paid (bool; executor: null|false, иначе 403 PAID_ADMIN_ONLY)</li>
+                        <li>Заказ создаётся в default column (или указанную) с position=max+1024</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-012: Удаление заказа (DELETE /api/v1/tasks/:id)</div>
+                <div class="flow-meta">DELETE /api/v1/tasks/:id (Admin) → 200 TaskDeleteResponse (со сводкой возвратов)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Действие:</div>
+                    <ul class="flow-items">
+                        <li>Если заказ в consumes_stock колонке, вернуть товары (ADR-004 undo reconciliation)</li>
+                        <li>DELETE task_stock, stock_movements (task_id=id), subtasks, DELETE task</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-015/AC-016: Экран «Остатки» и бейдж (GET /api/v1/stock + GET /stock/summary)</div>
+                <div class="flow-meta">GET /api/v1/stock?scope=all|risky&limit=&offset= → StockListResponse; GET /stock/summary → StockSummaryResponse</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Stock Summary (ADR-002: прогноз):</div>
+                    <ul class="flow-items">
+                        <li>pending = Σ subtask_products.qty для заказов в NOT consumes_stock AND NOT is_final колонках</li>
+                        <li>forecast = stock − pending</li>
+                        <li>states: out (stock≤0), low (0<stock≤min_stock), will_low (stock>min AND forecast≤min), ok</li>
+                        <li>kpi: {out_count, low_count, will_low_count} (для бейджа: risk_count = out+low+will_low)</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Stock Table (scope=risky → только state<>'ok'):</div>
+                    <ul class="flow-items">
+                        <li>product_id, name, stock, min_stock, state, forecast, risk_count (бейдж в меню)</li>
+                        <li>Сортировка: stock−min_stock ASC (самые критичные сверху)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-013/AC-014: Фильтры доски (GET /api/v1/tasks?client_id&q&paid&due&assignee)</div>
+                <div class="flow-meta">Серверная фильтрация, AND-комбинация; дефолт assignee по роли (executor→'me')</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Параметры:</div>
+                    <ul class="flow-items">
+                        <li>q: ILIKE по tasks.title / clients.company_name + точный поиск #N (ID заказа)</li>
+                        <li>paid: all|paid|unpaid; due: all|soon|overdue</li>
+                        <li>assignee: me|all|{uuid}; client_id: {uuid}</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-017/AC-018: D26-гарды на удаление клиента и оборудования</div>
+                <div class="flow-meta">DELETE /api/v1/clients/:id → 409 CLIENT_HAS_TASKS; DELETE /api/v1/equipment/:id → 409 EQUIPMENT_USED_IN_TASKS</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Логика (ADR-005: гарда в clients/catalog без импорта board):</div>
+                    <ul class="flow-items">
+                        <li>clients.DeleteClient: SELECT COUNT(*) FROM tasks WHERE client_id=id → если >0, 409</li>
+                        <li>catalog.equipment.DeleteEquipment: SELECT COUNT(*) FROM subtasks WHERE equipment_id=id OR FROM task_equipment → если >0, 409</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">Обработка ошибок и warnings</div>
+                <div class="flow-meta">Коды 400 (валидация), 409 (конфликт состояния), 404 (IDOR), 403 (роль/PAID_ADMIN_ONLY)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Sentinel-коды (design-errors.md):</div>
+                    <ul class="flow-items">
+                        <li>SUBTASKS_NOT_DONE (409) — попытка перейти в финальную колонку с незавершёнными услугами + Extra.subtasks[]</li>
+                        <li>TASK_VERSION_CONFLICT (409) — PUT с неверной version</li>
+                        <li>CLIENT_HAS_TASKS (409) — попытка удалить клиента с заказами</li>
+                        <li>EQUIPMENT_USED_IN_TASKS (409) — попытка удалить оборудование из заказа</li>
+                        <li>PAID_ADMIN_ONLY (403) — executor меняет is_paid</li>
+                        <li>Warnings: [{product_id, name, stock, min_stock, kind: 'negative'|'below_min'}] — не ошибка, move выполняется</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-019: Seed demo (make seed-demo, ADR-105)</div>
+                <div class="flow-meta">Заполнение БД демо-данными (клиенты, оборудование, услуги, заказы во всех колонках, товары, остатки)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Действие:</div>
+                    <ul class="flow-items">
+                        <li>Guard: SELECT COUNT(*) FROM tasks → если >0, exit 0 (уже есть данные)</li>
+                        <li>TX: вставка clients, equipment, services, products, columns, tasks, subtasks, stock_movements</li>
+                        <li>Reconcile для всех заказов в consumes_stock колонках → инвариант склада сходится</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">Инвариант склада (Stock Invariant)</div>
+                <div class="flow-meta">Проверка консистентности: sum(stock_movements.qty_delta) = task_stock.qty для каждой (task_id, product_id)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Выполняется при:</div>
+                    <ul class="flow-items">
+                        <li>Каждом move (Reconcile идемпотентен)</li>
+                        <li>PUT stock (manual adjustment)</li>
+                        <li>DELETE task (возврат товаров)</li>
+                        <li>toggle consumes_stock на колонке (ребалансировка всех заказов)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <svg width="100%" height="400" viewBox="0 0 1000 400" xmlns="http://www.w3.org/2000/svg" style="margin-top: 24px;">
+            <defs>
+                <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                    <polygon points="0 0, 10 3, 0 6" fill="#3b82f6" />
+                </marker>
+                <marker id="arrowhead-dashed" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                    <polygon points="0 0, 10 3, 0 6" fill="#ef4444" />
+                </marker>
+                <marker id="arrowhead-amber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                    <polygon points="0 0, 10 3, 0 6" fill="#f59e0b" />
+                </marker>
+            </defs>
+
+            <text x="10" y="25" font-size="12" font-weight="600">Happy Path: Перенос заказа</text>
+            <line x1="30" y1="45" x2="280" y2="45" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowhead)" />
+            <text x="30" y="65" font-size="11">Браузер → Handler → Service.Reconcile → Repo.TX (lock order) → DB → warnings</text>
+
+            <text x="10" y="120" font-size="12" font-weight="600">Ошибка: незавершённые услуги перед финальной колонкой (409 SUBTASKS_NOT_DONE)</text>
+            <line x1="30" y1="140" x2="280" y2="140" stroke="#ef4444" stroke-width="2" stroke-dasharray="5,5" marker-end="url(#arrowhead-dashed)" />
+            <text x="30" y="160" font-size="11">Service обнаруживает subtask.status<>'done' → Extra.subtasks[{id, service_name, status}]</text>
+
+            <text x="10" y="215" font-size="12" font-weight="600">Сток-reconciliation: Consume vs Return</text>
+            <line x1="30" y1="235" x2="280" y2="235" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowhead-amber)" />
+            <text x="30" y="255" font-size="11">old_consumes? (yes) stock−=qty; new_consumes? (yes) stock−=qty; дельта = new−old</text>
+
+            <text x="10" y="310" font-size="12" font-weight="600">Stock Forecast (ADR-002)</text>
+            <line x1="30" y1="330" x2="280" y2="330" stroke="#14b8a6" stroke-width="2" marker-end="url(#arrowhead)" />
+            <text x="30" y="350" font-size="11">pending = Σ subtask_products.qty (NOT consumes ∧ NOT final); forecast = stock − pending</text>
+
+            <text x="30" y="385" font-size="10" fill="#6b7280">Миграция: 0005_board (tasks, columns, stock_movements, task_stock); Lock Order: columns → tasks → products; TX-retry на 40P01/40001 до 3 раз</text>
+        </svg>
+    </div>
+</body>
+</html>

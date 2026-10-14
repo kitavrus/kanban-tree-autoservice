@@ -1,0 +1,8 @@
+{{ define "content" }}
+<div class="app-status mx-auto" data-testid="status-page">
+  <div class="app-status-code">{{ .Code }}</div>
+  <h2 class="fs-4 mt-3">{{ .Heading }}</h2>
+  <p class="text-body-secondary">{{ .Message }}</p>
+  <a href="/" class="btn btn-primary">На доску</a>
+</div>
+{{ end }}

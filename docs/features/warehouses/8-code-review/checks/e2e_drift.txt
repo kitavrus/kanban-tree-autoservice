@@ -1,0 +1,18 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/artifact_lint.py --e2e-drift /Users/igorpotema/mycode/kanban-tree/docs/features/warehouses/draft-spec.md /Users/igorpotema/mycode/kanban-tree/scripts/e2e --spec-glob *.spec.ts
+(exit 1)
+
+e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 14 id, code: 0 в 0 файлах, проблем: 14)
+  DRIFT: TS-001 есть в draft-spec.md, теста test('TS-001: …') нет (сценарий без теста)
+  DRIFT: TS-002 есть в draft-spec.md, теста test('TS-002: …') нет (сценарий без теста)
+  DRIFT: TS-003 есть в draft-spec.md, теста test('TS-003: …') нет (сценарий без теста)
+  DRIFT: TS-004 есть в draft-spec.md, теста test('TS-004: …') нет (сценарий без теста)
+  DRIFT: TS-005 есть в draft-spec.md, теста test('TS-005: …') нет (сценарий без теста)
+  DRIFT: TS-006 есть в draft-spec.md, теста test('TS-006: …') нет (сценарий без теста)
+  DRIFT: TS-007 есть в draft-spec.md, теста test('TS-007: …') нет (сценарий без теста)
+  DRIFT: TS-008 есть в draft-spec.md, теста test('TS-008: …') нет (сценарий без теста)
+  DRIFT: TS-009 есть в draft-spec.md, теста test('TS-009: …') нет (сценарий без теста)
+  DRIFT: TS-010 есть в draft-spec.md, теста test('TS-010: …') нет (сценарий без теста)
+  DRIFT: TS-011 есть в draft-spec.md, теста test('TS-011: …') нет (сценарий без теста)
+  DRIFT: TS-012 есть в draft-spec.md, теста test('TS-012: …') нет (сценарий без теста)
+  DRIFT: TS-013 есть в draft-spec.md, теста test('TS-013: …') нет (сценарий без теста)
+  DRIFT: TS-014 есть в draft-spec.md, теста test('TS-014: …') нет (сценарий без теста)

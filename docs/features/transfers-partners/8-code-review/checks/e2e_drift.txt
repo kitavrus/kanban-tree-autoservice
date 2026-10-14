@@ -1,0 +1,10 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/artifact_lint.py --e2e-drift /Users/igorpotema/mycode/kanban-tree/docs/features/transfers-partners/draft-spec.md /Users/igorpotema/mycode/kanban-tree/scripts/e2e --spec-glob transfers*.spec.ts
+(exit 1)
+
+e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 6 id, code: 0 в 0 файлах, проблем: 6)
+  DRIFT: TS-029 есть в draft-spec.md, теста test('TS-029: …') нет (сценарий без теста)
+  DRIFT: TS-032 есть в draft-spec.md, теста test('TS-032: …') нет (сценарий без теста)
+  DRIFT: TS-034 есть в draft-spec.md, теста test('TS-034: …') нет (сценарий без теста)
+  DRIFT: TS-035 есть в draft-spec.md, теста test('TS-035: …') нет (сценарий без теста)
+  DRIFT: TS-036 есть в draft-spec.md, теста test('TS-036: …') нет (сценарий без теста)
+  DRIFT: TS-039 есть в draft-spec.md, теста test('TS-039: …') нет (сценарий без теста)

@@ -1,0 +1,49 @@
+Класс 6 — authorization depth & data privacy (AC-003, AC-004, AC-012, AC-017).
+
+== Оборудование: TASK_EQUIPMENT_IN_USE / чужой клиент ==
+$ DELETE /api/v1/tasks/1862/equipment/{EQ1} (единица выбрана в done-услуге)
+-> 409 {"code":"TASK_EQUIPMENT_IN_USE","details":{"subtasks":[{"id":...,"service_name":"qa-oc-service-1","status":"done"}]}}
+
+$ POST /api/v1/tasks/1862/equipment {"equipment_id": EQ2 (клиент #2, заказ клиента #1)}
+-> 400 {"code":"VALIDATION","details":{"fields":[{"name":"equipment_id","message":"foreign_client"}]}}
+
+$ PUT /api/v1/subtasks/{sub1} {"equipment_id": EQ2 (не в task_equipment этого заказа)}
+-> 400 {"fields":[{"name":"equipment_id","message":"not_in_order"}]}
+
+$ PUT /api/v1/tasks/1862 {"client_id": CL2, ...} (EQ1 выбрана в услуге)
+-> 409 TASK_EQUIPMENT_IN_USE, client_id НЕ сменился (подтверждено повторным GET)
+
+== Журнал: SUBTASK_LOG_FORBIDDEN (чужая запись, executor) ==
+Логин sidorov/demo12345 (реальный логин, testutil-паттерн).
+$ PUT /api/v1/subtask-logs/{admin_log_id} {"text":"hacked"} (executor правит запись admin)
+-> 403 {"code":"SUBTASK_LOG_FORBIDDEN","message":"Можно менять только свои записи"}
+$ DELETE /api/v1/subtask-logs/{admin_log_id} (executor)
+-> 403 SUBTASK_LOG_FORBIDDEN
+$ POST /api/v1/subtasks/{sub1}/logs {"text":"executor own log"} (executor)
+-> 201, can_edit=true (для executor, своя запись)
+$ PUT /api/v1/subtask-logs/{exec_log_id} {"text":"admin overwrote"} (admin правит чужую — admin bypass)
+-> 200 (админ может править любые записи, D27)
+
+== Роли/оплата/удаление (AC-003, AC-017) ==
+$ DELETE /api/v1/tasks/1862 (executor)
+-> 403 {"code":"FORBIDDEN","message":"admin only"}
+$ PUT /api/v1/tasks/1862 {"is_paid": true, ...} (executor, было false)
+-> 403 {"code":"PAID_ADMIN_ONLY","message":"Оплату меняет только администратор"}
+
+== Сессия/CSRF ==
+$ curl GET /api/v1/tasks/1862/card (без cookie sid)
+-> 401
+$ curl POST /api/v1/subtasks/{sub1}/logs (с cookie sid, БЕЗ заголовка X-Csrf-Token)
+-> 403 {"code":"CSRF_INVALID","message":"csrf token missing or invalid"}
+
+== XSS ==
+$ POST /api/v1/subtasks/{sub1}/logs {"text":"<script>alert(1)</script> тест"}
+-> 201, JSON возвращает raw text (корректно, экранирование — только на этапе HTML-рендера)
+$ PUT /api/v1/tasks/1862/equipment/{EQ1} {"completeness":"<img src=x onerror=alert(1)>"}
+-> 201, JSON raw
+$ GET /tasks/1862/print/intake, /tasks/1862/print/handover (HTML)
+-> оба содержат экранированное `&lt;img src=x onerror=alert(1)&gt;` (grep -n "onerror" подтверждает
+   единственное вхождение — в escaped-виде, НЕ raw `<img`). XSS не воспроизведён.
+$ GET /tasks/1862/print/other -> 404 (PrintKind неизвестен)
+$ GET /tasks/9999999/print/intake -> 404
+$ HEAD /tasks/1862/print/intake -> Cache-Control: no-store, must-revalidate

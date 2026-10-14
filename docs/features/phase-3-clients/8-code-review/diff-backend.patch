@@ -1,0 +1,5006 @@
+diff --git a/internal/features/clients/clients_http_live_test.go b/internal/features/clients/clients_http_live_test.go
+new file mode 100644
+index 0000000..73e6a26
+--- /dev/null
++++ b/internal/features/clients/clients_http_live_test.go
+@@ -0,0 +1,1123 @@
++//go:build integration
++
++package clients_test
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/url"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// ClientsLiveSuite (§TD-8): клиенты + телефоны + version (оптимистичная блокировка),
++// поиск, каскадное удаление.
++type ClientsLiveSuite struct {
++	testutil.LiveSuite
++	admin *testutil.Browser
++}
++
++func TestClientsLiveSuite(t *testing.T) {
++	suite.Run(t, &ClientsLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *ClientsLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("clients-admin", "password1", "Клиенты Админ", "admin", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("clients-admin", "password1")
++}
++
++type phoneDTO struct {
++	Phone string `json:"phone"`
++	Note  string `json:"note"`
++}
++
++type clientDTO struct {
++	ID              string     `json:"id"`
++	CompanyName     string     `json:"company_name"`
++	Address         string     `json:"address"`
++	ContactName     string     `json:"contact_name"`
++	ContactPosition string     `json:"contact_position"`
++	Phones          []phoneDTO `json:"phones"`
++	EquipmentCount  int        `json:"equipment_count"`
++	Version         int64      `json:"version"`
++}
++
++type apiErr struct {
++	Code    string `json:"code"`
++	Details *struct {
++		Fields []struct{ Name, Message string } `json:"fields"`
++	} `json:"details"`
++}
++
++func (s *ClientsLiveSuite) errOf(body []byte) apiErr {
++	var e apiErr
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	return e
++}
++
++func (s *ClientsLiveSuite) fields(body []byte) map[string]string {
++	e := s.errOf(body)
++	s.Require().NotNil(e.Details, string(body))
++	m := map[string]string{}
++	for _, f := range e.Details.Fields {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func (s *ClientsLiveSuite) create(b *testutil.Browser, body map[string]any) (int, clientDTO, []byte) {
++	st, raw := b.Do(http.MethodPost, "/api/v1/clients", body)
++	var c clientDTO
++	if st == http.StatusCreated {
++		s.Require().NoError(json.Unmarshal(raw, &c))
++	}
++	return st, c, raw
++}
++
++func (s *ClientsLiveSuite) put(b *testutil.Browser, id string, body map[string]any) (int, []byte) {
++	return b.Do(http.MethodPut, "/api/v1/clients/"+id, body)
++}
++
++func card(c clientDTO, patch map[string]any) map[string]any {
++	m := map[string]any{
++		"company_name": c.CompanyName, "address": c.Address,
++		"contact_name": c.ContactName, "contact_position": c.ContactPosition,
++		"phones": c.Phones, "version": c.Version,
++	}
++	for k, v := range patch {
++		m[k] = v
++	}
++	return m
++}
++
++func (s *ClientsLiveSuite) newClient(company string, phones ...map[string]any) clientDTO {
++	if len(phones) == 0 {
++		phones = []map[string]any{{"phone": "9991234567", "note": ""}}
++	}
++	st, c, raw := s.create(s.admin, map[string]any{"company_name": company, "phones": phones})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	return c
++}
++
++// ---- LV-001/LV-002: happy path — создание/получение с несколькими телефонами ----
++
++func (s *ClientsLiveSuite) TestCreateAndGet_HappyPath() {
++	st, c, raw := s.create(s.admin, map[string]any{
++		"company_name":     "  ООО Ромашка  ",
++		"address":          "г. Москва, ул. Ленина, 1",
++		"contact_name":     "Иванов Иван",
++		"contact_position": "Директор",
++		"phones": []map[string]any{
++			{"phone": "+7 (999) 123-45-67", "note": "основной"},
++			{"phone": "8001234567", "note": ""},
++		},
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal("ООО Ромашка", c.CompanyName, "trim")
++	s.Require().Len(c.Phones, 2)
++	s.Equal("+7 (999) 123-45-67", c.Phones[0].Phone)
++	s.Equal("основной", c.Phones[0].Note)
++	s.Equal(int64(1), c.Version)
++	s.Equal(0, c.EquipmentCount)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Equal(http.StatusOK, st)
++	var got clientDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.Equal(c.ID, got.ID)
++	s.Len(got.Phones, 2)
++}
++
++// ---- LV-004: список и поиск (компания/представитель/телефон, в т.ч. по цифрам) ----
++
++func (s *ClientsLiveSuite) TestList_Search() {
++	c1 := s.newClient("Холодмаш", map[string]any{"phone": "+7 (999) 111-22-33", "note": ""})
++	s.newClient("Электросервис", map[string]any{"phone": "+7 (888) 000-00-00", "note": ""})
++	st, _, raw := s.create(s.admin, map[string]any{
++		"company_name": "Прочее ООО", "contact_name": "Холодов Пётр",
++		"phones": []map[string]any{{"phone": "111", "note": ""}},
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients?q=холод", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct {
++		Items  []clientDTO `json:"items"`
++		Total  int         `json:"total"`
++		Limit  int         `json:"limit"`
++		Offset int         `json:"offset"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(2, list.Total, "по компании 'Холодмаш' и по контакту 'Холодов Пётр'")
++	s.Equal(50, list.Limit)
++
++	// поиск по цифрам телефона (ADR-003): "999 111" встречается только у c1.
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients?q=999+111", nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Require().Equal(1, list.Total, string(raw))
++	s.Equal(c1.ID, list.Items[0].ID)
++}
++
++// ---- LV-004 (code review MEDIUM-3): «8999…» находит «+7 (999)…» — ведущая 7/8 полного
++// номера отбрасывается перед сравнением (ADR-003) ----
++
++// Область кодов «70x» — не пересекается с номерами остальных тестов сьюты (общая БД,
++// без TRUNCATE между тестами): изолирует Total-проверки от чужих строк.
++func (s *ClientsLiveSuite) TestList_Search_LeadingCountryDigit() {
++	var list struct {
++		Items []clientDTO `json:"items"`
++		Total int         `json:"total"`
++	}
++	search := func(q string) {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients?q="+url.QueryEscape(q), nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		s.Require().NoError(json.Unmarshal(raw, &list), string(raw))
++	}
++
++	// полный 11-значный номер, набранный с "+7" — находится запросом с ведущей 8, и наоборот.
++	c := s.newClient("Ведущая-Цифра-Клиент-701", map[string]any{"phone": "+7 (701) 555-11-22", "note": ""})
++	search("87015551122")
++	s.Require().Equal(1, list.Total, "«8701…» находит «+7 (701)…» (ADR-003): %+v", list)
++	s.Equal(c.ID, list.Items[0].ID)
++
++	c2 := s.newClient("Ведущая-Цифра-Клиент-702", map[string]any{"phone": "87024445566", "note": ""})
++	search("+7 (702) 444-55-66")
++	s.Require().Equal(1, list.Total, "%+v", list)
++	s.Equal(c2.ID, list.Items[0].ID)
++
++	// пример ADR-003 буквально: короткий частичный ввод «8<area><начало номера>» находит
++	// номер, набранный с "+7" (обрезанные цифры запроса — в обрезанных цифрах номера).
++	c3 := s.newClient("Ведущая-Цифра-Клиент-703", map[string]any{"phone": "+7 (703) 123-00-00", "note": ""})
++	search("8703123")
++	s.Require().Equal(1, list.Total, "короткий частичный ввод «8703123» ~ «+7 (703) 123-…»: %+v", list)
++	s.Equal(c3.ID, list.Items[0].ID)
++
++	// регрессия итерации 2: короткий частичный ввод С КОДОМ СТРАНЫ (не только полный
++	// 11-значный номер) обязан находить номер, набранный с той же ведущей цифрой — раньше
++	// (после MEDIUM-3 итерации 1) БД-сторона стриплась ВСЕГДА, а запрос — только при
++	// ≥11 цифрах, из-за чего оба варианта ниже давали 0 результатов.
++	c4 := s.newClient("Ведущая-Цифра-Клиент-704", map[string]any{"phone": "+7 (704) 111-99-00", "note": ""})
++	search("+7 704 111")
++	s.Require().Equal(1, list.Total, "«+7 704 111» находит «+7 (704) 111-99-00» (было 0 после регрессии): %+v", list)
++	s.Equal(c4.ID, list.Items[0].ID)
++
++	search("8 (704) 111")
++	s.Require().Equal(1, list.Total, "«8 (704) 111» находит «+7 (704) 111-99-00» (было 0 после регрессии): %+v", list)
++	s.Equal(c4.ID, list.Items[0].ID)
++
++	// негатив: номер без совпадающих цифр (другая «область») не находится.
++	search("+7 (709) 999-99-99")
++	s.Equal(0, list.Total, "номер без совпадающих цифр не должен находиться: %+v", list)
++}
++
++// ---- LV-040 (clients API часть): мусор в limit/offset — дефолты, не 500; % и _ в поиске
++// ищутся буквально (EscapeLike), не как SQL-шаблон.
++
++func (s *ClientsLiveSuite) TestList_GarbageParams_And_LiteralLikeChars() {
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients?limit=-5&offset=-100", nil)
++	s.Equal(http.StatusOK, st, string(raw))
++	var list struct {
++		Limit, Offset int
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(50, list.Limit)
++	s.Equal(0, list.Offset)
++
++	s.newClient("100% Сервис")
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients?q=100%25", nil) // "100%" буквально
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var withPct struct {
++		Total int `json:"total"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &withPct))
++	s.Equal(1, withPct.Total, "'%' в запросе ищется буквально, а не как SQL-шаблон 'любые символы'")
++}
++
++// ---- LV-035 (clients часть): пагинация — limit/offset корректно режут страницу ----
++
++func (s *ClientsLiveSuite) TestList_Pagination() {
++	for i := 0; i < 5; i++ {
++		s.newClient("Пагинация-Клиент-" + string(rune('A'+i)))
++	}
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients?q=Пагинация-Клиент&limit=2&offset=0", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var page1 struct {
++		Items []clientDTO `json:"items"`
++		Total int         `json:"total"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &page1))
++	s.Equal(5, page1.Total)
++	s.Len(page1.Items, 2)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients?q=Пагинация-Клиент&limit=2&offset=2", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var page2 struct {
++		Items []clientDTO `json:"items"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &page2))
++	s.Len(page2.Items, 2)
++	s.NotEqual(page1.Items[0].ID, page2.Items[0].ID)
++}
++
++// ---- LV-040 (clients API часть, authz): исполнитель читает, мутации 403; аноним 401 ----
++
++func (s *ClientsLiveSuite) TestAuthz_ExecutorReadOnly_MutationsForbidden_AnonUnauthorized() {
++	c := s.newClient("Права-Клиент")
++
++	s.SeedUser("clients-exec", "password1", "Клиенты Исп", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("clients-exec", "password1")
++
++	st, _ := exec.Do(http.MethodGet, "/api/v1/clients", nil)
++	s.Equal(http.StatusOK, st, "чтение списка разрешено исполнителю")
++	st, _ = exec.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Equal(http.StatusOK, st, "чтение карточки разрешено исполнителю")
++
++	for _, cs := range []struct{ method, path string }{
++		{http.MethodPost, "/api/v1/clients"},
++		{http.MethodPut, "/api/v1/clients/" + c.ID},
++		{http.MethodDelete, "/api/v1/clients/" + c.ID},
++	} {
++		st, raw := exec.Do(cs.method, cs.path, map[string]any{"company_name": "x"})
++		s.Equal(http.StatusForbidden, st, "%s %s", cs.method, cs.path)
++		s.Equal("FORBIDDEN", s.errOf(raw).Code)
++	}
++
++	anon := s.NewBrowser()
++	st, _ = anon.Do(http.MethodGet, "/api/v1/clients", nil)
++	s.Equal(http.StatusUnauthorized, st)
++}
++
++// ---- LV-005: валидация / мусор в теле → 400, не 500 ----
++
++func (s *ClientsLiveSuite) TestCreate_Validation() {
++	st, _, raw := s.create(s.admin, map[string]any{})
++	s.Equal(http.StatusBadRequest, st)
++	f := s.fields(raw)
++	s.Equal("required", f["company_name"])
++	s.Equal("required", f["phones"])
++
++	st, _, raw = s.create(s.admin, map[string]any{
++		"company_name": strings.Repeat("я", 201),
++		"phones":       []map[string]any{{"phone": "123"}},
++	})
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal("too_long", s.fields(raw)["company_name"])
++
++	manyPhones := make([]map[string]any, 21)
++	for i := range manyPhones {
++		manyPhones[i] = map[string]any{"phone": "123456789"}
++	}
++	st, _, raw = s.create(s.admin, map[string]any{"company_name": "Много телефонов", "phones": manyPhones})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("too_many", s.fields(raw)["phones"])
++
++	st, _, raw = s.create(s.admin, map[string]any{"company_name": "Плохой телефон", "phones": []map[string]any{{"phone": "abc"}}})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_format", s.fields(raw)["phones[0].phone"])
++
++	for _, body := range []string{`{`, `null`, `"str"`, `{"phones":"not-an-array"}`} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/clients", body)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
++	}
++
++	// version отсутствует на PUT → 400 required (ADR-100).
++	c := s.newClient("Без version на PUT")
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/clients/"+c.ID, map[string]any{
++		"company_name": c.CompanyName, "phones": []phoneDTO{{Phone: "123"}},
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["version"])
++}
++
++// ---- code review MEDIUM-1: NUL-байт / невалидный UTF-8 → 400, не 500 (§TD-4) ----
++
++func (s *ClientsLiveSuite) TestCreate_NulByteAndQueryGarbage_Not500() {
++	st, _, raw := s.create(s.admin, map[string]any{
++		"company_name": "Плохое имя\u0000",
++		"phones":       []map[string]any{{"phone": "123"}},
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_text", s.fields(raw)["company_name"])
++
++	st, _, raw = s.create(s.admin, map[string]any{
++		"company_name": "Клиент с NUL в телефоне",
++		"phones":       []map[string]any{{"phone": "1\u000023"}},
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_text", s.fields(raw)["phones[0].phone"])
++
++	// GET /api/v1/clients?q=%00 (доступно и исполнителю, D19/AC-013) — не 500: фильтр
++	// молча игнорируется, обычный список.
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients?q=%00", nil)
++	s.Equal(http.StatusOK, st, string(raw))
++
++	s.SeedUser("clients-exec-nul", "password1", "Клиенты Исп NUL", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("clients-exec-nul", "password1")
++	st, raw = exec.Do(http.MethodGet, "/api/v1/clients?q=%00", nil)
++	s.Equal(http.StatusOK, st, string(raw))
++}
++
++// ---- LV-008: битый/несуществующий uuid → 404, не 500 ----
++
++func (s *ClientsLiveSuite) TestBadOrMissingID_404() {
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000", "1'; DROP TABLE clients;--"} {
++		esc := url.PathEscape(id)
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients/"+esc, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, raw = s.put(s.admin, esc, map[string]any{"company_name": "x", "phones": []phoneDTO{{Phone: "1"}}, "version": 1})
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, raw = s.admin.Do(http.MethodDelete, "/api/v1/clients/"+esc, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++	}
++}
++
++// ---- LV-006: устаревший version на PUT → 409, карточка не перезаписана ----
++
++func (s *ClientsLiveSuite) TestUpdate_StaleVersion_Conflict_NotOverwritten() {
++	c := s.newClient("Версия-Клиент")
++	st, raw := s.put(s.admin, c.ID, card(c, map[string]any{"company_name": "Первая правка"}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	// повторный PUT со старым version=1 (карточка уже version=2) → 409, не перезапись.
++	st, raw = s.put(s.admin, c.ID, card(c, map[string]any{"company_name": "Устаревшая правка"}))
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("CLIENT_VERSION_CONFLICT", s.errOf(raw).Code)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got clientDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.Equal("Первая правка", got.CompanyName, "устаревшая правка не применилась")
++	s.Equal(int64(2), got.Version)
++}
++
++// ---- LV-020: конкурентная запись — детерминированный исход, ровно один 200, один 409 ----
++
++func (s *ClientsLiveSuite) TestUpdate_Concurrent_ExactlyOneWinner() {
++	c := s.newClient("Конкурентный-Клиент")
++
++	var wg sync.WaitGroup
++	statuses := make([]int, 2)
++	for i := 0; i < 2; i++ {
++		wg.Add(1)
++		go func(idx int) {
++			defer wg.Done()
++			b := s.NewBrowser()
++			b.Login("clients-admin", "password1")
++			st, _ := s.put(b, c.ID, card(c, map[string]any{"company_name": "Правка от горутины"}))
++			statuses[idx] = st
++		}(i)
++	}
++	wg.Wait()
++
++	ok200, ok409 := 0, 0
++	for _, st := range statuses {
++		switch st {
++		case http.StatusOK:
++			ok200++
++		case http.StatusConflict:
++			ok409++
++		}
++	}
++	s.Equal(1, ok200, "ровно один запрос выиграл гонку: %v", statuses)
++	s.Equal(1, ok409, "ровно один запрос получил конфликт: %v", statuses)
++
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got clientDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.Equal(int64(2), got.Version, "версия увеличилась ровно один раз")
++}
++
++// ---- LV-007: DELETE клиента с оборудованием — каскадное удаление (телефоны/оборудование),
++// повторный DELETE → 404 ----
++
++func (s *ClientsLiveSuite) TestDelete_Cascade_And_RepeatDelete404() {
++	c := s.newClient("Удаляемый-Клиент", map[string]any{"phone": "111", "note": ""}, map[string]any{"phone": "222", "note": ""})
++
++	var typeID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO equipment_types (name) VALUES ('Тип для удаления') RETURNING id`).Scan(&typeID))
++	var equipmentID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO equipment (client_id, type_id, model) VALUES ($1::uuid, $2::uuid, 'M1') RETURNING id`,
++		c.ID, typeID).Scan(&equipmentID))
++
++	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/clients/"+c.ID, nil)
++	s.Equal(http.StatusNoContent, st, string(raw))
++
++	var phonesLeft, equipmentLeft int
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`SELECT count(*) FROM client_phones WHERE client_id = $1::uuid`, c.ID).Scan(&phonesLeft))
++	s.Equal(0, phonesLeft, "телефоны удалены каскадом")
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`SELECT count(*) FROM equipment WHERE client_id = $1::uuid`, c.ID).Scan(&equipmentLeft))
++	s.Equal(0, equipmentLeft, "оборудование удалено каскадом")
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Equal(http.StatusNotFound, st, string(raw))
++
++	// повторное удаление уже удалённого клиента → 404, не 500.
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/clients/"+c.ID, nil)
++	s.Equal(http.StatusNotFound, st, string(raw))
++}
++
++// ---- SSR-экран (Phase 6) ----
++
++// ---- LV-041 (clients часть): admin — 200, исполнитель — 403-страница, аноним — редирект
++// на /login (не JSON).
++func (s *ClientsLiveSuite) TestSSR_Guards() {
++	st, page := s.admin.Do(http.MethodGet, "/clients", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="clients-table"`)
++
++	s.SeedUser("clients-exec-ssr", "password1", "Клиенты Исп SSR", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("clients-exec-ssr", "password1")
++	st, page = exec.Do(http.MethodGet, "/clients", nil)
++	s.Equal(http.StatusForbidden, st)
++	s.Contains(string(page), "Нет доступа")
++	st, _ = exec.Do(http.MethodGet, "/clients/new", nil)
++	s.Equal(http.StatusForbidden, st)
++
++	anon := s.NewBrowser()
++	resp := anon.Request(http.MethodGet, "/clients", nil, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusFound, resp.StatusCode)
++	s.Contains(resp.Header.Get("Location"), "/login")
++}
++
++// ---- LV-021: SSR PRG create + 409 conflict сохраняет ввод (в т.ч. телефоны, ADR-005) ----
++
++func (s *ClientsLiveSuite) TestSSR_CreatePRG_And_ConflictKeepsInput() {
++	form := url.Values{"company_name": {"SSR Конфликт Клиент"}, "address": {"г. Тест"}}
++	form.Add("phone", "9990000000")
++	form.Add("phone_note", "")
++	resp := s.admin.Request(http.MethodPost, "/clients", form, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	createLocation := resp.Header.Get("Location")
++
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients?q=SSR+Конфликт+Клиент", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct {
++		Items []clientDTO `json:"items"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Require().Len(list.Items, 1)
++	c := list.Items[0]
++	s.Equal(int64(1), c.Version)
++	// PRG — на карточку созданного клиента, не на список (design-go-layers.md §SSR Routes).
++	s.Equal("/clients/"+c.ID+"?flash=created", createLocation)
++
++	// кто-то другой обновляет карточку раньше нас (version становится 2).
++	st, raw = s.put(s.admin, c.ID, card(c, map[string]any{"company_name": "Уже изменено другим"}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	// SSR-правка со старым version=1 → 409, форма перерисована с нашим вводом.
++	staleForm := url.Values{"company_name": {"Мои несохранённые правки"}, "version": {"1"}}
++	staleForm.Add("phone", "1112223344")
++	staleForm.Add("phone_note", "мой ввод")
++	st, page := s.admin.Do(http.MethodPost, "/clients/"+c.ID, staleForm)
++	s.Equal(http.StatusConflict, st)
++	body := string(page)
++	s.Contains(body, "Карточку уже изменил другой пользователь — ваши правки не сохранены")
++	s.Contains(body, "Мои несохранённые правки")
++	s.Contains(body, "1112223344")
++	s.Contains(body, "мой ввод")
++	s.Contains(body, `href="/clients/`+c.ID+`"`, "ссылка «Открыть актуальную версию»")
++
++	// карточка в БД не перезаписана устаревшей правкой.
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got clientDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.Equal("Уже изменено другим", got.CompanyName)
++}
++
++// ---- LV-022: SSR delete без CSRF-токена → 403, с токеном — PRG-редирект ----
++
++func (s *ClientsLiveSuite) TestSSR_Delete_CSRFRequired() {
++	c := s.newClient("SSR Удаляемый Клиент")
++
++	resp := s.admin.Request(http.MethodPost, "/clients/"+c.ID+"/delete", url.Values{}, map[string]string{"X-Csrf-Token": ""})
++	defer resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode, "без CSRF-токена (ни заголовка, ни _csrf в теле) — 403")
++
++	resp2 := s.admin.Request(http.MethodPost, "/clients/"+c.ID+"/delete", url.Values{"_csrf": {s.admin.CSRFToken()}}, nil)
++	resp2.Body.Close()
++	s.Equal(http.StatusSeeOther, resp2.StatusCode)
++	s.Equal("/clients?flash=deleted", resp2.Header.Get("Location"))
++
++	st, _ := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Equal(http.StatusNotFound, st)
++}
++
++// ---- code review MEDIUM-2: SSR-форма перерисовывается НОРМАЛИЗОВАННЫМ списком телефонов
++// — индекс ошибки соответствует строке, которую ввёл пользователь, а не сырому индексу
++// POST (пример из отчёта: ["", "abc"] — пустая строка отбрасывается, ошибка должна быть
++// под "abc", не под пустой строкой) ----
++
++func (s *ClientsLiveSuite) TestSSR_Create_PhoneErrorIndexMatchesNormalizedRow() {
++	form := url.Values{"company_name": {"Индекс-Телефон-Клиент"}}
++	form.Add("phone", "")
++	form.Add("phone_note", "")
++	form.Add("phone", "abc")
++	form.Add("phone_note", "")
++	st, page := s.admin.Do(http.MethodPost, "/clients", form)
++	s.Equal(http.StatusUnprocessableEntity, st)
++	body := string(page)
++
++	firstRow := strings.Index(body, `data-testid="phone-row"`)
++	templateStart := strings.Index(body, "<template data-row-template>")
++	s.Require().True(firstRow >= 0 && templateStart > firstRow, body)
++	rowSegment := body[firstRow:templateStart]
++
++	s.Equal(1, strings.Count(rowSegment, `data-testid="phone-row"`),
++		"пустая строка отброшена normalize() — остаётся только строка 'abc'")
++	s.Contains(rowSegment, `value="abc"`, "нормализованная (не сырая) строка формы")
++	s.Contains(rowSegment, "Номер должен содержать цифры", "ошибка под строкой 'abc', не под отброшенной пустой")
++}
++
++// ---- Equipment API (Phase 7) ----
++
++type specDTO struct {
++	K string `json:"k"`
++	V string `json:"v"`
++}
++
++type equipmentDTO struct {
++	ID           string    `json:"id"`
++	ClientID     string    `json:"client_id"`
++	TypeID       string    `json:"type_id"`
++	TypeName     string    `json:"type_name"`
++	TypeIsActive bool      `json:"type_is_active"`
++	Brand        string    `json:"brand"`
++	Model        string    `json:"model"`
++	SKU          string    `json:"sku"`
++	Serial       string    `json:"serial"`
++	Specs        []specDTO `json:"specs"`
++	Note         string    `json:"note"`
++}
++
++// newType — активный тип оборудования напрямую в БД (equipmenttypes — отдельный пакет,
++// ADR-102: связь только через SQL).
++func (s *ClientsLiveSuite) newType(name string) string {
++	var id string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO equipment_types (name) VALUES ($1) RETURNING id`, name).Scan(&id))
++	return id
++}
++
++// archiveType — тип в архиве (is_active=false) напрямую в БД.
++func (s *ClientsLiveSuite) archiveType(name string) string {
++	id := s.newType(name)
++	_, err := s.Pool.Exec(s.T().Context(), `UPDATE equipment_types SET is_active = false WHERE id = $1::uuid`, id)
++	s.Require().NoError(err)
++	return id
++}
++
++func (s *ClientsLiveSuite) createEquipment(b *testutil.Browser, clientID string, body map[string]any) (int, equipmentDTO, []byte) {
++	st, raw := b.Do(http.MethodPost, "/api/v1/clients/"+clientID+"/equipment", body)
++	var e equipmentDTO
++	if st == http.StatusCreated {
++		s.Require().NoError(json.Unmarshal(raw, &e))
++	}
++	return st, e, raw
++}
++
++// ---- LV-010/LV-011: happy path — создание единицы оборудования с характеристиками,
++// список (envelope), счётчик оборудования клиента ----
++
++func (s *ClientsLiveSuite) TestEquipment_CreateAndGet_HappyPath() {
++	c := s.newClient("Оборудование-Клиент")
++	typeID := s.newType("Компрессор")
++
++	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{
++		"type_id": typeID, "brand": "  Danfoss  ", "model": "M100", "sku": "SKU1", "serial": "SN1",
++		"specs": []map[string]any{{"k": "мощность", "v": "5 кВт"}}, "note": "примечание",
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal(c.ID, e.ClientID)
++	s.Equal(typeID, e.TypeID)
++	s.Equal("Компрессор", e.TypeName)
++	s.True(e.TypeIsActive)
++	s.Equal("Danfoss", e.Brand, "trim")
++	s.Require().Len(e.Specs, 1)
++	s.Equal("мощность", e.Specs[0].K)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got equipmentDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.Equal(e.ID, got.ID)
++
++	// список оборудования клиента отражает созданную единицу.
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct {
++		Items []equipmentDTO `json:"items"`
++		Total int            `json:"total"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(1, list.Total)
++
++	// счётчик оборудования клиента отражает реальные данные.
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var cGot clientDTO
++	s.Require().NoError(json.Unmarshal(raw, &cGot))
++	s.Equal(1, cGot.EquipmentCount)
++}
++
++// ---- LV-040 (equipment часть, D19): исполнитель — GET/POST 200/201, PUT/DELETE 403;
++// аноним 401 ----
++
++func (s *ClientsLiveSuite) TestEquipment_Authz_ExecutorCreateAllowed_MutationsForbidden() {
++	c := s.newClient("Права-Оборудование-Клиент")
++	typeID := s.newType("Тип для прав")
++	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++
++	s.SeedUser("clients-exec-eq", "password1", "Клиенты Исп Обор", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("clients-exec-eq", "password1")
++
++	st, _ = exec.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment", nil)
++	s.Equal(http.StatusOK, st, "исполнитель читает список оборудования")
++	st, _ = exec.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
++	s.Equal(http.StatusOK, st, "исполнитель читает единицу оборудования")
++
++	st, execEq, raw := s.createEquipment(exec, c.ID, map[string]any{"type_id": typeID, "model": "M2"})
++	s.Equal(http.StatusCreated, st, "D19: исполнитель создаёт оборудование — %s", string(raw))
++	s.NotEmpty(execEq.ID)
++
++	for _, cs := range []struct{ method, path string }{
++		{http.MethodPut, "/api/v1/equipment/" + e.ID},
++		{http.MethodDelete, "/api/v1/equipment/" + e.ID},
++	} {
++		st, raw := exec.Do(cs.method, cs.path, map[string]any{"type_id": typeID, "model": "x"})
++		s.Equal(http.StatusForbidden, st, "%s %s → %s", cs.method, cs.path, string(raw))
++		s.Equal("FORBIDDEN", s.errOf(raw).Code)
++	}
++
++	anon := s.NewBrowser()
++	st, _ = anon.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment", nil)
++	s.Equal(http.StatusUnauthorized, st)
++	st, _ = anon.Do(http.MethodPost, "/api/v1/clients/"+c.ID+"/equipment", map[string]any{"type_id": typeID, "model": "x"})
++	s.Equal(http.StatusUnauthorized, st)
++}
++
++// ---- LV-008 (equipment часть, IDOR-подобное): оборудование чужого/несуществующего
++// клиента → 404 ----
++
++func (s *ClientsLiveSuite) TestEquipment_IDOR_UnknownOrForeignClient404() {
++	other := s.newClient("Чужой-Клиент-Обор")
++	typeID := s.newType("Тип IDOR")
++	_, e, raw := s.createEquipment(s.admin, other.ID, map[string]any{"type_id": typeID, "model": "M1"})
++	s.Require().NotEmpty(e.ID, string(raw))
++
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients/"+id+"/equipment", nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, _, raw = s.createEquipment(s.admin, id, map[string]any{"type_id": typeID, "model": "M1"})
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++	}
++
++	// оборудование существует у ДРУГОГО клиента — прямой GET по /equipment/:id не скрыт
++	// (нет child-scoping по клиенту в контракте), но список ЭТОГО клиента его не содержит.
++	c := s.newClient("Свой-Клиент-Обор")
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct {
++		Total int `json:"total"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(0, list.Total)
++
++	// битый/несуществующий uuid единицы оборудования → 404.
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment/"+id, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++	}
++}
++
++// ---- LV-012/LV-013/LV-014/LV-036 (equipment часть, валидация/adversarial, TD-4):
++// обязательные поля, битый uuid type_id, архивный тип на create → 400 archived, не 500;
++// specs key_required; мусор в теле → 400 ----
++
++func (s *ClientsLiveSuite) TestEquipment_Validation_And_ArchivedType400() {
++	c := s.newClient("Валидация-Оборудование-Клиент")
++	archivedType := s.archiveType("Архивный тип на создание")
++
++	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": archivedType, "model": "M1"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("archived", s.fields(raw)["type_id"])
++
++	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{"model": "M1"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["type_id"])
++
++	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{"type_id": "not-a-uuid", "model": "M1"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["type_id"])
++
++	typeID := s.newType("Тип валидации")
++	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["model"])
++
++	// specs: значение без ключа → key_required.
++	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{
++		"type_id": typeID, "model": "M1", "specs": []map[string]any{{"k": "", "v": "5"}},
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("key_required", s.fields(raw)["specs[0].k"])
++
++	// несуществующий type_id (валидный uuid, нет строки) → not_found.
++	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{
++		"type_id": "00000000-0000-0000-0000-000000000000", "model": "M1",
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("not_found", s.fields(raw)["type_id"])
++
++	for _, body := range []string{`{`, `null`, `"str"`} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/clients/"+c.ID+"/equipment", body)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
++	}
++}
++
++// ---- code review MEDIUM-1 (equipment часть): NUL-байт в полях единицы → 400, не 500 ----
++
++func (s *ClientsLiveSuite) TestEquipment_NulByte_400() {
++	c := s.newClient("NUL-Оборудование-Клиент")
++	typeID := s.newType("NUL Тип")
++
++	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{
++		"type_id": typeID, "model": "M1\u0000",
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_text", s.fields(raw)["model"])
++
++	st, _, raw = s.createEquipment(s.admin, c.ID, map[string]any{
++		"type_id": typeID, "model": "M1", "specs": []map[string]any{{"k": "к\u0000люч", "v": "5"}},
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_text", s.fields(raw)["specs[0].k"])
++}
++
++// ---- LV-008 (equipment часть, TD-4, гонка клиента): несуществующий/удалённый параллельно
++// клиент на POST → 404 CLIENT_NOT_FOUND ----
++
++func (s *ClientsLiveSuite) TestEquipment_Create_ClientGoneOrMissing_404() {
++	typeID := s.newType("Тип для гонки клиента")
++
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
++		st, _, raw := s.createEquipment(s.admin, id, map[string]any{"type_id": typeID, "model": "M1"})
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		s.Equal("CLIENT_NOT_FOUND", s.errOf(raw).Code)
++	}
++
++	// клиент удалён параллельно между валидацией и вставкой — FK 23503 на client_id
++	// маппится в 404 CLIENT_NOT_FOUND, не 500.
++	c := s.newClient("Удаляемый-Параллельно-Клиент")
++	_, err := s.Pool.Exec(s.T().Context(), `DELETE FROM clients WHERE id = $1::uuid`, c.ID)
++	s.Require().NoError(err)
++	st, _, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("CLIENT_NOT_FOUND", s.errOf(raw).Code)
++}
++
++// ---- LV-013 (equipment часть): правка — LWW, смена типа на активный ok, version клиента
++// не меняется ----
++
++func (s *ClientsLiveSuite) TestEquipment_Update_LWW_ClientVersionUnchanged() {
++	c := s.newClient("Правка-Оборудование-Клиент")
++	typeID := s.newType("Тип правки")
++	typeID2 := s.newType("Тип правки 2")
++
++	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++
++	st, rawGet := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var before clientDTO
++	s.Require().NoError(json.Unmarshal(rawGet, &before))
++
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
++		"type_id": typeID2, "brand": "NewBrand", "model": "M2", "sku": "", "serial": "", "note": "",
++		"specs": []map[string]any{{"k": "k1", "v": "v1"}},
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var updated equipmentDTO
++	s.Require().NoError(json.Unmarshal(raw, &updated))
++	s.Equal(typeID2, updated.TypeID)
++	s.Equal("M2", updated.Model)
++
++	// LWW: второй PUT без учёта версии всё равно применяется (нет version у equipment).
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
++		"type_id": typeID2, "model": "M3",
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	// version клиента не изменился после правок оборудования.
++	st, rawAfter := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var after clientDTO
++	s.Require().NoError(json.Unmarshal(rawAfter, &after))
++	s.Equal(before.Version, after.Version, "сохранение оборудования не меняет version клиента")
++}
++
++// ---- LV-013 (equipment часть, TD-4): смена на архивный тип → 400 archived; правка БЕЗ
++// смены уже архивного типа разрешена ----
++
++func (s *ClientsLiveSuite) TestEquipment_Update_ArchivedTypeRules() {
++	c := s.newClient("Архивный-Тип-Правка-Клиент")
++	typeID := s.newType("Активный тип правки")
++	archivedType := s.archiveType("Архивный тип для смены")
++
++	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++
++	// смена на архивный тип → 400 archived.
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e.ID, map[string]any{
++		"type_id": archivedType, "model": "M1",
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("archived", s.fields(raw)["type_id"])
++
++	// заводим единицу сразу с типом, который потом архивируем — правка БЕЗ смены типа
++	// (тип уже архивный) разрешена.
++	typeToArchive := s.newType("Тип, который заархивируют")
++	st, e2, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeToArchive, "model": "M2"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	_, err := s.Pool.Exec(s.T().Context(), `UPDATE equipment_types SET is_active = false WHERE id = $1::uuid`, typeToArchive)
++	s.Require().NoError(err)
++
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment/"+e2.ID, map[string]any{
++		"type_id": typeToArchive, "model": "M2-правка", "brand": "brand",
++	})
++	s.Equal(http.StatusOK, st, string(raw), "правка без смены уже архивного типа разрешена")
++}
++
++// ---- LV-015/LV-032: удаление единицы оборудования; удаление типа, который используется,
++// → 409 EQUIPMENT_TYPE_IN_USE (сквозная проверка через HTTP); повторный DELETE → 404 ----
++
++func (s *ClientsLiveSuite) TestEquipment_Delete_And_TypeInUseConflict() {
++	c := s.newClient("Удаление-Оборудование-Клиент")
++	typeID := s.newType("Тип для in-use")
++
++	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++
++	// тип теперь используется — удаление типа через API → 409 EQUIPMENT_TYPE_IN_USE.
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment-types/"+typeID, nil)
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("EQUIPMENT_TYPE_IN_USE", s.errOf(raw).Code)
++
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+e.ID, nil)
++	s.Equal(http.StatusNoContent, st, string(raw))
++
++	// оборудование больше не найдено, счётчик клиента обновился.
++	st, _ = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
++	s.Equal(http.StatusNotFound, st)
++	st, rawC := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got clientDTO
++	s.Require().NoError(json.Unmarshal(rawC, &got))
++	s.Equal(0, got.EquipmentCount)
++
++	// повторный DELETE → 404.
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+e.ID, nil)
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("EQUIPMENT_NOT_FOUND", s.errOf(raw).Code)
++
++	// тип теперь свободен — удаление проходит.
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment-types/"+typeID, nil)
++	s.Equal(http.StatusNoContent, st, string(raw))
++}
++
++// ---- LV-035 (equipment часть): мусор в limit/offset списка оборудования — дефолты,
++// не 500 ----
++
++func (s *ClientsLiveSuite) TestEquipment_List_GarbageParams() {
++	c := s.newClient("Мусор-Параметры-Оборудование")
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment?limit=-5&offset=-100", nil)
++	s.Equal(http.StatusOK, st, string(raw))
++	var list struct {
++		Limit, Offset int
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(200, list.Limit)
++	s.Equal(0, list.Offset)
++}
++
++// ---- SSR equipment (Phase 8) ----
++
++// ---- admin PRG: создание/правка/удаление единицы через форму ----
++
++func (s *ClientsLiveSuite) TestSSR_Equipment_CreateEditDelete_PRG() {
++	c := s.newClient("SSR Оборудование Клиент")
++	typeID := s.newType("SSR Тип оборудования")
++
++	st, page := s.admin.Do(http.MethodGet, "/clients/"+c.ID+"/equipment/new", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="equipment-form"`)
++
++	form := url.Values{"type_id": {typeID}, "model": {"M100"}, "brand": {"Danfoss"}}
++	form.Add("spec_k", "мощность")
++	form.Add("spec_v", "5 кВт")
++	resp := s.admin.Request(http.MethodPost, "/clients/"+c.ID+"/equipment", form, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/clients/"+c.ID+"?flash=eq_created", resp.Header.Get("Location"))
++
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/clients/"+c.ID+"/equipment", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct {
++		Items []equipmentDTO `json:"items"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Require().Len(list.Items, 1, string(raw))
++	e := list.Items[0]
++	s.Equal("M100", e.Model)
++
++	// правка — обновляем модель.
++	st, page = s.admin.Do(http.MethodGet, "/equipment/"+e.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(page), "M100")
++
++	editForm := url.Values{"type_id": {typeID}, "model": {"M200"}}
++	resp = s.admin.Request(http.MethodPost, "/equipment/"+e.ID, editForm, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/clients/"+c.ID+"?flash=eq_saved", resp.Header.Get("Location"))
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got equipmentDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.Equal("M200", got.Model)
++
++	// удаление — PRG на карточку клиента, оборудование пропадает.
++	resp = s.admin.Request(http.MethodPost, "/equipment/"+e.ID+"/delete", url.Values{"_csrf": {s.admin.CSRFToken()}}, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/clients/"+c.ID+"?flash=eq_deleted", resp.Header.Get("Location"))
++	st, _ = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID, nil)
++	s.Equal(http.StatusNotFound, st)
++}
++
++// ---- валидация формы → 422 с текстом ошибки; архивный тип на создание → 422 с текстом ----
++
++func (s *ClientsLiveSuite) TestSSR_Equipment_ValidationRerendersForm() {
++	c := s.newClient("SSR Валидация Оборудование")
++	archivedType := s.archiveType("SSR Архивный тип формы")
++
++	st, page := s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", url.Values{})
++	s.Equal(http.StatusUnprocessableEntity, st)
++	s.Contains(string(page), "Выберите тип")
++	s.Contains(string(page), "Обязательное поле")
++
++	// архивный тип на создание → 422 "Тип в архиве — выберите другой", ввод сохранён
++	// (ADR-004: TypeActive-проверка выполняется отдельно от валидации полей).
++	archivedForm := url.Values{"type_id": {archivedType}, "model": {"Мой ввод"}}
++	st, page = s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", archivedForm)
++	s.Equal(http.StatusUnprocessableEntity, st)
++	body := string(page)
++	s.Contains(body, "Тип в архиве — выберите другой")
++	s.Contains(body, "Мой ввод", "введённая модель сохранена в форме")
++
++	// значение характеристики без ключа → key_required, ввод сохранён.
++	activeType := s.newType("SSR Активный тип формы")
++	specForm := url.Values{"type_id": {activeType}, "model": {"Мой ввод 2"}}
++	specForm.Add("spec_k", "")
++	specForm.Add("spec_v", "5")
++	st, page = s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", specForm)
++	s.Equal(http.StatusUnprocessableEntity, st)
++	body = string(page)
++	s.Contains(body, "Укажите характеристику")
++	s.Contains(body, "Мой ввод 2", "введённая модель сохранена в форме")
++}
++
++// ---- code review MEDIUM-2 (equipment часть): SSR-форма единицы перерисовывается
++// НОРМАЛИЗОВАННЫМ списком характеристик — тот же баг, что и с телефонами ----
++
++func (s *ClientsLiveSuite) TestSSR_Equipment_SpecErrorIndexMatchesNormalizedRow() {
++	c := s.newClient("Индекс-Спека-Клиент")
++	typeID := s.newType("Индекс Спека Тип")
++
++	form := url.Values{"type_id": {typeID}, "model": {"M1"}}
++	form.Add("spec_k", "")
++	form.Add("spec_v", "")
++	form.Add("spec_k", "")
++	form.Add("spec_v", "значение без ключа")
++	st, page := s.admin.Do(http.MethodPost, "/clients/"+c.ID+"/equipment", form)
++	s.Equal(http.StatusUnprocessableEntity, st)
++	body := string(page)
++
++	firstRow := strings.Index(body, `data-testid="spec-row"`)
++	templateStart := strings.Index(body, "<template data-row-template>")
++	s.Require().True(firstRow >= 0 && templateStart > firstRow, body)
++	rowSegment := body[firstRow:templateStart]
++
++	s.Equal(1, strings.Count(rowSegment, `data-testid="spec-row"`),
++		"полностью пустая пара отброшена normalize() — остаётся только 'значение без ключа'")
++	s.Contains(rowSegment, `value="значение без ключа"`, "нормализованная (не сырая) строка формы")
++	s.Contains(rowSegment, "Укажите характеристику", "ошибка под строкой со значением, не под отброшенной пустой парой")
++}
++
++// ---- CSRF: POST без токена → 403; аноним → редирект /login; исполнитель → 403-страница ----
++
++func (s *ClientsLiveSuite) TestSSR_Equipment_Guards() {
++	c := s.newClient("SSR Права Оборудование")
++	typeID := s.newType("SSR Тип прав")
++	st, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "M1"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++
++	resp := s.admin.Request(http.MethodPost, "/clients/"+c.ID+"/equipment", url.Values{"type_id": {typeID}, "model": {"M2"}}, map[string]string{"X-Csrf-Token": ""})
++	defer resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode, "без CSRF-токена — 403")
++
++	s.SeedUser("clients-exec-eq-ssr", "password1", "Клиенты Исп Обор SSR", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("clients-exec-eq-ssr", "password1")
++	st, _ = exec.Do(http.MethodGet, "/clients/"+c.ID+"/equipment/new", nil)
++	s.Equal(http.StatusForbidden, st)
++	st, page := exec.Do(http.MethodGet, "/equipment/"+e.ID, nil)
++	s.Equal(http.StatusForbidden, st)
++	s.Contains(string(page), "Нет доступа")
++
++	anon := s.NewBrowser()
++	resp2 := anon.Request(http.MethodGet, "/equipment/"+e.ID, nil, nil)
++	resp2.Body.Close()
++	s.Equal(http.StatusFound, resp2.StatusCode)
++	s.Contains(resp2.Header.Get("Location"), "/login")
++}
++
++// ---- карточка клиента отражает реальный блок «Оборудование клиента» ----
++
++func (s *ClientsLiveSuite) TestSSR_ClientCard_ShowsEquipmentBlock() {
++	c := s.newClient("SSR Карточка Оборудование")
++	typeID := s.newType("SSR Тип карточки")
++	_, e, raw := s.createEquipment(s.admin, c.ID, map[string]any{"type_id": typeID, "model": "КартаМодель", "serial": "SN-CARD"})
++	s.Require().NotEmpty(e.ID, string(raw))
++
++	st, page := s.admin.Do(http.MethodGet, "/clients/"+c.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	body := string(page)
++	s.Contains(body, `data-testid="equipment-table"`)
++	s.Contains(body, "КартаМодель")
++	s.Contains(body, "SN-CARD")
++	s.Contains(body, `href="/equipment/`+e.ID+`"`)
++}
+diff --git a/internal/features/clients/dto.go b/internal/features/clients/dto.go
+new file mode 100644
+index 0000000..fa1c3ed
+--- /dev/null
++++ b/internal/features/clients/dto.go
+@@ -0,0 +1,93 @@
++package clients
++
++import "time"
++
++// Wire-типы — JSON только snake_case (§API-1); конверт списка {items,total,limit,offset}.
++
++type PhoneDTO struct {
++	Phone string `json:"phone"`
++	Note  string `json:"note"`
++}
++
++type ClientResponse struct {
++	ID              string     `json:"id"`
++	CompanyName     string     `json:"company_name"`
++	Address         string     `json:"address"`
++	ContactName     string     `json:"contact_name"`
++	ContactPosition string     `json:"contact_position"`
++	Phones          []PhoneDTO `json:"phones"` // всегда массив, не null
++	EquipmentCount  int        `json:"equipment_count"`
++	Version         int64      `json:"version"`
++	CreatedAt       time.Time  `json:"created_at"`
++	UpdatedAt       time.Time  `json:"updated_at"`
++}
++
++type ClientListResponse struct {
++	Items  []ClientResponse `json:"items"`
++	Total  int              `json:"total"`
++	Limit  int              `json:"limit"`
++	Offset int              `json:"offset"`
++}
++
++// ClientCreateRequest — POST /api/v1/clients.
++type ClientCreateRequest struct {
++	CompanyName     string     `json:"company_name"`
++	Address         string     `json:"address"`
++	ContactName     string     `json:"contact_name"`
++	ContactPosition string     `json:"contact_position"`
++	Phones          []PhoneDTO `json:"phones"`
++}
++
++// ClientUpdateRequest — PUT /api/v1/clients/:id: полная замена карточки + телефонов в
++// одной транзакции (ADR-101). Version nil → 400 version: required (ADR-100, оптимистичная
++// блокировка: UPDATE ... WHERE version=$n).
++type ClientUpdateRequest struct {
++	CompanyName     string     `json:"company_name"`
++	Address         string     `json:"address"`
++	ContactName     string     `json:"contact_name"`
++	ContactPosition string     `json:"contact_position"`
++	Phones          []PhoneDTO `json:"phones"`
++	Version         *int64     `json:"version"`
++}
++
++// --- Equipment DTO — заготовки полей (design-go-layers.md `## DTO Equipment`),
++// наполнение логики (сервис/репозиторий/хендлер) — Phase 7. ---
++
++type SpecDTO struct {
++	K string `json:"k"`
++	V string `json:"v"`
++}
++
++type EquipmentResponse struct {
++	ID           string    `json:"id"`
++	ClientID     string    `json:"client_id"`
++	TypeID       string    `json:"type_id"`
++	TypeName     string    `json:"type_name"`
++	TypeIsActive bool      `json:"type_is_active"` // ADR-004
++	Brand        string    `json:"brand"`
++	Model        string    `json:"model"`
++	SKU          string    `json:"sku"`
++	Serial       string    `json:"serial"`
++	Specs        []SpecDTO `json:"specs"` // всегда массив
++	Note         string    `json:"note"`
++	CreatedAt    time.Time `json:"created_at"`
++	UpdatedAt    time.Time `json:"updated_at"`
++}
++
++type EquipmentListResponse struct {
++	Items  []EquipmentResponse `json:"items"`
++	Total  int                 `json:"total"`
++	Limit  int                 `json:"limit"`
++	Offset int                 `json:"offset"`
++}
++
++// EquipmentRequest — POST /clients/:id/equipment и PUT /equipment/:id (полная замена, LWW).
++type EquipmentRequest struct {
++	TypeID string    `json:"type_id"`
++	Brand  string    `json:"brand"`
++	Model  string    `json:"model"`
++	SKU    string    `json:"sku"`
++	Serial string    `json:"serial"`
++	Specs  []SpecDTO `json:"specs"`
++	Note   string    `json:"note"`
++}
+diff --git a/internal/features/clients/handler.go b/internal/features/clients/handler.go
+new file mode 100644
+index 0000000..9769b04
+--- /dev/null
++++ b/internal/features/clients/handler.go
+@@ -0,0 +1,140 @@
++package clients
++
++import (
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Handler — JSON API /api/v1/clients (чтение — RequireAPI, мутации — +admin, гарды
++// вешает routes.go). Equipment-методы (ListEquipment/CreateEquipment/GetEquipment/
++// UpdateEquipment/DeleteEquipment) — Phase 7.
++type Handler struct {
++	svc *Service
++}
++
++func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
++
++// List — GET /api/v1/clients?q=&limit=&offset=.
++func (h *Handler) List(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	resp, err := h.svc.List(c.Context(), ListQuery{Q: c.Query("q"), Limit: limit, Offset: offset})
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Get — GET /api/v1/clients/:id.
++func (h *Handler) Get(c fiber.Ctx) error {
++	resp, err := h.svc.Get(c.Context(), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Create — POST /api/v1/clients (admin).
++func (h *Handler) Create(c fiber.Ctx) error {
++	var req ClientCreateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Create(c.Context(), ClientInput{
++		CompanyName: req.CompanyName, Address: req.Address,
++		ContactName: req.ContactName, ContactPosition: req.ContactPosition, Phones: req.Phones,
++	})
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// Update — PUT /api/v1/clients/:id (admin; полная карточка + телефоны, version обязателен).
++func (h *Handler) Update(c fiber.Ctx) error {
++	var req ClientUpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Update(c.Context(), c.Params("id"), req.Version, ClientInput{
++		CompanyName: req.CompanyName, Address: req.Address,
++		ContactName: req.ContactName, ContactPosition: req.ContactPosition, Phones: req.Phones,
++	})
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Delete — DELETE /api/v1/clients/:id (admin); каскадно удаляет телефоны и оборудование.
++func (h *Handler) Delete(c fiber.Ctx) error {
++	if err := h.svc.Delete(c.Context(), c.Params("id")); err != nil {
++		return err
++	}
++	return c.SendStatus(fiber.StatusNoContent)
++}
++
++// ListEquipment — GET /api/v1/clients/:id/equipment (RequireAPI, D19: без admin-guard).
++func (h *Handler) ListEquipment(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	resp, err := h.svc.ListEquipment(c.Context(), c.Params("id"), limit, offset)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// CreateEquipment — POST /api/v1/clients/:id/equipment (RequireAPI, D19: исполнитель
++// допущен создавать оборудование).
++func (h *Handler) CreateEquipment(c fiber.Ctx) error {
++	var req EquipmentRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.CreateEquipment(c.Context(), c.Params("id"), equipmentInputOf(req))
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// GetEquipment — GET /api/v1/equipment/:id (RequireAPI).
++func (h *Handler) GetEquipment(c fiber.Ctx) error {
++	resp, err := h.svc.GetEquipment(c.Context(), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// UpdateEquipment — PUT /api/v1/equipment/:id (admin; полная замена, LWW).
++func (h *Handler) UpdateEquipment(c fiber.Ctx) error {
++	var req EquipmentRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.UpdateEquipment(c.Context(), c.Params("id"), equipmentInputOf(req))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// DeleteEquipment — DELETE /api/v1/equipment/:id (admin).
++func (h *Handler) DeleteEquipment(c fiber.Ctx) error {
++	if _, err := h.svc.DeleteEquipment(c.Context(), c.Params("id")); err != nil {
++		return err
++	}
++	return c.SendStatus(fiber.StatusNoContent)
++}
++
++func equipmentInputOf(req EquipmentRequest) EquipmentInput {
++	return EquipmentInput{
++		TypeID: req.TypeID, Brand: req.Brand, Model: req.Model, SKU: req.SKU,
++		Serial: req.Serial, Note: req.Note, Specs: req.Specs,
++	}
++}
+diff --git a/internal/features/clients/repo.go b/internal/features/clients/repo.go
+new file mode 100644
+index 0000000..228f02f
+--- /dev/null
++++ b/internal/features/clients/repo.go
+@@ -0,0 +1,506 @@
++package clients
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Client — карточка клиента (repo-модель). Version — оптимистичная блокировка (D28),
++// только у clients (у equipment_types её нет).
++type Client struct {
++	ID              string
++	CompanyName     string
++	Address         string
++	ContactName     string
++	ContactPosition string
++	Phones          []PhoneDTO
++	EquipmentCount  int
++	Version         int64
++	CreatedAt       time.Time
++	UpdatedAt       time.Time
++}
++
++type Repo struct {
++	pool *pgxpool.Pool
++}
++
++func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
++
++var (
++	ErrNotFound        = pgx.ErrNoRows
++	errVersionConflict = errors.New("clients: version conflict")
++	// errClientGone — 23503 на equipment.client_id (клиент удалён параллельно с созданием
++	// единицы оборудования, ADR из design-sql.md `## Create Equipment Query`).
++	errClientGone = errors.New("clients: client gone")
++	// errTypeGone — 23503 на equipment.type_id (тип удалён параллельно между TypeActive-
++	// проверкой в сервисе и вставкой/обновлением строки, code review LOW#1): сервис маппит
++	// в поле `type_id: not_found`, а не в 404/500 клиента.
++	errTypeGone = errors.New("clients: type gone")
++)
++
++// mapEquipmentFKViolation — 23503 на equipment различает нарушенный constraint по имени:
++// client_id (клиент удалён параллельно) → errClientGone, type_id (тип удалён параллельно)
++// → errTypeGone. Раньше любой 23503 в CreateEquipment трактовался как errClientGone, а в
++// UpdateEquipment не обрабатывался вовсе — оба случая уходили в 500/неверный 404
++// (code review LOW#1).
++func mapEquipmentFKViolation(err error) error {
++	var pgErr *pgconn.PgError
++	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
++		return err
++	}
++	switch pgErr.ConstraintName {
++	case "equipment_client_id_fkey":
++		return errClientGone
++	case "equipment_type_id_fkey":
++		return errTypeGone
++	default:
++		return err
++	}
++}
++
++// Equipment — единица оборудования клиента (repo-модель, JOIN с equipment_types).
++type Equipment struct {
++	ID           string
++	ClientID     string
++	TypeID       string
++	TypeName     string
++	TypeIsActive bool
++	Brand        string
++	Model        string
++	SKU          string
++	Serial       string
++	Specs        []SpecDTO
++	Note         string
++	CreatedAt    time.Time
++	UpdatedAt    time.Time
++}
++
++// TypeOption — опция <select> формы единицы (ADR-102: только SQL-чтение equipment_types,
++// без Go-импорта пакета equipmenttypes).
++type TypeOption struct {
++	ID       string
++	Name     string
++	SpecKeys []string
++	IsActive bool
++}
++
++const equipmentColumns = `e.id, e.client_id, e.type_id, t.name, t.is_active, e.brand, e.model, e.sku, e.serial,
++	e.specs, e.note, e.created_at, e.updated_at`
++
++func scanEquipment(row pgx.Row) (*Equipment, error) {
++	var e Equipment
++	var specsRaw []byte
++	if err := row.Scan(&e.ID, &e.ClientID, &e.TypeID, &e.TypeName, &e.TypeIsActive,
++		&e.Brand, &e.Model, &e.SKU, &e.Serial, &specsRaw, &e.Note, &e.CreatedAt, &e.UpdatedAt); err != nil {
++		return nil, err
++	}
++	if len(specsRaw) > 0 {
++		if err := json.Unmarshal(specsRaw, &e.Specs); err != nil {
++			return nil, fmt.Errorf("clients: unmarshal specs: %w", err)
++		}
++	}
++	return &e, nil
++}
++
++// ListParams — фильтры списка. Digits/DigitsAlt — цифры телефона для сравнения (ADR-003,
++// searchDigits в service.go); "" значит соответствующее сравнение не применяется.
++type ListParams struct {
++	Q             string
++	Digits        string
++	DigitsAlt     string
++	Limit, Offset int
++}
++
++// phoneDigitsExpr — цифры телефона как есть (без модификаций).
++const phoneDigitsExpr = `regexp_replace(p.phone, '\D', '', 'g')`
++
++// phoneAltDigitsExpr — та же строка БЕЗ ведущей 7/8 (если она есть): у номера в БД
++// отбрасывается СИММЕТРИЧНО тому же правилу, что применяется к запросу (`searchDigits`),
++// НЕЗАВИСИМО от длины строки — раньше (итерация 1) БД-сторона стриплась только при полных
++// ≥11 цифрах, а запрос — тоже только при ≥11, из-за чего частичный ввод с кодом страны
++// («+7 999 555», «8 (999) 555») переставал находить совпадения (regression, code review
++// итерация 2). Сравнивается ОБА варианта через OR ($2 — прямое совпадение цифр, $3 — без
++// ведущей 7/8 с обеих сторон), поэтому "8999123" находит "+7 (999) 123-…", а полный
++// "+79991234567"/"89991234567" находят друг друга при любой длине частичного ввода.
++const phoneAltDigitsExpr = `regexp_replace(` + phoneDigitsExpr + `, '^[78]', '')`
++
++// ListClients — список клиентов с equipment_count (без N+1: телефоны — один batch-запрос
++// на страницу, design-sql.md `## Client Phones Batch Query`).
++func (r *Repo) ListClients(ctx context.Context, p ListParams) ([]Client, int, error) {
++	var args []any
++	where := ""
++	if p.Q != "" {
++		likeQ := "%" + sqlutil.EscapeLike(p.Q) + "%"
++		digitsLike := ""
++		if p.Digits != "" {
++			digitsLike = "%" + p.Digits + "%"
++		}
++		digitsAltLike := ""
++		if p.DigitsAlt != "" {
++			digitsAltLike = "%" + p.DigitsAlt + "%"
++		}
++		args = []any{likeQ, digitsLike, digitsAltLike}
++		where = ` WHERE (c.company_name ILIKE $1 OR c.contact_name ILIKE $1
++			OR EXISTS (SELECT 1 FROM client_phones p
++			           WHERE p.client_id = c.id
++			             AND (p.phone ILIKE $1
++			                  OR ($2 <> '' AND ` + phoneDigitsExpr + ` LIKE $2)
++			                  OR ($3 <> '' AND ` + phoneAltDigitsExpr + ` LIKE $3))))`
++	}
++
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM clients c`+where, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++
++	// company_name регистронезависимо, id вторым ключом — стабильный порядок при равенстве.
++	q := `SELECT c.id, c.company_name, c.address, c.contact_name, c.contact_position,
++	       c.version, c.created_at, c.updated_at,
++	       (SELECT count(*) FROM equipment e WHERE e.client_id = c.id) AS equipment_count
++	FROM clients c` + where +
++		fmt.Sprintf(" ORDER BY lower(c.company_name), c.id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
++	rows, err := r.pool.Query(ctx, q, append(args, p.Limit, p.Offset)...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++
++	out := []Client{}
++	ids := []string{}
++	for rows.Next() {
++		var c Client
++		if err := rows.Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition,
++			&c.Version, &c.CreatedAt, &c.UpdatedAt, &c.EquipmentCount); err != nil {
++			return nil, 0, err
++		}
++		out = append(out, c)
++		ids = append(ids, c.ID)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, 0, err
++	}
++
++	phones, err := r.phonesBatch(ctx, ids)
++	if err != nil {
++		return nil, 0, err
++	}
++	for i := range out {
++		out[i].Phones = phones[out[i].ID]
++	}
++	return out, total, nil
++}
++
++// phonesBatch — телефоны нескольких клиентов одним запросом (без N+1); отсутствующие
++// в результате id — без телефонов (nil-срез, приводится к [] в toResponse).
++func (r *Repo) phonesBatch(ctx context.Context, clientIDs []string) (map[string][]PhoneDTO, error) {
++	res := make(map[string][]PhoneDTO, len(clientIDs))
++	if len(clientIDs) == 0 {
++		return res, nil
++	}
++	rows, err := r.pool.Query(ctx,
++		`SELECT client_id, phone, note FROM client_phones
++		 WHERE client_id = ANY($1::uuid[]) ORDER BY client_id, position`, clientIDs)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var clientID string
++		var p PhoneDTO
++		if err := rows.Scan(&clientID, &p.Phone, &p.Note); err != nil {
++			return nil, err
++		}
++		res[clientID] = append(res[clientID], p)
++	}
++	return res, rows.Err()
++}
++
++// GetClient — id уже провалидирован как uuid сервисом.
++func (r *Repo) GetClient(ctx context.Context, id string) (*Client, error) {
++	var c Client
++	err := r.pool.QueryRow(ctx,
++		`SELECT c.id, c.company_name, c.address, c.contact_name, c.contact_position,
++		        c.version, c.created_at, c.updated_at,
++		        (SELECT count(*) FROM equipment e WHERE e.client_id = c.id)
++		 FROM clients c WHERE c.id = $1::uuid`, id).
++		Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition,
++			&c.Version, &c.CreatedAt, &c.UpdatedAt, &c.EquipmentCount)
++	if err != nil {
++		return nil, err
++	}
++	phones, err := r.phonesBatch(ctx, []string{id})
++	if err != nil {
++		return nil, err
++	}
++	c.Phones = phones[id]
++	return &c, nil
++}
++
++// CreateClient — клиент + телефоны в одной транзакции.
++func (r *Repo) CreateClient(ctx context.Context, in ClientInput) (*Client, error) {
++	tx, err := r.pool.Begin(ctx)
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++
++	var c Client
++	err = tx.QueryRow(ctx,
++		`INSERT INTO clients (company_name, address, contact_name, contact_position)
++		 VALUES ($1, $2, $3, $4)
++		 RETURNING id, company_name, address, contact_name, contact_position, version, created_at, updated_at`,
++		in.CompanyName, in.Address, in.ContactName, in.ContactPosition).
++		Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition, &c.Version, &c.CreatedAt, &c.UpdatedAt)
++	if err != nil {
++		return nil, err
++	}
++	if err := insertPhones(ctx, tx, c.ID, in.Phones); err != nil {
++		return nil, err
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return nil, err
++	}
++	c.Phones = in.Phones
++	c.EquipmentCount = 0
++	return &c, nil
++}
++
++// UpdateClient — полная замена карточки + набора телефонов в транзакции (ADR-100/ADR-101).
++// 0 строк на UPDATE (version не совпал ИЛИ записи нет) → SELECT EXISTS различает случаи:
++// запись есть → errVersionConflict, нет → ErrNotFound.
++func (r *Repo) UpdateClient(ctx context.Context, id string, version int64, in ClientInput) (*Client, error) {
++	tx, err := r.pool.Begin(ctx)
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++
++	var c Client
++	err = tx.QueryRow(ctx,
++		`UPDATE clients SET company_name = $2, address = $3, contact_name = $4, contact_position = $5,
++		        version = version + 1, updated_at = now()
++		 WHERE id = $1::uuid AND version = $6
++		 RETURNING id, company_name, address, contact_name, contact_position, version, created_at, updated_at`,
++		id, in.CompanyName, in.Address, in.ContactName, in.ContactPosition, version).
++		Scan(&c.ID, &c.CompanyName, &c.Address, &c.ContactName, &c.ContactPosition, &c.Version, &c.CreatedAt, &c.UpdatedAt)
++	if errors.Is(err, pgx.ErrNoRows) {
++		var exists bool
++		if scanErr := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM clients WHERE id = $1::uuid)`, id).Scan(&exists); scanErr != nil {
++			return nil, scanErr
++		}
++		if exists {
++			return nil, errVersionConflict
++		}
++		return nil, ErrNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++
++	if _, err := tx.Exec(ctx, `DELETE FROM client_phones WHERE client_id = $1::uuid`, id); err != nil {
++		return nil, err
++	}
++	if err := insertPhones(ctx, tx, id, in.Phones); err != nil {
++		return nil, err
++	}
++	if err := tx.QueryRow(ctx, `SELECT count(*) FROM equipment WHERE client_id = $1::uuid`, id).Scan(&c.EquipmentCount); err != nil {
++		return nil, err
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return nil, err
++	}
++	c.Phones = in.Phones
++	return &c, nil
++}
++
++// DeleteClient — RowsAffected 0 → ErrNotFound; каскад БД удаляет client_phones и equipment
++// (ON DELETE CASCADE, design-sql.md). D26 («клиент с заказами») — не в этой фазе.
++func (r *Repo) DeleteClient(ctx context.Context, id string) error {
++	tag, err := r.pool.Exec(ctx, `DELETE FROM clients WHERE id = $1::uuid`, id)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrNotFound
++	}
++	return nil
++}
++
++// ClientExists — используется Phase 7 (создание/список оборудования проверяет клиента
++// до запроса); заведена в этой фазе, т.к. часть Repo-интерфейса design-go-layers.md.
++func (r *Repo) ClientExists(ctx context.Context, id string) (bool, error) {
++	var exists bool
++	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM clients WHERE id = $1::uuid)`, id).Scan(&exists)
++	return exists, err
++}
++
++// insertPhones — вставка телефонов unnest(...) WITH ORDINALITY (ADR-101): позиция —
++// порядок ввода (0-based). Пустой список — no-op.
++func insertPhones(ctx context.Context, tx pgx.Tx, clientID string, phones []PhoneDTO) error {
++	if len(phones) == 0 {
++		return nil
++	}
++	texts := make([]string, len(phones))
++	notes := make([]string, len(phones))
++	for i, p := range phones {
++		texts[i] = p.Phone
++		notes[i] = p.Note
++	}
++	_, err := tx.Exec(ctx,
++		`INSERT INTO client_phones (client_id, position, phone, note)
++		 SELECT $1::uuid, t.ord - 1, t.phone, t.note
++		 FROM unnest($2::text[], $3::text[]) WITH ORDINALITY AS t(phone, note, ord)`,
++		clientID, texts, notes)
++	return err
++}
++
++// ListEquipment — оборудование клиента (JOIN с equipment_types для type_name/type_is_active,
++// ADR-102). Сервис проверяет существование клиента до вызова (design-sql.md).
++func (r *Repo) ListEquipment(ctx context.Context, clientID string, limit, offset int) ([]Equipment, int, error) {
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM equipment WHERE client_id = $1::uuid`, clientID).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++	rows, err := r.pool.Query(ctx,
++		`SELECT `+equipmentColumns+`
++		 FROM equipment e JOIN equipment_types t ON t.id = e.type_id
++		 WHERE e.client_id = $1::uuid
++		 ORDER BY e.created_at, e.id
++		 LIMIT $2 OFFSET $3`, clientID, limit, offset)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++	out := []Equipment{}
++	for rows.Next() {
++		e, err := scanEquipment(rows)
++		if err != nil {
++			return nil, 0, err
++		}
++		out = append(out, *e)
++	}
++	return out, total, rows.Err()
++}
++
++// GetEquipment — id уже провалидирован как uuid сервисом. ErrNoRows → ErrNotFound.
++func (r *Repo) GetEquipment(ctx context.Context, id string) (*Equipment, error) {
++	return scanEquipment(r.pool.QueryRow(ctx,
++		`SELECT `+equipmentColumns+`
++		 FROM equipment e JOIN equipment_types t ON t.id = e.type_id
++		 WHERE e.id = $1::uuid`, id))
++}
++
++// TypeActive — ADR-004: ErrNoRows → тип не существует (сервис маппит в поле type_id
++// not_found), false → тип в архиве (поле type_id archived).
++func (r *Repo) TypeActive(ctx context.Context, typeID string) (bool, error) {
++	var active bool
++	err := r.pool.QueryRow(ctx, `SELECT is_active FROM equipment_types WHERE id = $1::uuid`, typeID).Scan(&active)
++	return active, err
++}
++
++// CreateEquipment — вставка + повторное чтение (Get Equipment Query) ради type_name/
++// type_is_active. 23503 различается по constraint (mapEquipmentFKViolation): client_id
++// (клиент удалён параллельно) → errClientGone, type_id (тип удалён параллельно между
++// TypeActive-проверкой сервиса и вставкой) → errTypeGone.
++func (r *Repo) CreateEquipment(ctx context.Context, clientID string, in EquipmentInput) (*Equipment, error) {
++	specsJSON, err := json.Marshal(in.Specs)
++	if err != nil {
++		return nil, fmt.Errorf("clients: marshal specs: %w", err)
++	}
++	var id string
++	err = r.pool.QueryRow(ctx,
++		`INSERT INTO equipment (client_id, type_id, brand, model, sku, serial, specs, note)
++		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8)
++		 RETURNING id`,
++		clientID, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note).Scan(&id)
++	if err != nil {
++		return nil, mapEquipmentFKViolation(err)
++	}
++	return r.GetEquipment(ctx, id)
++}
++
++// UpdateEquipment — полная замена (LWW, без version). check — валидация архивного типа
++// (ADR-004): архивный допустим, только если type_id не менялся; вызывается ВНУТРИ tx с
++// текущим type_id единицы, чтобы избежать TOCTOU-гонки со сменой типа. ErrNoRows → ErrNotFound.
++func (r *Repo) UpdateEquipment(ctx context.Context, id string, in EquipmentInput, check func(curTypeID string) error) (*Equipment, error) {
++	tx, err := r.pool.Begin(ctx)
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++
++	var curTypeID string
++	if err := tx.QueryRow(ctx, `SELECT type_id FROM equipment WHERE id = $1::uuid`, id).Scan(&curTypeID); err != nil {
++		return nil, err
++	}
++	if err := check(curTypeID); err != nil {
++		return nil, err
++	}
++
++	specsJSON, err := json.Marshal(in.Specs)
++	if err != nil {
++		return nil, fmt.Errorf("clients: marshal specs: %w", err)
++	}
++	var updatedID string
++	err = tx.QueryRow(ctx,
++		`UPDATE equipment SET type_id = $2::uuid, brand = $3, model = $4, sku = $5, serial = $6,
++		        specs = $7::jsonb, note = $8, updated_at = now()
++		 WHERE id = $1::uuid RETURNING id`,
++		id, in.TypeID, in.Brand, in.Model, in.SKU, in.Serial, specsJSON, in.Note).Scan(&updatedID)
++	if err != nil {
++		// 23503 на type_id (тип удалён параллельно между check(curTypeID) выше и этим
++		// UPDATE) — раньше уходило в 500 (code review LOW#1), теперь errTypeGone → сервис
++		// мапит в поле type_id: not_found, как при создании.
++		return nil, mapEquipmentFKViolation(err)
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return nil, err
++	}
++	return r.GetEquipment(ctx, updatedID)
++}
++
++// DeleteEquipment — 0 строк (pgx.ErrNoRows) → ErrNotFound; возвращает client_id
++// (PRG-редирект SSR).
++func (r *Repo) DeleteEquipment(ctx context.Context, id string) (string, error) {
++	var clientID string
++	err := r.pool.QueryRow(ctx, `DELETE FROM equipment WHERE id = $1::uuid RETURNING client_id`, id).Scan(&clientID)
++	if err != nil {
++		return "", err
++	}
++	return clientID, nil
++}
++
++// TypeOptions — опции формы единицы (ADR-102): активные + текущий тип единицы (может быть
++// архивным — правка без смены типа архивного допустима). currentTypeID == "" — новая единица.
++func (r *Repo) TypeOptions(ctx context.Context, currentTypeID string) ([]TypeOption, error) {
++	var curArg any
++	if currentTypeID != "" {
++		curArg = currentTypeID
++	}
++	rows, err := r.pool.Query(ctx,
++		`SELECT id, name, spec_keys, is_active FROM equipment_types
++		 WHERE is_active OR id = $1::uuid
++		 ORDER BY lower(name), id`, curArg)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	out := []TypeOption{}
++	for rows.Next() {
++		var t TypeOption
++		if err := rows.Scan(&t.ID, &t.Name, &t.SpecKeys, &t.IsActive); err != nil {
++			return nil, err
++		}
++		out = append(out, t)
++	}
++	return out, rows.Err()
++}
+diff --git a/internal/features/clients/routes.go b/internal/features/clients/routes.go
+new file mode 100644
+index 0000000..bb37348
+--- /dev/null
++++ b/internal/features/clients/routes.go
+@@ -0,0 +1,48 @@
++package clients
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++)
++
++// Register — JSON API /api/v1/clients + /api/v1/equipment (чтение — RequireAPI, мутации —
++// +admin; POST /clients/:id/equipment — RequireAPI без admin, D19: исполнитель создаёт
++// оборудование) + SSR-экран /clients + форма единицы оборудования /equipment/:id (только
++// admin, ADR-005/ADR-006). При s == nil SSR-группа не регистрируется (используется в
++// тестах, где рендерер не нужен — эталон equipmenttypes/routes.go).
++func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
++	admin := middleware.RequireAdmin(nil)
++	g := api.Group("/clients", a.RequireAPI())
++	g.Get("", h.List)
++	g.Post("", admin, h.Create)
++	g.Get("/:id", h.Get)
++	g.Put("/:id", admin, h.Update)
++	g.Delete("/:id", admin, h.Delete)
++	g.Get("/:id/equipment", h.ListEquipment)
++	g.Post("/:id/equipment", h.CreateEquipment) // D19: без admin-guard
++
++	e := api.Group("/equipment", a.RequireAPI())
++	e.Get("/:id", h.GetEquipment)
++	e.Put("/:id", admin, h.UpdateEquipment)
++	e.Delete("/:id", admin, h.DeleteEquipment)
++
++	if s == nil {
++		return
++	}
++	ssrAdmin := middleware.RequireAdmin(s.status.Forbidden)
++	p := app.Group("/clients", a.RequireSSR(), ssrAdmin)
++	p.Get("", s.list)
++	p.Get("/new", s.formNew)
++	p.Post("", s.create)
++	p.Get("/:id", s.formEdit)
++	p.Post("/:id", s.update)
++	p.Post("/:id/delete", s.remove)
++	p.Get("/:id/equipment/new", s.eqNew)
++	p.Post("/:id/equipment", s.eqCreate)
++
++	q := app.Group("/equipment", a.RequireSSR(), ssrAdmin)
++	q.Get("/:id", s.eqEdit)
++	q.Post("/:id", s.eqUpdate)
++	q.Post("/:id/delete", s.eqRemove)
++}
+diff --git a/internal/features/clients/service.go b/internal/features/clients/service.go
+new file mode 100644
+index 0000000..aef04c2
+--- /dev/null
++++ b/internal/features/clients/service.go
+@@ -0,0 +1,346 @@
++package clients
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"regexp"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++var (
++	ErrClientNotFound        = errorspkg.New("CLIENT_NOT_FOUND", http.StatusNotFound, "Клиент не найден")
++	ErrEquipmentNotFound     = errorspkg.New("EQUIPMENT_NOT_FOUND", http.StatusNotFound, "Оборудование не найдено")
++	ErrClientVersionConflict = errorspkg.New("CLIENT_VERSION_CONFLICT", http.StatusConflict,
++		"Карточку уже изменил другой пользователь — ваши правки не сохранены")
++)
++
++const (
++	defaultLimit = 50
++	maxLimit     = 200
++	// minSearchDigits — ADR-003: строка поиска трактуется как телефон (сравнение по
++	// цифрам), если после отбрасывания нецифр остаётся ≥3 цифры.
++	minSearchDigits = 3
++
++	// equipmentDefaultLimit/equipmentMaxLimit — оборудование одного клиента, список
++	// не постраничный по UX, но лимит защищает от неограниченной выборки.
++	equipmentDefaultLimit = 200
++	equipmentMaxLimit     = 200
++)
++
++var (
++	// phoneLikeRe — строка похожа на телефонный ввод (цифры/+()-/пробел), не текст.
++	phoneLikeRe = regexp.MustCompile(`^[0-9+()\- ]+$`)
++	nonDigitRe  = regexp.MustCompile(`\D`)
++)
++
++type Service struct {
++	repo *Repo
++}
++
++func NewService(pool *pgxpool.Pool) *Service {
++	return &Service{repo: NewRepo(pool)}
++}
++
++// ListQuery — параметры списка из HTTP-слоя (сырые).
++type ListQuery struct {
++	Q             string
++	Limit, Offset int
++}
++
++func (s *Service) List(ctx context.Context, q ListQuery) (*ClientListResponse, error) {
++	limit, offset := q.Limit, q.Offset
++	if limit <= 0 {
++		limit = defaultLimit
++	}
++	limit = min(limit, maxLimit)
++	offset = max(offset, 0)
++
++	query := strings.TrimSpace(q.Q)
++	if sqlutil.HasInvalidText(query) {
++		// NUL-байт / невалидный UTF-8 в q (напр. GET /api/v1/clients?q=%00, доступно и
++		// исполнителю) — не 500: фильтр молча игнорируется, как будто q не задан (200 с
++		// полным списком), а не ошибка формы поиска по адресной строке (code review §TD-4).
++		query = ""
++	}
++	digits, digitsAlt := searchDigits(query)
++	items, total, err := s.repo.ListClients(ctx, ListParams{
++		Q: query, Digits: digits, DigitsAlt: digitsAlt, Limit: limit, Offset: offset,
++	})
++	if err != nil {
++		return nil, err
++	}
++	resp := &ClientListResponse{Items: make([]ClientResponse, len(items)), Total: total, Limit: limit, Offset: offset}
++	for i, c := range items {
++		resp.Items[i] = toResponse(c)
++	}
++	return resp, nil
++}
++
++// searchDigits — ADR-003: строка похожа на телефон и содержит ≥3 цифры → цифры для
++// прямого сравнения с БД (`regexp_replace(phone, '\D', '', 'g') LIKE '%<digits>%'`); иначе
++// оба возврата — "". digitsAlt (непусто, только если digits начинается с 7 или 8) — та же
++// строка БЕЗ ведущей цифры, для СИММЕТРИЧНОГО сравнения repo.go: у номера в БД точно так же
++// отбрасывается ведущая 7/8 (`phoneAltDigitsExpr`), поэтому «8999123»/«+7999123» находят
++// друг друга независимо от длины ввода (частичный ввод, не только полный 11-значный номер —
++// code review, регрессия итерации 1: сравнение digits ПОЛНОЙ длины ≥11 ломало короткий
++// частичный ввод с кодом страны, т.к. БД-сторона стриплась всегда, а запрос — только при
++// ≥11 цифрах).
++func searchDigits(q string) (digits, digitsAlt string) {
++	if q == "" || !phoneLikeRe.MatchString(q) {
++		return "", ""
++	}
++	digits = nonDigitRe.ReplaceAllString(q, "")
++	if len(digits) < minSearchDigits {
++		return "", ""
++	}
++	if digits[0] == '7' || digits[0] == '8' {
++		digitsAlt = digits[1:]
++	}
++	return digits, digitsAlt
++}
++
++func (s *Service) Get(ctx context.Context, id string) (*ClientResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrClientNotFound
++	}
++	c, err := s.repo.GetClient(ctx, id)
++	if errors.Is(err, ErrNotFound) {
++		return nil, ErrClientNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	resp := toResponse(*c)
++	return &resp, nil
++}
++
++func (s *Service) Create(ctx context.Context, in ClientInput) (*ClientResponse, error) {
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	c, err := s.repo.CreateClient(ctx, in)
++	if err != nil {
++		return nil, err
++	}
++	resp := toResponse(*c)
++	return &resp, nil
++}
++
++// Update — полная замена карточки + набора телефонов; version nil → 400 (ADR-100),
++// version не совпал с текущим → 409 CLIENT_VERSION_CONFLICT (не перезапись).
++func (s *Service) Update(ctx context.Context, id string, version *int64, in ClientInput) (*ClientResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrClientNotFound
++	}
++	in = in.normalize()
++	f := in.validate()
++	if version == nil {
++		f = append(f, errorspkg.Field{Name: "version", Message: msgRequired})
++	}
++	if len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	c, err := s.repo.UpdateClient(ctx, id, *version, in)
++	switch {
++	case errors.Is(err, ErrNotFound):
++		return nil, ErrClientNotFound
++	case errors.Is(err, errVersionConflict):
++		return nil, ErrClientVersionConflict
++	case err != nil:
++		return nil, err
++	}
++	resp := toResponse(*c)
++	return &resp, nil
++}
++
++func (s *Service) Delete(ctx context.Context, id string) error {
++	if uuid.Validate(id) != nil {
++		return ErrClientNotFound
++	}
++	err := s.repo.DeleteClient(ctx, id)
++	if errors.Is(err, ErrNotFound) {
++		return ErrClientNotFound
++	}
++	return err
++}
++
++func toResponse(c Client) ClientResponse {
++	phones := c.Phones
++	if phones == nil {
++		phones = []PhoneDTO{}
++	}
++	return ClientResponse{
++		ID: c.ID, CompanyName: c.CompanyName, Address: c.Address,
++		ContactName: c.ContactName, ContactPosition: c.ContactPosition,
++		Phones: phones, EquipmentCount: c.EquipmentCount, Version: c.Version,
++		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
++	}
++}
++
++// ListEquipment — 404 CLIENT_NOT_FOUND, если клиента нет (проверка до запроса, а не
++// пустой список — design-sql.md `## List Equipment By Client Query`).
++func (s *Service) ListEquipment(ctx context.Context, clientID string, limit, offset int) (*EquipmentListResponse, error) {
++	if uuid.Validate(clientID) != nil {
++		return nil, ErrClientNotFound
++	}
++	exists, err := s.repo.ClientExists(ctx, clientID)
++	if err != nil {
++		return nil, err
++	}
++	if !exists {
++		return nil, ErrClientNotFound
++	}
++
++	if limit <= 0 {
++		limit = equipmentDefaultLimit
++	}
++	limit = min(limit, equipmentMaxLimit)
++	offset = max(offset, 0)
++
++	items, total, err := s.repo.ListEquipment(ctx, clientID, limit, offset)
++	if err != nil {
++		return nil, err
++	}
++	resp := &EquipmentListResponse{Items: make([]EquipmentResponse, len(items)), Total: total, Limit: limit, Offset: offset}
++	for i, e := range items {
++		resp.Items[i] = toEquipmentResponse(e)
++	}
++	return resp, nil
++}
++
++func (s *Service) GetEquipment(ctx context.Context, id string) (*EquipmentResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrEquipmentNotFound
++	}
++	e, err := s.repo.GetEquipment(ctx, id)
++	if errors.Is(err, ErrNotFound) {
++		return nil, ErrEquipmentNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	resp := toEquipmentResponse(*e)
++	return &resp, nil
++}
++
++// CreateEquipment — validate → TypeActive(type_id): not_found/archived → 400 Validation
++// (ADR-004, создание разрешено только с активным типом) → repo.CreateEquipment (клиент
++// удалён параллельно → 404 CLIENT_NOT_FOUND, не 500).
++func (s *Service) CreateEquipment(ctx context.Context, clientID string, in EquipmentInput) (*EquipmentResponse, error) {
++	if uuid.Validate(clientID) != nil {
++		return nil, ErrClientNotFound
++	}
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++
++	// ADR-004: создание разрешено только с активным типом; type_id уже провалидирован
++	// как корректный uuid — validate() выше.
++	active, err := s.repo.TypeActive(ctx, in.TypeID)
++	switch {
++	case errors.Is(err, ErrNotFound):
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
++	case err != nil:
++		return nil, err
++	case !active:
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "archived"})
++	}
++
++	e, err := s.repo.CreateEquipment(ctx, clientID, in)
++	switch {
++	case errors.Is(err, errClientGone):
++		return nil, ErrClientNotFound
++	case errors.Is(err, errTypeGone):
++		// тип удалён параллельно между TypeActive-проверкой выше и вставкой — тот же код
++		// поля, что и «тип не существует» до вставки (LOW#1).
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
++	case err != nil:
++		return nil, err
++	}
++	resp := toEquipmentResponse(*e)
++	return &resp, nil
++}
++
++// UpdateEquipment — LWW (без version, D28 — версия только у clients). Архивный тип
++// допустим, только если type_id не менялся (ADR-004) — check() читает curTypeID и
++// TypeActive ВНУТРИ tx репозитория (repo.go UpdateEquipment), поэтому смена типа между
++// проверкой и этим вызовом невозможна для одной единицы; type_id-цель проверки (в т.ч.
++// смена на архивный тип) читается вне tx (pool, не tx.QueryRow) и не блокируется —
++// параллельный архив/удаление ЦЕЛЕВОГО типа между check() и UPDATE теоретически возможны
++// (LOW-риск, admin-only): архивный тип на этот момент допускается на UPDATE
++// (SQLSTATE 23503 на type_id — errTypeGone, если тип успели удалить), не FOR UPDATE.
++func (s *Service) UpdateEquipment(ctx context.Context, id string, in EquipmentInput) (*EquipmentResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrEquipmentNotFound
++	}
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++
++	check := func(curTypeID string) error {
++		if curTypeID == in.TypeID {
++			return nil // тип не меняется — архивный допустим.
++		}
++		active, err := s.repo.TypeActive(ctx, in.TypeID)
++		if errors.Is(err, ErrNotFound) {
++			return errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
++		}
++		if err != nil {
++			return err
++		}
++		if !active {
++			return errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "archived"})
++		}
++		return nil
++	}
++
++	e, err := s.repo.UpdateEquipment(ctx, id, in, check)
++	switch {
++	case errors.Is(err, ErrNotFound):
++		return nil, ErrEquipmentNotFound
++	case errors.Is(err, errTypeGone):
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "type_id", Message: "not_found"})
++	case err != nil:
++		return nil, err
++	}
++	resp := toEquipmentResponse(*e)
++	return &resp, nil
++}
++
++func (s *Service) DeleteEquipment(ctx context.Context, id string) (string, error) {
++	if uuid.Validate(id) != nil {
++		return "", ErrEquipmentNotFound
++	}
++	clientID, err := s.repo.DeleteEquipment(ctx, id)
++	if errors.Is(err, ErrNotFound) {
++		return "", ErrEquipmentNotFound
++	}
++	return clientID, err
++}
++
++// TypeOptions — опции формы единицы (ADR-102). currentTypeID == "" — новая единица.
++func (s *Service) TypeOptions(ctx context.Context, currentTypeID string) ([]TypeOption, error) {
++	return s.repo.TypeOptions(ctx, currentTypeID)
++}
++
++func toEquipmentResponse(e Equipment) EquipmentResponse {
++	specs := e.Specs
++	if specs == nil {
++		specs = []SpecDTO{}
++	}
++	return EquipmentResponse{
++		ID: e.ID, ClientID: e.ClientID, TypeID: e.TypeID, TypeName: e.TypeName, TypeIsActive: e.TypeIsActive,
++		Brand: e.Brand, Model: e.Model, SKU: e.SKU, Serial: e.Serial, Specs: specs, Note: e.Note,
++		CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,
++	}
++}
+diff --git a/internal/features/clients/ssr.go b/internal/features/clients/ssr.go
+new file mode 100644
+index 0000000..41bc2d1
+--- /dev/null
++++ b/internal/features/clients/ssr.go
+@@ -0,0 +1,589 @@
++package clients
++
++import (
++	"encoding/json"
++	"errors"
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++	"github.com/google/uuid"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Root — шаблоны экрана «Клиенты» относительно корня модуля.
++const Root = "web/ssr/clients/templates"
++
++// SSR — экран «Клиенты» (/clients) + карточка клиента: список + формы создания/правки
++// (PRG), удаление (подтверждение), конфликт одновременной правки (ADR-005) + блок
++// «Оборудование клиента» и форма единицы оборудования (Phase 8).
++type SSR struct {
++	svc    *Service
++	r      *ssr.Renderer
++	shell  ssr.ShellBuilder
++	status *ssr.StatusPages
++}
++
++func NewSSR(svc *Service, r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages) *SSR {
++	return &SSR{svc: svc, r: r, shell: shell, status: status}
++}
++
++// ListVM — список клиентов. Фильтр q — в URL (reload/назад/ссылка сохраняют состояние).
++type ListVM struct {
++	Shell ssr.Shell
++	Q     string
++	Flash string
++	Items []ClientResponse
++	Total int
++}
++
++// PhoneRow — строка телефона в form-view (совпадает с PhoneDTO, отдельный тип — вьюмодель
++// формы, не wire-контракт API).
++type PhoneRow struct {
++	Phone string
++	Note  string
++}
++
++// FormVM — форма клиента (создание/правка) + карточка (телефоны 1..N, версия, блок
++// «Оборудование клиента»).
++type FormVM struct {
++	Shell           ssr.Shell
++	IsNew           bool
++	ID              string
++	CompanyName     string
++	Address         string
++	ContactName     string
++	ContactPosition string
++	Phones          []PhoneRow
++	Version         int64
++	EquipmentCount  int
++	Equipment       []EquipmentRow
++	Flash           string            // flash после PRG-редиректа на карточку (created/saved/eq_*)
++	Errors          map[string]string // поле → текст ошибки
++	Error           string            // общая ошибка формы
++	Conflict        bool              // ADR-005: 409 → ссылка «Открыть актуальную версию»
++}
++
++// EquipmentRow — строка блока «Оборудование клиента» в карточке.
++type EquipmentRow struct {
++	ID           string
++	Model        string
++	TypeName     string
++	TypeIsActive bool
++	Serial       string
++}
++
++var flashes = map[string]string{
++	"created":    "Клиент создан",
++	"saved":      "Изменения сохранены",
++	"deleted":    "Клиент удалён",
++	"eq_created": "Оборудование добавлено",
++	"eq_saved":   "Оборудование сохранено",
++	"eq_deleted": "Оборудование удалено",
++}
++
++// list — GET /clients.
++func (h *SSR) list(c fiber.Ctx) error {
++	vm := ListVM{Q: c.Query("q"), Flash: flashes[c.Query("flash")]}
++	resp, err := h.svc.List(c.Context(), ListQuery{Q: vm.Q, Limit: maxLimit})
++	if err != nil {
++		return err
++	}
++	vm.Items, vm.Total = resp.Items, resp.Total
++	vm.Shell = h.shell.Build(c, "Клиенты")
++	return h.r.Page(c, "list", vm)
++}
++
++// formNew — GET /clients/new.
++func (h *SSR) formNew(c fiber.Ctx) error {
++	return h.renderForm(c, fiber.StatusOK, FormVM{IsNew: true, Phones: []PhoneRow{{}}})
++}
++
++// create — POST /clients. Редирект — на карточку созданного клиента (design-go-layers.md
++// §SSR Routes: `/clients/{id}?flash=created`), не на список (code review LOW#3).
++func (h *SSR) create(c fiber.Ctx) error {
++	vm := formFrom(c)
++	vm.IsNew = true
++	cl, err := h.svc.Create(c.Context(), inputFrom(vm))
++	if err != nil {
++		return h.formError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/clients/" + cl.ID + "?flash=created")
++}
++
++// formEdit — GET /clients/:id.
++func (h *SSR) formEdit(c fiber.Ctx) error {
++	cl, err := h.svc.Get(c.Context(), c.Params("id"))
++	if errors.Is(err, ErrClientNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	vm := vmFromResponse(*cl)
++	vm.Flash = flashes[c.Query("flash")]
++	eq, err := h.svc.ListEquipment(c.Context(), cl.ID, 0, 0)
++	if err != nil {
++		return err
++	}
++	vm.Equipment = equipmentRowsOf(eq.Items)
++	return h.renderForm(c, fiber.StatusOK, vm)
++}
++
++func equipmentRowsOf(items []EquipmentResponse) []EquipmentRow {
++	out := make([]EquipmentRow, len(items))
++	for i, e := range items {
++		out[i] = EquipmentRow{ID: e.ID, Model: e.Model, TypeName: e.TypeName, TypeIsActive: e.TypeIsActive, Serial: e.Serial}
++	}
++	return out
++}
++
++// update — POST /clients/:id. Version пуст/битый → nil → сервис вернёт 400 version:
++// required (ADR-100), как на JSON API. Редирект на успехе — карточка (design-go-layers.md
++// §SSR Routes: `/clients/{id}?flash=saved`, code review LOW#3).
++func (h *SSR) update(c fiber.Ctx) error {
++	vm := formFrom(c)
++	vm.ID = c.Params("id")
++
++	var version *int64
++	if raw := c.FormValue("version"); raw != "" {
++		if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
++			version = &v
++			vm.Version = v
++		}
++	}
++
++	_, err := h.svc.Update(c.Context(), vm.ID, version, inputFrom(vm))
++	if errors.Is(err, ErrClientNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		// блок «Оборудование клиента» не должен пропадать при перерисовке формы (422/409) —
++		// раньше vm.Equipment оставался пуст на любой ошибке сохранения (code review LOW#4).
++		if eq, eqErr := h.svc.ListEquipment(c.Context(), vm.ID, 0, 0); eqErr == nil {
++			vm.Equipment = equipmentRowsOf(eq.Items)
++			vm.EquipmentCount = eq.Total
++		}
++		return h.formError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/clients/" + vm.ID + "?flash=saved")
++}
++
++// remove — POST /clients/:id/delete.
++func (h *SSR) remove(c fiber.Ctx) error {
++	id := c.Params("id")
++	err := h.svc.Delete(c.Context(), id)
++	if errors.Is(err, ErrClientNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/clients?flash=deleted")
++}
++
++// --- Оборудование клиента (Phase 8): форма создания/правки единицы, привязанной к
++// клиенту (ADR-102 — TypeOptions читает equipment_types напрямую SQL, без Go-импорта
++// пакета equipmenttypes). ---
++
++// SpecRow — строка характеристики в form-view (совпадает с SpecDTO, вьюмодель формы).
++type SpecRow struct {
++	K string
++	V string
++}
++
++// TypeOptionVM — опция <select> формы единицы; SpecKeysJSON — JSON-массив ключей типа
++// для data-spec-keys (JS подставляет шаблон характеристик при смене типа, ADR-002).
++type TypeOptionVM struct {
++	ID           string
++	Name         string
++	IsActive     bool
++	SpecKeysJSON string
++}
++
++// EquipmentFormVM — форма единицы оборудования (создание/правка).
++type EquipmentFormVM struct {
++	Shell      ssr.Shell
++	IsNew      bool
++	ID         string
++	ClientID   string
++	ClientName string
++	TypeID     string
++	Brand      string
++	Model      string
++	SKU        string
++	Serial     string
++	Note       string
++	Specs      []SpecRow
++	Types      []TypeOptionVM
++	Errors     map[string]string
++	Error      string
++}
++
++// eqNew — GET /clients/:id/equipment/new.
++func (h *SSR) eqNew(c fiber.Ctx) error {
++	clientID := c.Params("id")
++	cl, err := h.svc.Get(c.Context(), clientID)
++	if errors.Is(err, ErrClientNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	vm := EquipmentFormVM{IsNew: true, ClientID: clientID, ClientName: cl.CompanyName, Specs: []SpecRow{{}}}
++	return h.renderEquipmentForm(c, fiber.StatusOK, vm)
++}
++
++// eqCreate — POST /clients/:id/equipment.
++func (h *SSR) eqCreate(c fiber.Ctx) error {
++	clientID := c.Params("id")
++	vm := equipmentFormFrom(c)
++	vm.IsNew = true
++	vm.ClientID = clientID
++	if cl, err := h.svc.Get(c.Context(), clientID); err == nil {
++		vm.ClientName = cl.CompanyName
++	}
++
++	_, err := h.svc.CreateEquipment(c.Context(), clientID, equipmentInputFrom(vm))
++	if errors.Is(err, ErrClientNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return h.equipmentFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/clients/" + clientID + "?flash=eq_created")
++}
++
++// eqEdit — GET /equipment/:id.
++func (h *SSR) eqEdit(c fiber.Ctx) error {
++	e, err := h.svc.GetEquipment(c.Context(), c.Params("id"))
++	if errors.Is(err, ErrEquipmentNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	clientName := ""
++	if cl, err := h.svc.Get(c.Context(), e.ClientID); err == nil {
++		clientName = cl.CompanyName
++	}
++	return h.renderEquipmentForm(c, fiber.StatusOK, vmFromEquipment(*e, clientName))
++}
++
++// eqUpdate — POST /equipment/:id (LWW, без version — D28).
++func (h *SSR) eqUpdate(c fiber.Ctx) error {
++	id := c.Params("id")
++	cur, err := h.svc.GetEquipment(c.Context(), id)
++	if errors.Is(err, ErrEquipmentNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++
++	vm := equipmentFormFrom(c)
++	vm.ID = id
++	vm.ClientID = cur.ClientID
++	if cl, gerr := h.svc.Get(c.Context(), cur.ClientID); gerr == nil {
++		vm.ClientName = cl.CompanyName
++	}
++
++	_, err = h.svc.UpdateEquipment(c.Context(), id, equipmentInputFrom(vm))
++	if errors.Is(err, ErrEquipmentNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return h.equipmentFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/clients/" + cur.ClientID + "?flash=eq_saved")
++}
++
++// eqRemove — POST /equipment/:id/delete.
++func (h *SSR) eqRemove(c fiber.Ctx) error {
++	clientID, err := h.svc.DeleteEquipment(c.Context(), c.Params("id"))
++	if errors.Is(err, ErrEquipmentNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/clients/" + clientID + "?flash=eq_deleted")
++}
++
++// equipmentFormFrom — поля формы из тела POST, перерисовываются НОРМАЛИЗОВАННЫМ списком
++// характеристик (EquipmentInput.normalize() — та же нормализация, что validate()): индексы
++// `specs[i].k` считаются по нормализованному списку (design-errors.md) — vm.Specs должен
++// быть тем же списком, иначе ошибка индекса рисуется не под той строкой (code review MEDIUM-2).
++func equipmentFormFrom(c fiber.Ctx) EquipmentFormVM {
++	in := EquipmentInput{
++		TypeID: c.FormValue("type_id"),
++		Brand:  c.FormValue("brand"),
++		Model:  c.FormValue("model"),
++		SKU:    c.FormValue("sku"),
++		Serial: c.FormValue("serial"),
++		Note:   c.FormValue("note"),
++		Specs:  specsFrom(c),
++	}.normalize()
++	rows := make([]SpecRow, len(in.Specs))
++	for i, sp := range in.Specs {
++		rows[i] = SpecRow{K: sp.K, V: sp.V}
++	}
++	if len(rows) == 0 {
++		rows = []SpecRow{{}}
++	}
++	return EquipmentFormVM{
++		TypeID: in.TypeID,
++		Brand:  in.Brand,
++		Model:  in.Model,
++		SKU:    in.SKU,
++		Serial: in.Serial,
++		Note:   in.Note,
++		Specs:  rows,
++	}
++}
++
++func specsFrom(c fiber.Ctx) []SpecDTO {
++	ks := c.Request().PostArgs().PeekMulti("spec_k")
++	vs := c.Request().PostArgs().PeekMulti("spec_v")
++	out := make([]SpecDTO, 0, len(ks))
++	for i := range ks {
++		v := ""
++		if i < len(vs) {
++			v = string(vs[i])
++		}
++		out = append(out, SpecDTO{K: string(ks[i]), V: v})
++	}
++	return out
++}
++
++func equipmentInputFrom(vm EquipmentFormVM) EquipmentInput {
++	specs := make([]SpecDTO, len(vm.Specs))
++	for i, sp := range vm.Specs {
++		specs[i] = SpecDTO{K: sp.K, V: sp.V}
++	}
++	return EquipmentInput{
++		TypeID: vm.TypeID, Brand: vm.Brand, Model: vm.Model, SKU: vm.SKU, Serial: vm.Serial,
++		Note: vm.Note, Specs: specs,
++	}
++}
++
++func vmFromEquipment(e EquipmentResponse, clientName string) EquipmentFormVM {
++	rows := make([]SpecRow, len(e.Specs))
++	for i, sp := range e.Specs {
++		rows[i] = SpecRow{K: sp.K, V: sp.V}
++	}
++	if len(rows) == 0 {
++		rows = []SpecRow{{}}
++	}
++	return EquipmentFormVM{
++		ID: e.ID, ClientID: e.ClientID, ClientName: clientName,
++		TypeID: e.TypeID, Brand: e.Brand, Model: e.Model, SKU: e.SKU, Serial: e.Serial,
++		Note: e.Note, Specs: rows,
++	}
++}
++
++// typeOptionsVM — TypeOption (repo) → опции <select> с JSON-шаблоном характеристик.
++func typeOptionsVM(opts []TypeOption) []TypeOptionVM {
++	out := make([]TypeOptionVM, len(opts))
++	for i, o := range opts {
++		keys := o.SpecKeys
++		if keys == nil {
++			keys = []string{}
++		}
++		b, _ := json.Marshal(keys)
++		out[i] = TypeOptionVM{ID: o.ID, Name: o.Name, IsActive: o.IsActive, SpecKeysJSON: string(b)}
++	}
++	return out
++}
++
++// equipmentFormError — ошибки сервиса → форма единицы с текстами (422 валидация; 404 —
++// уже обработан вызывающей стороной до попадания сюда).
++func (h *SSR) equipmentFormError(c fiber.Ctx, vm EquipmentFormVM, err error) error {
++	var app *errorspkg.AppError
++	if !errors.As(err, &app) || app.HTTP >= fiber.StatusInternalServerError {
++		return err
++	}
++	vm.Errors = map[string]string{}
++	for _, f := range app.Fields {
++		vm.Errors[f.Name] = equipmentFieldText(f.Name, f.Message)
++	}
++	if len(app.Fields) == 0 {
++		vm.Error = app.Message
++	}
++	status := app.HTTP
++	if len(app.Fields) > 0 {
++		status = fiber.StatusUnprocessableEntity
++	}
++	return h.renderEquipmentForm(c, status, vm)
++}
++
++// renderEquipmentForm — опции типа читаются заново на каждый рендер (ADR-102): включают
++// vm.TypeID, даже если он архивный (правка существующей единицы без смены типа).
++func (h *SSR) renderEquipmentForm(c fiber.Ctx, status int, vm EquipmentFormVM) error {
++	curTypeID := vm.TypeID
++	if uuid.Validate(curTypeID) != nil {
++		curTypeID = ""
++	}
++	opts, err := h.svc.TypeOptions(c.Context(), curTypeID)
++	if err != nil {
++		return err
++	}
++	vm.Types = typeOptionsVM(opts)
++
++	title := "Оборудование"
++	if vm.IsNew {
++		title = "Новое оборудование"
++	}
++	vm.Shell = h.shell.Build(c, title)
++	c.Status(status)
++	return h.r.Page(c, "equipment-form", vm)
++}
++
++// equipmentFieldText — код ошибки поля → текст под полем (design-errors.md §fieldText,
++// часть equipment).
++func equipmentFieldText(field, code string) string {
++	switch code {
++	case msgRequired:
++		if field == "type_id" {
++			return "Выберите тип"
++		}
++		return "Обязательное поле"
++	case msgTooLong:
++		return "Слишком длинное значение"
++	case msgTooMany:
++		return "Не больше 50 характеристик"
++	case msgInvalid, "not_found":
++		return "Тип не найден"
++	case "archived":
++		return "Тип в архиве — выберите другой"
++	case msgKeyRequired:
++		return "Укажите характеристику"
++	}
++	return "Недопустимое значение"
++}
++
++// formFrom — поля формы из тела POST, перерисовываются НОРМАЛИЗОВАННЫМ списком телефонов
++// (ClientInput.normalize() — та же нормализация, что использует validate()): индексы ошибок
++// `phones[i].phone` считаются по нормализованному списку (design-errors.md), поэтому и
++// vm.Phones должен быть тем же списком — иначе при отбросе пустых строк (напр.
++// ["", "abc"]) ошибка индекса 0 рисуется под неправильной строкой формы (code review MEDIUM-2).
++func formFrom(c fiber.Ctx) FormVM {
++	in := ClientInput{
++		CompanyName:     c.FormValue("company_name"),
++		Address:         c.FormValue("address"),
++		ContactName:     c.FormValue("contact_name"),
++		ContactPosition: c.FormValue("contact_position"),
++		Phones:          phonesFrom(c),
++	}.normalize()
++	rows := make([]PhoneRow, len(in.Phones))
++	for i, p := range in.Phones {
++		rows[i] = PhoneRow{Phone: p.Phone, Note: p.Note}
++	}
++	if len(rows) == 0 {
++		rows = []PhoneRow{{}}
++	}
++	return FormVM{
++		CompanyName:     in.CompanyName,
++		Address:         in.Address,
++		ContactName:     in.ContactName,
++		ContactPosition: in.ContactPosition,
++		Phones:          rows,
++	}
++}
++
++func phonesFrom(c fiber.Ctx) []PhoneDTO {
++	phones := c.Request().PostArgs().PeekMulti("phone")
++	notes := c.Request().PostArgs().PeekMulti("phone_note")
++	out := make([]PhoneDTO, 0, len(phones))
++	for i := range phones {
++		note := ""
++		if i < len(notes) {
++			note = string(notes[i])
++		}
++		out = append(out, PhoneDTO{Phone: string(phones[i]), Note: note})
++	}
++	return out
++}
++
++func inputFrom(vm FormVM) ClientInput {
++	phones := make([]PhoneDTO, len(vm.Phones))
++	for i, p := range vm.Phones {
++		phones[i] = PhoneDTO{Phone: p.Phone, Note: p.Note}
++	}
++	return ClientInput{
++		CompanyName:     vm.CompanyName,
++		Address:         vm.Address,
++		ContactName:     vm.ContactName,
++		ContactPosition: vm.ContactPosition,
++		Phones:          phones,
++	}
++}
++
++func vmFromResponse(cl ClientResponse) FormVM {
++	rows := make([]PhoneRow, len(cl.Phones))
++	for i, p := range cl.Phones {
++		rows[i] = PhoneRow{Phone: p.Phone, Note: p.Note}
++	}
++	if len(rows) == 0 {
++		rows = []PhoneRow{{}}
++	}
++	return FormVM{
++		ID: cl.ID, CompanyName: cl.CompanyName, Address: cl.Address,
++		ContactName: cl.ContactName, ContactPosition: cl.ContactPosition,
++		Phones: rows, Version: cl.Version, EquipmentCount: cl.EquipmentCount,
++	}
++}
++
++// formError — ошибки сервиса → форма с текстами (422 валидация, 409 конфликт версии —
++// эталон users/ssr.go formError; ветка ErrClientVersionConflict — ADR-005).
++func (h *SSR) formError(c fiber.Ctx, vm FormVM, err error) error {
++	var app *errorspkg.AppError
++	if !errors.As(err, &app) || app.HTTP >= fiber.StatusInternalServerError {
++		return err
++	}
++	vm.Errors = map[string]string{}
++	for _, f := range app.Fields {
++		vm.Errors[f.Name] = fieldText(f.Name, f.Message)
++	}
++	switch {
++	case errors.Is(err, ErrClientVersionConflict):
++		vm.Error = ErrClientVersionConflict.Message
++		vm.Conflict = true
++	case len(app.Fields) == 0:
++		vm.Error = app.Message
++	}
++	status := app.HTTP
++	if len(app.Fields) > 0 {
++		status = fiber.StatusUnprocessableEntity
++	}
++	return h.renderForm(c, status, vm)
++}
++
++func (h *SSR) renderForm(c fiber.Ctx, status int, vm FormVM) error {
++	title := "Клиент"
++	if vm.IsNew {
++		title = "Новый клиент"
++	}
++	vm.Shell = h.shell.Build(c, title)
++	c.Status(status)
++	return h.r.Page(c, "form", vm)
++}
++
++// fieldText — код ошибки поля → текст под полем (design-errors.md §fieldText, часть clients).
++func fieldText(field, code string) string {
++	switch code {
++	case msgRequired:
++		if field == "phones" {
++			return "Укажите хотя бы один телефон"
++		}
++		return "Обязательное поле"
++	case msgTooLong:
++		return "Слишком длинное значение"
++	case msgTooMany:
++		return "Не больше 20 телефонов"
++	case msgInvalidFormat:
++		return "Номер должен содержать цифры"
++	}
++	return "Недопустимое значение"
++}
+diff --git a/internal/features/clients/validate.go b/internal/features/clients/validate.go
+new file mode 100644
+index 0000000..45b7559
+--- /dev/null
++++ b/internal/features/clients/validate.go
+@@ -0,0 +1,245 @@
++package clients
++
++import (
++	"fmt"
++	"regexp"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/google/uuid"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Коды ошибок полей (details.fields[].message) — SSR переводит их в текст.
++const (
++	msgRequired      = "required"
++	msgTooLong       = "too_long"
++	msgTooMany       = "too_many"
++	msgInvalidFormat = "invalid_format"
++	msgInvalid       = "invalid"
++	msgKeyRequired   = "key_required"
++	// msgInvalidText — NUL-байт / невалидный UTF-8 (code review §TD-4): отдельный от
++	// msgInvalid код, т.к. msgInvalid для type_id в equipmentFieldText жёстко маппится на
++	// текст «Тип не найден» безотносительно поля — переиспользование сломало бы текст
++	// ошибки для остальных полей.
++	msgInvalidText = "invalid_text"
++)
++
++// Границы полей (Tech Spec §Лимиты).
++const (
++	companyNameMax = 200
++	addressMax     = 500
++	contactMax     = 200
++	phonesMax      = 20
++	phoneMax       = 32
++	phoneNoteMax   = 200
++
++	equipmentModelMax  = 200
++	equipmentBrandMax  = 200
++	equipmentSKUMax    = 200
++	equipmentSerialMax = 200
++	equipmentNoteMax   = 1000
++	specsMax           = 50
++	specKMax           = 100
++	specVMax           = 500
++)
++
++// phoneDigitRe — телефон обязан содержать хотя бы одну цифру.
++var phoneDigitRe = regexp.MustCompile(`[0-9]`)
++
++// ClientInput — нормализованные поля карточки клиента + телефонов (общие для API и
++// SSR-формы).
++type ClientInput struct {
++	CompanyName     string
++	Address         string
++	ContactName     string
++	ContactPosition string
++	Phones          []PhoneDTO
++}
++
++// normalize — trim всех строк; строки телефонов с пустыми phone И note отбрасываются
++// (пустая строка формы). Индексы валидации/ошибок считаются ПОСЛЕ этого отброса.
++func (in ClientInput) normalize() ClientInput {
++	in.CompanyName = strings.TrimSpace(in.CompanyName)
++	in.Address = strings.TrimSpace(in.Address)
++	in.ContactName = strings.TrimSpace(in.ContactName)
++	in.ContactPosition = strings.TrimSpace(in.ContactPosition)
++
++	phones := make([]PhoneDTO, 0, len(in.Phones))
++	for _, p := range in.Phones {
++		p.Phone = strings.TrimSpace(p.Phone)
++		p.Note = strings.TrimSpace(p.Note)
++		if p.Phone == "" && p.Note == "" {
++			continue
++		}
++		phones = append(phones, p)
++	}
++	in.Phones = phones
++	return in
++}
++
++// validate — ошибки полей после normalize().
++func (in ClientInput) validate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	switch n := utf8.RuneCountInString(in.CompanyName); {
++	case n == 0:
++		add("company_name", msgRequired)
++	case n > companyNameMax:
++		add("company_name", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.CompanyName) {
++		add("company_name", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.Address) > addressMax {
++		add("address", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Address) {
++		add("address", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.ContactName) > contactMax {
++		add("contact_name", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.ContactName) {
++		add("contact_name", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.ContactPosition) > contactMax {
++		add("contact_position", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.ContactPosition) {
++		add("contact_position", msgInvalidText)
++	}
++
++	switch {
++	case len(in.Phones) == 0:
++		add("phones", msgRequired)
++	case len(in.Phones) > phonesMax:
++		add("phones", msgTooMany)
++	}
++	for i, p := range in.Phones {
++		switch n := utf8.RuneCountInString(p.Phone); {
++		case n == 0:
++			add(fmt.Sprintf("phones[%d].phone", i), msgRequired)
++		case n > phoneMax:
++			add(fmt.Sprintf("phones[%d].phone", i), msgTooLong)
++		case !phoneDigitRe.MatchString(p.Phone):
++			add(fmt.Sprintf("phones[%d].phone", i), msgInvalidFormat)
++		}
++		if sqlutil.HasInvalidText(p.Phone) {
++			add(fmt.Sprintf("phones[%d].phone", i), msgInvalidText)
++		}
++		if utf8.RuneCountInString(p.Note) > phoneNoteMax {
++			add(fmt.Sprintf("phones[%d].note", i), msgTooLong)
++		}
++		if sqlutil.HasInvalidText(p.Note) {
++			add(fmt.Sprintf("phones[%d].note", i), msgInvalidText)
++		}
++	}
++	return f
++}
++
++// EquipmentInput — нормализованные поля единицы оборудования (общие для API и SSR-формы).
++type EquipmentInput struct {
++	TypeID string
++	Brand  string
++	Model  string
++	SKU    string
++	Serial string
++	Note   string
++	Specs  []SpecDTO
++}
++
++// normalize — trim; пары характеристик с пустыми k И v отбрасываются; nil specs → [].
++func (in EquipmentInput) normalize() EquipmentInput {
++	in.TypeID = strings.TrimSpace(in.TypeID)
++	in.Brand = strings.TrimSpace(in.Brand)
++	in.Model = strings.TrimSpace(in.Model)
++	in.SKU = strings.TrimSpace(in.SKU)
++	in.Serial = strings.TrimSpace(in.Serial)
++	in.Note = strings.TrimSpace(in.Note)
++
++	specs := make([]SpecDTO, 0, len(in.Specs))
++	for _, sp := range in.Specs {
++		sp.K = strings.TrimSpace(sp.K)
++		sp.V = strings.TrimSpace(sp.V)
++		if sp.K == "" && sp.V == "" {
++			continue
++		}
++		specs = append(specs, sp)
++	}
++	in.Specs = specs
++	return in
++}
++
++// validate — ошибки полей после normalize(). Активность/существование type_id — сервис
++// (запрос к БД), не здесь. Дубли k разрешены.
++func (in EquipmentInput) validate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	switch {
++	case in.TypeID == "":
++		add("type_id", msgRequired)
++	case uuid.Validate(in.TypeID) != nil:
++		add("type_id", msgInvalid)
++	}
++
++	switch n := utf8.RuneCountInString(in.Model); {
++	case n == 0:
++		add("model", msgRequired)
++	case n > equipmentModelMax:
++		add("model", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Model) {
++		add("model", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.Brand) > equipmentBrandMax {
++		add("brand", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Brand) {
++		add("brand", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.SKU) > equipmentSKUMax {
++		add("sku", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.SKU) {
++		add("sku", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.Serial) > equipmentSerialMax {
++		add("serial", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Serial) {
++		add("serial", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.Note) > equipmentNoteMax {
++		add("note", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Note) {
++		add("note", msgInvalidText)
++	}
++
++	if len(in.Specs) > specsMax {
++		add("specs", msgTooMany)
++	}
++	for i, sp := range in.Specs {
++		switch {
++		case sp.K == "":
++			add(fmt.Sprintf("specs[%d].k", i), msgKeyRequired)
++		case utf8.RuneCountInString(sp.K) > specKMax:
++			add(fmt.Sprintf("specs[%d].k", i), msgTooLong)
++		}
++		if sqlutil.HasInvalidText(sp.K) {
++			add(fmt.Sprintf("specs[%d].k", i), msgInvalidText)
++		}
++		if utf8.RuneCountInString(sp.V) > specVMax {
++			add(fmt.Sprintf("specs[%d].v", i), msgTooLong)
++		}
++		if sqlutil.HasInvalidText(sp.V) {
++			add(fmt.Sprintf("specs[%d].v", i), msgInvalidText)
++		}
++	}
++	return f
++}
+diff --git a/internal/features/clients/validate_test.go b/internal/features/clients/validate_test.go
+new file mode 100644
+index 0000000..039b6f1
+--- /dev/null
++++ b/internal/features/clients/validate_test.go
+@@ -0,0 +1,243 @@
++package clients
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++func fieldsOf(fs []errorspkg.Field) map[string]string {
++	m := map[string]string{}
++	for _, f := range fs {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func onePhone(phone, note string) []PhoneDTO { return []PhoneDTO{{Phone: phone, Note: note}} }
++
++// UT-001: ClientInput: trim; company_name пусто → required, 200/201 rune (кириллица) →
++// ok/too_long; address 500/501; contact_* 200/201.
++func TestClientInput_Validate_StringLimits(t *testing.T) {
++	cases := []struct {
++		name  string
++		in    ClientInput
++		field string
++		msg   string
++	}{
++		{"валидный", ClientInput{CompanyName: "ООО Ромашка", Phones: onePhone("+7 999 1234567", "")}, "", ""},
++		{"company_name пусто", ClientInput{Phones: onePhone("123", "")}, "company_name", msgRequired},
++		{"company_name из пробелов — required после trim", ClientInput{CompanyName: "   ", Phones: onePhone("123", "")}, "company_name", msgRequired},
++		{"company_name 200 — граница", ClientInput{CompanyName: strings.Repeat("я", 200), Phones: onePhone("123", "")}, "", ""},
++		{"company_name 201", ClientInput{CompanyName: strings.Repeat("я", 201), Phones: onePhone("123", "")}, "company_name", msgTooLong},
++		{"address 500 — граница", ClientInput{CompanyName: "ООО", Address: strings.Repeat("я", 500), Phones: onePhone("123", "")}, "", ""},
++		{"address 501", ClientInput{CompanyName: "ООО", Address: strings.Repeat("я", 501), Phones: onePhone("123", "")}, "address", msgTooLong},
++		{"contact_name 200 — граница", ClientInput{CompanyName: "ООО", ContactName: strings.Repeat("я", 200), Phones: onePhone("123", "")}, "", ""},
++		{"contact_name 201", ClientInput{CompanyName: "ООО", ContactName: strings.Repeat("я", 201), Phones: onePhone("123", "")}, "contact_name", msgTooLong},
++		{"contact_position 200 — граница", ClientInput{CompanyName: "ООО", ContactPosition: strings.Repeat("я", 200), Phones: onePhone("123", "")}, "", ""},
++		{"contact_position 201", ClientInput{CompanyName: "ООО", ContactPosition: strings.Repeat("я", 201), Phones: onePhone("123", "")}, "contact_position", msgTooLong},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got := fieldsOf(tc.in.normalize().validate())
++			if tc.field == "" {
++				assert.Empty(t, got)
++				return
++			}
++			assert.Equal(t, tc.msg, got[tc.field])
++		})
++	}
++	// trim компании — пробелы вокруг не считаются частью значения.
++	in := ClientInput{CompanyName: "  ООО Ромашка  ", Phones: onePhone("123", "")}.normalize()
++	assert.Equal(t, "ООО Ромашка", in.CompanyName)
++}
++
++// UT-002: phones: 0 после отброса → phones required; 20 ok / 21 too_many.
++func TestClientInput_Validate_PhonesCount(t *testing.T) {
++	in := ClientInput{CompanyName: "ООО"}.normalize()
++	assert.Equal(t, map[string]string{"phones": msgRequired}, fieldsOf(in.validate()))
++
++	// все строки пустые (phone+note) — отбрасываются normalize(), остаётся 0 → required.
++	in = ClientInput{CompanyName: "ООО", Phones: []PhoneDTO{{}, {Phone: "  ", Note: " "}}}.normalize()
++	assert.Empty(t, in.Phones)
++	assert.Equal(t, map[string]string{"phones": msgRequired}, fieldsOf(in.validate()))
++
++	phones20 := make([]PhoneDTO, 20)
++	for i := range phones20 {
++		phones20[i] = PhoneDTO{Phone: "1234567"}
++	}
++	in = ClientInput{CompanyName: "ООО", Phones: phones20}.normalize()
++	assert.Len(t, in.Phones, 20)
++	assert.Empty(t, fieldsOf(in.validate()), "20 телефонов — граница, ok")
++
++	phones21 := append(append([]PhoneDTO{}, phones20...), PhoneDTO{Phone: "7654321"})
++	in = ClientInput{CompanyName: "ООО", Phones: phones21}.normalize()
++	assert.Equal(t, map[string]string{"phones": msgTooMany}, fieldsOf(in.validate()))
++}
++
++// UT-003: строки телефонов: пустые (phone+note) отбрасываются; note без phone →
++// phones[i].phone required; индекс после нормализации.
++func TestClientInput_Normalize_PhoneRows(t *testing.T) {
++	in := ClientInput{CompanyName: "ООО", Phones: []PhoneDTO{
++		{Phone: "", Note: ""},               // отброшена
++		{Phone: "  ", Note: "  "},           // отброшена (пусто после trim)
++		{Phone: "", Note: "звонить вечером"}, // note без phone — остаётся, индекс 0 после отброса
++		{Phone: " 123 ", Note: " доб. 1 "},   // остаётся, индекс 1
++	}}.normalize()
++
++	assert.Equal(t, []PhoneDTO{
++		{Phone: "", Note: "звонить вечером"},
++		{Phone: "123", Note: "доб. 1"},
++	}, in.Phones, "пустые строки отброшены, индексы пересчитаны")
++
++	got := fieldsOf(in.validate())
++	assert.Equal(t, msgRequired, got["phones[0].phone"], "note без phone → phone required по нормализованному индексу")
++	assert.NotContains(t, got, "phones[1].phone")
++}
++
++// UT-004: phone: 32/33 → too_long; «abc» / «()-» → invalid_format; «+7 (999) 1» ok;
++// note 200/201.
++func TestClientInput_Validate_PhoneField(t *testing.T) {
++	cases := []struct {
++		name  string
++		phone string
++		note  string
++		field string
++		msg   string
++	}{
++		{"phone 32 — граница", strings.Repeat("1", 32), "", "", ""},
++		{"phone 33", strings.Repeat("1", 33), "", "phones[0].phone", msgTooLong},
++		{"без цифр — буквы", "abc", "", "phones[0].phone", msgInvalidFormat},
++		{"без цифр — только спецсимволы", "()-", "", "phones[0].phone", msgInvalidFormat},
++		{"с цифрой и форматированием — ok", "+7 (999) 1", "", "", ""},
++		{"note 200 — граница", "123", strings.Repeat("я", 200), "", ""},
++		{"note 201", "123", strings.Repeat("я", 201), "phones[0].note", msgTooLong},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			in := ClientInput{CompanyName: "ООО", Phones: onePhone(tc.phone, tc.note)}.normalize()
++			got := fieldsOf(in.validate())
++			if tc.field == "" {
++				assert.Empty(t, got)
++				return
++			}
++			assert.Equal(t, tc.msg, got[tc.field])
++		})
++	}
++}
++
++// UT-010: digits-нормализация поиска (ADR-003): «8 (999) 12» → digits «899912» + digitsAlt
++// «99912» (ведущая 7/8 отбрасывается НЕЗАВИСИМО от длины ввода — фикс регрессии итерации 2:
++// раньше digitsAlt считался только при ≥11 цифрах, из-за чего частичный ввод с кодом страны
++// не находил номер); «ab1» → «»/«» (не похоже на телефон); «12» (<3 цифр) → «»/«»; digitsAlt
++// пуст, если строка не начинается с 7/8.
++func TestSearchDigits(t *testing.T) {
++	cases := []struct {
++		name          string
++		q             string
++		wantDigits    string
++		wantDigitsAlt string
++	}{
++		{"короткий ввод с ведущей 8 — digitsAlt без длины-порога", "8 (999) 12", "899912", "99912"},
++		{"короткий ввод без ведущей 7/8 — digitsAlt пуст", "9 (999) 12", "999912", ""},
++		{"буквы — не похоже на телефон", "ab1", "", ""},
++		{"меньше 3 цифр", "12", "", ""},
++		{"пусто", "", "", ""},
++		{"полный номер с ведущей 8", "89991234567", "89991234567", "9991234567"},
++		{"полный номер с ведущей 7", "+7 (999) 123-45-67", "79991234567", "9991234567"},
++		{"10 цифр без кода страны — digitsAlt пуст", "9991234567", "9991234567", ""},
++		{"частичный ввод с ведущей 7 (регрессия итерации 2)", "+7 999 555", "7999555", "999555"},
++		{"частичный ввод с ведущей 8 (регрессия итерации 2)", "8 (999) 555", "8999555", "999555"},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			digits, digitsAlt := searchDigits(tc.q)
++			assert.Equal(t, tc.wantDigits, digits, "digits")
++			assert.Equal(t, tc.wantDigitsAlt, digitsAlt, "digitsAlt")
++		})
++	}
++}
++
++const validTypeID = "11111111-1111-1111-1111-111111111111"
++
++// UT-005: EquipmentInput: type_id пусто → required, «xyz» → invalid; model
++// required/200/201; brand/sku/serial 200/201; note 1000/1001.
++func TestEquipmentInput_Validate_StringLimits(t *testing.T) {
++	cases := []struct {
++		name  string
++		in    EquipmentInput
++		field string
++		msg   string
++	}{
++		{"валидный", EquipmentInput{TypeID: validTypeID, Model: "M1"}, "", ""},
++		{"type_id пусто", EquipmentInput{Model: "M1"}, "type_id", msgRequired},
++		{"type_id битый uuid", EquipmentInput{TypeID: "xyz", Model: "M1"}, "type_id", msgInvalid},
++		{"model пусто", EquipmentInput{TypeID: validTypeID}, "model", msgRequired},
++		{"model 200 — граница", EquipmentInput{TypeID: validTypeID, Model: strings.Repeat("я", 200)}, "", ""},
++		{"model 201", EquipmentInput{TypeID: validTypeID, Model: strings.Repeat("я", 201)}, "model", msgTooLong},
++		{"brand 200 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", Brand: strings.Repeat("я", 200)}, "", ""},
++		{"brand 201", EquipmentInput{TypeID: validTypeID, Model: "M1", Brand: strings.Repeat("я", 201)}, "brand", msgTooLong},
++		{"sku 200 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", SKU: strings.Repeat("я", 200)}, "", ""},
++		{"sku 201", EquipmentInput{TypeID: validTypeID, Model: "M1", SKU: strings.Repeat("я", 201)}, "sku", msgTooLong},
++		{"serial 200 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", Serial: strings.Repeat("я", 200)}, "", ""},
++		{"serial 201", EquipmentInput{TypeID: validTypeID, Model: "M1", Serial: strings.Repeat("я", 201)}, "serial", msgTooLong},
++		{"note 1000 — граница", EquipmentInput{TypeID: validTypeID, Model: "M1", Note: strings.Repeat("я", 1000)}, "", ""},
++		{"note 1001", EquipmentInput{TypeID: validTypeID, Model: "M1", Note: strings.Repeat("я", 1001)}, "note", msgTooLong},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got := fieldsOf(tc.in.normalize().validate())
++			if tc.field == "" {
++				assert.Empty(t, got)
++				return
++			}
++			assert.Equal(t, tc.msg, got[tc.field])
++		})
++	}
++}
++
++// UT-006: specs nil → [] (не null в JSON).
++func TestEquipmentInput_Normalize_SpecsNilToEmpty(t *testing.T) {
++	in := EquipmentInput{TypeID: validTypeID, Model: "M1"}.normalize()
++	assert.NotNil(t, in.Specs)
++	assert.Empty(t, in.Specs)
++}
++
++// UT-007: specs: пустые пары отбрасываются; v без k → specs[i].k key_required; k 100/101,
++// v 500/501; 50/51 → too_many; дубли k разрешены.
++func TestEquipmentInput_Validate_Specs(t *testing.T) {
++	in := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{
++		{K: "", V: ""},          // отброшена
++		{K: "  ", V: "  "},      // отброшена (пусто после trim)
++		{K: "", V: "значение"},  // v без k — остаётся, индекс 0
++		{K: "мощность", V: "5"}, // индекс 1
++	}}.normalize()
++	assert.Equal(t, []SpecDTO{{K: "", V: "значение"}, {K: "мощность", V: "5"}}, in.Specs)
++	got := fieldsOf(in.validate())
++	assert.Equal(t, msgKeyRequired, got["specs[0].k"])
++	assert.NotContains(t, got, "specs[1].k")
++
++	borderK := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{{K: strings.Repeat("k", 100), V: strings.Repeat("v", 500)}}}.normalize()
++	assert.Empty(t, fieldsOf(borderK.validate()))
++	overK := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{{K: strings.Repeat("k", 101), V: strings.Repeat("v", 501)}}}.normalize()
++	overFields := fieldsOf(overK.validate())
++	assert.Equal(t, msgTooLong, overFields["specs[0].k"])
++	assert.Equal(t, msgTooLong, overFields["specs[0].v"])
++
++	specs50 := make([]SpecDTO, 50)
++	for i := range specs50 {
++		specs50[i] = SpecDTO{K: "k", V: "v"}
++	}
++	in50 := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: specs50}.normalize()
++	assert.Empty(t, fieldsOf(in50.validate()), "50 характеристик — граница, ok")
++
++	specs51 := append(append([]SpecDTO{}, specs50...), SpecDTO{K: "k", V: "v"})
++	in51 := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: specs51}.normalize()
++	assert.Equal(t, msgTooMany, fieldsOf(in51.validate())["specs"])
++
++	dupSpecs := EquipmentInput{TypeID: validTypeID, Model: "M1", Specs: []SpecDTO{{K: "мощность", V: "5"}, {K: "мощность", V: "7"}}}.normalize()
++	assert.Empty(t, fieldsOf(dupSpecs.validate()))
++}
+diff --git a/internal/features/equipmenttypes/dto.go b/internal/features/equipmenttypes/dto.go
+new file mode 100644
+index 0000000..4475f71
+--- /dev/null
++++ b/internal/features/equipmenttypes/dto.go
+@@ -0,0 +1,36 @@
++package equipmenttypes
++
++import "time"
++
++// Wire-типы — JSON только snake_case (§API-1); конверт списка {items,total,limit,offset}.
++
++type TypeResponse struct {
++	ID             string    `json:"id"`
++	Name           string    `json:"name"`
++	SpecKeys       []string  `json:"spec_keys"` // всегда массив
++	IsActive       bool      `json:"is_active"`
++	EquipmentCount int       `json:"equipment_count"`
++	CreatedAt      time.Time `json:"created_at"`
++	UpdatedAt      time.Time `json:"updated_at"`
++}
++
++type TypeListResponse struct {
++	Items  []TypeResponse `json:"items"`
++	Total  int            `json:"total"`
++	Limit  int            `json:"limit"`
++	Offset int            `json:"offset"`
++}
++
++// TypeCreateRequest — POST /api/v1/equipment-types. is_active не передаётся — активен.
++type TypeCreateRequest struct {
++	Name     string   `json:"name"`
++	SpecKeys []string `json:"spec_keys"`
++}
++
++// TypeUpdateRequest — PUT /api/v1/equipment-types/:id: полная замена карточки типа.
++// is_active не передан (nil) — 400 is_active: required (как users.UpdateRequest).
++type TypeUpdateRequest struct {
++	Name     string   `json:"name"`
++	SpecKeys []string `json:"spec_keys"`
++	IsActive *bool    `json:"is_active"`
++}
+diff --git a/internal/features/equipmenttypes/equipmenttypes_http_live_test.go b/internal/features/equipmenttypes/equipmenttypes_http_live_test.go
+new file mode 100644
+index 0000000..f5a655a
+--- /dev/null
++++ b/internal/features/equipmenttypes/equipmenttypes_http_live_test.go
+@@ -0,0 +1,361 @@
++//go:build integration
++
++package equipmenttypes_test
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/url"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// TypesLiveSuite (§TD-8): типы оборудования — API, права (ADR-004), уникальность имени
++// (ADR-007), удаление используемого типа.
++type TypesLiveSuite struct {
++	testutil.LiveSuite
++	admin *testutil.Browser
++}
++
++func TestTypesLiveSuite(t *testing.T) {
++	suite.Run(t, &TypesLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *TypesLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("catalog-admin", "password1", "Каталог Админ", "admin", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("catalog-admin", "password1")
++}
++
++type typeDTO struct {
++	ID             string   `json:"id"`
++	Name           string   `json:"name"`
++	SpecKeys       []string `json:"spec_keys"`
++	IsActive       bool     `json:"is_active"`
++	EquipmentCount int      `json:"equipment_count"`
++}
++
++type apiErr struct {
++	Code    string `json:"code"`
++	Details *struct {
++		Fields []struct{ Name, Message string } `json:"fields"`
++	} `json:"details"`
++}
++
++func (s *TypesLiveSuite) errOf(body []byte) apiErr {
++	var e apiErr
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	return e
++}
++
++func (s *TypesLiveSuite) fields(body []byte) map[string]string {
++	e := s.errOf(body)
++	s.Require().NotNil(e.Details, string(body))
++	m := map[string]string{}
++	for _, f := range e.Details.Fields {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func (s *TypesLiveSuite) create(b *testutil.Browser, body map[string]any) (int, typeDTO, []byte) {
++	st, raw := b.Do(http.MethodPost, "/api/v1/equipment-types", body)
++	var t typeDTO
++	if st == http.StatusCreated {
++		s.Require().NoError(json.Unmarshal(raw, &t))
++	}
++	return st, t, raw
++}
++
++func (s *TypesLiveSuite) put(b *testutil.Browser, id string, body map[string]any) (int, []byte) {
++	return b.Do(http.MethodPut, "/api/v1/equipment-types/"+id, body)
++}
++
++func card(t typeDTO, patch map[string]any) map[string]any {
++	m := map[string]any{"name": t.Name, "spec_keys": t.SpecKeys, "is_active": t.IsActive}
++	for k, v := range patch {
++		m[k] = v
++	}
++	return m
++}
++
++func (s *TypesLiveSuite) newType(name string) typeDTO {
++	st, tp, raw := s.create(s.admin, map[string]any{"name": name, "spec_keys": []string{"Мощность", "Напряжение"}})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	return tp
++}
++
++// ---- LV-030: happy path — создание/получение/список ----
++
++func (s *TypesLiveSuite) TestCreateGetList() {
++	st, tp, raw := s.create(s.admin, map[string]any{"name": "  Холодильник  ", "spec_keys": []string{" Объём ", "объём", "Тип хладагента"}})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal("Холодильник", tp.Name)
++	s.Equal([]string{"Объём", "Тип хладагента"}, tp.SpecKeys, "дедуп case-insensitive, порядок первого вхождения")
++	s.True(tp.IsActive)
++	s.Equal(0, tp.EquipmentCount)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment-types/"+tp.ID, nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(raw), `"name":"Холодильник"`)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment-types?q=холод", nil)
++	s.Equal(http.StatusOK, st)
++	var list struct {
++		Items  []typeDTO `json:"items"`
++		Total  int       `json:"total"`
++		Limit  int       `json:"limit"`
++		Offset int       `json:"offset"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(1, list.Total)
++	s.Equal(500, list.Limit, "лимит по умолчанию для lookup-списка — 500")
++}
++
++// ---- LV-035 (equipment-types часть): мусор в limit/offset/include_archived — дефолты,
++// не 500 ----
++
++func (s *TypesLiveSuite) TestList_GarbageParams_DefaultsNot500() {
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment-types?limit=-5&offset=-1&include_archived=maybe", nil)
++	s.Equal(http.StatusOK, st, string(raw))
++}
++
++// ---- LV-040 (equipment-types часть, authz): исполнитель читает только активные типы,
++// мутации 403; аноним 401 ----
++
++func (s *TypesLiveSuite) TestAuthz_ExecutorReadOnlyActive_MutationsForbidden_AnonUnauthorized() {
++	active := s.newType("Насос")
++	archived := s.newType("Списанный компрессор")
++	st, raw := s.put(s.admin, archived.ID, card(archived, map[string]any{"is_active": false}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	s.SeedUser("catalog-exec", "password1", "Каталог Исп", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("catalog-exec", "password1")
++
++	st, raw = exec.Do(http.MethodGet, "/api/v1/equipment-types?include_archived=true", nil)
++	s.Equal(http.StatusOK, st, "чтение активных типов разрешено исполнителю")
++	s.NotContains(string(raw), archived.Name, "исполнитель не видит архив даже с include_archived=true (ADR-004)")
++	s.Contains(string(raw), active.Name)
++
++	st, raw = exec.Do(http.MethodGet, "/api/v1/equipment-types/"+active.ID, nil)
++	s.Equal(http.StatusOK, st, string(raw))
++
++	for _, c := range []struct{ method, path string }{
++		{http.MethodPost, "/api/v1/equipment-types"},
++		{http.MethodPut, "/api/v1/equipment-types/" + active.ID},
++		{http.MethodDelete, "/api/v1/equipment-types/" + active.ID},
++	} {
++		st, raw := exec.Do(c.method, c.path, map[string]any{"name": "x"})
++		s.Equal(http.StatusForbidden, st, "%s %s", c.method, c.path)
++		s.Equal("FORBIDDEN", s.errOf(raw).Code)
++	}
++
++	anon := s.NewBrowser()
++	st, _ = anon.Do(http.MethodGet, "/api/v1/equipment-types", nil)
++	s.Equal(http.StatusUnauthorized, st)
++}
++
++// ---- LV-036 (equipment-types часть): валидация полей / мусорное тело → 400, не 500 ----
++
++func (s *TypesLiveSuite) TestCreate_Validation() {
++	st, _, raw := s.create(s.admin, map[string]any{})
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal(map[string]string{"name": "required"}, s.fields(raw))
++
++	st, _, raw = s.create(s.admin, map[string]any{"name": strings.Repeat("я", 101)})
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal("too_long", s.fields(raw)["name"])
++
++	longKeys := make([]string, 51)
++	for i := range longKeys {
++		longKeys[i] = strings.Repeat("k", i+1) // все разные — не схлопнутся дедупом
++	}
++	st, _, raw = s.create(s.admin, map[string]any{"name": "Дрель", "spec_keys": longKeys})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("too_many", s.fields(raw)["spec_keys"])
++
++	st, _, raw = s.create(s.admin, map[string]any{"name": "Дрель-2", "spec_keys": []string{strings.Repeat("k", 101)}})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("too_long", s.fields(raw)["spec_keys[0]"])
++
++	for _, body := range []string{`{`, `null`, `"str"`, `{"is_active":"yes"}`} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/equipment-types", body)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
++	}
++
++	st, tp, raw := s.create(s.admin, map[string]any{"name": "Без is_active"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/equipment-types/"+tp.ID, map[string]any{"name": "Без is_active"})
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal("required", s.fields(raw)["is_active"])
++}
++
++// ---- code review MEDIUM-1: NUL-байт → 400, не 500 (§TD-4) ----
++
++func (s *TypesLiveSuite) TestCreate_NulByte_Not500() {
++	st, _, raw := s.create(s.admin, map[string]any{"name": "Тип\u0000"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_text", s.fields(raw)["name"])
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment-types?q=%00", nil)
++	s.Equal(http.StatusOK, st, string(raw))
++}
++
++// ---- (equipment-types, аналог LV-008): битый/несуществующий uuid → 404, не 500 ----
++
++func (s *TypesLiveSuite) TestBadOrMissingID_404() {
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000", "1'; DROP TABLE equipment_types;--"} {
++		esc := url.PathEscape(id)
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment-types/"+esc, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, raw = s.put(s.admin, esc, map[string]any{"name": "x", "is_active": true})
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment-types/"+esc, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++	}
++}
++
++// ---- LV-031: дубль имени активного (409 TAKEN) vs архивного (409 ARCHIVED) ----
++
++func (s *TypesLiveSuite) TestCreate_DuplicateName_TakenVsArchived() {
++	t1 := s.newType("Кондиционер")
++	st, _, raw := s.create(s.admin, map[string]any{"name": "КОНДИЦИОНЕР"})
++	s.Equal(http.StatusConflict, st)
++	s.Equal("EQUIPMENT_TYPE_NAME_TAKEN", s.errOf(raw).Code)
++
++	st, raw = s.put(s.admin, t1.ID, card(t1, map[string]any{"is_active": false}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	st, _, raw = s.create(s.admin, map[string]any{"name": "кондиционер"})
++	s.Equal(http.StatusConflict, st)
++	s.Equal("EQUIPMENT_TYPE_NAME_ARCHIVED", s.errOf(raw).Code)
++
++	t2 := s.newType("Обогреватель")
++	st, raw = s.put(s.admin, t2.ID, card(t2, map[string]any{"name": "кондиционер"}))
++	s.Equal(http.StatusConflict, st, string(raw))
++}
++
++// ---- LV-032: удаление используемого типа → 409 EQUIPMENT_TYPE_IN_USE; свободный удаляется ----
++
++func (s *TypesLiveSuite) TestDelete_InUse409_FreeDeletes() {
++	used := s.newType("Компрессор")
++	var clientID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO clients (company_name) VALUES ('ООО Клиент') RETURNING id`).Scan(&clientID))
++	var equipmentID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO equipment (client_id, type_id, model) VALUES ($1::uuid, $2::uuid, 'M1') RETURNING id`,
++		clientID, used.ID).Scan(&equipmentID))
++
++	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/equipment-types/"+used.ID, nil)
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("EQUIPMENT_TYPE_IN_USE", s.errOf(raw).Code)
++
++	free := s.newType("Свободный тип")
++	st, _ = s.admin.Do(http.MethodDelete, "/api/v1/equipment-types/"+free.ID, nil)
++	s.Equal(http.StatusNoContent, st)
++	st, _ = s.admin.Do(http.MethodGet, "/api/v1/equipment-types/"+free.ID, nil)
++	s.Equal(http.StatusNotFound, st)
++}
++
++// ---- LV-034: SSR archive/restore/delete-in-use ----
++
++func (s *TypesLiveSuite) TestSSR_ArchiveRestoreDeleteInUse() {
++	st, page := s.admin.Do(http.MethodGet, "/catalog/equipment-types", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="types-table"`)
++
++	form := url.Values{"name": {"SSR Чиллер"}, "spec_keys": {"Мощность, Объём"}}
++	resp := s.admin.Request(http.MethodPost, "/catalog/equipment-types", form, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/catalog/equipment-types?flash=created", resp.Header.Get("Location"))
++
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/equipment-types?q=SSR+Чиллер", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct {
++		Items []typeDTO `json:"items"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Require().Len(list.Items, 1, string(raw))
++	tp := list.Items[0]
++
++	// archive — редирект сохраняет фильтр `archived`, с которым отправлена форма
++	// (design-go-layers.md §SSR Routes); форма отправлена без него (активный список) →
++	// без archived=1 в редиректе (code review LOW#3 — раньше было наоборот).
++	resp = s.admin.Request(http.MethodPost, "/catalog/equipment-types/"+tp.ID+"/archive", url.Values{}, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/catalog/equipment-types?flash=archived", resp.Header.Get("Location"))
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment-types/"+tp.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got typeDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.False(got.IsActive)
++
++	// restore — редирект всегда с archived=1 (design-go-layers.md §SSR Routes): тип обычно
++	// восстанавливают, просматривая архивный список.
++	resp = s.admin.Request(http.MethodPost, "/catalog/equipment-types/"+tp.ID+"/restore", url.Values{}, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/catalog/equipment-types?archived=1&flash=restored", resp.Header.Get("Location"))
++
++	// архивирование из формы, отправленной с архивным фильтром (скрытое поле `archived`
++	// строки списка, list.html) — фильтр сохраняется в редиректе.
++	resp = s.admin.Request(http.MethodPost, "/catalog/equipment-types/"+tp.ID+"/archive", url.Values{"archived": {"1"}}, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/catalog/equipment-types?archived=1&flash=archived", resp.Header.Get("Location"))
++	resp = s.admin.Request(http.MethodPost, "/catalog/equipment-types/"+tp.ID+"/restore", url.Values{}, nil)
++	resp.Body.Close()
++
++	// используемый тип — удаление 409, SSR-форма перерисовывается с ошибкой и «В архив».
++	var clientID, equipmentID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO clients (company_name) VALUES ('ООО СSSR-Клиент') RETURNING id`).Scan(&clientID))
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO equipment (client_id, type_id, model) VALUES ($1::uuid, $2::uuid, 'M1') RETURNING id`,
++		clientID, tp.ID).Scan(&equipmentID))
++
++	st, page = s.admin.Do(http.MethodPost, "/catalog/equipment-types/"+tp.ID+"/delete", url.Values{})
++	s.Equal(http.StatusConflict, st, string(page))
++	s.Contains(string(page), "удалить нельзя")
++	s.Contains(string(page), `data-testid="type-archive"`)
++}
++
++// ---- LV-041 (equipment-types часть): SSR — исполнитель 403, аноним редирект на /login ----
++
++func (s *TypesLiveSuite) TestSSR_ExecutorForbidden_AnonRedirect() {
++	s.SeedUser("catalog-exec-ssr", "password1", "Каталог Исп СSSR", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("catalog-exec-ssr", "password1")
++
++	st, page := exec.Do(http.MethodGet, "/catalog/equipment-types", nil)
++	s.Equal(http.StatusForbidden, st)
++	s.Contains(string(page), "Нет доступа")
++
++	tp := s.newType("Тип для 403")
++	for _, path := range []string{"/catalog/equipment-types/new", "/catalog/equipment-types/" + tp.ID} {
++		st, _ := exec.Do(http.MethodGet, path, nil)
++		s.Equal(http.StatusForbidden, st, path)
++	}
++	for _, path := range []string{
++		"/catalog/equipment-types",
++		"/catalog/equipment-types/" + tp.ID,
++		"/catalog/equipment-types/" + tp.ID + "/archive",
++		"/catalog/equipment-types/" + tp.ID + "/delete",
++	} {
++		st, _ := exec.Do(http.MethodPost, path, url.Values{"name": {"x"}})
++		s.Equal(http.StatusForbidden, st, path)
++	}
++
++	anon := s.NewBrowser()
++	st, _ = anon.Do(http.MethodGet, "/catalog/equipment-types", nil)
++	s.Equal(http.StatusFound, st, "аноним — редирект на /login")
++}
+diff --git a/internal/features/equipmenttypes/handler.go b/internal/features/equipmenttypes/handler.go
+new file mode 100644
+index 0000000..cdc19a1
+--- /dev/null
++++ b/internal/features/equipmenttypes/handler.go
+@@ -0,0 +1,83 @@
++package equipmenttypes
++
++import (
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Handler — JSON API /api/v1/equipment-types (чтение — RequireAPI, мутации — +admin,
++// гарды вешает routes.go).
++type Handler struct {
++	svc *Service
++}
++
++func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
++
++// List — GET /api/v1/equipment-types?q=&include_archived=&limit=&offset=.
++// include_archived для не-admin форсируется в false сервисом (ADR-004).
++func (h *Handler) List(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	includeArchived, _ := strconv.ParseBool(c.Query("include_archived"))
++	isAdmin := false
++	if p := middleware.CurrentPrincipal(c); p != nil {
++		isAdmin = p.IsAdmin()
++	}
++	resp, err := h.svc.List(c.Context(), ListQuery{
++		Q: c.Query("q"), IncludeArchived: includeArchived, Limit: limit, Offset: offset,
++	}, isAdmin)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Get — GET /api/v1/equipment-types/:id.
++func (h *Handler) Get(c fiber.Ctx) error {
++	resp, err := h.svc.Get(c.Context(), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Create — POST /api/v1/equipment-types (admin). is_active по умолчанию — true.
++func (h *Handler) Create(c fiber.Ctx) error {
++	var req TypeCreateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Create(c.Context(), Input{Name: req.Name, SpecKeys: req.SpecKeys, IsActive: true})
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// Update — PUT /api/v1/equipment-types/:id (admin; полная карточка, is_active обязателен).
++func (h *Handler) Update(c fiber.Ctx) error {
++	var req TypeUpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	if req.IsActive == nil {
++		return errorspkg.Validation(errorspkg.Field{Name: "is_active", Message: msgRequired})
++	}
++	resp, err := h.svc.Update(c.Context(), c.Params("id"), Input{Name: req.Name, SpecKeys: req.SpecKeys, IsActive: *req.IsActive})
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Delete — DELETE /api/v1/equipment-types/:id (admin); используемый тип → 409 EQUIPMENT_TYPE_IN_USE.
++func (h *Handler) Delete(c fiber.Ctx) error {
++	if err := h.svc.Delete(c.Context(), c.Params("id")); err != nil {
++		return err
++	}
++	return c.SendStatus(fiber.StatusNoContent)
++}
+diff --git a/internal/features/equipmenttypes/repo.go b/internal/features/equipmenttypes/repo.go
+new file mode 100644
+index 0000000..9593aab
+--- /dev/null
++++ b/internal/features/equipmenttypes/repo.go
+@@ -0,0 +1,194 @@
++package equipmenttypes
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Type — тип оборудования (repo-модель).
++type Type struct {
++	ID             string
++	Name           string
++	SpecKeys       []string
++	IsActive       bool
++	EquipmentCount int
++	CreatedAt      time.Time
++	UpdatedAt      time.Time
++}
++
++type Repo struct {
++	pool *pgxpool.Pool
++}
++
++func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
++
++var (
++	ErrNotFound     = pgx.ErrNoRows
++	errNameTaken    = errors.New("equipmenttypes: name taken")
++	errNameArchived = errors.New("equipmenttypes: name archived")
++	errInUse        = errors.New("equipmenttypes: in use")
++)
++
++// listColumns — проекция списка/получения (design-sql.md `## List/Get Equipment Type Query`).
++const listColumns = `t.id, t.name, t.spec_keys, t.is_active, t.created_at, t.updated_at,
++	(SELECT count(*) FROM equipment e WHERE e.type_id = t.id)`
++
++func scanWithCount(row pgx.Row) (*Type, error) {
++	var t Type
++	if err := row.Scan(&t.ID, &t.Name, &t.SpecKeys, &t.IsActive, &t.CreatedAt, &t.UpdatedAt, &t.EquipmentCount); err != nil {
++		return nil, err
++	}
++	return &t, nil
++}
++
++// ListParams — фильтры списка. IncludeArchived — сервис уже применил ADR-004
++// (!isAdmin → false).
++type ListParams struct {
++	Q               string
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++func (r *Repo) List(ctx context.Context, p ListParams) ([]Type, int, error) {
++	var conds []string
++	var args []any
++	add := func(cond string, val any) {
++		args = append(args, val)
++		conds = append(conds, fmt.Sprintf(cond, len(args)))
++	}
++	if !p.IncludeArchived {
++		conds = append(conds, "is_active")
++	}
++	if p.Q != "" {
++		add("name ILIKE $%d", "%"+sqlutil.EscapeLike(p.Q)+"%")
++	}
++	where := ""
++	if len(conds) > 0 {
++		where = " WHERE " + strings.Join(conds, " AND ")
++	}
++
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM equipment_types`+where, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++	// id вторым ключом сортировки — стабильный порядок строк с равным именем.
++	q := `SELECT ` + listColumns + ` FROM equipment_types t` + where +
++		fmt.Sprintf(" ORDER BY lower(t.name), t.id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
++	rows, err := r.pool.Query(ctx, q, append(args, p.Limit, p.Offset)...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++	out := []Type{}
++	for rows.Next() {
++		t, err := scanWithCount(rows)
++		if err != nil {
++			return nil, 0, err
++		}
++		out = append(out, *t)
++	}
++	return out, total, rows.Err()
++}
++
++// Get — id уже провалидирован как uuid сервисом.
++func (r *Repo) Get(ctx context.Context, id string) (*Type, error) {
++	return scanWithCount(r.pool.QueryRow(ctx, `SELECT `+listColumns+` FROM equipment_types t WHERE t.id = $1::uuid`, id))
++}
++
++// Create — INSERT; 23505 (equipment_types_name_lower_uq) → errNameTaken/errNameArchived
++// в зависимости от is_active строки-конфликта (ADR-007).
++func (r *Repo) Create(ctx context.Context, in Input) (*Type, error) {
++	var t Type
++	err := r.pool.QueryRow(ctx,
++		`INSERT INTO equipment_types (name, spec_keys) VALUES ($1, $2::text[])
++		 RETURNING id, name, spec_keys, is_active, created_at, updated_at`,
++		in.Name, in.SpecKeys).Scan(&t.ID, &t.Name, &t.SpecKeys, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
++	if err != nil {
++		return nil, r.mapNameConflict(ctx, in.Name, err)
++	}
++	// Новый тип ещё не может использоваться в оборудовании.
++	t.EquipmentCount = 0
++	return &t, nil
++}
++
++// Update — полная замена карточки типа; ErrNoRows → ErrNotFound (сервис маппит),
++// 23505 → как в Create (конфликт по строке ≠ правимая запись).
++func (r *Repo) Update(ctx context.Context, id string, in Input) (*Type, error) {
++	var t Type
++	err := r.pool.QueryRow(ctx,
++		`UPDATE equipment_types SET name = $2, spec_keys = $3::text[], is_active = $4, updated_at = now()
++		 WHERE id = $1::uuid RETURNING id, name, spec_keys, is_active, created_at, updated_at`,
++		id, in.Name, in.SpecKeys, in.IsActive).Scan(&t.ID, &t.Name, &t.SpecKeys, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
++	if err != nil {
++		return nil, r.mapNameConflict(ctx, in.Name, err)
++	}
++	cnt, err := r.equipmentCount(ctx, id)
++	if err != nil {
++		return nil, err
++	}
++	t.EquipmentCount = cnt
++	return &t, nil
++}
++
++// SetActive — SSR archive/restore, без перезаписи имени.
++func (r *Repo) SetActive(ctx context.Context, id string, active bool) error {
++	tag, err := r.pool.Exec(ctx, `UPDATE equipment_types SET is_active = $2, updated_at = now() WHERE id = $1::uuid`, id, active)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrNotFound
++	}
++	return nil
++}
++
++// Delete — RowsAffected 0 → ErrNotFound; FK-нарушение (equipment_type_id_fkey, RESTRICT)
++// → errInUse. Postgres на явный ON DELETE RESTRICT отдаёт SQLSTATE 23001
++// (restrict_violation), а не 23503 (foreign_key_violation, NO ACTION) — проверяем оба.
++func (r *Repo) Delete(ctx context.Context, id string) error {
++	tag, err := r.pool.Exec(ctx, `DELETE FROM equipment_types WHERE id = $1::uuid`, id)
++	if err != nil {
++		var pgErr *pgconn.PgError
++		if errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "23001") {
++			return errInUse
++		}
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrNotFound
++	}
++	return nil
++}
++
++func (r *Repo) equipmentCount(ctx context.Context, typeID string) (int, error) {
++	var n int
++	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM equipment WHERE type_id = $1::uuid`, typeID).Scan(&n)
++	return n, err
++}
++
++// mapNameConflict — 23505 (equipment_types_name_lower_uq) → errNameTaken (строка-конфликт
++// активна) | errNameArchived (в архиве); прочие ошибки (в т.ч. pgx.ErrNoRows) — как есть.
++func (r *Repo) mapNameConflict(ctx context.Context, name string, err error) error {
++	var pgErr *pgconn.PgError
++	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
++		return err
++	}
++	var active bool
++	if scanErr := r.pool.QueryRow(ctx,
++		`SELECT is_active FROM equipment_types WHERE lower(btrim(name)) = lower(btrim($1))`, name).Scan(&active); scanErr != nil {
++		return err
++	}
++	if active {
++		return errNameTaken
++	}
++	return errNameArchived
++}
+diff --git a/internal/features/equipmenttypes/routes.go b/internal/features/equipmenttypes/routes.go
+new file mode 100644
+index 0000000..6c104ed
+--- /dev/null
++++ b/internal/features/equipmenttypes/routes.go
+@@ -0,0 +1,39 @@
++package equipmenttypes
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++)
++
++// Register — JSON API /api/v1/equipment-types (D28: !isAdmin — только чтение активных
++// типов, мутации — admin) + SSR-экран /catalog/equipment-types (только admin,
++// ADR-005/ADR-006). GET /catalog — 303 на список типов (единственный подраздел каталога
++// на эту фазу). При s == nil SSR-группа не регистрируется (используется в тестах,
++// где рендерер не нужен).
++func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
++	admin := middleware.RequireAdmin(nil)
++	g := api.Group("/equipment-types", a.RequireAPI())
++	g.Get("", h.List)
++	g.Post("", admin, h.Create)
++	g.Get("/:id", h.Get)
++	g.Put("/:id", admin, h.Update)
++	g.Delete("/:id", admin, h.Delete)
++
++	if s == nil {
++		return
++	}
++	ssrAdmin := middleware.RequireAdmin(s.status.Forbidden)
++	app.Get("/catalog", a.RequireSSR(), ssrAdmin, func(c fiber.Ctx) error {
++		return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/equipment-types")
++	})
++	p := app.Group("/catalog/equipment-types", a.RequireSSR(), ssrAdmin)
++	p.Get("", s.list)
++	p.Get("/new", s.formNew)
++	p.Post("", s.create)
++	p.Get("/:id", s.formEdit)
++	p.Post("/:id", s.update)
++	p.Post("/:id/archive", s.archive)
++	p.Post("/:id/restore", s.restore)
++	p.Post("/:id/delete", s.remove)
++}
+diff --git a/internal/features/equipmenttypes/service.go b/internal/features/equipmenttypes/service.go
+new file mode 100644
+index 0000000..504d2f5
+--- /dev/null
++++ b/internal/features/equipmenttypes/service.go
+@@ -0,0 +1,166 @@
++package equipmenttypes
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++var (
++	ErrTypeNotFound  = errorspkg.New("EQUIPMENT_TYPE_NOT_FOUND", http.StatusNotFound, "Тип оборудования не найден")
++	ErrTypeNameTaken = errorspkg.New("EQUIPMENT_TYPE_NAME_TAKEN", http.StatusConflict, "Такой тип уже есть")
++	// ADR-007: отдельный код → клиент показывает CTA «Вернуть из архива» по code, не по тексту.
++	ErrTypeNameArchived = errorspkg.New("EQUIPMENT_TYPE_NAME_ARCHIVED", http.StatusConflict,
++		"Такой тип уже есть в архиве — верните его из архива")
++	ErrTypeInUse = errorspkg.New("EQUIPMENT_TYPE_IN_USE", http.StatusConflict,
++		"Тип используется в оборудовании клиентов — удалить нельзя, отправьте его в архив")
++)
++
++const (
++	// defaultLimit/maxLimit — 500: список типов используется как lookup (комбобокс).
++	defaultLimit = 500
++	maxLimit     = 500
++)
++
++type Service struct {
++	repo *Repo
++}
++
++func NewService(pool *pgxpool.Pool) *Service {
++	return &Service{repo: NewRepo(pool)}
++}
++
++// ListQuery — параметры списка из HTTP-слоя (сырые).
++type ListQuery struct {
++	Q               string
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++// List — !isAdmin форсирует IncludeArchived=false (ADR-004): исполнитель видит
++// только активные типы, даже если сам попросил include_archived=true.
++func (s *Service) List(ctx context.Context, q ListQuery, isAdmin bool) (*TypeListResponse, error) {
++	limit, offset := q.Limit, q.Offset
++	if limit <= 0 {
++		limit = defaultLimit
++	}
++	limit = min(limit, maxLimit)
++	offset = max(offset, 0)
++	includeArchived := q.IncludeArchived && isAdmin
++
++	query := strings.TrimSpace(q.Q)
++	if sqlutil.HasInvalidText(query) {
++		// NUL-байт / невалидный UTF-8 в q — не 500: фильтр игнорируется (200, как без q),
++		// а не ошибка (code review §TD-4).
++		query = ""
++	}
++	items, total, err := s.repo.List(ctx, ListParams{
++		Q: query, IncludeArchived: includeArchived, Limit: limit, Offset: offset,
++	})
++	if err != nil {
++		return nil, err
++	}
++	resp := &TypeListResponse{Items: make([]TypeResponse, len(items)), Total: total, Limit: limit, Offset: offset}
++	for i, t := range items {
++		resp.Items[i] = toResponse(t)
++	}
++	return resp, nil
++}
++
++func (s *Service) Get(ctx context.Context, id string) (*TypeResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrTypeNotFound
++	}
++	t, err := s.repo.Get(ctx, id)
++	if errors.Is(err, ErrNotFound) {
++		return nil, ErrTypeNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	resp := toResponse(*t)
++	return &resp, nil
++}
++
++func (s *Service) Create(ctx context.Context, in Input) (*TypeResponse, error) {
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	t, err := s.repo.Create(ctx, in)
++	switch {
++	case errors.Is(err, errNameTaken):
++		return nil, ErrTypeNameTaken
++	case errors.Is(err, errNameArchived):
++		return nil, ErrTypeNameArchived
++	case err != nil:
++		return nil, err
++	}
++	resp := toResponse(*t)
++	return &resp, nil
++}
++
++func (s *Service) Update(ctx context.Context, id string, in Input) (*TypeResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrTypeNotFound
++	}
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	t, err := s.repo.Update(ctx, id, in)
++	switch {
++	case errors.Is(err, ErrNotFound):
++		return nil, ErrTypeNotFound
++	case errors.Is(err, errNameTaken):
++		return nil, ErrTypeNameTaken
++	case errors.Is(err, errNameArchived):
++		return nil, ErrTypeNameArchived
++	case err != nil:
++		return nil, err
++	}
++	resp := toResponse(*t)
++	return &resp, nil
++}
++
++// SetActive — SSR archive/restore (Phase 4), без перезаписи имени.
++func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
++	if uuid.Validate(id) != nil {
++		return ErrTypeNotFound
++	}
++	if err := s.repo.SetActive(ctx, id, active); errors.Is(err, ErrNotFound) {
++		return ErrTypeNotFound
++	} else if err != nil {
++		return err
++	}
++	return nil
++}
++
++func (s *Service) Delete(ctx context.Context, id string) error {
++	if uuid.Validate(id) != nil {
++		return ErrTypeNotFound
++	}
++	err := s.repo.Delete(ctx, id)
++	switch {
++	case errors.Is(err, ErrNotFound):
++		return ErrTypeNotFound
++	case errors.Is(err, errInUse):
++		return ErrTypeInUse
++	default:
++		return err
++	}
++}
++
++func toResponse(t Type) TypeResponse {
++	return TypeResponse{
++		ID: t.ID, Name: t.Name, SpecKeys: t.SpecKeys, IsActive: t.IsActive,
++		EquipmentCount: t.EquipmentCount, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
++	}
++}
+diff --git a/internal/features/equipmenttypes/ssr.go b/internal/features/equipmenttypes/ssr.go
+new file mode 100644
+index 0000000..3b3b0ea
+--- /dev/null
++++ b/internal/features/equipmenttypes/ssr.go
+@@ -0,0 +1,247 @@
++package equipmenttypes
++
++import (
++	"errors"
++	"net/url"
++	"strconv"
++	"strings"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Root — шаблоны экрана «Каталог: типы оборудования» относительно корня модуля.
++const Root = "web/ssr/equipmenttypes/templates"
++
++// SSR — экран «Каталог: типы оборудования» (admin): список + формы создания/правки
++// (PRG), архив/восстановление, удаление свободного типа (AC-011, AC-012).
++type SSR struct {
++	svc    *Service
++	r      *ssr.Renderer
++	shell  ssr.ShellBuilder
++	status *ssr.StatusPages
++}
++
++func NewSSR(svc *Service, r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages) *SSR {
++	return &SSR{svc: svc, r: r, shell: shell, status: status}
++}
++
++// ListVM — список типов. Фильтры (q, archived) — в URL: reload/назад/ссылка сохраняют
++// состояние (AC-011).
++type ListVM struct {
++	Shell    ssr.Shell
++	Q        string
++	Archived bool
++	Flash    string
++	Items    []TypeResponse
++	Total    int
++}
++
++// SpecKeysText — характеристики через запятую для списка («—», если пусто).
++func (t TypeResponse) SpecKeysText() string {
++	if len(t.SpecKeys) == 0 {
++		return "—"
++	}
++	return strings.Join(t.SpecKeys, ", ")
++}
++
++// FormVM — форма типа оборудования (создание/правка).
++type FormVM struct {
++	Shell          ssr.Shell
++	IsNew          bool
++	ID             string
++	Name           string
++	SpecKeys       string // одна строка через запятую — как вводит пользователь
++	IsActive       bool
++	EquipmentCount int
++	Errors         map[string]string // поле → текст ошибки
++	Error          string            // общая ошибка формы (в т.ч. ErrTypeInUse)
++	ArchivedLink   string            // ADR-007: имя занято архивным типом → ссылка «Показать архивные»
++}
++
++var flashes = map[string]string{
++	"created":  "Тип оборудования создан",
++	"saved":    "Изменения сохранены",
++	"archived": "Тип отправлен в архив",
++	"restored": "Тип возвращён из архива",
++	"deleted":  "Тип удалён",
++}
++
++// list — GET /catalog/equipment-types.
++func (h *SSR) list(c fiber.Ctx) error {
++	vm := ListVM{Q: c.Query("q"), Flash: flashes[c.Query("flash")]}
++	vm.Archived, _ = strconv.ParseBool(c.Query("archived"))
++	// SSR-экран доступен только admin (routes.go) — include_archived читаем как есть.
++	resp, err := h.svc.List(c.Context(), ListQuery{Q: vm.Q, IncludeArchived: vm.Archived, Limit: defaultLimit}, true)
++	if err != nil {
++		return err
++	}
++	vm.Items, vm.Total = resp.Items, resp.Total
++	vm.Shell = h.shell.Build(c, "Каталог: типы оборудования")
++	return h.r.Page(c, "list", vm)
++}
++
++// formNew — GET /catalog/equipment-types/new.
++func (h *SSR) formNew(c fiber.Ctx) error {
++	return h.renderForm(c, fiber.StatusOK, FormVM{IsNew: true, IsActive: true})
++}
++
++// create — POST /catalog/equipment-types.
++func (h *SSR) create(c fiber.Ctx) error {
++	vm := formFrom(c)
++	vm.IsNew = true
++	_, err := h.svc.Create(c.Context(), Input{Name: vm.Name, SpecKeys: ParseSpecKeys(vm.SpecKeys), IsActive: true})
++	if err != nil {
++		return h.formError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/equipment-types?flash=created")
++}
++
++// formEdit — GET /catalog/equipment-types/:id.
++func (h *SSR) formEdit(c fiber.Ctx) error {
++	t, err := h.svc.Get(c.Context(), c.Params("id"))
++	if errors.Is(err, ErrTypeNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	return h.renderForm(c, fiber.StatusOK, FormVM{
++		ID: t.ID, Name: t.Name, SpecKeys: strings.Join(t.SpecKeys, ", "),
++		IsActive: t.IsActive, EquipmentCount: t.EquipmentCount,
++	})
++}
++
++// update — POST /catalog/equipment-types/:id (is_active сохраняется как есть —
++// архивирование/восстановление отдельными маршрутами).
++func (h *SSR) update(c fiber.Ctx) error {
++	vm := formFrom(c)
++	vm.ID = c.Params("id")
++	cur, err := h.svc.Get(c.Context(), vm.ID)
++	if errors.Is(err, ErrTypeNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	vm.IsActive = cur.IsActive
++	vm.EquipmentCount = cur.EquipmentCount
++	_, err = h.svc.Update(c.Context(), vm.ID, Input{Name: vm.Name, SpecKeys: ParseSpecKeys(vm.SpecKeys), IsActive: cur.IsActive})
++	if err != nil {
++		return h.formError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/equipment-types?flash=saved")
++}
++
++// archive — POST /catalog/equipment-types/:id/archive. Редирект сохраняет фильтр
++// `archived`, с которым была отправлена форма (design-go-layers.md §SSR Routes: «фильтр
++// сохраняется: archived из формы») — НЕ форсирует archived=1 (это восстановление, code
++// review LOW#3).
++func (h *SSR) archive(c fiber.Ctx) error {
++	q := ""
++	if v := c.FormValue("archived"); v != "" {
++		q = "archived=" + url.QueryEscape(v) + "&"
++	}
++	return h.setActive(c, false, "archived", q)
++}
++
++// restore — POST /catalog/equipment-types/:id/restore. Редирект — всегда с archived=1
++// (design-go-layers.md §SSR Routes): восстановленный тип виден в архивном списке, откуда
++// обычно и вызывается «Вернуть».
++func (h *SSR) restore(c fiber.Ctx) error { return h.setActive(c, true, "restored", "archived=1&") }
++
++func (h *SSR) setActive(c fiber.Ctx, active bool, flash, q string) error {
++	id := c.Params("id")
++	err := h.svc.SetActive(c.Context(), id, active)
++	if errors.Is(err, ErrTypeNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/equipment-types?" + q + "flash=" + flash)
++}
++
++// remove — POST /catalog/equipment-types/:id/delete. Используемый тип (409
++// EQUIPMENT_TYPE_IN_USE) → форма перерисовывается с ошибкой и видимой кнопкой «В архив».
++func (h *SSR) remove(c fiber.Ctx) error {
++	id := c.Params("id")
++	err := h.svc.Delete(c.Context(), id)
++	if errors.Is(err, ErrTypeNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		t, gerr := h.svc.Get(c.Context(), id)
++		if gerr != nil {
++			return err
++		}
++		vm := FormVM{ID: t.ID, Name: t.Name, SpecKeys: strings.Join(t.SpecKeys, ", "), IsActive: t.IsActive, EquipmentCount: t.EquipmentCount}
++		return h.formError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/equipment-types?flash=deleted")
++}
++
++func formFrom(c fiber.Ctx) FormVM {
++	return FormVM{Name: c.FormValue("name"), SpecKeys: c.FormValue("spec_keys")}
++}
++
++// formError — ошибки сервиса → форма с текстами (422 валидация, 409 конфликты —
++// эталон users/ssr.go formError).
++func (h *SSR) formError(c fiber.Ctx, vm FormVM, err error) error {
++	var app *errorspkg.AppError
++	if !errors.As(err, &app) || app.HTTP >= fiber.StatusInternalServerError {
++		return err
++	}
++	vm.Errors = map[string]string{}
++	for _, f := range app.Fields {
++		name := f.Name
++		if strings.HasPrefix(name, "spec_keys[") {
++			// SSR-форма — один текстовый инпут (spec_keys через запятую), без построчных
++			// индексов: любая ошибка отдельного ключа сворачивается в общую под полем.
++			name = "spec_keys"
++		}
++		vm.Errors[name] = fieldText(name, f.Message)
++	}
++	switch {
++	case errors.Is(err, ErrTypeNameTaken):
++		vm.Errors["name"] = ErrTypeNameTaken.Message
++	case errors.Is(err, ErrTypeNameArchived):
++		vm.Errors["name"] = ErrTypeNameArchived.Message
++		vm.ArchivedLink = "/catalog/equipment-types?archived=1&q=" + url.QueryEscape(vm.Name)
++	case errors.Is(err, ErrTypeInUse):
++		vm.Error = ErrTypeInUse.Message
++	case len(app.Fields) == 0:
++		vm.Error = app.Message
++	}
++	status := app.HTTP
++	if len(app.Fields) > 0 {
++		status = fiber.StatusUnprocessableEntity
++	}
++	return h.renderForm(c, status, vm)
++}
++
++func (h *SSR) renderForm(c fiber.Ctx, status int, vm FormVM) error {
++	title := "Тип оборудования"
++	if vm.IsNew {
++		title = "Новый тип оборудования"
++	}
++	vm.Shell = h.shell.Build(c, title)
++	c.Status(status)
++	return h.r.Page(c, "form", vm)
++}
++
++// fieldText — код ошибки поля → текст под полем (design-errors.md §fieldText).
++func fieldText(field, code string) string {
++	switch code {
++	case msgRequired:
++		return "Обязательное поле"
++	case msgTooLong:
++		return "Слишком длинное значение"
++	case msgTooMany:
++		return "Не больше 50 характеристик"
++	}
++	_ = field
++	return "Недопустимое значение"
++}
+diff --git a/internal/features/equipmenttypes/validate.go b/internal/features/equipmenttypes/validate.go
+new file mode 100644
+index 0000000..fffab3c
+--- /dev/null
++++ b/internal/features/equipmenttypes/validate.go
+@@ -0,0 +1,89 @@
++package equipmenttypes
++
++import (
++	"fmt"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Коды ошибок полей (details.fields[].message) — SSR переводит их в текст.
++const (
++	msgRequired = "required"
++	msgTooLong  = "too_long"
++	msgTooMany  = "too_many"
++	// msgInvalidText — NUL-байт / невалидный UTF-8 (code review §TD-4, «мусор → 400, не 500»).
++	msgInvalidText = "invalid_text"
++)
++
++// Границы полей (Tech Spec §Лимиты).
++const (
++	nameMax     = 100
++	specKeyMax  = 100
++	specKeysMax = 50
++)
++
++// Input — нормализованные поля типа оборудования (общие для API и SSR-формы).
++type Input struct {
++	Name     string
++	SpecKeys []string
++	IsActive bool
++}
++
++// normalize — trim name; spec_keys: trim, пустые и дубли (регистронезависимо)
++// отбрасываются молча, порядок — первого вхождения.
++func (in Input) normalize() Input {
++	in.Name = strings.TrimSpace(in.Name)
++	seen := make(map[string]bool, len(in.SpecKeys))
++	keys := make([]string, 0, len(in.SpecKeys))
++	for _, k := range in.SpecKeys {
++		k = strings.TrimSpace(k)
++		if k == "" {
++			continue
++		}
++		low := strings.ToLower(k)
++		if seen[low] {
++			continue
++		}
++		seen[low] = true
++		keys = append(keys, k)
++	}
++	in.SpecKeys = keys
++	return in
++}
++
++// validate — ошибки полей после normalize().
++func (in Input) validate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	switch n := utf8.RuneCountInString(in.Name); {
++	case n == 0:
++		add("name", msgRequired)
++	case n > nameMax:
++		add("name", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Name) {
++		add("name", msgInvalidText)
++	}
++	if len(in.SpecKeys) > specKeysMax {
++		add("spec_keys", msgTooMany)
++	}
++	for i, k := range in.SpecKeys {
++		if utf8.RuneCountInString(k) > specKeyMax {
++			add(fmt.Sprintf("spec_keys[%d]", i), msgTooLong)
++		}
++		if sqlutil.HasInvalidText(k) {
++			add(fmt.Sprintf("spec_keys[%d]", i), msgInvalidText)
++		}
++	}
++	return f
++}
++
++// ParseSpecKeys — SSR-форма типа: одна строка через запятую → сырой список
++// (дедуп/trim делает Input.normalize()). Эталон прототипа.
++func ParseSpecKeys(raw string) []string {
++	return strings.Split(raw, ",")
++}
+diff --git a/internal/features/equipmenttypes/validate_test.go b/internal/features/equipmenttypes/validate_test.go
+new file mode 100644
+index 0000000..19cb12f
+--- /dev/null
++++ b/internal/features/equipmenttypes/validate_test.go
+@@ -0,0 +1,89 @@
++package equipmenttypes
++
++import (
++	"strconv"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++func fieldsOf(fs []errorspkg.Field) map[string]string {
++	m := map[string]string{}
++	for _, f := range fs {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func TestInput_Normalize(t *testing.T) {
++	in := Input{
++		Name:     "  Холодильник  ",
++		SpecKeys: []string{" Объём ", "объём", "", "Тип хладагента", "ТИП ХЛАДАГЕНТА", "  "},
++	}.normalize()
++	assert.Equal(t, "Холодильник", in.Name)
++	assert.Equal(t, []string{"Объём", "Тип хладагента"}, in.SpecKeys, "trim + дедуп case-insensitive, порядок первого вхождения")
++}
++
++// UT-008: name required/100/101.
++func TestInput_Validate(t *testing.T) {
++	cases := []struct {
++		name  string
++		in    Input
++		field string
++		msg   string
++	}{
++		{"валидный", Input{Name: "Дрель"}, "", ""},
++		{"имя пусто", Input{Name: ""}, "name", msgRequired},
++		{"имя из пробелов — required после trim", Input{Name: "   "}, "name", msgRequired},
++		{"имя 100 — граница", Input{Name: strings.Repeat("я", 100)}, "", ""},
++		{"имя 101", Input{Name: strings.Repeat("я", 101)}, "name", msgTooLong},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got := fieldsOf(tc.in.normalize().validate())
++			if tc.field == "" {
++				assert.Empty(t, got)
++				return
++			}
++			assert.Equal(t, map[string]string{tc.field: tc.msg}, got)
++		})
++	}
++}
++
++// UT-008: spec_keys trim/дедуп case-insensitive/порядок первого вхождения; 50/51 после дедупа.
++func TestInput_Validate_SpecKeys(t *testing.T) {
++	keys50 := make([]string, 50)
++	for i := range keys50 {
++		keys50[i] = "k" + strconv.Itoa(i)
++	}
++	in := Input{Name: "Дрель", SpecKeys: keys50}.normalize()
++	assert.Len(t, in.SpecKeys, 50)
++	assert.Empty(t, fieldsOf(in.validate()), "50 уникальных ключей — граница, ok")
++
++	keys51 := append(append([]string{}, keys50...), "extra")
++	in = Input{Name: "Дрель", SpecKeys: keys51}.normalize()
++	assert.Equal(t, map[string]string{"spec_keys": msgTooMany}, fieldsOf(in.validate()), "51 уникальный после дедупа — too_many")
++
++	// дубли (в т.ч. case-insensitive) не считаются за лишние — 50 уникальных + 20 дублей всё ещё 50.
++	dupHeavy := append(append([]string{}, keys50...), keys50...)
++	in = Input{Name: "Дрель", SpecKeys: dupHeavy}.normalize()
++	assert.Len(t, in.SpecKeys, 50)
++	assert.Empty(t, fieldsOf(in.validate()))
++
++	in = Input{Name: "Дрель", SpecKeys: []string{strings.Repeat("k", 100)}}.normalize()
++	assert.Empty(t, fieldsOf(in.validate()), "ключ 100 рун — граница")
++
++	in = Input{Name: "Дрель", SpecKeys: []string{strings.Repeat("k", 101)}}.normalize()
++	assert.Equal(t, map[string]string{"spec_keys[0]": msgTooLong}, fieldsOf(in.validate()), "ключ 101 руна — too_long")
++}
++
++// UT-009: SSR-разбор spec_keys строки через запятую → normalize().
++func TestParseSpecKeys(t *testing.T) {
++	got := Input{SpecKeys: ParseSpecKeys("a, b,,A ")}.normalize().SpecKeys
++	assert.Equal(t, []string{"a", "b"}, got)
++
++	assert.Empty(t, Input{SpecKeys: ParseSpecKeys("")}.normalize().SpecKeys, "пустая строка формы — пустой список")
++}
+diff --git a/internal/features/users/repo.go b/internal/features/users/repo.go
+index 1646e00..1c5e1b8 100644
+--- a/internal/features/users/repo.go
++++ b/internal/features/users/repo.go
+@@ -10,6 +10,8 @@ import (
+ 	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgconn"
+ 	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
+ )
+ 
+ type User struct {
+@@ -64,7 +66,7 @@ func (r *Repo) List(ctx context.Context, p ListParams) ([]User, int, error) {
+ 		conds = append(conds, fmt.Sprintf(cond, len(args)))
+ 	}
+ 	if p.Q != "" {
+-		add("(name ILIKE $%[1]d OR login ILIKE $%[1]d OR phone ILIKE $%[1]d)", "%"+escapeLike(p.Q)+"%")
++		add("(name ILIKE $%[1]d OR login ILIKE $%[1]d OR phone ILIKE $%[1]d)", "%"+sqlutil.EscapeLike(p.Q)+"%")
+ 	}
+ 	if p.Role != "" {
+ 		add("role = $%d", p.Role)
+@@ -100,10 +102,6 @@ func (r *Repo) List(ctx context.Context, p ListParams) ([]User, int, error) {
+ 	return out, total, rows.Err()
+ }
+ 
+-// escapeLike — символы шаблона LIKE в пользовательском вводе ищутся буквально.
+-func escapeLike(s string) string {
+-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+-}
+ 
+ // GetByID — id уже провалидирован как uuid сервисом.
+ func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
+diff --git a/internal/server/router.go b/internal/server/router.go
+index af14554..9b5aa8b 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -16,6 +16,8 @@ import (
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/config"
+ 	"github.com/kitavrus/kanban-tree/internal/features/auth"
++	"github.com/kitavrus/kanban-tree/internal/features/clients"
++	"github.com/kitavrus/kanban-tree/internal/features/equipmenttypes"
+ 	"github.com/kitavrus/kanban-tree/internal/features/home"
+ 	"github.com/kitavrus/kanban-tree/internal/features/users"
+ 	"github.com/kitavrus/kanban-tree/internal/observability"
+@@ -71,7 +73,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	guard := &middleware.Auth{Store: store, Load: authSvc.Principal, Secure: cfg.Auth.CookieSecure, MaxAge: cfg.Auth.SessionAbsoluteMax}
+ 
+ 	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
+-	shell := ssr.NewShellBuilder("/", "/users")
++	shell := ssr.NewShellBuilder("/", "/users", "/catalog", "/clients")
+ 
+ 	sharedR, err := ssr.NewRenderer(ssr.SharedRoot)
+ 	if err != nil {
+@@ -90,11 +92,23 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	typesR, err := ssr.NewRenderer(equipmenttypes.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
++	clientsR, err := ssr.NewRenderer(clients.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	api := app.Group("/api/v1")
+ 	auth.Register(app, api, auth.NewHandler(authSvc, guard, authR, shell), guard)
+ 	usersSvc := users.NewService(pool, store)
+ 	users.Register(app, api, guard, users.NewHandler(usersSvc), users.NewSSR(usersSvc, usersR, shell, status))
++	typesSvc := equipmenttypes.NewService(pool)
++	equipmenttypes.Register(app, api, guard, equipmenttypes.NewHandler(typesSvc), equipmenttypes.NewSSR(typesSvc, typesR, shell, status))
++	clientsSvc := clients.NewService(pool)
++	clients.Register(app, api, guard, clients.NewHandler(clientsSvc), clients.NewSSR(clientsSvc, clientsR, shell, status))
+ 	(&home.Handlers{R: homeR, Shell: shell}).Register(app, guard)
+ 
+ 	return app, nil
+diff --git a/internal/ssr/menu.go b/internal/ssr/menu.go
+index e8fc1ac..f2385ea 100644
+--- a/internal/ssr/menu.go
++++ b/internal/ssr/menu.go
+@@ -23,7 +23,7 @@ var menu = []NavGroup{
+ 	}},
+ 	{Label: "Справочники", Items: []NavItem{
+ 		{Title: "Клиенты", Icon: "🏢", URL: "/clients", AdminOnly: true},
+-		{Title: "Услуги и товары", Icon: "🧰", URL: "/catalog", AdminOnly: true},
++		{Title: "Каталог", Icon: "🧰", URL: "/catalog", AdminOnly: true},
+ 	}},
+ 	{Label: "Администрирование", Items: []NavItem{
+ 		{Title: "Сотрудники", Icon: "👥", URL: "/users", AdminOnly: true},
+diff --git a/internal/ssr/render_test.go b/internal/ssr/render_test.go
+index c54c9b6..8fd83fc 100644
+--- a/internal/ssr/render_test.go
++++ b/internal/ssr/render_test.go
+@@ -92,7 +92,7 @@ func TestBuildMenu(t *testing.T) {
+ 		return out
+ 	}
+ 
+-	assert.Equal(t, []string{"Работа/Доска", "Работа/Остатки", "Справочники/Клиенты", "Справочники/Услуги и товары", "Администрирование/Сотрудники"},
++	assert.Equal(t, []string{"Работа/Доска", "Работа/Остатки", "Справочники/Клиенты", "Справочники/Каталог", "Администрирование/Сотрудники"},
+ 		titles(BuildMenu(all, true)))
+ 	assert.Equal(t, []string{"Работа/Доска", "Работа/Остатки"}, titles(BuildMenu(all, false)),
+ 		"исполнитель не видит справочники и сотрудников (D19); пустые группы выкинуты")
+diff --git a/internal/ssr/shell.go b/internal/ssr/shell.go
+index 22b206d..8a3dac0 100644
+--- a/internal/ssr/shell.go
++++ b/internal/ssr/shell.go
+@@ -67,6 +67,16 @@ func (b ShellBuilder) Build(c fiber.Ctx, title string) Shell {
+ 	}
+ }
+ 
++// NavActive — подсвечивать ли пункт меню с URL url для текущего ActivePath (ADR-006).
++// "/" — только точное совпадение (иначе подсвечивался бы на любой странице); остальные
++// пункты — точное совпадение либо ActivePath — вложенный путь (url + "/" + …).
++func (s Shell) NavActive(url string) bool {
++	if url == "/" {
++		return s.ActivePath == "/"
++	}
++	return s.ActivePath == url || strings.HasPrefix(s.ActivePath, url+"/")
++}
++
+ // Initials — «Сидоров Пётр» → «СП» (аватар в сайдбаре, как в прототипе).
+ func Initials(name string) string {
+ 	var out []rune
+diff --git a/internal/ssr/shell_test.go b/internal/ssr/shell_test.go
+new file mode 100644
+index 0000000..1685388
+--- /dev/null
++++ b/internal/ssr/shell_test.go
+@@ -0,0 +1,29 @@
++package ssr
++
++import "testing"
++
++// TestShell_NavActive — UT-011 (ADR-006): "/" только точное совпадение; вложенные
++// пути подсвечивают родительский пункт; похожие, но не вложенные — нет.
++func TestShell_NavActive(t *testing.T) {
++	cases := []struct {
++		name       string
++		activePath string
++		url        string
++		want       bool
++	}{
++		{"root exact match", "/", "/", true},
++		{"root does not match nested", "/stock", "/", false},
++		{"clients matches nested", "/clients/abc", "/clients", true},
++		{"clients exact match", "/clients", "/clients", true},
++		{"users does not match users-x", "/users-x", "/users", false},
++		{"catalog matches nested", "/catalog/equipment-types", "/catalog", true},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			sh := Shell{ActivePath: c.activePath}
++			if got := sh.NavActive(c.url); got != c.want {
++				t.Errorf("Shell{ActivePath:%q}.NavActive(%q) = %v, want %v", c.activePath, c.url, got, c.want)
++			}
++		})
++	}
++}
+diff --git a/pkg/sqlutil/like.go b/pkg/sqlutil/like.go
+new file mode 100644
+index 0000000..ac4cc5e
+--- /dev/null
++++ b/pkg/sqlutil/like.go
+@@ -0,0 +1,12 @@
++// Package sqlutil — общие мелкие хелперы для построения SQL-запросов,
++// переиспользуемые несколькими фичами.
++package sqlutil
++
++import "strings"
++
++// EscapeLike экранирует спецсимволы ILIKE/LIKE-паттерна (`%`, `_`, `\`), чтобы
++// пользовательский ввод, вставляемый в паттерн подстроки (`"%" + EscapeLike(q) + "%"`),
++// искался буквально, а не как шаблон.
++func EscapeLike(s string) string {
++	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
++}
+diff --git a/pkg/sqlutil/like_test.go b/pkg/sqlutil/like_test.go
+new file mode 100644
+index 0000000..4f5e976
+--- /dev/null
++++ b/pkg/sqlutil/like_test.go
+@@ -0,0 +1,25 @@
++package sqlutil
++
++import "testing"
++
++func TestEscapeLike_SpecialChars(t *testing.T) {
++	cases := []struct {
++		name string
++		in   string
++		want string
++	}{
++		{"percent", "50%", `50\%`},
++		{"underscore", "a_b", `a\_b`},
++		{"backslash", `a\b`, `a\\b`},
++		{"combined", `100%_off\`, `100\%\_off\\`},
++		{"plain", "abc", "abc"},
++		{"empty", "", ""},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			if got := EscapeLike(c.in); got != c.want {
++				t.Errorf("EscapeLike(%q) = %q, want %q", c.in, got, c.want)
++			}
++		})
++	}
++}
+diff --git a/pkg/sqlutil/text.go b/pkg/sqlutil/text.go
+new file mode 100644
+index 0000000..08378a5
+--- /dev/null
++++ b/pkg/sqlutil/text.go
+@@ -0,0 +1,15 @@
++package sqlutil
++
++import (
++	"strings"
++	"unicode/utf8"
++)
++
++// HasInvalidText — строка непригодна для хранения/поиска в Postgres text: невалидная
++// UTF-8-последовательность или NUL-байт (`\u0000`). Postgres отклоняет такие значения на
++// уровне протокола (SQLSTATE 22021 invalid_byte_sequence / 22P05 untranslatable_character)
++// ещё до записи в колонку — без этой проверки на входе ошибка доходит до БД и превращается
++// в 500 вместо 400 (code review, §TD-4 «мусор → 400, не 500»).
++func HasInvalidText(s string) bool {
++	return !utf8.ValidString(s) || strings.ContainsRune(s, 0)
++}
+diff --git a/pkg/sqlutil/text_test.go b/pkg/sqlutil/text_test.go
+new file mode 100644
+index 0000000..68baa3d
+--- /dev/null
++++ b/pkg/sqlutil/text_test.go
+@@ -0,0 +1,24 @@
++package sqlutil
++
++import "testing"
++
++func TestHasInvalidText(t *testing.T) {
++	cases := []struct {
++		name string
++		s    string
++		want bool
++	}{
++		{"пусто", "", false},
++		{"обычный текст", "ООО Ромашка", false},
++		{"NUL-байт", "abc\u0000def", true},
++		{"только NUL", "\u0000", true},
++		{"невалидный UTF-8", string([]byte{0xff, 0xfe}), true},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := HasInvalidText(tc.s); got != tc.want {
++				t.Errorf("HasInvalidText(%q) = %v, want %v", tc.s, got, tc.want)
++			}
++		})
++	}
++}

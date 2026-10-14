@@ -1,0 +1,73 @@
+{{ define "base" }}<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ .Shell.Title }} — Kanban-tree</title>
+<!-- Тема (system/light/dark, localStorage kt-theme, см. /assets/ssr-shared/js/theme.js):
+     снипет ДО стилей, иначе вспышка светлой темы. Bootstrap color modes — data-bs-theme. -->
+<script>(function(){var d=false;try{var p=localStorage.getItem('kt-theme')||'system';d=p==='dark'||(p==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);}catch(e){}document.documentElement.setAttribute('data-bs-theme',d?'dark':'light');})();</script>
+<link rel="icon" href="/assets/ssr-shared/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/ssr-shared/vendor/bootstrap/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/ssr-shared/app.css">
+<meta name="csrf-token" content="{{ .Shell.CSRFToken }}">
+</head>
+<!-- data-timezone — часовой пояс пользователя (IANA, DS-031): по нему /assets/ssr-shared/js/timezone.js
+     (KT.time) форматирует все даты и время, а не по поясу браузера. -->
+<body data-timezone="{{ .Shell.User.Timezone }}">
+<div class="app-shell">
+  <aside class="app-sidebar" id="app-sidebar" data-testid="sidebar">
+    <div class="app-brand"><span class="app-brand-logo">▦</span> Kanban-tree</div>
+    <nav class="app-nav">
+      {{ range .Shell.Menu }}
+      <div class="app-nav-label">{{ .Label }}</div>
+      {{ range .Items }}
+      <a href="{{ .URL }}" class="app-nav-link{{ if $.Shell.NavActive .URL }} active{{ end }}"{{ if $.Shell.NavActive .URL }} aria-current="page"{{ end }}>{{ .Icon }} {{ .Title }}{{ if eq .URL "/stock" }} <span class="badge rounded-pill text-bg-danger ms-auto" data-nav-badge="{{ .URL }}" data-testid="nav-badge-stock" {{ if not .Badge }}hidden{{ end }}>{{ .Badge }}</span>{{ end }}</a>
+      {{ end }}
+      {{ end }}
+    </nav>
+    <div class="app-sidebar-footer">
+      {{ if .Shell.User.Name }}
+      <div class="d-flex align-items-center gap-2">
+        <span class="app-avatar">{{ initials .Shell.User.Name }}</span>
+        <div><b>{{ .Shell.User.Name }}</b><div class="text-body-secondary small">{{ if .Shell.IsAdmin }}Администратор{{ else }}Исполнитель{{ end }}</div></div>
+      </div>
+      <div>
+        <label for="app-timezone" class="form-label small text-body-secondary mb-1">Часовой пояс</label>
+        <select id="app-timezone" class="form-select form-select-sm" data-timezone-select data-testid="timezone-select">
+          {{ range .Shell.Timezones }}<option value="{{ .Value }}"{{ if eq .Value $.Shell.User.Timezone }} selected{{ end }}>{{ .Label }}</option>
+          {{ end }}
+        </select>
+      </div>
+      {{ end }}
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-theme-toggle data-testid="theme-toggle">◐ Тема</button>
+      {{ if .Shell.User.Name }}
+      <form method="post" action="/logout"><input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+        <button type="submit" class="btn btn-sm btn-outline-secondary w-100">Выйти</button>
+      </form>
+      {{ end }}
+    </div>
+  </aside>
+  <div class="app-backdrop" data-sidebar-close></div>
+  <div class="app-main">
+    <header class="app-topbar">
+      <button type="button" class="btn btn-sm btn-outline-secondary app-menu-btn" data-sidebar-toggle aria-label="Меню" data-testid="menu-toggle">☰</button>
+      <h1 class="app-title">{{ .Shell.Title }}</h1>
+      {{ block "actions" . }}{{ end }}
+    </header>
+    <main class="app-content">
+    {{ template "content" . }}
+    </main>
+  </div>
+</div>
+<script src="/assets/ssr-shared/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+<script src="/assets/ssr-shared/js/theme.js"></script>
+<script src="/assets/ssr-shared/js/api.js"></script>
+<script src="/assets/ssr-shared/js/timezone.js"></script>
+<script src="/assets/ssr-shared/js/nav-badge.js"></script>
+<script src="/assets/ssr-shared/js/ui-dialog.js"></script>
+<script src="/assets/ssr-shared/js/combobox.js"></script>
+{{ block "scripts" . }}{{ end }}
+</body>
+</html>
+{{ end }}

@@ -1,0 +1,18 @@
+Класс 2 — regression на смежных фичах (board list) + AC-002 description_html (LV-102).
+
+$ GET /api/v1/tasks?limit=1 (board list, as-is фазы 5 + новые поля фазы 6)
+-> 200, items[0] содержит ВСЕ as-is поля (id, column_id, client_id, title, assignee_*, due_date,
+   is_paid, position, version, subtasks_total/done/late) ПЛЮС новые total_amount=13400.0,
+   last_log=null — регресс не сломан, старые поля на месте.
+
+$ GET / (SSR доска, root) -> 200 (регресс SSR-страницы после расширения TaskCard/TaskResponse)
+
+AC-002 description_html (UT-001/LV-102):
+$ POST /api/v1/tasks {"description":"a<b>\n\nc"}
+-> description_html = "<p>a&lt;b&gt;</p><p>c</p>"  (экранирование <>, пустая строка -> разделитель абзацев)
+$ PUT /api/v1/tasks/:id БЕЗ поля description
+-> description_html не изменился ("<p>a&lt;b&gt;</p><p>c</p>")
+$ PUT /api/v1/tasks/:id {"description":""}
+-> description_html = "" (явная очистка)
+
+Все три сценария 1:1 с design-tests.md LV-102 / UT-001.

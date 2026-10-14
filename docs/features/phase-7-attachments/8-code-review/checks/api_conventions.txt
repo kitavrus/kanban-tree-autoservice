@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature phase-7-attachments --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9 --paths internal/features/board internal/filestore
+(exit 0)
+
+api-conventions internal/features/board,internal/filestore: PASS (проблем: 0)

@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature attachment-orphan-gc --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/jovial-babbage-3d79d4
+(exit 0)
+
+E2E-MODE SKIP-NO-EVIDENCE: нет docs/features/attachment-orphan-gc/9-validation/evidence/e2e-run.txt — прогонов E2E не зафиксировано (фича без фронта либо улика не сохранялась)

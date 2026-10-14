@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "project": {
+    "name": "kanban-tree",
+    "go_module": "github.com/kitavrus/kanban-tree",
+    "http_port": 8080
+  },
+  "auth": { "mode": "session" },
+  "components": {
+    "clickhouse": false,
+    "kafka": false,
+    "frontend": false
+  }
+}

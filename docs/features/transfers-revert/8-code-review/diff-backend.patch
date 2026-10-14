@@ -1,0 +1,2055 @@
+diff --git a/internal/features/board/equipment_location_http_live_test.go b/internal/features/board/equipment_location_http_live_test.go
+index 425c84e..973fe1d 100644
+--- a/internal/features/board/equipment_location_http_live_test.go
++++ b/internal/features/board/equipment_location_http_live_test.go
+@@ -71,6 +71,8 @@ type transferErrDTO struct {
+ 	Message string `json:"message"`
+ 	Details *struct {
+ 		TransferID int64 `json:"transfer_id"`
++		// TransferIDs — 409 TASK_HAS_TRANSFERS: номера мешающих документов (transfers-revert).
++		TransferIDs []int64 `json:"transfer_ids"`
+ 	} `json:"details"`
+ }
+ 
+@@ -258,55 +260,6 @@ func (s *OrderCardLiveSuite) TestCardTransfers_ListAndTransitToClient() {
+ 	s.Equal("received", card.Transfers[0].Status)
+ }
+ 
+-// DS-012 (§6.9): DELETE /api/v1/tasks/:id при любом документе заказа (в любом статусе) → 409
+-// CONFLICT с общим текстом вместо 500 по FK; заказ и документ на месте. Заказ без документов
+-// удаляется как раньше.
+-func (s *OrderCardLiveSuite) TestDeleteTask_WithTransfers409() {
+-	almaty := s.warehouseID("Алматы")
+-	c := s.newClient("Клиент-Удаление-С-Перемещениями")
+-	col := s.columnID("Новые")
+-	for _, tc := range []struct {
+-		name   string
+-		flags  map[string]any
+-		cancel bool
+-	}{
+-		{"заявка", nil, false},
+-		{"в пути", map[string]any{"send": true}, false},
+-		{"получено", map[string]any{"receive": true}, false},
+-		{"отменён", nil, true},
+-	} {
+-		taskID, _ := s.newTask(c, col)
+-		eq := s.newEquipment(c)
+-		s.addEq(taskID, eq, "")
+-		doc := s.clientTransfer("client_to_warehouse", taskID, almaty, tc.flags, eq)
+-		if tc.cancel {
+-			doc = s.transferAction(doc, "cancel")
+-		}
+-
+-		st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), nil)
+-		s.Equal(http.StatusConflict, st, "%s: %s", tc.name, raw)
+-		var e transferErrDTO
+-		s.Require().NoError(json.Unmarshal(raw, &e), string(raw))
+-		s.Equal("CONFLICT", e.Code, tc.name)
+-		s.Equal("У заказа есть перемещения — удалить нельзя", e.Message, tc.name)
+-
+-		st, card, _ := s.getCard(s.admin, taskID)
+-		s.Require().Equal(http.StatusOK, st, "%s: заказ на месте", tc.name)
+-		s.Require().Len(card.Transfers, 1, tc.name)
+-		s.Equal(doc.ID, card.Transfers[0].ID)
+-		s.Equal(doc.Status, card.Transfers[0].Status)
+-		s.Len(card.Equipment, 1, "%s: оборудование заказа не тронуто", tc.name)
+-	}
+-
+-	// негатив: заказ без документов удаляется.
+-	free, _ := s.newTask(c, col)
+-	s.addEq(free, s.newEquipment(c), "")
+-	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", free), nil)
+-	s.Equal(http.StatusOK, st, string(raw))
+-	st, _, _ = s.getCard(s.admin, free)
+-	s.Equal(http.StatusNotFound, st)
+-}
+-
+ // ---- TS-027 ----
+ 
+ // TS-027: удалённые endpoints (send / receive / cancel-transit оборудования заказа и
+diff --git a/internal/features/board/order_card_revert_http_live_test.go b/internal/features/board/order_card_revert_http_live_test.go
+new file mode 100644
+index 0000000..5183747
+--- /dev/null
++++ b/internal/features/board/order_card_revert_http_live_test.go
+@@ -0,0 +1,263 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++)
++
++// Отмена проведения и удаление в карточке заказа
++// (docs/features/transfers-revert/draft-spec.md §11) — методы OrderCardLiveSuite (§TD-8):
++// TS-013 (откат накладной оплаченного заказа), TS-017 (удаление заказа с документами), хвост
++// TS-018 (удаление документа-заявки освобождает единицу). Документы создаются и проводятся
++// через API перемещений того же сервера.
++
++// unreceiveTransfer — «Отменить проведение» документа (актуальная версия) с причиной.
++func (s *OrderCardLiveSuite) unreceiveTransfer(id int64, version int) salesTransferDTO {
++	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/unreceive", id),
++		map[string]any{"version": version, "reason": "Ошибочное проведение"})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var out salesTransferDTO
++	s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++	s.Require().Equal("in_transit", out.Status)
++	return out
++}
++
++func (s *OrderCardLiveSuite) revertScalar(q string, args ...any) string {
++	var v string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), q, args...).Scan(&v), q)
++	return v
++}
++
++func (s *OrderCardLiveSuite) stockAt(productID, warehouseID string) string {
++	return s.revertScalar(`SELECT stock::text FROM product_stock WHERE product_id = $1 AND warehouse_id = $2`, productID, warehouseID)
++}
++
++// deleteTaskBlocked — DELETE заказа обязан вернуть 409 TASK_HAS_TRANSFERS с номерами ids.
++func (s *OrderCardLiveSuite) deleteTaskBlocked(taskID int64, ctx string, ids ...int64) {
++	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), nil)
++	s.Require().Equal(http.StatusConflict, st, "%s: %s", ctx, raw)
++	var e transferErrDTO
++	s.Require().NoError(json.Unmarshal(raw, &e), string(raw))
++	s.Equal("TASK_HAS_TRANSFERS", e.Code, ctx)
++	msg := "Сначала отмените перемещения: "
++	for i, id := range ids {
++		if i > 0 {
++			msg += ", "
++		}
++		msg += fmt.Sprintf("#%d", id)
++	}
++	s.Equal(msg, e.Message, ctx)
++	s.Require().NotNil(e.Details, string(raw))
++	s.Equal(ids, e.Details.TransferIDs, "%s: номера по возрастанию", ctx)
++}
++
++// ---- TS-013 ----
++
++// TS-013: откат полученной накладной оплаченного заказа разрешён (DS-020 / DS-023): 200,
++// is_paid заказа не изменился, total_amount по-прежнему включает накладную (она «В пути»),
++// товар остаётся списанным (движений отката нет). Негатив: последующая отмена накладной
++// убирает её сумму из итога и возвращает товар на склад; отметка «Оплачен» остаётся.
++func (s *OrderCardLiveSuite) TestTS013_UnreceiveInvoiceOfPaidOrder() {
++	ctx := context.Background()
++	almaty := s.warehouseID("Алматы")
++	c := s.newClient("Клиент-Откат-Накладной")
++	taskID, _ := s.newTask(c, s.columnID("Новые"))
++	svc := s.newService("1000")
++	st, _, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svc})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	goods := s.newProduct("100.10", "20", "1")
++
++	inv := s.invoice(taskID, true, [3]any{goods, 3, 100.10})
++	inv = s.invoiceAction(inv, "receive")
++	s.Require().Equal("received", inv.Status)
++	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET is_paid = true, paid_at = now() WHERE id = $1`, taskID)
++	s.Require().NoError(err)
++	total, sold, paid, _ := s.totals(taskID, c)
++	s.Equal("1300.30", total, "1000 + 300.30")
++	s.Equal("300.30", sold)
++	s.True(paid)
++	s.Equal("17.000", s.stockAt(goods, almaty))
++
++	// откат: документ «В пути», сумма остаётся в итоге, оплата не тронута, товар списан.
++	back := s.unreceiveTransfer(inv.ID, inv.Version)
++	s.Equal("300.30", back.Amount.String())
++	total, sold, paid, card := s.totals(taskID, c)
++	s.Equal("1300.30", total, "накладная «В пути» остаётся в итоге заказа")
++	s.Equal("300.30", sold)
++	s.True(paid, "отметка «Оплачен» откатом не трогается")
++	s.Require().Len(card.Transfers, 1)
++	s.Equal("in_transit", card.Transfers[0].Status)
++	s.Equal("17.000", s.stockAt(goods, almaty), "товар накладной остаётся списанным")
++	s.Equal("client_out", s.revertScalar(`SELECT string_agg(reason, ',' ORDER BY reason) FROM stock_movements WHERE transfer_id = $1`, inv.ID),
++		"откат накладной движений не создаёт")
++	s.Equal("t", s.revertScalar(`SELECT (is_paid AND paid_at IS NOT NULL)::text FROM tasks WHERE id = $1`, taskID)[:1])
++
++	// негатив: отмена накладной после отката — сумма уходит из итога, товар возвращается.
++	cnc := s.invoiceAction(back, "cancel")
++	s.Equal("cancelled", cnc.Status)
++	total, sold, paid, _ = s.totals(taskID, c)
++	s.Equal("1000.00", total, "отменённая накладная в итог не входит")
++	s.Equal("0.00", sold)
++	s.True(paid, "отметка «Оплачен» остаётся и после отмены накладной")
++	s.Equal("20.000", s.stockAt(goods, almaty), "товар вернулся на склад отправления")
++}
++
++// ---- TS-017 ----
++
++// TS-017: DELETE /api/v1/tasks/:id — документ заказа в requested / in_transit / received →
++// 409 TASK_HAS_TRANSFERS с details.transfer_ids (номера по возрастанию, отменённые в список не
++// входят); при отказе заказ, документы, остатки и оборудование не изменились (abuse case 5).
++// Только отменённые документы → заказ и они удалены одной транзакцией, движения остатков
++// остались с transfer_id = NULL (DS-050). Путь к удалению у полученного: откат → отмена.
++// Негатив: заказ без документов удаляется как раньше.
++func (s *OrderCardLiveSuite) TestTS017_DeleteTaskWithTransfers() {
++	almaty := s.warehouseID("Алматы")
++	c := s.newClient("Клиент-Удаление-С-Перемещениями")
++	col := s.columnID("Новые")
++	del := func(taskID int64) (int, []byte) {
++		return s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), nil)
++	}
++
++	// ---- по одному мешающему документу в каждом неотменённом статусе ----
++	var receivedTask int64
++	var receivedDoc transferDocDTO
++	var receivedUnit string
++	for _, tc := range []struct {
++		name  string
++		flags map[string]any
++	}{
++		{"заявка", nil},
++		{"в пути", map[string]any{"send": true}},
++		{"получено", map[string]any{"receive": true}},
++	} {
++		taskID, _ := s.newTask(c, col)
++		eq := s.newEquipment(c)
++		s.addEq(taskID, eq, "")
++		doc := s.clientTransfer("client_to_warehouse", taskID, almaty, tc.flags, eq)
++		s.deleteTaskBlocked(taskID, tc.name, doc.ID)
++
++		st, card, _ := s.getCard(s.admin, taskID)
++		s.Require().Equal(http.StatusOK, st, "%s: заказ на месте", tc.name)
++		s.Require().Len(card.Transfers, 1, tc.name)
++		s.Equal(doc.ID, card.Transfers[0].ID)
++		s.Equal(doc.Status, card.Transfers[0].Status, "%s: документ не изменён", tc.name)
++		s.Len(card.Equipment, 1, "%s: оборудование заказа не тронуто", tc.name)
++		if doc.Status == "received" {
++			receivedTask, receivedDoc, receivedUnit = taskID, doc, eq
++		}
++	}
++
++	// полученный документ: откат → всё ещё мешает («В пути») → отмена → заказ удаляется.
++	back := s.unreceiveTransfer(receivedDoc.ID, receivedDoc.Version)
++	s.deleteTaskBlocked(receivedTask, "после отката — в пути", receivedDoc.ID)
++	s.transferAction(transferDocDTO{ID: back.ID, Status: back.Status, Version: back.Version}, "cancel")
++	st, raw := del(receivedTask)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("0", s.revertScalar(`SELECT count(*)::text FROM transfers WHERE id = $1`, receivedDoc.ID), "отменённый документ удалён с заказом")
++	s.Equal("at_client|", s.revertScalar(`
++		SELECT location_status || '|' || coalesce(active_transfer_id::text, '') FROM equipment WHERE id = $1`, receivedUnit),
++		"единица осталась в справочнике: у клиента, свободна")
++
++	// ---- несколько документов: в ответе только неотменённые, по возрастанию ----
++	taskID, _ := s.newTask(c, col)
++	units := []string{s.newEquipment(c), s.newEquipment(c), s.newEquipment(c)}
++	for _, u := range units {
++		s.addEq(taskID, u, "")
++	}
++	goods := s.newProduct("10", "50", "0")
++	d1 := s.clientTransfer("client_to_warehouse", taskID, almaty, nil, units[0])
++	d2 := s.transferAction(s.clientTransfer("client_to_warehouse", taskID, almaty, nil, units[1]), "cancel")
++	d3 := s.clientTransfer("client_to_warehouse", taskID, almaty, map[string]any{"send": true}, units[2])
++	inv := s.invoice(taskID, true, [3]any{goods, 4, 10})
++	s.Equal("46.000", s.stockAt(goods, almaty))
++	s.deleteTaskBlocked(taskID, "три мешающих и один отменённый", d1.ID, d3.ID, inv.ID)
++
++	// отказ ничего не изменил: документы, остаток, движения, оборудование.
++	_, card, _ := s.getCard(s.admin, taskID)
++	statuses := map[int64]string{}
++	for _, t := range card.Transfers {
++		statuses[t.ID] = t.Status
++	}
++	s.Equal(map[int64]string{d1.ID: "requested", d2.ID: "cancelled", d3.ID: "in_transit", inv.ID: "in_transit"}, statuses)
++	s.Len(card.Equipment, 3)
++	s.Equal("46.000", s.stockAt(goods, almaty))
++	s.Equal("1", s.revertScalar(`SELECT count(*)::text FROM stock_movements WHERE transfer_id = $1`, inv.ID))
++
++	// все документы отменены → заказ и они удаляются одной транзакцией.
++	s.transferAction(d1, "cancel")
++	s.transferAction(d3, "cancel")
++	s.invoiceAction(inv, "cancel")
++	s.Equal("50.000", s.stockAt(goods, almaty), "отмена накладной вернула товар")
++	docIDs := []int64{d1.ID, d2.ID, d3.ID, inv.ID}
++	s.Equal("4", s.revertScalar(`SELECT count(*)::text FROM transfers WHERE id = ANY($1)`, docIDs))
++	st, raw = del(taskID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, _, _ = s.getCard(s.admin, taskID)
++	s.Equal(http.StatusNotFound, st, "заказ удалён")
++	s.Equal("0", s.revertScalar(`SELECT count(*)::text FROM transfers WHERE id = ANY($1)`, docIDs), "отменённые документы удалены")
++	s.Equal("0", s.revertScalar(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = ANY($1)`, docIDs))
++	for _, id := range docIDs {
++		st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/transfers/%d", id), nil)
++		s.Equal(http.StatusNotFound, st, string(raw))
++	}
++	s.Equal("client_out:-4.000,transfer_return:4.000", s.revertScalar(`
++		SELECT string_agg(reason || ':' || qty_delta::text, ',' ORDER BY reason) FROM stock_movements
++		WHERE product_id = $1 AND transfer_id IS NULL`, goods), "движения остатков остались, отвязаны от документа")
++	s.Equal("50.000", s.stockAt(goods, almaty), "удаление остаток не меняет")
++	s.Equal("3", s.revertScalar(`
++		SELECT count(*)::text FROM equipment WHERE id = ANY($1::uuid[]) AND location_status = 'at_client' AND active_transfer_id IS NULL`, units),
++		"единицы остались в справочнике: у клиента, свободны")
++
++	// негатив: заказ без документов удаляется как раньше.
++	free, _ := s.newTask(c, col)
++	s.addEq(free, s.newEquipment(c), "")
++	st, raw = del(free)
++	s.Equal(http.StatusOK, st, string(raw))
++	st, _, _ = s.getCard(s.admin, free)
++	s.Equal(http.StatusNotFound, st)
++}
++
++// ---- TS-018 (хвост) ----
++
++// TS-018 (transfers-revert): единица в заявке не убирается из заказа и не удаляется из
++// справочника; после УДАЛЕНИЯ документа-заявки (DELETE /api/v1/transfers/:id) она свободна,
++// убирается из заказа и — раз строк документов у неё больше нет — удаляется из справочника
++// (после отмены без удаления строки документа остаются и держат единицу, DS-026).
++func (s *OrderCardLiveSuite) TestTS018_DeleteRequestFreesEquipment() {
++	almaty, moscow := s.warehouseID("Алматы"), s.warehouseID("Москва")
++	c := s.newClient("Клиент-Удаление-Заявки")
++	taskID, _ := s.newTask(c, s.columnID("Новые"))
++	eq := s.newEquipment(c)
++	s.attachRaw(taskID, eq)
++	_, err := s.Pool.Exec(context.Background(),
++		`UPDATE equipment SET location_status = 'at_warehouse', warehouse_id = $2 WHERE id = $1`, eq, almaty) // фикстура местоположения
++	s.Require().NoError(err)
++	removePath := fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, eq)
++
++	doc := s.newTransfer(almaty, moscow, false, eq)
++	st, raw := s.admin.Do(http.MethodDelete, removePath, nil)
++	s.Require().Equal(http.StatusConflict, st, string(raw))
++	s.Equal("EQUIPMENT_IN_TRANSFER", s.errOf(raw).Code)
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+eq, nil)
++	s.Require().Equal(http.StatusConflict, st, string(raw))
++	s.Equal("EQUIPMENT_HAS_TRANSFERS", s.errOf(raw).Code)
++
++	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d?version=%d", doc.ID, doc.Version), nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	_, card, _ := s.getCard(s.admin, taskID)
++	e := s.cardEquipment(card, eq)
++	s.Nil(e.ActiveTransferID, "после удаления заявки единица свободна")
++	s.Equal("at_warehouse", e.LocationStatus, "заявка местоположение не меняла")
++	s.Empty(card.Transfers)
++
++	st, m, raw := s.doEquipment(s.admin, http.MethodDelete, removePath, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Empty(m.Card.Equipment, "единица убрана из заказа")
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/equipment/"+eq, nil)
++	s.Equal(http.StatusNoContent, st, "строк документов больше нет — единица удаляется из справочника: %s", raw)
++	s.Equal("0", s.revertScalar(`SELECT count(*)::text FROM equipment WHERE id = $1`, eq))
++}
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index 0c9f274..d5169ed 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -3,7 +3,9 @@ package board
+ import (
+ 	"context"
+ 	"errors"
++	"net/http"
+ 	"strconv"
++	"strings"
+ 
+ 	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgconn"
+@@ -340,15 +342,49 @@ func (s *TaskService) Move(ctx context.Context, a Actor, idStr string, in TaskMo
+ 	return s.mutationResponse(ctx, a, id, reconcile)
+ }
+ 
+-// ErrTaskHasTransfers — удаление заказа с документами «Перемещение» (transfers-partners
+-// DS-012); общий текст — до части transfers-revert (сообщение с номерами, DS-025).
+-var ErrTaskHasTransfers = errorspkg.Conflict("У заказа есть перемещения — удалить нельзя")
++// codeTaskHasTransfers — удаление заказа с неотменёнными документами «Перемещение»
++// (transfers-revert DS-025): details.transfer_ids — номера мешающих документов по возрастанию.
++const codeTaskHasTransfers = "TASK_HAS_TRANSFERS"
+ 
+-// hasTransfers — у заказа есть хоть один документ «Перемещение» в любом статусе.
+-func hasTransfers(ctx context.Context, tx pgx.Tx, taskID int64) (bool, error) {
+-	var ok bool
+-	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM transfers WHERE task_id = $1)`, taskID).Scan(&ok)
+-	return ok, err
++// errTaskHasTransfers — 409 TASK_HAS_TRANSFERS «Сначала отмените перемещения: #N, #M».
++func errTaskHasTransfers(ids []int64) error {
++	nums := make([]string, len(ids))
++	for i, id := range ids {
++		nums[i] = "#" + strconv.FormatInt(id, 10)
++	}
++	return errorspkg.New(codeTaskHasTransfers, http.StatusConflict,
++		"Сначала отмените перемещения: "+strings.Join(nums, ", ")).WithDetail("transfer_ids", ids)
++}
++
++// deleteTaskTransfers — документы «Перемещение» удаляемого заказа (transfers-revert DS-025,
++// DS-050): есть документ в requested / in_transit / received → errTaskHasTransfers с их
++// номерами, ничего не удалено; иначе отменённые документы удаляются (строки — каскадом FK,
++// stock_movements.transfer_id → NULL: журнал остатков сохраняется).
++//
++// Документами владеет пакет transfers, но удаляет их здесь board — тем же SQL-способом, каким
++// он уже читает таблицу transfers (итог заказа): импорт transfers → цикл пакетов не нужен, а
++// удаление отменённого документа не несёт логики (учёт он не затрагивает).
++//
++// Вызывается под блокировкой заказа (LockTask FOR UPDATE): создание документа заказа ждёт её
++// (FOR KEY SHARE в transfers.checkRefs и FK), поэтому новых документов не появится, а
++// «Отменён» терминален. Строки transfers при чтении НЕ блокируются (FOR UPDATE): порядок
++// блокировок пакета transfers — документ → заказ, обратный порядок здесь дал бы взаимную
++// блокировку с правкой заявки; страховка от гонки — FK transfers.task_id RESTRICT.
++func deleteTaskTransfers(ctx context.Context, tx pgx.Tx, taskID int64) error {
++	rows, err := tx.Query(ctx, `
++SELECT id FROM transfers WHERE task_id = $1 AND status <> 'cancelled' ORDER BY id`, taskID)
++	if err != nil {
++		return err
++	}
++	blocking, err := pgx.CollectRows(rows, pgx.RowTo[int64])
++	if err != nil {
++		return err
++	}
++	if len(blocking) > 0 {
++		return errTaskHasTransfers(blocking)
++	}
++	_, err = tx.Exec(ctx, `DELETE FROM transfers WHERE task_id = $1 AND status = 'cancelled'`, taskID)
++	return err
+ }
+ 
+ // Delete — только admin (роут + повторная проверка роли в сервисе); StockEngine.
+@@ -368,13 +404,10 @@ func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string) (*TaskD
+ 		if _, err := s.repo.LockTask(ctx, tx, id); err != nil {
+ 			return taskLockError(err)
+ 		}
+-		// transfers-partners DS-012: заказ с документами «Перемещение» (в любом статусе) не
+-		// удаляется. Проверка — под блокировкой заказа: параллельное создание документа ждёт
+-		// её (FK transfers.task_id), а FK RESTRICT остаётся страховкой.
+-		if has, err := hasTransfers(ctx, tx, id); err != nil {
++		// transfers-revert DS-025 / DS-050: неотменённые документы заказа запрещают удаление
++		// (409 с номерами), отменённые удаляются вместе с заказом — в этой же транзакции.
++		if err := deleteTaskTransfers(ctx, tx, id); err != nil {
+ 			return err
+-		} else if has {
+-			return ErrTaskHasTransfers
+ 		}
+ 		res, err := s.engine.Reconcile(ctx, tx, id, false, a.ID)
+ 		if err != nil {
+diff --git a/internal/features/transfers/dto.go b/internal/features/transfers/dto.go
+index 076cb2c..0d37698 100644
+--- a/internal/features/transfers/dto.go
++++ b/internal/features/transfers/dto.go
+@@ -52,7 +52,6 @@ const (
+ )
+ 
+ // Причины движений перемещения (CHECK stock_movements_reason_check миграций 0008, 0015).
+-// transfer_unreceive разрешён CHECK'ом, но пишется частью 6 (DS-040).
+ const (
+ 	reasonOut    = "transfer_out"
+ 	reasonIn     = "transfer_in"
+@@ -62,6 +61,9 @@ const (
+ 	reasonSupplierIn = "supplier_in"
+ 	// reasonClientOut — списание товара накладной клиенту при отправке (transfers-sales DS-011).
+ 	reasonClientOut = "client_out"
++	// reasonUnreceive — компенсирующее движение отмены проведения: −факт приёмки на складе
++	// назначения (transfers-revert DS-017).
++	reasonUnreceive = "transfer_unreceive"
+ )
+ 
+ // ItemInput — строка документа в запросе создания/правки. kind = product — product_id +
+@@ -113,6 +115,18 @@ type TransferActionRequest struct {
+ 	Version *int `json:"version"`
+ }
+ 
++// TransferUnreceiveRequest — POST /:id/unreceive («Отменить проведение», только admin):
++// обязательная причина 1–500 символов после trim (transfers-revert DS-053).
++type TransferUnreceiveRequest struct {
++	Version *int   `json:"version"`
++	Reason  string `json:"reason"`
++}
++
++// TransferDeleteResponse — DELETE /api/v1/transfers/:id: номер удалённого документа.
++type TransferDeleteResponse struct {
++	ID int64 `json:"id"`
++}
++
+ // ReceiveItemInput — факт по товарной строке при приёмке; строка без записи — факт =
+ // qty_sent; строки-единицы факта не имеют (DS-037).
+ type ReceiveItemInput struct {
+@@ -158,7 +172,9 @@ type TransferItemResponse struct {
+ }
+ 
+ // TransferResponse — карточка перемещения (re-fetch-after-write). Warnings — только в
+-// ответе отправки (иначе пустой массив). Точки маршрута заполнены по direction: склады,
++// ответе отправки и отмены проведения (иначе пустой массив). Unreceived* — последняя отмена
++// проведения (кто, когда, причина; transfers-revert DS-044): сохраняются и после повторной
++// приёмки; у документа без отката — null и пустая причина. Точки маршрута заполнены по direction: склады,
+ // заказ + клиент (документы с клиентом), поставщик — остальное null. Amount — сумма накладной:
+ // Σ line_total товарных строк; 0.00 вне «склад → клиент» и без товаров (DS-038).
+ type TransferResponse struct {
+@@ -187,6 +203,10 @@ type TransferResponse struct {
+ 	CancelledBy       *string                `json:"cancelled_by"`
+ 	CancelledByName   *string                `json:"cancelled_by_name"`
+ 	CancelledAt       *time.Time             `json:"cancelled_at"`
++	UnreceivedBy      *string                `json:"unreceived_by"`
++	UnreceivedByName  *string                `json:"unreceived_by_name"`
++	UnreceivedAt      *time.Time             `json:"unreceived_at"`
++	UnreceiveReason   string                 `json:"unreceive_reason"`
+ 	CreatedAt         time.Time              `json:"created_at"`
+ 	UpdatedAt         time.Time              `json:"updated_at"`
+ 	Version           int                    `json:"version"`
+@@ -196,7 +216,8 @@ type TransferResponse struct {
+ }
+ 
+ // TransferSummary — строка списка (без строк документа). Amount — сумма накладной (0.00 вне
+-// «склад → клиент»).
++// «склад → клиент»). UnreceivedAt — последняя отмена проведения (значок «↩» у документа,
++// возвращённого откатом в «В пути»).
+ type TransferSummary struct {
+ 	ID                int64          `json:"id"`
+ 	Direction         string         `json:"direction"`
+@@ -213,6 +234,7 @@ type TransferSummary struct {
+ 	Note              string         `json:"note"`
+ 	ItemsCount        int            `json:"items_count"`
+ 	CreatedByName     string         `json:"created_by_name"`
++	UnreceivedAt      *time.Time     `json:"unreceived_at"`
+ 	CreatedAt         time.Time      `json:"created_at"`
+ 	UpdatedAt         time.Time      `json:"updated_at"`
+ 	Version           int            `json:"version"`
+diff --git a/internal/features/transfers/handler.go b/internal/features/transfers/handler.go
+index af003b5..b5c8543 100644
+--- a/internal/features/transfers/handler.go
++++ b/internal/features/transfers/handler.go
+@@ -122,3 +122,25 @@ func (h *Handler) Cancel(c fiber.Ctx) error {
+ 	}
+ 	return c.JSON(resp)
+ }
++
++// Unreceive — POST /api/v1/transfers/:id/unreceive («Отменить проведение», только admin).
++func (h *Handler) Unreceive(c fiber.Ctx) error {
++	var req TransferUnreceiveRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return badBody()
++	}
++	resp, err := h.svc.Unreceive(c.Context(), actor(c), c.Params("id"), req.Version, req.Reason)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Delete — DELETE /api/v1/transfers/:id?version=N (только admin; «Заявка» / «Отменён»).
++func (h *Handler) Delete(c fiber.Ctx) error {
++	resp, err := h.svc.Delete(c.Context(), actor(c), c.Params("id"), c.Query("version"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
+diff --git a/internal/features/transfers/migration_revert_integration_test.go b/internal/features/transfers/migration_revert_integration_test.go
+new file mode 100644
+index 0000000..1faf53c
+--- /dev/null
++++ b/internal/features/transfers/migration_revert_integration_test.go
+@@ -0,0 +1,125 @@
++//go:build integration
++
++package transfers_test
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// TransfersRevertMigrationSuite — миграция 0017 (transfers-revert §4.1, DS-044 / DS-053):
++// сведения о последней отмене проведения на документе — unreceived_by (FK users RESTRICT),
++// unreceived_at, unreceive_reason (NOT NULL, ” у документов без отката, CHECK ≤ 500 символов);
++// down убирает колонки, документы и движения transfer_unreceive остаются.
++type TransfersRevertMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestTransfersRevertMigrationSuite(t *testing.T) {
++	suite.Run(t, new(TransfersRevertMigrationSuite))
++}
++
++const trmAdminID = "aaaaaaaa-0017-0017-0017-000000000001"
++
++func (s *TransfersRevertMigrationSuite) scalar(q string, args ...any) string {
++	var v string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), q, args...).Scan(&v), q)
++	return v
++}
++
++func (s *TransfersRevertMigrationSuite) exec(q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	s.Require().NoError(err, q)
++}
++
++func (s *TransfersRevertMigrationSuite) fails(name, q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	s.Error(err, name)
++}
++
++// columns — «имя:тип:nullable» колонок отката таблицы transfers, по имени.
++func (s *TransfersRevertMigrationSuite) columns() string {
++	return s.scalar(`
++		SELECT coalesce(string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY column_name), '')
++		FROM information_schema.columns
++		WHERE table_name = 'transfers' AND column_name IN ('unreceived_by', 'unreceived_at', 'unreceive_reason')`)
++}
++
++func (s *TransfersRevertMigrationSuite) constraint(name string) bool {
++	return s.scalar(`SELECT count(*)::text FROM pg_constraint WHERE conname = $1`, name) == "1"
++}
++
++func (s *TransfersRevertMigrationSuite) TestMigration0017_UpDown() {
++	ctx := context.Background()
++	mig, err := migrate.New(migrationsURL(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(16))
++	defer func() {
++		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	s.Empty(s.columns(), "0016: колонок отката нет")
++
++	// ---- данные «до» (0016): полученный приход-подобный документ склад → склад ----
++	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'trm-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, trmAdminID)
++	almaty := s.scalar(`SELECT id::text FROM warehouses WHERE name = 'Алматы'`)
++	moscow := s.scalar(`SELECT id::text FROM warehouses WHERE name = 'Москва'`)
++	catID := s.scalar(`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'TRM ' || gen_random_uuid()) RETURNING id::text`)
++	productID := s.scalar(`INSERT INTO products (category_id, name) VALUES ($1, 'TRM товар') RETURNING id::text`, catID)
++	var doc int64
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		INSERT INTO transfers (direction, from_warehouse_id, to_warehouse_id, status, created_by, sent_by, sent_at, received_by, received_at)
++		VALUES ('warehouse_to_warehouse', $1, $2, 'received', $3, $3, now(), $3, now()) RETURNING id`, almaty, moscow, trmAdminID).Scan(&doc))
++	defer s.exec(`DELETE FROM transfers WHERE id = $1`, doc)
++	s.exec(`INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent, qty_received) VALUES ($1, 'product', $2, 1, 4, 4)`, doc, productID)
++
++	// ---- up → 0017 ----
++	s.Require().NoError(mig.Migrate(17))
++	s.Equal("unreceive_reason:text:NO,unreceived_at:timestamp with time zone:YES,unreceived_by:uuid:YES", s.columns())
++	s.True(s.constraint("transfers_unreceive_reason_check"))
++	s.Equal("||", s.scalar(`
++		SELECT coalesce(unreceived_by::text, '') || '|' || coalesce(unreceived_at::text, '') || '|' || unreceive_reason
++		FROM transfers WHERE id = $1`, doc), "существующий документ: отката не было — NULL, NULL, ''")
++
++	// причина — до 500 символов (символов, не байт); 501 — отказ CHECK.
++	s.exec(`UPDATE transfers SET unreceived_by = $2, unreceived_at = now(), unreceive_reason = $3 WHERE id = $1`,
++		doc, trmAdminID, strings.Repeat("я", 500))
++	s.Equal("500", s.scalar(`SELECT char_length(unreceive_reason)::text FROM transfers WHERE id = $1`, doc))
++	s.fails("причина 501 символ", `UPDATE transfers SET unreceive_reason = $2 WHERE id = $1`, doc, strings.Repeat("я", 501))
++	s.fails("причина NULL", `UPDATE transfers SET unreceive_reason = NULL WHERE id = $1`, doc)
++	// FK unreceived_by → users: несуществующий пользователь и удаление автора отката запрещены.
++	s.fails("unreceived_by — несуществующий пользователь",
++		`UPDATE transfers SET unreceived_by = 'aaaaaaaa-0017-0017-0017-00000000dead' WHERE id = $1`, doc)
++	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ('aaaaaaaa-0017-0017-0017-000000000002', 'trm-second', 'x', 'Second', 'admin') ON CONFLICT (id) DO NOTHING`)
++	s.exec(`UPDATE transfers SET unreceived_by = 'aaaaaaaa-0017-0017-0017-000000000002' WHERE id = $1`, doc)
++	s.fails("удаление пользователя, отменившего проведение (RESTRICT)",
++		`DELETE FROM users WHERE id = 'aaaaaaaa-0017-0017-0017-000000000002'`)
++	// компенсирующее движение отката допустимо CHECK'ом причин (значение добавлено в 0015).
++	s.exec(`INSERT INTO stock_movements (product_id, warehouse_id, qty_delta, reason, user_id, transfer_id)
++		VALUES ($1, $2, -4, 'transfer_unreceive', $3, $4)`, productID, moscow, trmAdminID, doc)
++
++	// ---- down → 0016 ----
++	s.Require().NoError(mig.Migrate(16))
++	s.Empty(s.columns())
++	s.False(s.constraint("transfers_unreceive_reason_check"))
++	s.Equal("received", s.scalar(`SELECT status FROM transfers WHERE id = $1`, doc), "документ остался")
++	s.Equal("-4.000", s.scalar(`SELECT qty_delta::text FROM stock_movements WHERE transfer_id = $1 AND reason = 'transfer_unreceive'`, doc),
++		"движение отката осталось")
++	s.exec(`DELETE FROM users WHERE id = 'aaaaaaaa-0017-0017-0017-000000000002'`) // FK ушёл вместе с колонкой
++
++	// повторный up поверх отката проходит (идемпотентность пары up/down).
++	s.Require().NoError(mig.Migrate(17))
++	s.Equal("||", s.scalar(`
++		SELECT coalesce(unreceived_by::text, '') || '|' || coalesce(unreceived_at::text, '') || '|' || unreceive_reason
++		FROM transfers WHERE id = $1`, doc))
++}
+diff --git a/internal/features/transfers/repo.go b/internal/features/transfers/repo.go
+index db4f7e7..e1b3221 100644
+--- a/internal/features/transfers/repo.go
++++ b/internal/features/transfers/repo.go
+@@ -29,6 +29,9 @@ const (
+ 	actionSend    = "send"
+ 	actionReceive = "receive"
+ 	actionCancel  = "cancel"
++	// transfers-revert §6.1, §6.2.
++	actionUnreceive = "unreceive"
++	actionDelete    = "delete"
+ )
+ 
+ // statusError — действие недоступно в текущем статусе документа (409; сообщение зависит от
+@@ -58,6 +61,19 @@ type notAtSourceError struct {
+ 
+ func (e *notAtSourceError) Error() string { return "transfers: equipment not at source" }
+ 
++// unreceiveBlockedError — отмена проведения запрещена единицей equipmentID (transfers-revert
++// DS-023, 409 TRANSFER_UNRECEIVE_BLOCKED): later — её увёз более поздний полученный документ
++// transferID; иначе она стоит в другом незавершённом документе transferID. transferID = 0 —
++// единица числится не там, куда её привёз документ, а мешающего документа нет (местоположение
++// правили в обход перемещений).
++type unreceiveBlockedError struct {
++	equipmentID string
++	transferID  int64
++	later       bool
++}
++
++func (e *unreceiveBlockedError) Error() string { return "transfers: unreceive blocked" }
++
+ // fieldsError — ошибки полей, найденные под транзакцией (склад/товар/единица не существует
+ // или в архиве, факт приёмки вне границ).
+ type fieldsError struct{ Fields []errorspkg.Field }
+@@ -107,7 +123,7 @@ SELECT t.id, t.direction, t.from_warehouse_id::text, fw.name, t.to_warehouse_id:
+        t.task_id, t.client_id::text, c.company_name, t.supplier_id::text, sp.name,
+        t.status, t.note,
+        (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id)::int,
+-       cu.name, t.created_at, t.updated_at, t.version, `+amountSelectSQL+`, count(*) OVER () AS total
++       cu.name, t.unreceived_at, t.created_at, t.updated_at, t.version, `+amountSelectSQL+`, count(*) OVER () AS total
+ FROM transfers t
+ LEFT JOIN warehouses fw ON fw.id = t.from_warehouse_id
+ LEFT JOIN warehouses tw ON tw.id = t.to_warehouse_id
+@@ -136,7 +152,7 @@ LIMIT $10 OFFSET $11`, nullable(p.Status), nullable(p.WarehouseID), nullable(p.D
+ 		var amount string
+ 		if err := rows.Scan(&t.ID, &t.Direction, &t.FromWarehouseID, &t.FromWarehouseName, &t.ToWarehouseID, &t.ToWarehouseName,
+ 			&t.TaskID, &t.ClientID, &t.ClientName, &t.SupplierID, &t.SupplierName,
+-			&t.Status, &t.Note, &t.ItemsCount, &t.CreatedByName, &t.CreatedAt, &t.UpdatedAt, &t.Version, &amount, &total); err != nil {
++			&t.Status, &t.Note, &t.ItemsCount, &t.CreatedByName, &t.UnreceivedAt, &t.CreatedAt, &t.UpdatedAt, &t.Version, &amount, &total); err != nil {
+ 			return nil, 0, err
+ 		}
+ 		t.Amount = numeric.Amount(amount)
+@@ -161,6 +177,7 @@ SELECT t.id, t.direction, t.from_warehouse_id::text, fw.name, t.to_warehouse_id:
+        t.sent_by::text, su.name, t.sent_at,
+        t.received_by::text, ru.name, t.received_at,
+        t.cancelled_by::text, xu.name, t.cancelled_at,
++       t.unreceived_by::text, uu.name, t.unreceived_at, t.unreceive_reason,
+        t.created_at, t.updated_at, t.version, `+amountSelectSQL+`
+ FROM transfers t
+ LEFT JOIN warehouses fw ON fw.id = t.from_warehouse_id
+@@ -172,12 +189,14 @@ JOIN users cu      ON cu.id = t.created_by
+ LEFT JOIN users su ON su.id = t.sent_by
+ LEFT JOIN users ru ON ru.id = t.received_by
+ LEFT JOIN users xu ON xu.id = t.cancelled_by
++LEFT JOIN users uu ON uu.id = t.unreceived_by
+ WHERE t.id = $1`, id).Scan(&t.ID, &t.Direction, &t.FromWarehouseID, &t.FromWarehouseName, &t.ToWarehouseID, &t.ToWarehouseName,
+ 		&t.TaskID, &t.TaskTitle, &t.ClientID, &t.ClientName, &t.SupplierID, &t.SupplierName,
+ 		&t.Status, &t.Note, &t.CreatedBy, &t.CreatedByName,
+ 		&t.SentBy, &t.SentByName, &t.SentAt,
+ 		&t.ReceivedBy, &t.ReceivedByName, &t.ReceivedAt,
+ 		&t.CancelledBy, &t.CancelledByName, &t.CancelledAt,
++		&t.UnreceivedBy, &t.UnreceivedByName, &t.UnreceivedAt, &t.UnreceiveReason,
+ 		&t.CreatedAt, &t.UpdatedAt, &t.Version, &amount)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errNotFound
+@@ -460,8 +479,11 @@ FROM transfer_items i WHERE i.transfer_id = $1 AND i.kind = 'product' AND i.qty_
+ 	if err := settleEquipment(ctx, tx, id, doc.to); err != nil {
+ 		return err
+ 	}
++	// received_at — clock_timestamp(), не now() (время начала транзакции): порядок приёмок
++	// документов с общей единицей обязан совпадать с порядком взятия блокировки её строки —
++	// по нему отмена проведения ищет «более поздний» документ (transfers-revert DS-023).
+ 	_, err = tx.Exec(ctx, `
+-UPDATE transfers SET status = $2, received_by = $3::uuid, received_at = now(), updated_at = now(), version = version + 1
++UPDATE transfers SET status = $2, received_by = $3::uuid, received_at = clock_timestamp(), updated_at = now(), version = version + 1
+ WHERE id = $1`, id, StatusReceived, userID)
+ 	return err
+ }
+@@ -519,6 +541,170 @@ WHERE id = $1`, id, StatusCancelled, userID)
+ 	})
+ }
+ 
++// receivesStock — приёмка документа приходует факт на склад назначения (а отмена проведения
++// его снимает): склад → склад и приход от поставщика. Товар накладной «склад → клиент» списан
++// при отправке, у приёма от клиента товарных строк нет.
++func receivesStock(direction string) bool {
++	return direction == DirWarehouseToWarehouse || direction == DirSupplierToWarehouse
++}
++
++// Unreceive — «Отменить проведение»: received → in_transit (transfers-revert DS-017).
++//   - склад → склад и приход от поставщика: −факт приёмки на складе назначения
++//     (transfer_unreceive; факт 0 — без движения); остаток может уйти в минус — это только
++//     предупреждение (DS-020);
++//   - документы с клиентом: движений нет (товар накладной списан при отправке и остаётся
++//     списанным, пока документ «в пути»);
++//   - единицы — снова «в пути» и заняты документом; запрещено, если единицу увёз более поздний
++//     полученный документ либо она стоит в другом незавершённом (DS-023);
++//   - факт по строкам и отметка «кто/когда принял» обнуляются; на документе — кто, когда и
++//     почему отменил проведение (DS-044).
++//
++// Lock Order общий: документ → product_stock → equipment.
++func (r *Repo) Unreceive(ctx context.Context, id int64, version int, reason, userID string) (*TransferResponse, error) {
++	return r.inTx(ctx, func(tx pgx.Tx) ([]StockWarning, int64, error) {
++		doc, err := lockTransfer(ctx, tx, id, version, actionUnreceive, StatusReceived)
++		if err != nil {
++			return nil, 0, err
++		}
++		warnings := []StockWarning{}
++		if receivesStock(doc.direction) {
++			if err := lockPairs(ctx, tx, id, doc.to); err != nil {
++				return nil, 0, err
++			}
++			if _, err := tx.Exec(ctx, `
++UPDATE product_stock ps SET stock = ps.stock - d.qty
++FROM (SELECT i.product_id, sum(i.qty_received) AS qty FROM transfer_items i
++      WHERE i.transfer_id = $1 AND i.kind = 'product' AND i.qty_received > 0
++      GROUP BY i.product_id) d
++WHERE ps.product_id = d.product_id AND ps.warehouse_id = $2::uuid`, id, doc.to); err != nil {
++				return nil, 0, err
++			}
++			if _, err := tx.Exec(ctx, `
++INSERT INTO stock_movements (product_id, warehouse_id, qty_delta, reason, user_id, transfer_id)
++SELECT i.product_id, $2::uuid, -i.qty_received, $3, $4::uuid, $1
++FROM transfer_items i WHERE i.transfer_id = $1 AND i.kind = 'product' AND i.qty_received > 0`,
++				id, doc.to, reasonUnreceive, userID); err != nil {
++				return nil, 0, err
++			}
++			if warnings, err = stockWarnings(ctx, tx, id, doc.to); err != nil {
++				return nil, 0, err
++			}
++		}
++		if err := unsettleEquipment(ctx, tx, id, doc.to); err != nil {
++			return nil, 0, err
++		}
++		if _, err := tx.Exec(ctx, `UPDATE transfer_items SET qty_received = NULL WHERE transfer_id = $1`, id); err != nil {
++			return nil, 0, err
++		}
++		_, err = tx.Exec(ctx, `
++UPDATE transfers SET status = $2, received_by = NULL, received_at = NULL,
++       unreceived_by = $3::uuid, unreceived_at = now(), unreceive_reason = $4,
++       updated_at = now(), version = version + 1
++WHERE id = $1`, id, StatusInTransit, userID, reason)
++		return warnings, id, err
++	})
++}
++
++// unsettleEquipment — обратное settleEquipment приёмки: единицы полученного документа снова
++// «в пути» и заняты им. Под блокировкой строк единиц (порядок id) каждая обязана (DS-023):
++//   - быть свободной — иначе она стоит в другом незавершённом документе;
++//   - не входить в более поздний полученный документ. Порядок — по (received_at, id), а не по
++//     текущему местоположению: единица, которую увезли и вернули на тот же склад, числится «на
++//     месте», но откат обязан идти в обратном порядке. Называется САМЫЙ поздний документ — с
++//     него откат и начинают;
++//   - числиться там, куда её привёз документ (warehouseID; пустой — «у клиента»).
++//
++// Иначе unreceiveBlockedError по первой единице в порядке id; ничего не изменено.
++func unsettleEquipment(ctx context.Context, tx pgx.Tx, transferID int64, warehouseID string) error {
++	ids, err := transferEquipmentIDs(ctx, tx, transferID)
++	if err != nil {
++		return err
++	}
++	if len(ids) == 0 {
++		return nil
++	}
++	states, err := lockEquipment(ctx, tx, ids)
++	if err != nil {
++		return err
++	}
++	// читается ПОСЛЕ блокировки единиц: приёмка более позднего документа держит блокировку
++	// единицы до своего коммита, поэтому здесь она уже видна (READ COMMITTED).
++	later := map[string]int64{}
++	rows, err := tx.Query(ctx, `
++SELECT DISTINCT ON (i.equipment_id) i.equipment_id::text, t.id
++FROM transfer_items i
++JOIN transfers t  ON t.id = i.transfer_id
++JOIN transfers me ON me.id = $1
++WHERE i.kind = 'equipment' AND i.equipment_id = ANY($2::uuid[])
++  AND t.id <> me.id AND t.status = $3
++  AND (t.received_at, t.id) > (me.received_at, me.id)
++ORDER BY i.equipment_id, t.received_at DESC, t.id DESC`, transferID, ids, StatusReceived)
++	if err != nil {
++		return err
++	}
++	for rows.Next() {
++		var eq string
++		var tid int64
++		if err := rows.Scan(&eq, &tid); err != nil {
++			rows.Close()
++			return err
++		}
++		later[eq] = tid
++	}
++	rows.Close()
++	if err := rows.Err(); err != nil {
++		return err
++	}
++	for _, eq := range ids { // ids отсортированы по id
++		st := states[eq]
++		if st.activeID != nil {
++			return &unreceiveBlockedError{equipmentID: eq, transferID: *st.activeID}
++		}
++		if tid, ok := later[eq]; ok {
++			return &unreceiveBlockedError{equipmentID: eq, transferID: tid, later: true}
++		}
++		atDestination := st.location == locationAtWarehouse && st.warehouseID != nil && *st.warehouseID == warehouseID
++		if warehouseID == "" {
++			atDestination = st.location == locationAtClient
++		}
++		if !atDestination {
++			return &unreceiveBlockedError{equipmentID: eq}
++		}
++	}
++	_, err = tx.Exec(ctx, `
++UPDATE equipment SET location_status = $3, warehouse_id = NULL, active_transfer_id = $1, updated_at = now()
++WHERE id = ANY($2::uuid[])`, transferID, ids, locationInTransit)
++	return err
++}
++
++// Delete — удаление документа, не влияющего на учёт (transfers-revert DS-025): только
++// requested / cancelled. Строки уходят каскадом FK, stock_movements.transfer_id и
++// equipment.active_transfer_id (единицы заявки) — SET NULL. Возвращает статус удалённого.
++func (r *Repo) Delete(ctx context.Context, id int64, version int) (string, error) {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
++	if err != nil {
++		return "", err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++	doc, err := lockTransfer(ctx, tx, id, version, actionDelete, StatusRequested, StatusCancelled)
++	if err != nil {
++		return "", err
++	}
++	// единицы заявки блокируются явно в порядке id (освобождает их FK SET NULL) — порядок
++	// блокировок общий с остальными операциями пакета.
++	ids, err := transferEquipmentIDs(ctx, tx, id)
++	if err != nil {
++		return "", err
++	}
++	if _, err := lockEquipment(ctx, tx, ids); err != nil {
++		return "", err
++	}
++	if _, err := tx.Exec(ctx, `DELETE FROM transfers WHERE id = $1`, id); err != nil {
++		return "", err
++	}
++	return doc.status, tx.Commit(ctx)
++}
++
+ // lockedTransfer — шапка документа под блокировкой: from / to / supplier — пустая строка,
+ // если точка маршрута направлению не положена (NULL).
+ type lockedTransfer struct {
+@@ -749,11 +935,16 @@ UPDATE transfers SET status = $2, sent_by = $3::uuid, sent_at = now(), updated_a
+ WHERE id = $1`, id, StatusInTransit, userID); err != nil {
+ 		return nil, err
+ 	}
+-	out := []StockWarning{}
+ 	if !moveStock {
+-		return out, nil
++		return []StockWarning{}, nil
+ 	}
++	return stockWarnings(ctx, tx, id, from)
++}
+ 
++// stockWarnings — остатки товаров документа на складе warehouseID, ставшие отрицательными либо
++// на/ниже минимума (после списания отправкой или отмены проведения) — только предупреждение.
++func stockWarnings(ctx context.Context, tx pgx.Tx, id int64, warehouseID string) ([]StockWarning, error) {
++	out := []StockWarning{}
+ 	rows, err := tx.Query(ctx, `
+ SELECT p.id::text, w.id::text, w.name, p.name, ps.stock::text, ps.min_stock::text,
+        CASE WHEN ps.stock < 0 THEN 'negative' ELSE 'below_min' END
+@@ -762,7 +953,7 @@ JOIN product_stock ps ON ps.product_id = i.product_id AND ps.warehouse_id = $2::
+ JOIN products p ON p.id = i.product_id
+ JOIN warehouses w ON w.id = ps.warehouse_id
+ WHERE i.transfer_id = $1 AND ps.stock <= ps.min_stock
+-ORDER BY p.name, p.id`, id, from)
++ORDER BY p.name, p.id`, id, warehouseID)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/internal/features/transfers/routes.go b/internal/features/transfers/routes.go
+index 5821cb0..a64b93c 100644
+--- a/internal/features/transfers/routes.go
++++ b/internal/features/transfers/routes.go
+@@ -19,6 +19,9 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler,
+ 	g.Post("/:id/send", h.Send)
+ 	g.Post("/:id/receive", h.Receive)
+ 	g.Post("/:id/cancel", h.Cancel)
++	// transfers-revert: только администратор — роль проверяет сервис (исполнитель → 403).
++	g.Post("/:id/unreceive", h.Unreceive)
++	g.Delete("/:id", h.Delete)
+ 
+ 	if s == nil {
+ 		return
+diff --git a/internal/features/transfers/service.go b/internal/features/transfers/service.go
+index 1fab389..74927a5 100644
+--- a/internal/features/transfers/service.go
++++ b/internal/features/transfers/service.go
+@@ -22,6 +22,10 @@ const (
+ 	// details.transfer_id / details.equipment_id. Тот же код отдаёт board при удалении такой
+ 	// единицы из заказа (DS-026).
+ 	codeEquipmentInTransfer = "EQUIPMENT_IN_TRANSFER"
++	// codeUnreceiveBlocked — отмена проведения запрещена единицей документа (transfers-revert
++	// DS-023): её увёз более поздний документ либо она стоит в другом незавершённом;
++	// details.transfer_id / details.equipment_id.
++	codeUnreceiveBlocked = "TRANSFER_UNRECEIVE_BLOCKED"
+ )
+ 
+ var (
+@@ -79,9 +83,18 @@ var statusMessages = map[string]map[string]string{
+ 		StatusCancelled: "Перемещение отменено",
+ 	},
+ 	actionCancel: {
+-		StatusReceived:  "Перемещение уже получено — отменить нельзя",
++		StatusReceived:  "Перемещение получено — сначала отмените проведение",
+ 		StatusCancelled: "Перемещение уже отменено",
+ 	},
++	actionUnreceive: {
++		StatusRequested: "Перемещение ещё не проведено",
++		StatusInTransit: "Перемещение ещё не получено",
++		StatusCancelled: "Перемещение отменено",
++	},
++	actionDelete: {
++		StatusInTransit: "Перемещение в пути — сначала отмените его",
++		StatusReceived:  "Перемещение получено — сначала отмените проведение, затем отмените",
++	},
+ }
+ 
+ func statusConflict(action, status string) *errorspkg.AppError {
+@@ -286,6 +299,55 @@ func (s *Service) Cancel(ctx context.Context, a Actor, rawID string, version *in
+ 	return logged(ctx, t, err, actionCancel, a.ID)
+ }
+ 
++// Unreceive — «Отменить проведение» (transfers-revert DS-017): только администратор —
++// исполнитель получает 403 для любого документа, в т.ч. с клиентом (DS-018; проверка роли
++// первой — существование документа не раскрывается).
++func (s *Service) Unreceive(ctx context.Context, a Actor, rawID string, version *int, reason string) (*TransferResponse, error) {
++	if !a.IsAdmin {
++		return nil, ErrForbidden
++	}
++	id, err := parseID(rawID)
++	if err != nil {
++		return nil, err
++	}
++	reason, f := validateReason(reason)
++	if version == nil {
++		f = append([]errorspkg.Field{{Name: "version", Message: msgRequired}}, f...)
++	}
++	if len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	t, err := s.repo.Unreceive(ctx, id, *version, reason, a.ID)
++	if err != nil {
++		return nil, mapErr(err)
++	}
++	slog.InfoContext(ctx, "transfer mutated", "transfer_id", t.ID, "direction", t.Direction,
++		"action", actionUnreceive, "user_id", a.ID, "reason", reason)
++	return t, nil
++}
++
++// Delete — удаление документа в статусе «Заявка» или «Отменён» (transfers-revert DS-025):
++// только администратор (DS-042). rawVersion — query-параметр version.
++func (s *Service) Delete(ctx context.Context, a Actor, rawID, rawVersion string) (*TransferDeleteResponse, error) {
++	if !a.IsAdmin {
++		return nil, ErrForbidden
++	}
++	id, err := parseID(rawID)
++	if err != nil {
++		return nil, err
++	}
++	version, f := parseVersion(rawVersion)
++	if len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	status, err := s.repo.Delete(ctx, id, version)
++	if err != nil {
++		return nil, mapErr(err)
++	}
++	slog.InfoContext(ctx, "transfer deleted", "transfer_id", id, "status", status, "user_id", a.ID)
++	return &TransferDeleteResponse{ID: id}, nil
++}
++
+ // actionTarget — id документа перехода: скоуп исполнителя (чужое направление → 404, раньше
+ // проверки тела — существование не раскрывается), затем обязательный version.
+ func (s *Service) actionTarget(ctx context.Context, a Actor, rawID string, version *int) (int64, error) {
+@@ -338,6 +400,7 @@ func mapErr(err error) error {
+ 		se   *statusError
+ 		busy *equipmentBusyError
+ 		nas  *notAtSourceError
++		ub   *unreceiveBlockedError
+ 	)
+ 	switch {
+ 	case err == nil:
+@@ -361,8 +424,26 @@ func mapErr(err error) error {
+ 		return ErrEquipmentNotAtClient.WithDetail("equipment_id", nas.equipmentID)
+ 	case errors.As(err, &nas):
+ 		return ErrEquipmentNotAtSource.WithDetail("equipment_id", nas.equipmentID)
++	case errors.As(err, &ub):
++		return unreceiveBlocked(ub)
+ 	case errors.As(err, &fe):
+ 		return errorspkg.Validation(fe.Fields...)
+ 	}
+ 	return err
+ }
++
++// unreceiveBlocked — 409 TRANSFER_UNRECEIVE_BLOCKED с номером мешающего документа (§6.1).
++func unreceiveBlocked(e *unreceiveBlockedError) error {
++	msg := "Оборудование находится не там, куда его привезло это перемещение"
++	switch {
++	case e.transferID != 0 && e.later:
++		msg = fmt.Sprintf("Сначала отмените проведение перемещения #%d", e.transferID)
++	case e.transferID != 0:
++		msg = fmt.Sprintf("Сначала отмените перемещение #%d", e.transferID)
++	}
++	out := errorspkg.New(codeUnreceiveBlocked, http.StatusConflict, msg).WithDetail("equipment_id", e.equipmentID)
++	if e.transferID != 0 {
++		out = out.WithDetail("transfer_id", e.transferID)
++	}
++	return out
++}
+diff --git a/internal/features/transfers/transfers_equipment_http_live_test.go b/internal/features/transfers/transfers_equipment_http_live_test.go
+index 50ebf2f..e17b507 100644
+--- a/internal/features/transfers/transfers_equipment_http_live_test.go
++++ b/internal/features/transfers/transfers_equipment_http_live_test.go
+@@ -386,7 +386,8 @@ func (s *TransfersLiveSuite) TestTS009_VersionBeforeStatusAndTransitionMessages(
+ 		{requested, "receive", "Перемещение ещё не отправлено"},
+ 		{rcv, "receive", "Перемещение уже получено"},
+ 		{cnc, "receive", "Перемещение отменено"},
+-		{rcv, "cancel", "Перемещение уже получено — отменить нельзя"},
++		// transfers-revert (хвост TS-009): «Получено» не окончательно — путь к отмене назван.
++		{rcv, "cancel", "Перемещение получено — сначала отмените проведение"},
+ 		{cnc, "cancel", "Перемещение уже отменено"},
+ 	} {
+ 		st, _, raw := s.action(tc.doc, tc.act, nil)
+diff --git a/internal/features/transfers/transfers_http_live_test.go b/internal/features/transfers/transfers_http_live_test.go
+index 8704504..4c3d941 100644
+--- a/internal/features/transfers/transfers_http_live_test.go
++++ b/internal/features/transfers/transfers_http_live_test.go
+@@ -90,28 +90,34 @@ type warningDTO struct {
+ // transferDTO — точки маршрута, не положенные направлению, в JSON — null (здесь — нулевое
+ // значение; TaskID — указатель: «нет заказа» отличим от 0).
+ type transferDTO struct {
+-	ID                int64        `json:"id"`
+-	Direction         string       `json:"direction"`
+-	FromWarehouseID   string       `json:"from_warehouse_id"`
+-	FromWarehouseName string       `json:"from_warehouse_name"`
+-	ToWarehouseID     string       `json:"to_warehouse_id"`
+-	ToWarehouseName   string       `json:"to_warehouse_name"`
+-	TaskID            *int64       `json:"task_id"`
+-	TaskTitle         string       `json:"task_title"`
+-	ClientID          string       `json:"client_id"`
+-	ClientName        string       `json:"client_name"`
+-	SupplierID        string       `json:"supplier_id"`
+-	SupplierName      string       `json:"supplier_name"`
+-	Status            string       `json:"status"`
+-	Note              string       `json:"note"`
+-	CreatedByName     string       `json:"created_by_name"`
+-	SentAt            *string      `json:"sent_at"`
+-	ReceivedAt        *string      `json:"received_at"`
+-	CancelledAt       *string      `json:"cancelled_at"`
+-	Version           int          `json:"version"`
+-	Amount            json.Number  `json:"amount"`
+-	Items             []itemDTO    `json:"items"`
+-	Warnings          []warningDTO `json:"warnings"`
++	ID                int64   `json:"id"`
++	Direction         string  `json:"direction"`
++	FromWarehouseID   string  `json:"from_warehouse_id"`
++	FromWarehouseName string  `json:"from_warehouse_name"`
++	ToWarehouseID     string  `json:"to_warehouse_id"`
++	ToWarehouseName   string  `json:"to_warehouse_name"`
++	TaskID            *int64  `json:"task_id"`
++	TaskTitle         string  `json:"task_title"`
++	ClientID          string  `json:"client_id"`
++	ClientName        string  `json:"client_name"`
++	SupplierID        string  `json:"supplier_id"`
++	SupplierName      string  `json:"supplier_name"`
++	Status            string  `json:"status"`
++	Note              string  `json:"note"`
++	CreatedByName     string  `json:"created_by_name"`
++	SentAt            *string `json:"sent_at"`
++	ReceivedAt        *string `json:"received_at"`
++	CancelledAt       *string `json:"cancelled_at"`
++	// сведения о последней отмене проведения (transfers-revert DS-044).
++	ReceivedBy       *string      `json:"received_by"`
++	UnreceivedBy     *string      `json:"unreceived_by"`
++	UnreceivedByName *string      `json:"unreceived_by_name"`
++	UnreceivedAt     *string      `json:"unreceived_at"`
++	UnreceiveReason  string       `json:"unreceive_reason"`
++	Version          int          `json:"version"`
++	Amount           json.Number  `json:"amount"`
++	Items            []itemDTO    `json:"items"`
++	Warnings         []warningDTO `json:"warnings"`
+ }
+ 
+ type listDTO struct {
+diff --git a/internal/features/transfers/transfers_revert_http_live_test.go b/internal/features/transfers/transfers_revert_http_live_test.go
+new file mode 100644
+index 0000000..832a7f8
+--- /dev/null
++++ b/internal/features/transfers/transfers_revert_http_live_test.go
+@@ -0,0 +1,576 @@
++//go:build integration
++
++package transfers_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"strings"
++	"sync"
++)
++
++// Отмена проведения и удаление документа «Перемещение»
++// (docs/features/transfers-revert/draft-spec.md §11) — методы TransfersLiveSuite (§TD-8):
++// TS-010 (откат каждого из четырёх направлений, причина, повторная приёмка, параллельный
++// откат), TS-011 (израсходованный товар — минус с предупреждением), TS-012 (обратный порядок:
++// более поздний документ, «увезли и вернули»), TS-016 (удаление документа по статусам),
++// хвост TS-015 (исполнитель → 403). Откат накладной оплаченного заказа (TS-013) и удаление
++// заказа (TS-017) — в сьюте доски (internal/features/board).
++
++// ---- хелперы ----
++
++// unreceive — «Отменить проведение» документа t (актуальная версия) с причиной reason.
++func (s *TransfersLiveSuite) unreceive(t transferDTO, reason string) (int, transferDTO, []byte) {
++	return s.action(t, "unreceive", map[string]any{"reason": reason})
++}
++
++func (s *TransfersLiveSuite) mustUnreceive(t transferDTO, reason string) transferDTO {
++	st, out, raw := s.unreceive(t, reason)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Require().Equal("in_transit", out.Status)
++	return out
++}
++
++// must — действие act над документом t обязано пройти (200).
++func (s *TransfersLiveSuite) must(t transferDTO, act string, body map[string]any) transferDTO {
++	st, out, raw := s.action(t, act, body)
++	s.Require().Equal(http.StatusOK, st, "%s #%d → %s", act, t.ID, raw)
++	return out
++}
++
++func deletePath(id int64, version any) string {
++	return fmt.Sprintf("/api/v1/transfers/%d?version=%v", id, version)
++}
++
++// productLine — id товарной строки документа по товару.
++func (s *TransfersLiveSuite) productLine(t transferDTO, productID string) string {
++	for _, it := range t.Items {
++		if it.Kind == "product" && it.ProductID == productID {
++			return it.ID
++		}
++	}
++	s.FailNow("товарная строка не найдена", productID)
++	return ""
++}
++
++func fact(lineID string, qty any) map[string]any {
++	return map[string]any{"id": lineID, "qty_received": qty}
++}
++
++func (s *TransfersLiveSuite) expectConflict(st int, raw []byte, code, msg, ctx string) apiErr {
++	s.Equal(http.StatusConflict, st, "%s: %s", ctx, raw)
++	e := s.errOf(raw)
++	s.Equal(code, e.Code, ctx)
++	s.Equal(msg, e.Message, ctx)
++	return e
++}
++
++// ---- TS-010 ----
++
++// TS-010 (склад → склад): приёмка с недостачей дала на получателе чистый прирост на факт
++// (transfer_in +5, transfer_loss −2) — откат снимает ровно факт (transfer_unreceive −3);
++// единица снова «в пути» и занята документом; факт и отметка приёмки обнулены, на документе —
++// кто / когда / причина (после trim). Повторная приёмка с другим фактом и отмена после
++// отката проходят; сведения об откате остаются.
++func (s *TransfersLiveSuite) TestTS010_Unreceive_WarehouseToWarehouse() {
++	p := s.newProduct("50")
++	u := s.newUnit(s.almaty)
++	body := s.body(productItem(p, 5), unitItem(u))
++	body["send"] = true
++	doc := s.create(body)
++	rcv := s.must(doc, "receive", map[string]any{"items": []map[string]any{fact(s.productLine(doc, p), 3)}})
++	s.Equal("45.000", s.pairStock(p, s.almaty))
++	s.Equal("3.000", s.pairStock(p, s.moscow))
++	s.Equal("at_warehouse|Москва|", s.unitLoc(u))
++	s.Require().NotNil(rcv.ReceivedAt)
++	s.Nil(rcv.UnreceivedAt, "отката ещё не было")
++	s.Empty(rcv.UnreceiveReason)
++
++	back := s.mustUnreceive(rcv, "  Ошибка в факте \n")
++	s.Equal(rcv.Version+1, back.Version)
++	s.Nil(back.ReceivedAt)
++	s.Nil(back.ReceivedBy)
++	s.Require().NotNil(back.UnreceivedBy)
++	s.Equal(s.adminID, *back.UnreceivedBy)
++	s.Require().NotNil(back.UnreceivedByName)
++	s.Equal("Перемещения Админ", *back.UnreceivedByName)
++	s.Require().NotNil(back.UnreceivedAt)
++	s.Equal("Ошибка в факте", back.UnreceiveReason, "причина — после trim")
++	s.NotNil(back.SentAt, "отметка отправки сохраняется")
++	for _, it := range back.Items {
++		s.Nil(it.QtyReceived, "факт обнулён: %s", it.Kind)
++	}
++	s.Equal("45.000", s.pairStock(p, s.almaty), "источник не тронут")
++	s.Equal("0.000", s.pairStock(p, s.moscow), "получатель: −факт приёмки")
++	s.Equal(fmt.Sprintf("in_transit||%d", doc.ID), s.unitLoc(u), "единица снова в пути и занята документом")
++	s.ElementsMatch([]string{
++		"transfer_out:Алматы:-5.000", "transfer_in:Москва:5.000", "transfer_loss:Москва:-2.000",
++		"transfer_unreceive:Москва:-3.000",
++	}, s.movements(doc.ID))
++	s.Equal("1", s.scalarText(`SELECT count(*)::text FROM transfers WHERE id = $1 AND received_by IS NULL AND received_at IS NULL
++		AND unreceived_by = $2 AND unreceived_at IS NOT NULL`, doc.ID, s.adminID))
++	// GET отдаёт то же состояние.
++	got := s.get(doc.ID)
++	s.Equal("in_transit", got.Status)
++	s.Equal("Ошибка в факте", got.UnreceiveReason)
++
++	// повторная приёмка с другим фактом (полным): сведения об откате остаются.
++	again := s.must(back, "receive", map[string]any{"items": []map[string]any{fact(s.productLine(back, p), 5)}})
++	s.Equal("received", again.Status)
++	s.Equal("5.000", s.pairStock(p, s.moscow))
++	s.Equal("at_warehouse|Москва|", s.unitLoc(u))
++	s.NotNil(again.ReceivedAt)
++	s.Equal("Ошибка в факте", again.UnreceiveReason, "сведения об откате переживают повторную приёмку")
++	s.Equal(back.UnreceivedAt, again.UnreceivedAt)
++	s.Equal("5.000", s.productMovementsSum(p, s.moscow), "остаток получателя = Σ движений")
++
++	// второй откат и отмена: всё возвращается в источник, причина — последняя.
++	back2 := s.mustUnreceive(again, "Вторая причина")
++	s.Equal("Вторая причина", back2.UnreceiveReason, "хранится последний откат")
++	s.Equal("0.000", s.pairStock(p, s.moscow))
++	cnc := s.must(back2, "cancel", nil)
++	s.Equal("cancelled", cnc.Status)
++	s.Equal("50.000", s.pairStock(p, s.almaty), "товар вернулся на склад отправления")
++	s.Equal("0.000", s.pairStock(p, s.moscow))
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(u), "единица вернулась в источник и свободна")
++	s.Equal("Вторая причина", cnc.UnreceiveReason)
++	s.Equal("0.000", s.productMovementsSum(p, s.moscow))
++	s.Equal("0.000", s.productMovementsSum(p, s.almaty), "−5 отправка, +5 возврат")
++}
++
++// TS-010 (приход от поставщика): откат снимает факт приёмки (в т.ч. факт больше заказанного),
++// строка с фактом 0 движения не даёт; повторная приёмка — с новым фактом.
++func (s *TransfersLiveSuite) TestTS010_Unreceive_SupplierToWarehouse() {
++	sup := s.newSupplier(true)
++	p, zero := s.newProduct("0"), s.newProduct("0")
++	doc := s.create(with(s.supplyBody(sup, p, 10), "send", true,
++		"items", []map[string]any{productItem(p, 10), productItem(zero, 4)}))
++	rcv := s.must(doc, "receive", map[string]any{"items": []map[string]any{
++		fact(s.productLine(doc, p), 12), fact(s.productLine(doc, zero), 0),
++	}})
++	s.Equal("12.000", s.pairStock(p, s.almaty))
++	s.Equal("0.000", s.pairStock(zero, s.almaty))
++	s.ElementsMatch([]string{"supplier_in:Алматы:12.000"}, s.movements(doc.ID))
++
++	back := s.mustUnreceive(rcv, "Пересчитали поставку")
++	s.Equal("supplier_to_warehouse", back.Direction)
++	s.Equal("0.000", s.pairStock(p, s.almaty))
++	s.Equal("0.000", s.pairStock(zero, s.almaty))
++	s.ElementsMatch([]string{"supplier_in:Алматы:12.000", "transfer_unreceive:Алматы:-12.000"}, s.movements(doc.ID),
++		"строка с фактом 0 компенсирующего движения не даёт")
++	for _, it := range back.Items {
++		s.Nil(it.QtyReceived)
++	}
++	s.Nil(back.ReceivedAt)
++	s.Equal("Пересчитали поставку", back.UnreceiveReason)
++
++	again := s.must(back, "receive", map[string]any{"items": []map[string]any{
++		fact(s.productLine(back, p), 7), fact(s.productLine(back, zero), 2),
++	}})
++	s.Equal("received", again.Status)
++	s.Equal("7.000", s.pairStock(p, s.almaty))
++	s.Equal("2.000", s.pairStock(zero, s.almaty))
++	s.Equal("7.000", s.productMovementsSum(p, s.almaty), "+12 −12 +7")
++	s.Equal("Пересчитали поставку", again.UnreceiveReason)
++}
++
++// TS-010 (документы с клиентом): откат движений остатка не создаёт. Приём от клиента —
++// единица со склада назначения снова «в пути» (отмена вернёт её клиенту); накладная «склад →
++// клиент» — единица от клиента снова «в пути», товар остаётся списанным (списан при отправке),
++// пока документ «в пути»; отмена после отката возвращает товар и единицу на склад.
++func (s *TransfersLiveSuite) TestTS010_Unreceive_ClientDocuments() {
++	// клиент → склад
++	taskID, units := s.taskWithUnits(1)
++	u := units[0]
++	intake := s.create(with(intakeBody(taskID, s.almaty, u), "receive", true))
++	s.Require().Equal("received", intake.Status)
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(u))
++	back := s.mustUnreceive(intake, "Приняли не ту единицу")
++	s.Equal("client_to_warehouse", back.Direction)
++	s.Equal(fmt.Sprintf("in_transit||%d", intake.ID), s.unitLoc(u))
++	s.Empty(s.movements(intake.ID), "приём от клиента остаток не двигает — и откат тоже")
++	s.Nil(back.ReceivedAt)
++	s.Equal("Приняли не ту единицу", back.UnreceiveReason)
++	cnc := s.must(back, "cancel", nil)
++	s.Equal("cancelled", cnc.Status)
++	s.Equal("at_client||", s.unitLoc(u), "отмена после отката возвращает единицу клиенту")
++
++	// склад → клиент (накладная с товаром и единицей)
++	task2, unit2 := s.taskWithStockUnit()
++	p := s.newPricedProduct("10", "100")
++	inv := s.create(with(s.invoiceBody(task2, unitItem(unit2), pricedItem(p, 4, 100)), "send", true))
++	s.Equal("6.000", s.pairStock(p, s.almaty))
++	rcv := s.must(inv, "receive", nil)
++	s.Equal("at_client||", s.unitLoc(unit2))
++	back = s.mustUnreceive(rcv, "Клиент не получил")
++	s.Equal("warehouse_to_client", back.Direction)
++	s.Equal(fmt.Sprintf("in_transit||%d", inv.ID), s.unitLoc(unit2), "единица снова в пути к клиенту")
++	s.Equal("6.000", s.pairStock(p, s.almaty), "товар остаётся списанным, пока накладная «в пути»")
++	s.ElementsMatch([]string{"client_out:Алматы:-4.000"}, s.movements(inv.ID), "откат накладной движений не создаёт")
++	s.Equal("400.00", back.Amount.String(), "сумма накладной не меняется")
++	// повторная приёмка — и снова откат с отменой: товар и единица возвращаются на склад.
++	rcv = s.must(back, "receive", nil)
++	s.Equal("at_client||", s.unitLoc(unit2))
++	back = s.mustUnreceive(rcv, "Всё-таки возврат")
++	cnc = s.must(back, "cancel", nil)
++	s.Equal("cancelled", cnc.Status)
++	s.Equal("10.000", s.pairStock(p, s.almaty))
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(unit2))
++	s.ElementsMatch([]string{"client_out:Алматы:-4.000", "transfer_return:Алматы:4.000"}, s.movements(inv.ID))
++}
++
++// TS-010 (причина и статусы): причина обязательна — пусто и пробелы → 400 required, 501
++// символ → 400 too_long, ровно 500 — проходит; version обязателен; устаревшая версия → 409;
++// откат из requested / in_transit / cancelled → 409 со своим сообщением; при каждом отказе
++// документ и остаток не изменились.
++func (s *TransfersLiveSuite) TestTS010_Unreceive_ReasonAndStatusGuards() {
++	sup := s.newSupplier(true)
++	p := s.newProduct("0")
++	mk := func() transferDTO { return s.create(with(s.supplyBody(sup, p, 2), "send", true)) }
++	rcv := s.must(mk(), "receive", nil)
++	s.Equal("2.000", s.pairStock(p, s.almaty))
++	path := fmt.Sprintf("/api/v1/transfers/%d/unreceive", rcv.ID)
++
++	for _, tc := range []struct {
++		name string
++		body map[string]any
++		want map[string]string
++	}{
++		{"причина пустая", map[string]any{"version": rcv.Version, "reason": ""}, map[string]string{"reason": "required"}},
++		{"причина из пробелов", map[string]any{"version": rcv.Version, "reason": " \t\n "}, map[string]string{"reason": "required"}},
++		{"причины нет", map[string]any{"version": rcv.Version}, map[string]string{"reason": "required"}},
++		{"501 символ", map[string]any{"version": rcv.Version, "reason": strings.Repeat("я", 501)}, map[string]string{"reason": "too_long"}},
++		{"нет version", map[string]any{"reason": "есть"}, map[string]string{"version": "required"}},
++		{"нет ничего", map[string]any{}, map[string]string{"version": "required", "reason": "required"}},
++	} {
++		st, _, raw := s.do(http.MethodPost, path, tc.body)
++		s.Equal(http.StatusBadRequest, st, "%s: %s", tc.name, raw)
++		s.Equal(tc.want, s.fields(raw), tc.name)
++	}
++	st, _, raw := s.do(http.MethodPost, path, map[string]any{"version": rcv.Version - 1, "reason": "есть"})
++	s.expectConflict(st, raw, "TRANSFER_VERSION_CONFLICT", "Перемещение уже изменено, обновите", "устаревшая версия")
++	st, _, raw = s.do(http.MethodPost, "/api/v1/transfers/999999999/unreceive", map[string]any{"version": 1, "reason": "есть"})
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("TRANSFER_NOT_FOUND", s.errOf(raw).Code)
++
++	// отказы ничего не изменили.
++	same := s.get(rcv.ID)
++	s.Equal("received", same.Status)
++	s.Equal(rcv.Version, same.Version)
++	s.Nil(same.UnreceivedAt)
++	s.Equal("2.000", s.pairStock(p, s.almaty))
++	s.Len(s.movements(rcv.ID), 1)
++
++	// граница: ровно 500 символов — проходит.
++	long := strings.Repeat("я", 500)
++	back := s.mustUnreceive(rcv, long)
++	s.Equal(long, back.UnreceiveReason)
++
++	// недопустимые статусы — свой текст на каждый.
++	requested := s.create(s.supplyBody(sup, p, 1))
++	inTransit := back // только что возвращён откатом
++	cancelled := s.must(s.create(s.supplyBody(sup, p, 1)), "cancel", nil)
++	for _, tc := range []struct {
++		doc transferDTO
++		msg string
++	}{
++		{requested, "Перемещение ещё не проведено"},
++		{inTransit, "Перемещение ещё не получено"},
++		{cancelled, "Перемещение отменено"},
++	} {
++		st, _, raw := s.unreceive(tc.doc, "причина")
++		s.expectConflict(st, raw, "TRANSFER_STATUS_CONFLICT", tc.msg, "unreceive on "+tc.doc.Status)
++		s.Equal(tc.doc.Version, s.get(tc.doc.ID).Version, "документ не изменён")
++	}
++	s.Equal("0.000", s.pairStock(p, s.almaty))
++}
++
++// TS-010 (негатив, §3 п.1): параллельные откаты одного документа → ровно один 200, остальные
++// 409 (версия либо статус); компенсирующее движение одно, остаток уменьшился один раз,
++// единица занята документом.
++func (s *TransfersLiveSuite) TestTS010_ParallelUnreceiveOnce() {
++	p := s.newProduct("50")
++	u := s.newUnit(s.almaty)
++	body := s.body(productItem(p, 4), unitItem(u))
++	body["send"] = true
++	rcv := s.must(s.create(body), "receive", nil)
++	s.Equal("4.000", s.pairStock(p, s.moscow))
++
++	var wg sync.WaitGroup
++	codes := make([]int, 6)
++	bodies := make([][]byte, 6)
++	for i := range codes {
++		wg.Add(1)
++		go func(i int) {
++			defer wg.Done()
++			codes[i], bodies[i] = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/unreceive", rcv.ID),
++				map[string]any{"version": rcv.Version, "reason": fmt.Sprintf("гонка %d", i)})
++		}(i)
++	}
++	wg.Wait()
++	ok := 0
++	for i, c := range codes {
++		if c == http.StatusOK {
++			ok++
++			continue
++		}
++		s.Equal(http.StatusConflict, c, string(bodies[i]))
++		s.Contains([]string{"TRANSFER_VERSION_CONFLICT", "TRANSFER_STATUS_CONFLICT"}, s.errOf(bodies[i]).Code)
++	}
++	s.Equal(1, ok, "ровно один откат")
++	s.Equal("0.000", s.pairStock(p, s.moscow), "остаток уменьшился один раз")
++	s.Equal("1", s.scalarText(`SELECT count(*)::text FROM stock_movements WHERE transfer_id = $1 AND reason = 'transfer_unreceive'`, rcv.ID))
++	s.Equal(fmt.Sprintf("in_transit||%d", rcv.ID), s.unitLoc(u))
++	s.Equal(rcv.Version+1, s.get(rcv.ID).Version, "версия выросла один раз")
++}
++
++// ---- TS-011 ----
++
++// TS-011: принятый товар успели израсходовать — откат не блокируется: остаток склада
++// назначения уходит в минус, ответ 200 несёт warnings[].kind = negative по этому складу.
++func (s *TransfersLiveSuite) TestTS011_Unreceive_ConsumedStockGoesNegative() {
++	sup := s.newSupplier(true)
++	p := s.newProduct("0")
++	rcv := s.must(s.create(with(s.supplyBody(sup, p, 10), "send", true)), "receive", nil)
++	s.Equal("10.000", s.pairStock(p, s.almaty))
++	// фикстура: 9 из 10 израсходовано (списание услугами — не предмет теста).
++	_, err := s.Pool.Exec(context.Background(),
++		`UPDATE product_stock SET stock = stock - 9 WHERE product_id = $1 AND warehouse_id = $2`, p, s.almaty)
++	s.Require().NoError(err)
++
++	st, back, raw := s.unreceive(rcv, "Поставка оказалась чужой")
++	s.Require().Equal(http.StatusOK, st, "откат не блокируется: %s", raw)
++	s.Equal("in_transit", back.Status)
++	s.Equal("-9.000", s.pairStock(p, s.almaty), "1 − 10")
++	s.ElementsMatch([]string{"supplier_in:Алматы:10.000", "transfer_unreceive:Алматы:-10.000"}, s.movements(rcv.ID))
++	s.Require().Len(back.Warnings, 1, string(raw))
++	w := back.Warnings[0]
++	s.Equal(p, w.ProductID)
++	s.Equal(s.almaty, w.WarehouseID, "предупреждение — по складу назначения")
++	s.Equal("negative", w.Kind)
++	stock, err := w.Stock.Float64()
++	s.Require().NoError(err)
++	s.InDelta(-9.0, stock, 1e-9)
++}
++
++// ---- TS-012 ----
++
++// blocked — откат документа doc обязан быть запрещён единицей unit: 409
++// TRANSFER_UNRECEIVE_BLOCKED с номером мешающего документа; документ не изменён.
++func (s *TransfersLiveSuite) blocked(doc transferDTO, unit string, by int64, msg string) {
++	cur := s.get(doc.ID)
++	st, _, raw := s.unreceive(cur, "попытка")
++	e := s.expectConflict(st, raw, "TRANSFER_UNRECEIVE_BLOCKED", msg, fmt.Sprintf("unreceive #%d", doc.ID))
++	s.Require().NotNil(e.Details, string(raw))
++	s.Equal(by, e.Details.TransferID)
++	s.Equal(unit, e.Details.EquipmentID)
++	after := s.get(doc.ID)
++	s.Equal("received", after.Status)
++	s.Equal(cur.Version, after.Version)
++	s.NotNil(after.ReceivedAt)
++	s.Nil(after.UnreceivedAt)
++}
++
++// TS-012: откат — в обратном порядке. Единицу документа A увёз более поздний документ → 409 с
++// номером САМОГО позднего; в т.ч. когда более поздние документы увезли единицу и вернули на
++// тот же склад (текущее местоположение совпадает с точкой назначения A — проверяется порядок
++// документов, abuse case 3). При отказе остатки, строки и местоположение не изменились. После
++// отката более поздних (по одному, с конца) — успех. Негатив: единица в другом незавершённом
++// документе → 409 с его номером.
++func (s *TransfersLiveSuite) TestTS012_UnreceiveReverseOrder() {
++	p := s.newProduct("10")
++	u := s.newUnit(s.almaty)
++	move := func(from, to string, items ...map[string]any) transferDTO {
++		return s.must(s.create(map[string]any{"from_warehouse_id": from, "to_warehouse_id": to, "items": items, "send": true}), "receive", nil)
++	}
++	a := move(s.almaty, s.moscow, unitItem(u), productItem(p, 2)) // единица и товар → Москва
++	b := move(s.moscow, s.almaty, unitItem(u))                    // единицу увезли в Алматы
++	c := move(s.almaty, s.moscow, unitItem(u))                    // и вернули в Москву
++	s.Equal("at_warehouse|Москва|", s.unitLoc(u), "единица снова там, куда её привёз A")
++	s.Equal("2.000", s.pairStock(p, s.moscow))
++
++	later := func(id int64) string {
++		return fmt.Sprintf("Сначала отмените проведение перемещения #%d", id)
++	}
++	open := func(id int64) string {
++		return fmt.Sprintf("Сначала отмените перемещение #%d", id)
++	}
++
++	// «увезли и вернули»: местоположение совпадает, но откат A запрещён — мешает C.
++	s.blocked(a, u, c.ID, later(c.ID))
++	s.Equal("2.000", s.pairStock(p, s.moscow), "отказ: остаток не изменился")
++	s.Equal("8.000", s.pairStock(p, s.almaty))
++	s.Len(s.movements(a.ID), 2, "отказ: компенсирующего движения нет")
++	s.Equal("1", s.scalarText(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1 AND qty_received = 2`, a.ID),
++		"отказ: факт по строке на месте")
++	s.Equal("at_warehouse|Москва|", s.unitLoc(u), "отказ: местоположение не изменилось")
++	s.blocked(b, u, c.ID, later(c.ID)) // B тоже ждёт C
++
++	// обратный порядок: C → B → A.
++	cBack := s.mustUnreceive(s.get(c.ID), "с конца")
++	s.Equal(fmt.Sprintf("in_transit||%d", c.ID), s.unitLoc(u))
++	s.blocked(a, u, c.ID, open(c.ID)) // C теперь незавершён и держит единицу
++	s.must(cBack, "cancel", nil)
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(u), "отмена C вернула единицу туда, куда её привёз B")
++
++	s.blocked(a, u, b.ID, later(b.ID))
++	bBack := s.mustUnreceive(s.get(b.ID), "дальше")
++	s.must(bBack, "cancel", nil)
++	s.Equal("at_warehouse|Москва|", s.unitLoc(u))
++
++	aBack := s.mustUnreceive(s.get(a.ID), "теперь можно")
++	s.Equal(fmt.Sprintf("in_transit||%d", a.ID), s.unitLoc(u))
++	s.Equal("0.000", s.pairStock(p, s.moscow))
++	s.Equal("теперь можно", aBack.UnreceiveReason)
++
++	// негатив: единица стоит в другой незавершённой ЗАЯВКЕ → 409 с её номером.
++	u2 := s.newUnit(s.almaty)
++	d := move(s.almaty, s.moscow, unitItem(u2))
++	e := s.create(map[string]any{"from_warehouse_id": s.moscow, "to_warehouse_id": s.almaty, "items": []map[string]any{unitItem(u2)}})
++	s.Require().Equal("requested", e.Status)
++	s.blocked(d, u2, e.ID, open(e.ID))
++	s.Equal(fmt.Sprintf("at_warehouse|Москва|%d", e.ID), s.unitLoc(u2), "отказ: единица по-прежнему занята заявкой")
++	// заявку отменили — откат проходит.
++	s.must(e, "cancel", nil)
++	s.mustUnreceive(s.get(d.ID), "заявка отменена")
++	s.Equal(fmt.Sprintf("in_transit||%d", d.ID), s.unitLoc(u2))
++}
++
++// ---- TS-016 ----
++
++func (s *TransfersLiveSuite) deleteDoc(id int64, version any) (int, []byte) {
++	return s.admin.Do(http.MethodDelete, deletePath(id, version), nil)
++}
++
++// TS-016: удаление документа — только «Заявка» и «Отменён». Заявка: строки удалены, единица
++// свободна; отменённый (после «в пути»): движения остатков остались с transfer_id = NULL,
++// остатки не изменились. «В пути» и «Получено» → 409 со своим сообщением, ничего не
++// изменилось. Негатив: без version → 400 required, не число → 400 invalid, устаревшая версия
++// → 409, повтор → 404.
++func (s *TransfersLiveSuite) TestTS016_DeleteDocumentByStatus() {
++	p := s.newProduct("20")
++	mk := func(send bool) (transferDTO, string) {
++		u := s.newUnit(s.almaty)
++		body := s.body(productItem(p, 3), unitItem(u))
++		body["send"] = send
++		return s.create(body), u
++	}
++
++	// ---- заявка ----
++	requested, uReq := mk(false)
++	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", requested.ID), s.unitLoc(uReq), "заявка занимает единицу")
++	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/transfers/%d", requested.ID), nil)
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"version": "required"}, s.fields(raw))
++	st, raw = s.deleteDoc(requested.ID, "abc")
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"version": "invalid"}, s.fields(raw))
++	st, raw = s.deleteDoc(requested.ID, requested.Version+3)
++	s.expectConflict(st, raw, "TRANSFER_VERSION_CONFLICT", "Перемещение уже изменено, обновите", "устаревшая версия")
++	s.Equal("requested", s.get(requested.ID).Status, "отказы документ не тронули")
++
++	st, raw = s.deleteDoc(requested.ID, requested.Version)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var deleted struct {
++		ID int64 `json:"id"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &deleted), string(raw))
++	s.Equal(requested.ID, deleted.ID)
++	st, _, raw = s.do(http.MethodGet, fmt.Sprintf("/api/v1/transfers/%d", requested.ID), nil)
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("0", s.scalarText(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1`, requested.ID), "строки удалены каскадом")
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(uReq), "единица заявки свободна")
++	s.Equal("20.000", s.pairStock(p, s.almaty), "заявка остаток не двигала")
++	// свободную единицу можно поставить в новый документ.
++	reuse := s.create(s.body(unitItem(uReq)))
++	s.Equal(fmt.Sprintf("at_warehouse|Алматы|%d", reuse.ID), s.unitLoc(uReq))
++	// повтор → 404.
++	st, raw = s.deleteDoc(requested.ID, requested.Version)
++	s.Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("TRANSFER_NOT_FOUND", s.errOf(raw).Code)
++
++	// ---- в пути и получено: 409, ничего не изменилось ----
++	inTransit, uTransit := mk(true)
++	st, raw = s.deleteDoc(inTransit.ID, inTransit.Version)
++	s.expectConflict(st, raw, "TRANSFER_STATUS_CONFLICT", "Перемещение в пути — сначала отмените его", "delete in_transit")
++	s.Equal(fmt.Sprintf("in_transit||%d", inTransit.ID), s.unitLoc(uTransit))
++	s.Equal("17.000", s.pairStock(p, s.almaty))
++
++	rcvDoc, uRcv := mk(true)
++	received := s.must(rcvDoc, "receive", nil)
++	st, raw = s.deleteDoc(received.ID, received.Version)
++	s.expectConflict(st, raw, "TRANSFER_STATUS_CONFLICT",
++		"Перемещение получено — сначала отмените проведение, затем отмените", "delete received")
++	s.Equal("received", s.get(received.ID).Status)
++	s.Equal("at_warehouse|Москва|", s.unitLoc(uRcv))
++	s.Equal("14.000", s.pairStock(p, s.almaty))
++	s.Equal("3.000", s.pairStock(p, s.moscow))
++	s.Len(s.movements(received.ID), 2)
++
++	// ---- отменён (после «в пути»): путь «откат → отмена → удаление» у полученного ----
++	back := s.mustUnreceive(received, "удаляем ошибочный документ")
++	cancelled := s.must(back, "cancel", nil)
++	s.Equal("17.000", s.pairStock(p, s.almaty))
++	s.Equal("0.000", s.pairStock(p, s.moscow))
++	before := s.scalarText(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1`, p)
++	s.Len(s.movements(cancelled.ID), 4, "out, in, unreceive, return")
++	st, raw = s.deleteDoc(cancelled.ID, cancelled.Version)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("0", s.scalarText(`SELECT count(*)::text FROM transfers WHERE id = $1`, cancelled.ID))
++	s.Equal("0", s.scalarText(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = $1`, cancelled.ID))
++	s.Empty(s.movements(cancelled.ID), "движения отвязаны от документа")
++	s.Equal(before, s.scalarText(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1`, p), "журнал остатков сохранён")
++	s.Equal("4", s.scalarText(`SELECT count(*)::text FROM stock_movements WHERE product_id = $1 AND transfer_id IS NULL`, p))
++	s.Equal("17.000", s.pairStock(p, s.almaty), "удаление остаток не меняет")
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(uRcv))
++}
++
++// ---- TS-015 (хвост) ----
++
++// TS-015: «Отменить проведение» и удаление документа — только администратор. Исполнитель
++// получает 403 и для документов с клиентом (которые сам проводит), и для чужих направлений, и
++// для несуществующего документа (роль проверяется первой); документы не изменились.
++func (s *TransfersLiveSuite) TestTS015_ExecutorCannotUnreceiveOrDelete() {
++	exec := s.executor()
++	taskID, units := s.taskWithUnits(2)
++	// документ с клиентом, проведённый самим исполнителем.
++	st, own, raw := s.doAs(exec, http.MethodPost, "/api/v1/transfers", with(intakeBody(taskID, s.almaty, units[0]), "receive", true))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	st, ownReq, raw := s.doAs(exec, http.MethodPost, "/api/v1/transfers", intakeBody(taskID, s.almaty, units[1]))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	// документ чужого направления.
++	w2w := s.must(s.create(with(s.body(unitItem(s.newUnit(s.almaty))), "send", true)), "receive", nil)
++	w2wReq := s.create(s.body(unitItem(s.newUnit(s.almaty))))
++
++	forbidden := func(st int, raw []byte, ctx string) {
++		s.Equal(http.StatusForbidden, st, "%s: %s", ctx, raw)
++		e := s.errOf(raw)
++		s.Equal("FORBIDDEN", e.Code, ctx)
++		s.Equal("Недостаточно прав", e.Message, ctx)
++	}
++	for _, doc := range []transferDTO{own, w2w} {
++		st, raw := exec.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/unreceive", doc.ID),
++			map[string]any{"version": doc.Version, "reason": "исполнитель"})
++		forbidden(st, raw, "unreceive "+doc.Direction)
++		after := s.get(doc.ID)
++		s.Equal("received", after.Status)
++		s.Equal(doc.Version, after.Version)
++	}
++	for _, doc := range []transferDTO{ownReq, w2wReq} {
++		st, raw := exec.Do(http.MethodDelete, deletePath(doc.ID, doc.Version), nil)
++		forbidden(st, raw, "delete "+doc.Direction)
++		s.Equal("requested", s.get(doc.ID).Status)
++	}
++	st, raw = exec.Do(http.MethodPost, "/api/v1/transfers/999999999/unreceive", map[string]any{"version": 1, "reason": "x"})
++	forbidden(st, raw, "unreceive несуществующего")
++	st, raw = exec.Do(http.MethodDelete, deletePath(999999999, 1), nil)
++	forbidden(st, raw, "delete несуществующего")
++	s.Equal("at_warehouse|Алматы|", s.unitLoc(units[0]), "единица проведённого приёма на месте")
++
++	// администратору те же действия доступны.
++	s.mustUnreceive(own, "админ")
++	st, raw = s.deleteDoc(ownReq.ID, ownReq.Version)
++	s.Equal(http.StatusOK, st, string(raw))
++}
+diff --git a/internal/features/transfers/validate.go b/internal/features/transfers/validate.go
+index e887783..b1f7c7f 100644
+--- a/internal/features/transfers/validate.go
++++ b/internal/features/transfers/validate.go
+@@ -3,6 +3,7 @@ package transfers
+ import (
+ 	"fmt"
+ 	"math/big"
++	"strconv"
+ 	"strings"
+ 	"unicode/utf8"
+ 
+@@ -47,8 +48,39 @@ const (
+ const (
+ 	noteMax  = 1000
+ 	itemsMax = 200
++	// reasonMax — причина отмены проведения, символов после trim (transfers-revert DS-053).
++	reasonMax = 500
+ )
+ 
++// validateReason — причина отмены проведения: 1–500 символов после trim; возвращает
++// нормализованное значение.
++func validateReason(raw string) (string, []errorspkg.Field) {
++	reason := strings.TrimSpace(raw)
++	switch {
++	case reason == "":
++		return reason, []errorspkg.Field{{Name: "reason", Message: msgRequired}}
++	case utf8.RuneCountInString(reason) > reasonMax:
++		return reason, []errorspkg.Field{{Name: "reason", Message: msgTooLong}}
++	case sqlutil.HasInvalidText(reason):
++		return reason, []errorspkg.Field{{Name: "reason", Message: msgInvalidText}}
++	}
++	return reason, nil
++}
++
++// parseVersion — query-параметр version удаления документа: целое ≥ 1; нет → required, не
++// число → invalid.
++func parseVersion(raw string) (int, []errorspkg.Field) {
++	raw = strings.TrimSpace(raw)
++	if raw == "" {
++		return 0, []errorspkg.Field{{Name: "version", Message: msgRequired}}
++	}
++	v, err := strconv.Atoi(raw)
++	if err != nil || v < 1 {
++		return 0, []errorspkg.Field{{Name: "version", Message: msgInvalid}}
++	}
++	return v, nil
++}
++
+ // qtyScale — NUMERIC(12,3): 9 цифр целой части, 3 дробной.
+ var qtyScale = numeric.Scale{IntDigits: 9, FracDigits: 3}
+ 
+diff --git a/internal/features/transfers/validate_revert_test.go b/internal/features/transfers/validate_revert_test.go
+new file mode 100644
+index 0000000..a047f23
+--- /dev/null
++++ b/internal/features/transfers/validate_revert_test.go
+@@ -0,0 +1,117 @@
++package transfers
++
++import (
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Unit-сценарии части transfers-revert (docs/features/transfers-revert/draft-spec.md §11):
++// TS-010 — причина отмены проведения и «свои» сообщения 409 отката; TS-012 — текст и details
++// 409 TRANSFER_UNRECEIVE_BLOCKED; TS-016 — query-параметр version и сообщения 409 удаления;
++// TS-009 (хвост) — новый текст отмены полученного документа.
++
++func TestTS010_ValidateReason(t *testing.T) {
++	for _, tc := range []struct {
++		name, raw, want string
++		fields          map[string]string
++	}{
++		{"обычная", "ошибка в факте", "ошибка в факте", map[string]string{}},
++		{"trim", "  \n ошибка\t ", "ошибка", map[string]string{}},
++		{"пусто", "", "", map[string]string{"reason": msgRequired}},
++		{"только пробелы", " \t\n ", "", map[string]string{"reason": msgRequired}},
++		{"1 символ", "я", "я", map[string]string{}},
++		{"ровно 500 символов (не байт)", strings.Repeat("я", reasonMax), strings.Repeat("я", reasonMax), map[string]string{}},
++		{"500 символов после trim", " " + strings.Repeat("a", reasonMax) + " ", strings.Repeat("a", reasonMax), map[string]string{}},
++		{"501 символ", strings.Repeat("я", reasonMax+1), strings.Repeat("я", reasonMax+1), map[string]string{"reason": msgTooLong}},
++		{"NUL", "a\x00b", "a\x00b", map[string]string{"reason": msgInvalidText}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			got, f := validateReason(tc.raw)
++			assert.Equal(t, tc.want, got)
++			assert.Equal(t, tc.fields, fieldMap(f))
++		})
++	}
++}
++
++func TestTS016_ParseVersion(t *testing.T) {
++	for _, tc := range []struct {
++		raw    string
++		want   int
++		fields map[string]string
++	}{
++		{"1", 1, map[string]string{}},
++		{" 42 ", 42, map[string]string{}},
++		{"", 0, map[string]string{"version": msgRequired}},
++		{"   ", 0, map[string]string{"version": msgRequired}},
++		{"abc", 0, map[string]string{"version": msgInvalid}},
++		{"1.5", 0, map[string]string{"version": msgInvalid}},
++		{"0", 0, map[string]string{"version": msgInvalid}},
++		{"-3", 0, map[string]string{"version": msgInvalid}},
++		{"99999999999999999999", 0, map[string]string{"version": msgInvalid}},
++	} {
++		t.Run("version="+tc.raw, func(t *testing.T) {
++			got, f := parseVersion(tc.raw)
++			assert.Equal(t, tc.want, got)
++			assert.Equal(t, tc.fields, fieldMap(f))
++		})
++	}
++}
++
++// Каждый недопустимый статус отката / удаления / отмены — 409 TRANSFER_STATUS_CONFLICT со
++// своим сообщением (§5, §6.1, §6.2, §6.4).
++func TestTS010_TS016_StatusConflictMessages(t *testing.T) {
++	for _, tc := range []struct{ action, status, msg string }{
++		{actionUnreceive, StatusRequested, "Перемещение ещё не проведено"},
++		{actionUnreceive, StatusInTransit, "Перемещение ещё не получено"},
++		{actionUnreceive, StatusCancelled, "Перемещение отменено"},
++		{actionDelete, StatusInTransit, "Перемещение в пути — сначала отмените его"},
++		{actionDelete, StatusReceived, "Перемещение получено — сначала отмените проведение, затем отмените"},
++		{actionCancel, StatusReceived, "Перемещение получено — сначала отмените проведение"}, // TS-009
++	} {
++		e := mapErr(&statusError{action: tc.action, status: tc.status})
++		var app *errorspkg.AppError
++		require.True(t, errors.As(e, &app), "%s in %s", tc.action, tc.status)
++		assert.Equal(t, "TRANSFER_STATUS_CONFLICT", app.Code)
++		assert.Equal(t, 409, app.HTTP)
++		assert.Equal(t, tc.msg, app.Message, "%s in %s", tc.action, tc.status)
++	}
++}
++
++func TestTS012_UnreceiveBlockedError(t *testing.T) {
++	for _, tc := range []struct {
++		name  string
++		in    unreceiveBlockedError
++		msg   string
++		extra map[string]any
++	}{
++		{"более поздний полученный документ", unreceiveBlockedError{equipmentID: "eq-1", transferID: 14, later: true},
++			"Сначала отмените проведение перемещения #14", map[string]any{"equipment_id": "eq-1", "transfer_id": int64(14)}},
++		{"другой незавершённый документ", unreceiveBlockedError{equipmentID: "eq-2", transferID: 15},
++			"Сначала отмените перемещение #15", map[string]any{"equipment_id": "eq-2", "transfer_id": int64(15)}},
++		{"единица не на месте, мешающего документа нет", unreceiveBlockedError{equipmentID: "eq-3"},
++			"Оборудование находится не там, куда его привезло это перемещение", map[string]any{"equipment_id": "eq-3"}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			in := tc.in
++			var app *errorspkg.AppError
++			require.True(t, errors.As(mapErr(&in), &app))
++			assert.Equal(t, "TRANSFER_UNRECEIVE_BLOCKED", app.Code)
++			assert.Equal(t, 409, app.HTTP)
++			assert.Equal(t, tc.msg, app.Message)
++			assert.Equal(t, tc.extra, app.Extra)
++		})
++	}
++}
++
++func TestTS010_ReceivesStockByDirection(t *testing.T) {
++	assert.True(t, receivesStock(DirWarehouseToWarehouse))
++	assert.True(t, receivesStock(DirSupplierToWarehouse))
++	assert.False(t, receivesStock(DirWarehouseToClient), "товар накладной списан при отправке")
++	assert.False(t, receivesStock(DirClientToWarehouse), "товарных строк нет")
++}
+diff --git a/internal/features/transfers/validate_test.go b/internal/features/transfers/validate_test.go
+index d93d7bf..e92768f 100644
+--- a/internal/features/transfers/validate_test.go
++++ b/internal/features/transfers/validate_test.go
+@@ -198,7 +198,7 @@ func TestTS009_StatusConflictMessages(t *testing.T) {
+ 		{actionReceive, StatusRequested, "Перемещение ещё не отправлено"},
+ 		{actionReceive, StatusReceived, "Перемещение уже получено"},
+ 		{actionReceive, StatusCancelled, "Перемещение отменено"},
+-		{actionCancel, StatusReceived, "Перемещение уже получено — отменить нельзя"},
++		{actionCancel, StatusReceived, "Перемещение получено — сначала отмените проведение"},
+ 		{actionCancel, StatusCancelled, "Перемещение уже отменено"},
+ 	}
+ 	for _, tc := range cases {
+diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
+index 3b08b84..087c790 100644
+--- a/internal/seeddemo/seeddemo.go
++++ b/internal/seeddemo/seeddemo.go
+@@ -684,18 +684,29 @@ func (s *seeder) seedTransfers(products []productRow) error {
+ 
+ // seedSupplierTransfers — два прихода от поставщика на «Алматы»: полученный с недопоставкой
+ // (остаток растёт на факт, движение supplier_in) и «в пути» (учтён на «Остатках» в колонке
+-// «в пути», DS-047; движений нет).
++// «в пути», DS-047; движений нет). Полученный — откатанный и принятый заново (transfers-revert
++// TS-F1): сначала по ошибке принят на всё заказанное (supplier_in +20), проведение отменено с
++// причиной (transfer_unreceive −20), затем принят с верным фактом (supplier_in +18).
+ func (s *seeder) seedSupplierTransfers(products []productRow) error {
+ 	const ordered, fact = "20", "18"
+ 	var receivedID int64
+ 	if err := s.tx.QueryRow(s.ctx, `
+ 		INSERT INTO transfers (direction, to_warehouse_id, supplier_id, status, note, created_by,
+-		                       sent_by, sent_at, received_by, received_at, created_at, updated_at)
++		                       sent_by, sent_at, received_by, received_at, created_at, updated_at,
++		                       unreceived_by, unreceived_at, unreceive_reason, version)
+ 		VALUES ('supplier_to_warehouse', $1, $2, 'received', 'Плановая закупка расходников', $3, $3, now() - interval '6 days',
+-		        $3, now() - interval '4 days', now() - interval '6 days', now() - interval '4 days')
++		        $3, now() - interval '4 days', now() - interval '6 days', now() - interval '4 days',
++		        $3, now() - interval '4 days 2 hours', 'Приняли без пересчёта — по факту пришло меньше', 5)
+ 		RETURNING id`, s.almatyID, s.supplierID, s.adminID).Scan(&receivedID); err != nil {
+ 		return err
+ 	}
++	// первая (ошибочная) приёмка на всё заказанное и её откат — компенсирующее движение.
++	if err := s.moveStock(products[7].ID, s.almatyID, ordered, "supplier_in", receivedID); err != nil {
++		return err
++	}
++	if err := s.moveStock(products[7].ID, s.almatyID, "-"+ordered, "transfer_unreceive", receivedID); err != nil {
++		return err
++	}
+ 	if _, err := s.tx.Exec(s.ctx, `
+ 		INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent, qty_received)
+ 		VALUES ($1, 'product', $2, 1, $3::numeric, $4::numeric)`, receivedID, products[7].ID, ordered, fact); err != nil {
+@@ -1274,6 +1285,14 @@ func (s *seeder) seedEquipmentLocation(taskIdx int, taskID int64, clientID strin
+ 		}
+ 	}
+ 
++	if taskIdx == demoReturnTask {
++		// отменённая заявка на возврат (transfers-revert TS-F1): на учёт не влияет, удаляется
++		// вместе с заказом; местоположение единицы не меняет.
++		if err := s.cancelledReturn(taskID, clientID, warehouseID, unitIDs[0]); err != nil {
++			return err
++		}
++	}
++
+ 	if taskIdx == demoReturnTask && !completed {
+ 		unit := unitIDs[len(unitIDs)-1]
+ 		var onStock bool
+@@ -1297,6 +1316,22 @@ func (s *seeder) seedEquipmentLocation(taskIdx int, taskID int64, clientID strin
+ 	return nil
+ }
+ 
++// cancelledReturn — отменённая (не отправленная) заявка «склад → клиент» заказа с одной единицей.
++func (s *seeder) cancelledReturn(taskID int64, clientID, warehouseID, unit string) error {
++	var id int64
++	if err := s.tx.QueryRow(s.ctx, `
++		INSERT INTO transfers (direction, from_warehouse_id, task_id, client_id, status, note, created_by,
++		                       cancelled_by, cancelled_at, created_at, updated_at, version)
++		VALUES ('warehouse_to_client', $1, $2, $3, 'cancelled', 'Заявка на возврат создана по ошибке', $4,
++		        $4, now() - interval '2 days', now() - interval '2 days 1 hour', now() - interval '2 days', 2)
++		RETURNING id`, warehouseID, taskID, clientID, s.adminID).Scan(&id); err != nil {
++		return err
++	}
++	_, err := s.tx.Exec(s.ctx, `
++		INSERT INTO transfer_items (transfer_id, kind, equipment_id, position) VALUES ($1, 'equipment', $2, 1)`, id, unit)
++	return err
++}
++
+ // clientTransfer — документ с клиентом по заказу со строками-единицами: direction —
+ // client_to_warehouse (warehouseID — склад назначения) либо warehouse_to_client (склад
+ // отправления); status — received либо in_transit; ago — давность создания (interval).
+diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
+index 7d42b9a..cfc8c98 100644
+--- a/internal/seeddemo/seeddemo_integration_test.go
++++ b/internal/seeddemo/seeddemo_integration_test.go
+@@ -175,7 +175,9 @@ func (s *SeedDemoSuite) assertWarehouses() {
+ 	s.Positive(statuses["client_to_warehouse:received"], "приём от клиента проведён")
+ 	s.Positive(statuses["warehouse_to_client:received"], "возврат клиенту проведён (заказы последней колонки)")
+ 	s.Equal(1, statuses["warehouse_to_client:in_transit"], "один возврат клиенту в пути")
+-	s.Len(statuses, 7, "других сочетаний направление × статус нет")
++	// transfers-revert TS-F1: один отменённый документ у заказа (удаляется вместе с заказом).
++	s.Equal(1, statuses["warehouse_to_client:cancelled"], "одна отменённая заявка на возврат")
++	s.Len(statuses, 8, "других сочетаний направление × статус нет")
+ 	s.assertPartners()
+ 
+ 	// журнал перемещений = qty_sent (out) и qty_received (in) по строкам.
+@@ -268,7 +270,22 @@ func (s *SeedDemoSuite) assertPartners() {
+ 		       (SELECT count(*) FROM transfers t JOIN suppliers sp ON sp.id = t.supplier_id WHERE NOT sp.is_active)`).
+ 		Scan(&ordered, &fact, &supplierIn, &transitMovements, &archivedInDocs))
+ 	s.NotEqual(ordered, fact, "полученный приход — с расхождением")
+-	s.Equal(fact, supplierIn, "supplier_in = факт приёмки")
++	// transfers-revert TS-F1: полученный приход откатан и принят заново — ошибочная приёмка
++	// (supplier_in на заказанное) погашена компенсирующим движением transfer_unreceive, итог
++	// журнала = факт повторной приёмки; на документе — кто, когда и почему отменил проведение.
++	var unreceive, net, reason string
++	var unreceivedSet bool
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT (SELECT coalesce(sum(qty_delta), 0)::text FROM stock_movements WHERE reason = 'transfer_unreceive'),
++		       (SELECT coalesce(sum(qty_delta), 0)::text FROM stock_movements WHERE reason IN ('supplier_in', 'transfer_unreceive')),
++		       t.unreceive_reason, t.unreceived_by IS NOT NULL AND t.unreceived_at < t.received_at
++		FROM transfers t WHERE t.direction = 'supplier_to_warehouse' AND t.status = 'received'`).
++		Scan(&unreceive, &net, &reason, &unreceivedSet))
++	s.Equal("-"+ordered, unreceive, "transfer_unreceive = −ошибочный факт")
++	s.Equal(fact, net, "supplier_in − откат = факт повторной приёмки")
++	s.NotEqual(fact, supplierIn, "в журнале остались обе приёмки")
++	s.NotEmpty(reason, "причина отката")
++	s.True(unreceivedSet, "откат раньше повторной приёмки")
+ 	s.Zero(transitMovements, "приход «в пути» движений не создаёт")
+ 	s.Zero(archivedInDocs, "документы — на действующего поставщика")
+ 

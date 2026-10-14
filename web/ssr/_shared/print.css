@@ -1,0 +1,86 @@
+/* print.css — печатные акты (SSR-печать, ADR-102). Раздаётся статикой /assets/ssr-shared/.
+   Формат — A4, светлый фон принудительно (layout ставит data-bs-theme="light"); @media
+   print скрывает элементы .no-print (кнопка «Печать»). */
+
+body {
+  background: #fff;
+  color: #000;
+  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+.print-page {
+  max-width: 210mm;
+  margin: 0 auto;
+  padding: 16px 20px;
+}
+
+.print-firm {
+  margin-bottom: 16px;
+  border-bottom: 1px solid #333;
+  padding-bottom: 8px;
+}
+
+.print-firm-name {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.print-date {
+  color: #333;
+}
+
+.print-section {
+  margin: 16px 0;
+}
+
+.print-section h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.print-description {
+  white-space: normal;
+}
+
+.print-products-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.print-total h2 {
+  font-size: 1.1rem;
+}
+
+.print-signatures {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 48px;
+}
+
+.print-signature {
+  flex: 1;
+}
+
+/* узкий экран (просмотр акта с телефона, фаза 8 polish): таблицы и длинные слова
+   переносятся, подписи — в столбик; страница не скроллится вбок. */
+@media screen and (max-width: 576px) {
+  .print-page table { overflow-wrap: anywhere; }
+  .print-page { padding: 12px; }
+  .print-signatures { flex-direction: column; margin-top: 32px; }
+}
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  .print-page {
+    padding: 0;
+  }
+
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+}

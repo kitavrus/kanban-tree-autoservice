@@ -1,0 +1,94 @@
+{{/* print-handover — акт выдачи (AC-016, SD-009): ВСЕ услуги заказа со статусом и ценами
+     (не только выполненные), товары qty×цена, итог = task.total_amount (одна цифра с
+     карточкой, ADR-005), отметка оплаты. Каждый реквизит фирмы — свой `{{ if }}`. */}}
+{{ define "content" }}
+<header class="print-firm" data-testid="print-firm">
+  {{ if .Firm.Name }}<div class="print-firm-name">{{ .Firm.Name }}</div>{{ end }}
+  {{ if .Firm.Address }}<div class="print-firm-address">{{ .Firm.Address }}</div>{{ end }}
+  {{ if .Firm.Phone }}<div class="print-firm-phone">{{ .Firm.Phone }}</div>{{ end }}
+</header>
+
+<h1 data-testid="print-title">Акт выдачи №{{ .Card.Task.ID }}</h1>
+<p class="print-date" data-testid="print-date">Дата: {{ timeIn .Timezone "02.01.2006" .PrintedAt }}</p>
+
+<section class="print-section">
+  <h2>Клиент</h2>
+  <p data-testid="print-client">{{ .ClientName }}{{ if .ContactName }}, {{ .ContactName }}{{ end }}</p>
+  {{ if .Phones }}<p data-testid="print-phones">Телефон: {{ .Phones }}</p>{{ end }}
+</section>
+
+<section class="print-section">
+  <h2>Оборудование</h2>
+  {{ if .Card.Equipment }}
+  <table class="table table-bordered table-sm" data-testid="print-equipment">
+    <thead><tr><th>Тип</th><th>Бренд</th><th>Модель</th><th>Серийный №</th><th>Комплектность</th><th>Состояние</th></tr></thead>
+    <tbody>
+    {{ range .Card.Equipment }}
+    <tr>
+      <td>{{ .TypeName }}</td><td>{{ .Brand }}</td><td>{{ .Model }}</td><td>{{ .Serial }}</td>
+      <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
+    </tr>
+    {{ end }}
+    </tbody>
+  </table>
+  {{ else }}
+  <p class="text-body-secondary">Оборудование не указано.</p>
+  {{ end }}
+</section>
+
+{{ if .Description }}
+<section class="print-section">
+  <h2>Описание</h2>
+  <div class="print-description" data-testid="print-description">{{ .Description }}</div>
+</section>
+{{ end }}
+
+<section class="print-section">
+  <h2>Услуги</h2>
+  {{ if .Card.Subtasks }}
+  <table class="table table-bordered table-sm" data-testid="print-subtasks">
+    <thead><tr><th>Услуга</th><th>Статус</th><th>Цена работы</th><th>Товары</th><th>Итого</th></tr></thead>
+    <tbody>
+    {{ range .Card.Subtasks }}
+    <tr data-testid="print-subtask-row">
+      <td>{{ .ServiceName }}</td>
+      <td>{{ if eq .Status "new" }}Новая{{ else if eq .Status "in_progress" }}В работе{{ else if eq .Status "done" }}Выполнена{{ else }}{{ .Status }}{{ end }}</td>
+      <td>{{ if .Price }}{{ .Price }}{{ else }}—{{ end }}</td>
+      <td>
+        {{ if .Products }}
+        <ul class="print-products-list">
+          {{ range .Products }}
+          <li>{{ .Name }}: {{ .Qty }} {{ .Unit }} × {{ if .Price }}{{ .Price }}{{ else }}—{{ end }} = {{ .LineTotal }}</li>
+          {{ end }}
+        </ul>
+        {{ else }}
+        <span class="text-body-secondary">—</span>
+        {{ end }}
+      </td>
+      <td>{{ .Total }}</td>
+    </tr>
+    {{ end }}
+    </tbody>
+  </table>
+  {{ else }}
+  <p class="text-body-secondary">Услуги не добавлены.</p>
+  {{ end }}
+</section>
+
+<section class="print-section print-total" data-testid="print-total">
+  {{/* «Продано по накладным» (transfers-sales DS-014) — уже входит в итог; строки нет, пока
+       у заказа нет отправленных накладных с товаром. */}}
+  {{ if ne (printf "%s" .Card.Task.TransfersAmount) "0.00" }}
+  <p data-testid="print-transfers-amount">Продано по накладным: {{ .Card.Task.TransfersAmount }}</p>
+  {{ end }}
+  <h2>Итого: {{ .Card.Task.TotalAmount }}</h2>
+  <p data-testid="print-payment">
+    {{ if .Card.Task.IsPaid }}Оплачено{{ if .Card.Task.PaidAt }} {{ timeIn .Timezone "02.01.2006" .Card.Task.PaidAt }}{{ end }}{{ else }}Не оплачено{{ end }}
+  </p>
+</section>
+
+<section class="print-signatures">
+  <div class="print-signature" data-testid="print-signature-give">Выдал: ______________________</div>
+  <div class="print-signature" data-testid="print-signature-take">Получил: ______________________</div>
+</section>
+{{ end }}

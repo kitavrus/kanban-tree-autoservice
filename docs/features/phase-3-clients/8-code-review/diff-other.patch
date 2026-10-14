@@ -1,0 +1,566 @@
+diff --git a/web/ssr/_layout/templates/layouts/base.html b/web/ssr/_layout/templates/layouts/base.html
+index e71ed98..79ca58b 100644
+--- a/web/ssr/_layout/templates/layouts/base.html
++++ b/web/ssr/_layout/templates/layouts/base.html
+@@ -20,7 +20,7 @@
+       {{ range .Shell.Menu }}
+       <div class="app-nav-label">{{ .Label }}</div>
+       {{ range .Items }}
+-      <a href="{{ .URL }}" class="app-nav-link{{ if eq .URL $.Shell.ActivePath }} active{{ end }}"{{ if eq .URL $.Shell.ActivePath }} aria-current="page"{{ end }}>{{ .Icon }} {{ .Title }}</a>
++      <a href="{{ .URL }}" class="app-nav-link{{ if $.Shell.NavActive .URL }} active{{ end }}"{{ if $.Shell.NavActive .URL }} aria-current="page"{{ end }}>{{ .Icon }} {{ .Title }}</a>
+       {{ end }}
+       {{ end }}
+     </nav>
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index a523c6f..3744907 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -190,3 +190,11 @@ body { background: var(--bs-body-bg); }
+ /* ---- сотрудники ---- */
+ .badge-off { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: rgba(var(--bs-danger-rgb), .12); color: var(--bs-danger); }
+ .app-table-link { cursor: pointer; }
++
++/* ---- row-list: динамические строки 1..N (js/row-list.js, ADR-002) ---- */
++.row-list-item { display: flex; gap: var(--space-2); align-items: flex-start; margin-bottom: var(--space-2); }
++.row-list-item > input.form-control { flex: 1 1 0; min-width: 0; }
++@media (max-width: 576px) {
++  .row-list-item { flex-wrap: wrap; }
++  .row-list-item > input.form-control, .row-list-item > div { flex: 1 1 100%; }
++}
+diff --git a/web/ssr/_shared/js/row-list.js b/web/ssr/_shared/js/row-list.js
+new file mode 100644
+index 0000000..7838419
+--- /dev/null
++++ b/web/ssr/_shared/js/row-list.js
+@@ -0,0 +1,88 @@
++/* KT.rowList — динамические списки строк 1..N (телефоны клиента, характеристики
++   оборудования — ADR-002). Разметка:
++     <div id="phones-rows" data-row-list data-row-min="1">
++       <div>...строка: input[name=...] + [data-row-del]...</div>
++       ...
++       <template data-row-template><div>...пустая строка...</div></template>
++     </div>
++     <button data-row-add="phones-rows">+ Строка</button>
++   data-row-min="N" — ниже этого числа строк последняя строка НЕ удаляется, а очищается
++   (её значения сбрасываются в пустые) — «последняя строка телефонов очищается, не
++   удаляется» (ADR-002). KT.rowList.fill(el, rows) — программно заполнить список
++   массивом объектов {имя_поля: значение}; имя поля = атрибут name инпута строки. */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  function template(list) {
++    return Array.prototype.find.call(list.children, function (el) {
++      return el.tagName === 'TEMPLATE';
++    }) || null;
++  }
++
++  function rowsOf(list) {
++    var tpl = template(list);
++    return Array.prototype.filter.call(list.children, function (el) { return el !== tpl; });
++  }
++
++  function clearRow(row) {
++    row.querySelectorAll('input, textarea, select').forEach(function (el) { el.value = ''; });
++  }
++
++  function bindRow(list, row) {
++    var del = row.querySelector('[data-row-del]');
++    if (!del || del.dataset.rowBound) return;
++    del.dataset.rowBound = '1';
++    del.addEventListener('click', function (e) {
++      e.preventDefault();
++      var min = parseInt(list.getAttribute('data-row-min') || '0', 10);
++      if (rowsOf(list).length <= min) { clearRow(row); return; }
++      row.remove();
++    });
++  }
++
++  function newRow(list) {
++    var tpl = template(list);
++    if (!tpl || !tpl.content) return null;
++    var frag = tpl.content.cloneNode(true);
++    var row = frag.firstElementChild;
++    list.insertBefore(frag, tpl);
++    if (row) bindRow(list, row);
++    return row;
++  }
++
++  function addRow(list) {
++    var row = newRow(list);
++    if (!row) return row;
++    var focusEl = row.querySelector('input, textarea, select');
++    if (focusEl) focusEl.focus();
++    return row;
++  }
++
++  /** fill — очищает список и создаёт по одной строке на элемент rows (объект
++      {имя_поля: значение}); пустой rows — одна пустая строка (нечего удалять до 0). */
++  function fill(list, rows) {
++    rowsOf(list).forEach(function (r) { r.remove(); });
++    (rows && rows.length ? rows : [{}]).forEach(function (data) {
++      var row = newRow(list);
++      if (!row) return;
++      Object.keys(data || {}).forEach(function (k) {
++        var f = row.querySelector('[name="' + k + '"]');
++        if (f) f.value = data[k];
++      });
++    });
++  }
++
++  document.querySelectorAll('[data-row-list]').forEach(function (list) {
++    rowsOf(list).forEach(function (row) { bindRow(list, row); });
++  });
++  document.querySelectorAll('[data-row-add]').forEach(function (btn) {
++    btn.addEventListener('click', function (e) {
++      e.preventDefault();
++      var list = document.getElementById(btn.getAttribute('data-row-add'));
++      if (list) addRow(list);
++    });
++  });
++
++  KT.rowList = { fill: fill, addRow: addRow };
++})();
+diff --git a/web/ssr/_shared/js/ui-dialog.js b/web/ssr/_shared/js/ui-dialog.js
+index a0a2433..5b110e7 100644
+--- a/web/ssr/_shared/js/ui-dialog.js
++++ b/web/ssr/_shared/js/ui-dialog.js
+@@ -82,4 +82,32 @@
+   KT.uiPrompt = function (title, value) { return uiDialog({ title: title, input: value == null ? '' : String(value) }); };
+   KT.uiConfirm = function (text, ok) { return uiDialog({ title: 'Подтверждение', text: text, ok: ok || 'Удалить', danger: true }); };
+   KT.uiAlert = function (text, title) { return uiDialog({ title: title || 'Нельзя', text: text, cancel: null }); };
++
++  /* Делегированный submit-обработчик форм (ADR-103, Tech Spec «Двойной submit»):
++       form[data-confirm="текст"] — сабмит перехватывается, показывается KT.uiConfirm;
++       подтвердили → реальный сабмит через HTMLFormElement.prototype.submit (минуя
++       повторную отправку события submit, иначе бесконечный цикл); отменили → ничего
++       не отправляется. form[data-once] — на настоящем сабмите (после возможного
++       confirm) кнопка отправки блокируется, чтобы повторный клик/Enter не отправил
++       форму дважды, пока идёт PRG-редирект. */
++  document.addEventListener('submit', function (e) {
++    var form = e.target;
++    if (!(form instanceof HTMLFormElement)) return;
++
++    if (form.matches('[data-confirm]') && !form.dataset.confirmed) {
++      e.preventDefault();
++      KT.uiConfirm(form.getAttribute('data-confirm')).then(function (ok) {
++        if (!ok) return;
++        form.dataset.confirmed = '1';
++        HTMLFormElement.prototype.submit.call(form);
++      });
++      return;
++    }
++
++    if (form.matches('[data-once]') && !form.dataset.submitted) {
++      form.dataset.submitted = '1';
++      var btn = form.querySelector('button[type="submit"]');
++      if (btn) btn.disabled = true;
++    }
++  });
+ })();
+diff --git a/web/ssr/clients/templates/pages/equipment-form.html b/web/ssr/clients/templates/pages/equipment-form.html
+new file mode 100644
+index 0000000..42437cd
+--- /dev/null
++++ b/web/ssr/clients/templates/pages/equipment-form.html
+@@ -0,0 +1,135 @@
++{{ define "content" }}
++<form class="card mw-760" method="post" action="{{ if .IsNew }}/clients/{{ .ClientID }}/equipment{{ else }}/equipment/{{ .ID }}{{ end }}" data-testid="equipment-form" data-once novalidate>
++  <div class="card-body">
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    <p class="text-body-secondary small" data-testid="equipment-client-name">{{ .ClientName }}</p>
++    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
++    <div class="mb-3">
++      <label for="type_id" class="form-label">Тип *</label>
++      <select id="type_id" name="type_id" class="form-select{{ if index .Errors "type_id" }} is-invalid{{ end }}" data-testid="equipment-type">
++        <option value=""></option>
++        {{ range .Types }}
++        <option value="{{ .ID }}" data-spec-keys='{{ .SpecKeysJSON }}'{{ if eq .ID $.TypeID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (в архиве){{ end }}</option>
++        {{ end }}
++      </select>
++      {{ with index .Errors "type_id" }}<div class="invalid-feedback d-block" data-testid="error-type_id">{{ . }}</div>{{ end }}
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-sm-6">
++        <label for="brand" class="form-label">Производитель</label>
++        <input id="brand" name="brand" class="form-control{{ if index .Errors "brand" }} is-invalid{{ end }}" value="{{ .Brand }}" maxlength="200" autocomplete="off">
++        {{ with index .Errors "brand" }}<div class="invalid-feedback" data-testid="error-brand">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-sm-6">
++        <label for="model" class="form-label">Модель *</label>
++        <input id="model" name="model" class="form-control{{ if index .Errors "model" }} is-invalid{{ end }}" value="{{ .Model }}" maxlength="200" autocomplete="off">
++        {{ with index .Errors "model" }}<div class="invalid-feedback" data-testid="error-model">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-sm-6">
++        <label for="sku" class="form-label">Артикул / партномер</label>
++        <input id="sku" name="sku" class="form-control{{ if index .Errors "sku" }} is-invalid{{ end }}" value="{{ .SKU }}" maxlength="200" autocomplete="off">
++        {{ with index .Errors "sku" }}<div class="invalid-feedback" data-testid="error-sku">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-sm-6">
++        <label for="serial" class="form-label">Серийный номер / VIN</label>
++        <input id="serial" name="serial" class="form-control{{ if index .Errors "serial" }} is-invalid{{ end }}" value="{{ .Serial }}" maxlength="200" autocomplete="off">
++        {{ with index .Errors "serial" }}<div class="invalid-feedback" data-testid="error-serial">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="mb-4">
++      <label class="form-label">Характеристики</label>
++      <datalist id="spec-keys-datalist"></datalist>
++      <div id="specs-rows" class="row-list" data-row-list data-row-min="0" data-testid="specs-rows">
++        {{ range $i, $s := .Specs }}
++        <div class="row-list-item" data-testid="spec-row">
++          <div class="flex-grow-1">
++            <input type="text" name="spec_k" class="form-control{{ if index $.Errors (printf "specs[%d].k" $i) }} is-invalid{{ end }}" value="{{ $s.K }}" placeholder="Характеристика" list="spec-keys-datalist" maxlength="100" autocomplete="off" data-testid="spec-key">
++            {{ with index $.Errors (printf "specs[%d].k" $i) }}<div class="invalid-feedback d-block" data-testid="error-specs-{{ $i }}">{{ . }}</div>{{ end }}
++          </div>
++          <input type="text" name="spec_v" class="form-control" value="{{ $s.V }}" placeholder="Значение" maxlength="500" autocomplete="off" data-testid="spec-value">
++          <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить характеристику" data-testid="spec-del">×</button>
++        </div>
++        {{ end }}
++        <template data-row-template>
++          <div class="row-list-item" data-testid="spec-row">
++            <div class="flex-grow-1">
++              <input type="text" name="spec_k" class="form-control" placeholder="Характеристика" list="spec-keys-datalist" maxlength="100" autocomplete="off" data-testid="spec-key">
++            </div>
++            <input type="text" name="spec_v" class="form-control" placeholder="Значение" maxlength="500" autocomplete="off" data-testid="spec-value">
++            <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить характеристику" data-testid="spec-del">×</button>
++          </div>
++        </template>
++      </div>
++      <button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-row-add="specs-rows" data-testid="spec-add">+ Характеристика</button>
++      {{ with index .Errors "specs" }}<div class="text-danger small mt-1" data-testid="error-specs">{{ . }}</div>{{ end }}
++    </div>
++    <div class="mb-4">
++      <label for="note" class="form-label">Примечание</label>
++      <input id="note" name="note" class="form-control{{ if index .Errors "note" }} is-invalid{{ end }}" value="{{ .Note }}" maxlength="1000" autocomplete="off">
++      {{ with index .Errors "note" }}<div class="invalid-feedback" data-testid="error-note">{{ . }}</div>{{ end }}
++    </div>
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-primary" data-testid="equipment-save">Сохранить</button>
++      <a href="/clients/{{ .ClientID }}" class="btn btn-outline-secondary">Отмена</a>
++    </div>
++  </div>
++</form>
++{{ if not .IsNew }}
++<form method="post" action="/equipment/{{ .ID }}/delete" class="mt-3" data-testid="equipment-delete-form" data-confirm="Удалить оборудование «{{ .Model }}»? Отменить нельзя.">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="equipment-delete">Удалить</button>
++</form>
++{{ end }}
++{{ end }}
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/row-list.js"></script>
++<script>
++(function () {
++  var typeSel = document.getElementById('type_id');
++  var specsList = document.getElementById('specs-rows');
++  var datalist = document.getElementById('spec-keys-datalist');
++  if (!typeSel || !specsList) return;
++
++  function escAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
++
++  function specKeysOf(select) {
++    var opt = select.selectedOptions[0];
++    if (!opt || !opt.dataset.specKeys) return [];
++    try { return JSON.parse(opt.dataset.specKeys) || []; } catch (e) { return []; }
++  }
++
++  function currentRows() {
++    return Array.prototype.map.call(specsList.querySelectorAll('[data-testid="spec-row"]'), function (row) {
++      var k = row.querySelector('[name="spec_k"]'), v = row.querySelector('[name="spec_v"]');
++      return { k: k ? k.value : '', v: v ? v.value : '' };
++    });
++  }
++
++  function updateDatalist(keys) {
++    if (!datalist) return;
++    datalist.innerHTML = keys.map(function (k) { return '<option value="' + escAttr(k) + '">'; }).join('');
++  }
++
++  // ADR-002/AC-009: при выборе/смене типа строки характеристик подставляются шаблоном —
++  // заполненные ЗНАЧЕНИЯ сохраняются, пустые заменяются шаблоном нового типа (эталон —
++  // prototype/index.html openEquipment: `filled = e.specs.filter(p => p.v.trim())` —
++  // отбор по значению, а не по наличию ключа: непустой ключ без значения — тоже пустая
++  // строка и заменяется шаблоном, иначе после смены типа накапливались бы старые ключи
++  // без значений вперемешку с новым шаблоном).
++  typeSel.addEventListener('change', function () {
++    var keys = specKeysOf(typeSel);
++    updateDatalist(keys);
++    var filled = currentRows().filter(function (r) { return r.v.trim(); });
++    var rows = filled.map(function (r) { return { spec_k: r.k, spec_v: r.v }; });
++    keys.forEach(function (k) {
++      if (!filled.some(function (r) { return r.k === k; })) rows.push({ spec_k: k, spec_v: '' });
++    });
++    KT.rowList.fill(specsList, rows);
++  });
++
++  updateDatalist(specKeysOf(typeSel));
++})();
++</script>
++{{ end }}
+diff --git a/web/ssr/clients/templates/pages/form.html b/web/ssr/clients/templates/pages/form.html
+new file mode 100644
+index 0000000..7edda49
+--- /dev/null
++++ b/web/ssr/clients/templates/pages/form.html
+@@ -0,0 +1,108 @@
++{{ define "content" }}
++{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++<form class="card mw-760" method="post" action="{{ if .IsNew }}/clients{{ else }}/clients/{{ .ID }}{{ end }}" data-testid="client-form" data-once novalidate>
++  <div class="card-body">
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    {{ if not .IsNew }}<input type="hidden" name="version" value="{{ .Version }}">{{ end }}
++    {{ if .Error }}
++    <div class="alert alert-danger py-2" role="alert" data-testid="form-error">
++      {{ .Error }}
++      {{ if .Conflict }}<div class="mt-2"><a href="/clients/{{ .ID }}" data-testid="client-conflict-reload">Открыть актуальную версию</a></div>{{ end }}
++    </div>
++    {{ end }}
++    <div class="mb-3">
++      <label for="company_name" class="form-label">Компания *</label>
++      <input id="company_name" name="company_name" class="form-control{{ if index .Errors "company_name" }} is-invalid{{ end }}" value="{{ .CompanyName }}" maxlength="200" autocomplete="off">
++      {{ with index .Errors "company_name" }}<div class="invalid-feedback" data-testid="error-company_name">{{ . }}</div>{{ end }}
++    </div>
++    <div class="mb-3">
++      <label for="address" class="form-label">Адрес</label>
++      <input id="address" name="address" class="form-control{{ if index .Errors "address" }} is-invalid{{ end }}" value="{{ .Address }}" maxlength="500" autocomplete="off">
++      {{ with index .Errors "address" }}<div class="invalid-feedback" data-testid="error-address">{{ . }}</div>{{ end }}
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-sm-6">
++        <label for="contact_name" class="form-label">Представитель</label>
++        <input id="contact_name" name="contact_name" class="form-control{{ if index .Errors "contact_name" }} is-invalid{{ end }}" value="{{ .ContactName }}" maxlength="200" autocomplete="off">
++        {{ with index .Errors "contact_name" }}<div class="invalid-feedback" data-testid="error-contact_name">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-sm-6">
++        <label for="contact_position" class="form-label">Должность</label>
++        <input id="contact_position" name="contact_position" class="form-control{{ if index .Errors "contact_position" }} is-invalid{{ end }}" value="{{ .ContactPosition }}" maxlength="200" autocomplete="off">
++        {{ with index .Errors "contact_position" }}<div class="invalid-feedback" data-testid="error-contact_position">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="mb-4">
++      <label class="form-label">Телефоны *</label>
++      <div id="phones-rows" class="row-list" data-row-list data-row-min="1" data-testid="phones-rows">
++        {{ range $i, $p := .Phones }}
++        <div class="row-list-item" data-testid="phone-row">
++          <div class="flex-grow-1">
++            <input type="text" name="phone" class="form-control{{ if index $.Errors (printf "phones[%d].phone" $i) }} is-invalid{{ end }}" value="{{ $p.Phone }}" placeholder="Телефон" maxlength="32" inputmode="tel" autocomplete="off" data-testid="phone-input">
++            {{ with index $.Errors (printf "phones[%d].phone" $i) }}<div class="invalid-feedback d-block" data-testid="error-phones-{{ $i }}">{{ . }}</div>{{ end }}
++          </div>
++          <input type="text" name="phone_note" class="form-control" value="{{ $p.Note }}" placeholder="Примечание" maxlength="200" autocomplete="off" data-testid="phone-note">
++          <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить телефон" data-testid="phone-del">×</button>
++        </div>
++        {{ end }}
++        <template data-row-template>
++          <div class="row-list-item" data-testid="phone-row">
++            <div class="flex-grow-1">
++              <input type="text" name="phone" class="form-control" placeholder="Телефон" maxlength="32" inputmode="tel" autocomplete="off" data-testid="phone-input">
++            </div>
++            <input type="text" name="phone_note" class="form-control" placeholder="Примечание" maxlength="200" autocomplete="off" data-testid="phone-note">
++            <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить телефон" data-testid="phone-del">×</button>
++          </div>
++        </template>
++      </div>
++      <button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-row-add="phones-rows" data-testid="phone-add">+ Телефон</button>
++      {{ with index .Errors "phones" }}<div class="text-danger small mt-1" data-testid="error-phones">{{ . }}</div>{{ end }}
++    </div>
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-primary" data-testid="client-save">Сохранить</button>
++      <a href="/clients" class="btn btn-outline-secondary">Отмена</a>
++    </div>
++  </div>
++</form>
++{{ if not .IsNew }}
++<div class="card mw-760 mt-4">
++  <div class="card-body">
++    <div class="d-flex align-items-center mb-3">
++      <h2 class="fs-6 mb-0">Оборудование клиента</h2>
++      <a href="/clients/{{ .ID }}/equipment/new" class="btn btn-outline-secondary btn-sm ms-auto" data-testid="equipment-add">+ Оборудование</a>
++    </div>
++    {{ if .Equipment }}
++    <div class="table-responsive">
++    <table class="table table-hover align-middle" data-testid="equipment-table">
++      <thead>
++        <tr>
++          <th>Модель</th>
++          <th>Тип</th>
++          <th>Серийный номер</th>
++        </tr>
++      </thead>
++      <tbody>
++      {{ range .Equipment }}
++        <tr data-testid="equipment-row" data-model="{{ .Model }}">
++          <td><a href="/equipment/{{ .ID }}" class="fw-semibold">{{ .Model }}</a></td>
++          <td>{{ .TypeName }}{{ if not .TypeIsActive }} <span class="text-body-secondary small">(в архиве)</span>{{ end }}</td>
++          <td>{{ .Serial }}</td>
++        </tr>
++      {{ end }}
++      </tbody>
++    </table>
++    </div>
++    {{ else }}
++    <div class="empty-state" data-testid="equipment-empty">Оборудования пока нет</div>
++    {{ end }}
++  </div>
++</div>
++<form method="post" action="/clients/{{ .ID }}/delete" class="mt-3" data-testid="client-delete-form" data-confirm="Удалить клиента «{{ .CompanyName }}»? Единиц оборудования: {{ .EquipmentCount }}. Отменить нельзя.">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="client-delete">Удалить</button>
++</form>
++{{ end }}
++{{ end }}
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/row-list.js"></script>
++{{ end }}
+diff --git a/web/ssr/clients/templates/pages/list.html b/web/ssr/clients/templates/pages/list.html
+new file mode 100644
+index 0000000..021b1e6
+--- /dev/null
++++ b/web/ssr/clients/templates/pages/list.html
+@@ -0,0 +1,45 @@
++{{ define "actions" }}<a href="/clients/new" class="btn btn-primary" data-testid="client-add">+ Клиент</a>{{ end }}
++{{ define "content" }}
++{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++<form class="d-flex flex-wrap gap-2 mb-3" method="get" action="/clients" data-testid="clients-filters">
++  <input class="form-control" style="max-width:320px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск: компания, представитель, телефон" aria-label="Поиск" data-testid="filter-q">
++  <button class="btn btn-outline-secondary" type="submit">Найти</button>
++  {{ if .Q }}<a class="btn btn-link" href="/clients" data-testid="filter-reset">Сбросить</a>{{ end }}
++</form>
++{{ if .Items }}
++<div class="table-responsive">
++<table class="table table-hover align-middle" data-testid="clients-table">
++  <thead>
++    <tr>
++      <th>Компания</th>
++      <th class="d-none d-md-table-cell">Адрес</th>
++      <th>Представитель</th>
++      <th>Телефоны</th>
++      <th class="d-none d-md-table-cell">Оборудование</th>
++    </tr>
++  </thead>
++  <tbody>
++  {{ range .Items }}
++    <tr data-testid="client-row" data-company="{{ .CompanyName }}">
++      <td><a href="/clients/{{ .ID }}" class="fw-semibold">{{ .CompanyName }}</a></td>
++      <td class="d-none d-md-table-cell">{{ .Address }}</td>
++      <td>
++        {{ .ContactName }}
++        {{ if .ContactPosition }}<div class="text-body-secondary small">{{ .ContactPosition }}</div>{{ end }}
++      </td>
++      <td>
++        {{ range .Phones }}
++        <div>{{ .Phone }}{{ if .Note }} <span class="text-body-secondary small">({{ .Note }})</span>{{ end }}</div>
++        {{ end }}
++      </td>
++      <td class="d-none d-md-table-cell" data-testid="client-equipment-count">{{ .EquipmentCount }}</td>
++    </tr>
++  {{ end }}
++  </tbody>
++</table>
++</div>
++<p class="text-body-secondary small" data-testid="clients-total">Клиентов: {{ .Total }}</p>
++{{ else }}
++<div class="empty-state" data-testid="clients-empty">Клиенты не найдены</div>
++{{ end }}
++{{ end }}
+diff --git a/web/ssr/equipmenttypes/templates/pages/form.html b/web/ssr/equipmenttypes/templates/pages/form.html
+new file mode 100644
+index 0000000..589912c
+--- /dev/null
++++ b/web/ssr/equipmenttypes/templates/pages/form.html
+@@ -0,0 +1,45 @@
++{{ define "content" }}
++<form class="card mw-760" method="post" action="{{ if .IsNew }}/catalog/equipment-types{{ else }}/catalog/equipment-types/{{ .ID }}{{ end }}" data-testid="type-form" novalidate>
++  <div class="card-body">
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
++    <div class="mb-3">
++      <label for="name" class="form-label">Название *</label>
++      <input id="name" name="name" class="form-control{{ if index .Errors "name" }} is-invalid{{ end }}" value="{{ .Name }}" maxlength="100" autocomplete="off" data-testid="type-name">
++      {{ with index .Errors "name" }}<div class="invalid-feedback" data-testid="error-name">{{ . }}</div>{{ end }}
++      {{ if .ArchivedLink }}<div class="form-text"><a href="{{ .ArchivedLink }}" data-testid="show-archived-link">Показать архивные</a></div>{{ end }}
++    </div>
++    <div class="mb-4">
++      <label for="spec_keys" class="form-label">Характеристики по умолчанию (через запятую)</label>
++      <input id="spec_keys" name="spec_keys" class="form-control{{ if index .Errors "spec_keys" }} is-invalid{{ end }}" value="{{ .SpecKeys }}" placeholder="Мощность, Хладагент, Объём бака" autocomplete="off" data-testid="type-spec-keys">
++      {{ with index .Errors "spec_keys" }}<div class="invalid-feedback" data-testid="error-spec_keys">{{ . }}</div>{{ end }}
++    </div>
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-primary" data-testid="type-save">Сохранить</button>
++      <a href="/catalog/equipment-types" class="btn btn-outline-secondary">Отмена</a>
++      {{ if not .IsNew }}
++      <button type="submit" form="type-archive-form" class="btn btn-outline-secondary ms-auto" data-testid="type-archive">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++      {{ end }}
++    </div>
++  </div>
++</form>
++{{ if not .IsNew }}
++<form id="type-archive-form" method="post" action="/catalog/equipment-types/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-none" aria-hidden="true">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++</form>
++<form method="post" action="/catalog/equipment-types/{{ .ID }}/delete" class="mt-3" data-testid="type-delete-form">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="type-delete" data-confirm="Удалить тип «{{ .Name }}»? Отменить нельзя.">Удалить</button>
++</form>
++{{ end }}
++{{ end }}
++{{ define "scripts" }}
++<script>
++document.querySelectorAll('[data-confirm]').forEach(function (btn) {
++  btn.addEventListener('click', async function (e) {
++    e.preventDefault();
++    if (await KT.uiConfirm(btn.getAttribute('data-confirm'))) btn.closest('form').submit();
++  });
++});
++</script>
++{{ end }}
+diff --git a/web/ssr/equipmenttypes/templates/pages/list.html b/web/ssr/equipmenttypes/templates/pages/list.html
+new file mode 100644
+index 0000000..03ac3c0
+--- /dev/null
++++ b/web/ssr/equipmenttypes/templates/pages/list.html
+@@ -0,0 +1,43 @@
++{{ define "actions" }}<a href="/catalog/equipment-types/new" class="btn btn-primary" data-testid="type-add">+ Тип оборудования</a>{{ end }}
++{{ define "content" }}
++{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++<form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/equipment-types" data-testid="types-filters">
++  <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск по названию" aria-label="Поиск" data-testid="filter-q">
++  <button class="btn btn-outline-secondary" type="submit">Найти</button>
++  <div class="form-check ms-2">
++    <input class="form-check-input" type="checkbox" id="archived" name="archived" value="1"{{ if .Archived }} checked{{ end }} onchange="this.form.submit()" data-testid="filter-archived">
++    <label class="form-check-label" for="archived">Показать архивные</label>
++  </div>
++  {{ if .Q }}<a class="btn btn-link" href="/catalog/equipment-types{{ if .Archived }}?archived=1{{ end }}" data-testid="filter-reset">Сбросить</a>{{ end }}
++</form>
++{{ if .Items }}
++<div class="table-responsive">
++<table class="table table-hover align-middle" data-testid="types-table">
++  <thead><tr><th>Название</th><th>Характеристики</th><th class="d-none d-md-table-cell">Единиц</th><th></th></tr></thead>
++  <tbody>
++  {{ range .Items }}
++    <tr data-testid="type-row" data-name="{{ .Name }}">
++      <td>
++        <a href="/catalog/equipment-types/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
++        {{ if not .IsActive }}<span class="badge-off" data-testid="type-archived-badge">в архиве</span>{{ end }}
++      </td>
++      <td class="text-body-secondary">{{ .SpecKeysText }}</td>
++      <td class="d-none d-md-table-cell">{{ .EquipmentCount }}</td>
++      <td class="text-end">
++        <form method="post" action="/catalog/equipment-types/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-inline">
++          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++          {{ if $.Archived }}<input type="hidden" name="archived" value="1">{{ end }}
++          <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="type-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++        </form>
++      </td>
++    </tr>
++  {{ end }}
++  </tbody>
++</table>
++</div>
++<p class="text-body-secondary small" data-testid="types-total">Типов: {{ .Total }}</p>
++{{ else }}
++<div class="empty-state" data-testid="types-empty">{{ if or .Q .Archived }}Ничего не нашли по фильтру.{{ else }}Типов пока нет.{{ end }}</div>
++{{ end }}
++<p class="text-body-secondary small mt-3">Характеристики типа подставляются полями при заведении оборудования клиента — остаётся заполнить значения.</p>
++{{ end }}

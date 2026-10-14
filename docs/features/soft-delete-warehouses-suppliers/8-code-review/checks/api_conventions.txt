@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature soft-delete-warehouses-suppliers --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a --paths internal/features/board internal/features/catalog internal/features/softdelete internal/features/suppliers internal/features/transfers internal/features/warehouses
+(exit 0)
+
+api-conventions internal/features/board,internal/features/catalog,internal/features/softdelete,internal/features/suppliers,internal/features/transfers,internal/features/warehouses: PASS (проблем: 0)

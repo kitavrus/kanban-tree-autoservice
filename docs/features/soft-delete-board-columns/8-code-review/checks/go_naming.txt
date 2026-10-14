@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/go_naming_check.py --feature soft-delete-board-columns --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a --paths internal/features/board internal/features/softdelete
+(exit 0)
+
+go-naming internal/features/board,internal/features/softdelete: PASS (проблем: 0)

@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature executor-payouts --repo /Users/igorpotema/mycode/kanban-tree
+(exit 0)
+
+E2E-MODE: PASS (прогонов сверено 3/3, полных 0; источник режима — самоотчёт оркестратора (cmd в улике); из конфига машинно проверен только запрет `headless: true`)

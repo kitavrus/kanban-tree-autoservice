@@ -1,0 +1,24 @@
+# Класс 9.1 — Go native fuzz (board_fuzz_test.go), 4 таргета из design-tests.md §Fuzz Targets. -fuzztime=10-15s каждый.
+# pw-fuzz (9.2): n/a per design/validation (fuzz-verdict SKIP, tier M, risk reversible) — оркестратор/дизайн подтвердил.
+
+$ go test ./internal/features/board/... -run=^$ -fuzz=FuzzParseTaskFilter -fuzztime=15s
+fuzz: elapsed: 15s, execs: 851146 (55708/sec), new interesting: 37 (total: 255)
+PASS
+ok  	github.com/kitavrus/kanban-tree/internal/features/board	16.176s
+
+$ go test ./internal/features/board/... -run=^$ -fuzz=FuzzTaskInputValidate -fuzztime=10s
+fuzz: elapsed: 11s, execs: 529327 (21721/sec), new interesting: 22 (total: 167)
+PASS
+ok  	github.com/kitavrus/kanban-tree/internal/features/board	11.314s
+
+$ go test ./internal/features/board/... -run=^$ -fuzz=FuzzColumnInputValidate -fuzztime=10s
+fuzz: elapsed: 11s, execs: 432674 (19029/sec), new interesting: 8 (total: 123)
+PASS
+ok  	github.com/kitavrus/kanban-tree/internal/features/board	11.305s
+
+$ go test ./internal/features/board/... -run=^$ -fuzz=FuzzMoveBody -fuzztime=10s
+fuzz: elapsed: 11s, execs: 28335 (0/sec), new interesting: 25 (total: 155)
+PASS
+ok  	github.com/kitavrus/kanban-tree/internal/features/board	11.324s
+
+Итог: 4/4 target PASS, ни одного креша (testdata/fuzz/<FuzzName>/ пуст после прогонов, каталог не создан — go test не оставил crash-файлов). Инварианты (no panic, только *errorspkg.AppError 4xx, статус ∈ {200,400,404,409} для FuzzMoveBody) не нарушены.

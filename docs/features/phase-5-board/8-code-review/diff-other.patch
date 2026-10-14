@@ -1,0 +1,1542 @@
+diff --git a/Makefile b/Makefile
+index da26b28..2698430 100644
+--- a/Makefile
++++ b/Makefile
+@@ -104,6 +104,12 @@ migrate-down:  ## откат одной миграции
+ .PHONY: migrate-down
+ # <<< project-bootstrap <<<
+ 
++# --- kanban-tree: демо-данные (вне блока project-bootstrap, AC-019) ---
++seed-demo:  ## залить демо-данные доски одной командой (no-op, если заказы уже есть)
++	@test -f .env || (echo "нет .env — cp .env.example .env" && exit 1)
++	. scripts/dev/env.sh && go run ./cmd/seed-demo
++.PHONY: seed-demo
++
+ # --- kanban-tree: E2E (вне блока project-bootstrap; CLAUDE.md §TD-3 — chromium, headed) ---
+ e2e-install:  ## зависимости Playwright + chromium
+ 	npm --prefix e2e install
+diff --git a/web/ssr/_layout/templates/layouts/base.html b/web/ssr/_layout/templates/layouts/base.html
+index 79ca58b..f6b9f11 100644
+--- a/web/ssr/_layout/templates/layouts/base.html
++++ b/web/ssr/_layout/templates/layouts/base.html
+@@ -20,7 +20,7 @@
+       {{ range .Shell.Menu }}
+       <div class="app-nav-label">{{ .Label }}</div>
+       {{ range .Items }}
+-      <a href="{{ .URL }}" class="app-nav-link{{ if $.Shell.NavActive .URL }} active{{ end }}"{{ if $.Shell.NavActive .URL }} aria-current="page"{{ end }}>{{ .Icon }} {{ .Title }}</a>
++      <a href="{{ .URL }}" class="app-nav-link{{ if $.Shell.NavActive .URL }} active{{ end }}"{{ if $.Shell.NavActive .URL }} aria-current="page"{{ end }}>{{ .Icon }} {{ .Title }}{{ if eq .URL "/stock" }} <span class="badge rounded-pill text-bg-danger ms-auto" data-nav-badge="{{ .URL }}" data-testid="nav-badge-stock" {{ if not .Badge }}hidden{{ end }}>{{ .Badge }}</span>{{ end }}</a>
+       {{ end }}
+       {{ end }}
+     </nav>
+@@ -54,6 +54,7 @@
+ <script src="/assets/ssr-shared/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+ <script src="/assets/ssr-shared/js/theme.js"></script>
+ <script src="/assets/ssr-shared/js/api.js"></script>
++<script src="/assets/ssr-shared/js/nav-badge.js"></script>
+ <script src="/assets/ssr-shared/js/ui-dialog.js"></script>
+ <script src="/assets/ssr-shared/js/combobox.js"></script>
+ {{ block "scripts" . }}{{ end }}
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index 2b9c11a..bba4214 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -229,3 +229,64 @@ body { background: var(--bs-body-bg); }
+   .two-pane { flex-direction: column; align-items: stretch; } /* flex-start давал колонке ширину по содержимому → таблица раздвигала страницу */
+   .cat-panel { width: 100%; }
+ }
++
++/* ---- доска (фаза 6, эталон prototype/index.html .board/.column/.card) ----
++   .board-columns скроллится ВНУТРИ себя по X — страница целиком не скроллится вбок
++   (adaptive:min, US-1); min-width:0 у детей обязателен, иначе flex-item не сжимается
++   ниже content-width своего содержимого и раздвигает контейнер (тот же класс бага,
++   что у .cat-panel input выше). */
++.board-columns { display: flex; align-items: flex-start; gap: var(--space-4); overflow-x: auto; padding-bottom: var(--space-2); min-width: 0; }
++.board-col { width: 280px; flex-shrink: 0; min-width: 0; display: flex; flex-direction: column;
++  background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-top: 3px solid var(--c, var(--bs-border-color));
++  border-radius: var(--kt-radius); max-height: calc(100vh - 220px); }
++.board-col-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; font-weight: 600; min-width: 0; }
++.board-col-head .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--bs-secondary)); flex-shrink: 0; }
++.board-col-head .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.board-col-head .count { background: var(--bs-body-bg); color: var(--bs-secondary-color); border-radius: 10px; padding: 0 8px; font-size: var(--text-xs); font-weight: 500; }
++.board-col-head .final-mark { color: var(--bs-success); font-weight: 700; }
++.board-col-body { padding: 0 8px 8px; overflow-y: auto; min-height: 60px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
++.board-col-body.drag-over { background: rgba(var(--bs-primary-rgb), .08); border-radius: 6px; }
++.board-add-task { margin: 0 8px 8px; border-style: dashed; }
++.task-card { background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-left: 4px solid var(--c, var(--bs-border-color));
++  border-radius: var(--kt-radius); padding: 8px 10px; cursor: grab; min-width: 0; }
++.task-card.dragging { opacity: .4; }
++.task-card.overdue { box-shadow: 0 0 0 1px var(--bs-danger); }
++.task-card-title { font-weight: 600; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.task-card-client { font-size: var(--text-xs); color: var(--bs-secondary-color); display: flex; align-items: center; gap: 6px; margin-bottom: 6px; min-width: 0; }
++.task-card-client .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
++.task-card-menu-btn { margin-left: auto; flex-shrink: 0; }
++.task-card-foot { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); margin-top: 6px; }
++.task-card .pay { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 10px; white-space: nowrap; }
++.task-card .pay-yes { background: rgba(var(--bs-success-rgb), .15); color: var(--bs-success); }
++.task-card .pay-no { background: rgba(var(--bs-danger-rgb), .15); color: var(--bs-danger); }
++.task-card .due { padding: 1px 6px; border-radius: 4px; background: var(--bs-secondary-bg); color: var(--bs-secondary-color); }
++.task-card .due-soon { background: rgba(var(--bs-primary-rgb), .15); color: var(--bs-primary); font-weight: 600; }
++.task-card .due-overdue { background: rgba(var(--bs-danger-rgb), .15); color: var(--bs-danger); font-weight: 600; }
++.task-card .avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 10px; font-weight: 700;
++  background: rgba(var(--bs-primary-rgb), .15); color: var(--bs-primary); flex-shrink: 0; margin-left: auto; }
++.board-drop-placeholder { height: 48px; border: 2px dashed var(--bs-primary); border-radius: var(--kt-radius); background: rgba(var(--bs-primary-rgb), .06); }
++.board-add-column { width: 240px; flex-shrink: 0; border: 2px dashed var(--bs-border-color); border-radius: var(--kt-radius); padding: 14px;
++  text-align: center; color: var(--bs-secondary-color); background: transparent; }
++.board-add-column:hover { border-color: var(--bs-primary); color: var(--bs-primary); }
++.swatches { flex-wrap: wrap; }
++.swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; outline: 2px solid transparent; outline-offset: 1px; }
++.swatch.on { outline-color: var(--bs-body-color); }
++.board-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1090; max-width: min(560px, 92vw); }
++
++@media (max-width: 576px) {
++  .board-col { width: 85vw; }
++  .board-filters .form-select, .board-filters .form-control, .board-filters .cb { flex: 1 1 100%; max-width: none !important; }
++}
++
++/* ---- остатки (фаза 7, эталон prototype/index.html .kpis/.kpi) ---- */
++.stock-kpis { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-4); min-width: 0; }
++.stock-kpi { flex: 1 1 160px; min-width: 0; background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color);
++  border-radius: var(--kt-radius); padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: 4px; }
++.stock-kpi span { font-size: var(--text-xs); color: var(--bs-secondary-color); }
++.stock-kpi b { font-size: var(--text-xl); }
++
++@media (max-width: 576px) {
++  .stock-kpis { gap: var(--space-2); }
++  .stock-kpi { flex: 1 1 45%; padding: var(--space-2) var(--space-3); }
++  .stock-view .d-flex.flex-wrap .form-select, .stock-view .d-flex.flex-wrap .form-control, .stock-view .d-flex.flex-wrap .cb { flex: 1 1 100%; max-width: none !important; }
++}
+diff --git a/web/ssr/_shared/js/api.js b/web/ssr/_shared/js/api.js
+index b0ef45b..19938e8 100644
+--- a/web/ssr/_shared/js/api.js
++++ b/web/ssr/_shared/js/api.js
+@@ -22,9 +22,12 @@
+     return m ? m.content : '';
+   }
+ 
+-  function request(method, url, body) {
++  // opts.signal — AbortSignal для отменяемых фоновых запросов (доска отменяет их на
++  // pagehide/уходе со страницы, чтобы не долетал ответ уже после logout — BD-021).
++  function request(method, url, body, opts) {
+     var headers = { Accept: 'application/json' };
+     var init = { method: method, headers: headers, credentials: 'same-origin' };
++    if (opts && opts.signal) init.signal = opts.signal;
+     if (method !== 'GET' && method !== 'HEAD') {
+       headers['X-Csrf-Token'] = csrfToken();
+       if (body instanceof FormData) init.body = body;
+@@ -42,10 +45,10 @@
+ 
+   KT.ApiError = ApiError;
+   KT.api = {
+-    get: function (url) { return request('GET', url); },
+-    post: function (url, body) { return request('POST', url, body); },
+-    put: function (url, body) { return request('PUT', url, body); },
+-    patch: function (url, body) { return request('PATCH', url, body); },
+-    del: function (url) { return request('DELETE', url); }
++    get: function (url, opts) { return request('GET', url, undefined, opts); },
++    post: function (url, body, opts) { return request('POST', url, body, opts); },
++    put: function (url, body, opts) { return request('PUT', url, body, opts); },
++    patch: function (url, body, opts) { return request('PATCH', url, body, opts); },
++    del: function (url, opts) { return request('DELETE', url, undefined, opts); }
+   };
+ })();
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+new file mode 100644
+index 0000000..5ece891
+--- /dev/null
++++ b/web/ssr/_shared/js/board.js
+@@ -0,0 +1,815 @@
++/* KT.board — доска заказов «/» (rich-экран поверх JSON API, D30; эталон логики —
++   renderBoardView/cardHTML/renderBoard/moveTask/openColumn в prototype/index.html,
++   переложенные на Bootstrap 5 + KT.api/KT.uiDialog/KT.enhanceSelect этого проекта).
++
++   Данные — GET /api/v1/columns + ОДИН GET /api/v1/tasks (ADR-003), фильтры живут в
++   location.search. DnD — нативный HTML5 (dragstart/dragover/drop) с оптимистичным
++   переносом карточки и откатом при ошибке; на любом экране (в т.ч. ≤576px, где drag
++   неудобен) перенос доступен и через меню карточки «⋯ → Переместить в…» (ADR-106).
++
++   Весь пользовательский текст выводится через esc() (HTML-экранирование) — без
++   интерпретации HTML в данных (Security §, DoD фазы). */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++
++  var COLORS = ['#94A3B8', '#7C3AED', '#2563EB', '#D97706', '#059669', '#DB2777', '#DC2626', '#0891B2'];
++
++  // ---------- состояние ----------
++  var state = {
++    columns: [],
++    tasks: [],
++    assignees: [],
++    clients: [],
++    categories: [],
++    isAdmin: false,
++    viewerId: '',
++    filters: null,
++    editingTaskId: null,
++    editingColumnId: null,
++    lastKnownTasks: null // снапшот для отката DnD
++  };
++
++  // boardAbort — все фоновые GET доски (loadStatic/loadTasks/поиск клиента) уходят с этим
++  // signal. Отменяем их, как только страница реально начинает уходить — иначе фоновый
++  // GET (напр. loadTasks доски), отправленный ДО клика «Выйти», успевает получить ответ
++  // 401 УЖЕ после разлогина — HTTP-шум на чужой (по сути) странице (BD-021, найдено сводным
++  // E2E-гейтом на AU-005). Отменённый fetch не долетает до 'response' — Playwright §TD-4
++  // «чистая сеть» перестаёт его видеть.
++  // 'beforeunload'/'pagehide' — общая подстраховка, но на localhost они срабатывают СЛИШКОМ
++  // ПОЗДНО: браузер сначала ждёт ответ на сам POST /logout и только потом начинает
++  // навигацию/выгрузку документа, а к этому моменту параллельный быстрый localhost-GET
++  // (напр. тот же loadTasks) уже успевает получить ответ. Единственный НАДЁЖНЫЙ момент —
++  // submit самой формы logout (form[action="/logout"]): он происходит СИНХРОННО в том же
++  // тике, что и клик «Выйти», ДО того, как браузер вообще отправил POST — abort() отсюда
++  // гарантированно опережает и /logout, и любой другой ещё не завершившийся фоновый запрос.
++  var boardAbort = new AbortController();
++  document.addEventListener('submit', function (e) {
++    var f = e.target;
++    if (f && f.tagName === 'FORM' && f.getAttribute('action') === '/logout') boardAbort.abort();
++  }, true);
++  addEventListener('beforeunload', function () { boardAbort.abort(); });
++  addEventListener('pagehide', function () { boardAbort.abort(); });
++  function reqOpts() { return { signal: boardAbort.signal }; }
++  function isAbortError(err) { return err && (err.name === 'AbortError' || (err.code == null && /abort/i.test(err.message || ''))); }
++
++  function assigneeDefault() { return state.isAdmin ? 'all' : 'me'; }
++
++  function parseFilters() {
++    var p = new URLSearchParams(location.search);
++    return {
++      client_id: p.get('client_id') || '',
++      q: p.get('q') || '',
++      category_id: p.get('category_id') || '',
++      paid: p.get('paid') || 'all',
++      assignee: p.get('assignee') || assigneeDefault(),
++      due: p.get('due') || 'all'
++    };
++  }
++
++  function filtersSearch(f) {
++    var p = new URLSearchParams();
++    if (f.client_id) p.set('client_id', f.client_id);
++    if (f.q) p.set('q', f.q);
++    if (f.category_id) p.set('category_id', f.category_id);
++    if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
++    if (f.assignee && f.assignee !== assigneeDefault()) p.set('assignee', f.assignee);
++    if (f.due && f.due !== 'all') p.set('due', f.due);
++    var s = p.toString();
++    return s ? '?' + s : '';
++  }
++
++  function tasksQuery(f) {
++    var p = new URLSearchParams();
++    if (f.client_id) p.set('client_id', f.client_id);
++    if (f.q) p.set('q', f.q);
++    if (f.category_id) p.set('category_id', f.category_id);
++    if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
++    p.set('assignee', f.assignee || assigneeDefault());
++    if (f.due && f.due !== 'all') p.set('due', f.due);
++    p.set('limit', '500');
++    return '?' + p.toString();
++  }
++
++  function pushFiltersToUrl() {
++    var q = filtersSearch(state.filters);
++    history.replaceState(null, '', location.pathname + q);
++  }
++
++  // ---------- загрузка ----------
++  // GET /api/v1/clients клэмпит limit сервером до 200 (clients_service.go maxLimit) —
++  // грузим ТОЛЬКО первую (алфавитную) страницу для мгновенно отзывчивого списка «Все
++  // клиенты» в фильтре/форме заказа; клиенты дальше по алфавиту (за пределами 200,
++  // BD-009) находятся при вводе через серверный поиск remoteClientSearch — combobox.js
++  // сам вызывает его, когда в комбобоксе есть текст (см. wireClientCombobox ниже). Раньше
++  // здесь была догрузка ВСЕХ клиентов постранично (до 25 запросов) — она грузила доску
++  // десятками фоновых запросов, росла с числом клиентов и стала причиной гонки с logout
++  // (BD-021): запрос второй страницы получал 401 уже после разлогина.
++  function loadStatic() {
++    return Promise.all([
++      KT.api.get('/api/v1/columns?limit=100', reqOpts()),
++      KT.api.get('/api/v1/assignees?limit=1000', reqOpts()),
++      KT.api.get('/api/v1/clients?limit=200', reqOpts()),
++      KT.api.get('/api/v1/catalog-categories?kind=service&limit=200', reqOpts())
++    ]).then(function (r) {
++      state.columns = r[0].items;
++      state.assignees = r[1].items;
++      state.clients = r[2].items;
++      state.categories = r[3].items;
++    });
++  }
++
++  function loadTasks() {
++    return KT.api.get('/api/v1/tasks' + tasksQuery(state.filters), reqOpts()).then(function (r) {
++      state.tasks = r.items;
++      state.tasksTotal = r.total;
++    });
++  }
++
++  // remoteClientSearch — серверный поиск клиента по вводу (GET /api/v1/clients?q=…,
++  // ADR-003: ищет и по названию, и по телефону). Найденные клиенты добавляются в
++  // state.clients (dedup по id), чтобы пережить следующий fillFilterOptions/
++  // fillTaskFormOptions (они перестраивают <select> целиком из state.clients).
++  function remoteClientSearch(q) {
++    return KT.api.get('/api/v1/clients?q=' + encodeURIComponent(q) + '&limit=50', reqOpts()).then(function (r) {
++      r.items.forEach(function (c) {
++        if (!state.clients.some(function (x) { return x.id === c.id; })) state.clients.push(c);
++      });
++      return r.items.map(function (c) { return { value: c.id, text: c.company_name }; });
++    });
++  }
++
++  // wireClientCombobox — навешивает серверный поиск на комбобокс клиента (фильтр и форма
++  // заказа); combobox.js вызывает sel._cbFetchOptions(q), когда в его поле ввода есть текст.
++  function wireClientCombobox(sel) {
++    if (sel) sel._cbFetchOptions = remoteClientSearch;
++  }
++
++  function reloadAndRender() {
++    // AbortError (страница уходит, boardAbort.abort() на pagehide) — не настоящая ошибка,
++    // просто некому больше показывать доску; проглатываем, а не роняем в unhandled rejection.
++    return loadTasks().then(renderBoard).catch(function (err) {
++      if (isAbortError(err)) return;
++      throw err;
++    });
++  }
++
++  // ---------- фильтры ----------
++  function fillFilterOptions() {
++    var clientSel = $('#filter-client');
++    clientSel.innerHTML = '<option value="">Все клиенты</option>' + state.clients.map(function (c) {
++      return '<option value="' + esc(c.id) + '">' + esc(c.company_name) + '</option>';
++    }).join('');
++    wireClientCombobox(clientSel);
++
++    var catSel = $('#filter-category');
++    catSel.innerHTML = '<option value="">Все виды работ</option>' + state.categories.map(function (c) {
++      return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>';
++    }).join('');
++
++    var aSel = $('#filter-assignee');
++    aSel.innerHTML = '<option value="all">Все исполнители</option><option value="me">Мои</option>' + state.assignees.map(function (a) {
++      return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>';
++    }).join('');
++  }
++
++  function applyFiltersToForm() {
++    var f = state.filters;
++    $('#filter-client').value = f.client_id;
++    $('#filter-q').value = f.q;
++    $('#filter-category').value = f.category_id;
++    $('#filter-paid').value = f.paid;
++    $('#filter-assignee').value = f.assignee;
++    $('#filter-due').value = f.due;
++    // Все 5 select-фильтров превращены в комбобоксы (js/combobox.js) — после программной
++    // смены .value видимая кнопка не обновляется сама, нужен ручной _cbSync() на каждом
++    // (баг фазы 06: filter-paid/filter-due не синхронизировались после reload — BD-013).
++    ['#filter-client', '#filter-category', '#filter-paid', '#filter-assignee', '#filter-due'].forEach(function (sel) {
++      var el = $(sel);
++      if (el && el._cbSync) el._cbSync();
++    });
++  }
++
++  function bindFilters() {
++    function onChange(id, key) {
++      $(id).addEventListener('change', function (e) {
++        state.filters[key] = e.target.value;
++        pushFiltersToUrl();
++        reloadAndRender();
++      });
++    }
++    onChange('#filter-client', 'client_id');
++    onChange('#filter-category', 'category_id');
++    onChange('#filter-paid', 'paid');
++    onChange('#filter-assignee', 'assignee');
++    onChange('#filter-due', 'due');
++
++    var qTimer = null;
++    $('#filter-q').addEventListener('input', function (e) {
++      var v = e.target.value;
++      clearTimeout(qTimer);
++      qTimer = setTimeout(function () {
++        state.filters.q = v;
++        pushFiltersToUrl();
++        reloadAndRender();
++      }, 250);
++    });
++
++    $('#filter-reset').addEventListener('click', function () {
++      state.filters = { client_id: '', q: '', category_id: '', paid: 'all', assignee: assigneeDefault(), due: 'all' };
++      applyFiltersToForm();
++      pushFiltersToUrl();
++      reloadAndRender();
++    });
++  }
++
++  // ---------- рендер доски ----------
++  function due2Class(t) {
++    if (!t.due_date) return '';
++    var col = columnById(t.column_id);
++    if (col && col.is_final) return '';
++    var today = new Date(); today.setHours(0, 0, 0, 0);
++    var tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
++    var due = new Date(t.due_date + 'T00:00:00');
++    if (due < today) return 'overdue';
++    if (due <= tomorrow) return 'soon';
++    return '';
++  }
++  function fmtDate(iso) {
++    if (!iso) return '';
++    var p = iso.split('-');
++    return p[2] + '.' + p[1] + '.' + p[0];
++  }
++  function columnById(id) { return state.columns.filter(function (c) { return c.id === id; })[0]; }
++  function assigneeById(id) { return state.assignees.filter(function (a) { return a.id === id; })[0]; }
++
++  function cardHTML(t) {
++    var ds = due2Class(t);
++    var late = t.subtasks_late || 0;
++    return '' +
++      '<div class="task-card' + (ds === 'overdue' ? ' overdue' : '') + '" draggable="true" data-id="' + t.id + '" data-testid="task-card-' + t.id + '" style="--c:' + esc(columnColor(t.column_id)) + '">' +
++      '  <div class="d-flex align-items-start">' +
++      '    <div class="task-card-title">#' + t.id + ' ' + esc(t.title) + '</div>' +
++      '    <div class="dropdown task-card-menu-btn">' +
++      '      <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" aria-expanded="false" data-testid="task-card-menu-' + t.id + '">⋯</button>' +
++      '      <ul class="dropdown-menu dropdown-menu-end">' +
++      state.columns.filter(function (c) { return c.id !== t.column_id; }).map(function (c) {
++        return '<li><a class="dropdown-item task-move-link" href="#" data-task-id="' + t.id + '" data-column-id="' + c.id + '" data-testid="task-move-to-' + c.id + '">Переместить в «' + esc(c.name) + '»</a></li>';
++      }).join('') +
++      '      </ul>' +
++      '    </div>' +
++      '  </div>' +
++      '  <div class="task-card-client">🏢 <span class="name">' + esc(t.client_name) + '</span><span class="pay ' + (t.is_paid ? 'pay-yes' : 'pay-no') + '">' + (t.is_paid ? '✓ Оплачен' : 'Не оплачен') + '</span></div>' +
++      (t.subtasks_total ? '<div class="small text-body-secondary mb-1">☑ ' + t.subtasks_done + '/' + t.subtasks_total + (late ? ' · <span class="text-danger">⚠ ' + late + '</span>' : '') + '</div>' : '') +
++      '  <div class="task-card-foot">' +
++      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
++      (t.assignee_name ? '<span class="avatar" title="' + esc(t.assignee_name) + '">' + esc(initials(t.assignee_name)) + '</span>' : '') +
++      '  </div>' +
++      '</div>';
++  }
++  function initials(name) {
++    return String(name || '').trim().split(/\s+/).map(function (w) { return w[0]; }).slice(0, 2).join('').toUpperCase();
++  }
++  function columnColor(columnId) {
++    var c = columnById(columnId);
++    return c ? c.color : '#94A3B8';
++  }
++
++  function renderBoard() {
++    var board = $('#board');
++    var tasksByColumn = {};
++    state.columns.forEach(function (c) { tasksByColumn[c.id] = []; });
++    state.tasks.forEach(function (t) { if (tasksByColumn[t.column_id]) tasksByColumn[t.column_id].push(t); });
++
++    board.innerHTML = state.columns.map(function (col) {
++      var tasks = tasksByColumn[col.id] || [];
++      return '' +
++        '<section class="board-col" data-column-id="' + col.id + '" data-testid="board-column-' + col.id + '" style="--c:' + esc(col.color) + '">' +
++        '  <div class="board-col-head">' +
++        '    <i class="dot"></i><span class="name">' + esc(col.name) + '</span><span class="count">' + tasks.length + '</span>' +
++        (col.is_final ? '<span class="final-mark" title="Финальная колонка">✓</span>' : '') +
++        (state.isAdmin ? '<div class="dropdown"><button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" data-testid="column-menu-' + col.id + '">⋯</button>' +
++          '<ul class="dropdown-menu dropdown-menu-end">' +
++          '<li><a class="dropdown-item column-edit-link" href="#" data-column-id="' + col.id + '" data-testid="column-edit-' + col.id + '">Изменить</a></li>' +
++          '<li><a class="dropdown-item column-delete-link text-danger" href="#" data-column-id="' + col.id + '" data-testid="column-delete-' + col.id + '">Удалить</a></li>' +
++          '</ul></div>' : '') +
++        '  </div>' +
++        '  <div class="board-col-body" data-column-id="' + col.id + '" data-testid="column-body-' + col.id + '">' +
++        tasks.map(cardHTML).join('') +
++        '  </div>' +
++        '  <button type="button" class="btn btn-sm board-add-task" data-column-id="' + col.id + '" data-testid="column-add-task-' + col.id + '">+ Добавить заказ</button>' +
++        '</section>';
++    }).join('') + (state.isAdmin ? '<button type="button" class="board-add-column" id="board-add-column-btn" data-testid="board-add-column">+ Добавить колонку</button>' : '');
++
++    var shown = state.tasks.length;
++    $('#board-found') && ($('#board-found').textContent = shown === state.tasksTotal ? 'Заказов: ' + state.tasksTotal : 'Показаны первые ' + shown + ' из ' + state.tasksTotal);
++
++    bindColumnMenus();
++    bindTaskCards();
++    bindDnd();
++  }
++
++  function bindColumnMenus() {
++    $$('.column-edit-link').forEach(function (a) {
++      a.addEventListener('click', function (e) { e.preventDefault(); openColumnForm(columnById(a.dataset.columnId)); });
++    });
++    $$('.column-delete-link').forEach(function (a) {
++      a.addEventListener('click', function (e) { e.preventDefault(); deleteColumn(a.dataset.columnId); });
++    });
++    $$('.board-add-task').forEach(function (b) {
++      b.addEventListener('click', function () { openTaskForm(null, b.dataset.columnId); });
++    });
++    var addCol = $('#board-add-column-btn');
++    if (addCol) addCol.addEventListener('click', function () { openColumnForm(null); });
++  }
++
++  function bindTaskCards() {
++    $$('.task-card').forEach(function (el) {
++      el.addEventListener('click', function (e) {
++        if (e.target.closest('.dropdown')) return;
++        openTaskForm(taskById(+el.dataset.id));
++      });
++    });
++    $$('.task-move-link').forEach(function (a) {
++      a.addEventListener('click', function (e) {
++        e.preventDefault();
++        moveTaskToEnd(+a.dataset.taskId, a.dataset.columnId);
++      });
++    });
++  }
++
++  function taskById(id) { return state.tasks.filter(function (t) { return t.id === id; })[0]; }
++
++  // ---------- DnD ----------
++  var dragId = null;
++  var dragFromColumn = null;
++
++  function bindDnd() {
++    $$('.task-card').forEach(function (el) {
++      el.addEventListener('dragstart', function (e) {
++        dragId = +el.dataset.id;
++        var t = taskById(dragId);
++        dragFromColumn = t ? t.column_id : null;
++        e.dataTransfer.setData('text/plain', String(dragId));
++        e.dataTransfer.effectAllowed = 'move';
++        el.classList.add('dragging');
++      });
++      el.addEventListener('dragend', function () {
++        el.classList.remove('dragging');
++        $$('.board-drop-placeholder').forEach(function (p) { p.remove(); });
++        $$('.drag-over').forEach(function (b) { b.classList.remove('drag-over'); });
++      });
++    });
++
++    $$('.board-col-body').forEach(function (body) {
++      body.addEventListener('dragover', function (e) {
++        e.preventDefault();
++        $$('.drag-over').forEach(function (b) { if (b !== body) b.classList.remove('drag-over'); });
++        body.classList.add('drag-over');
++        var after = $$('.task-card:not(.dragging)', body).filter(function (c) {
++          var r = c.getBoundingClientRect();
++          return e.clientY < r.top + r.height / 2;
++        })[0] || null;
++        var ph = $('.board-drop-placeholder') || document.createElement('div');
++        ph.className = 'board-drop-placeholder';
++        if (after) body.insertBefore(ph, after); else body.appendChild(ph);
++      });
++      body.addEventListener('drop', function (e) {
++        e.preventDefault();
++        var ph = $('.board-drop-placeholder');
++        if (!ph || dragId == null) return;
++        var prevEl = ph.previousElementSibling && ph.previousElementSibling.classList.contains('task-card') ? ph.previousElementSibling : null;
++        var nextEl = ph.nextElementSibling && ph.nextElementSibling.classList.contains('task-card') ? ph.nextElementSibling : null;
++        var prevId = prevEl ? +prevEl.dataset.id : null;
++        var nextId = nextEl ? +nextEl.dataset.id : null;
++        var columnId = body.dataset.columnId;
++        var taskId = dragId;
++        ph.remove();
++        dragId = null;
++        performMove(taskId, columnId, prevId, nextId);
++      });
++    });
++  }
++
++  function moveTaskToEnd(taskId, columnId) {
++    var t = taskById(taskId);
++    if (!t || t.column_id === columnId) return;
++    var body = $('.board-col-body[data-column-id="' + columnId + '"]');
++    var last = body ? $$('.task-card', body).pop() : null;
++    performMove(taskId, columnId, last ? +last.dataset.id : null, null);
++  }
++
++  function performMove(taskId, columnId, prevId, nextId) {
++    // снапшот снимается ЗДЕСЬ, прямо перед собственной оптимистичной правкой этого move
++    // (не в dragstart/moveTaskToEnd) — иначе два быстрых move подряд затирают снапшот друг
++    // друга: rollback первого отката откатывал бы к состоянию ПОСЛЕ оптимистичной правки
++    // второго (баг из code review LOW-4).
++    state.lastKnownTasks = JSON.parse(JSON.stringify(state.tasks));
++    // оптимистичный перенос — локально переносим карточку сразу.
++    var idx = state.tasks.findIndex(function (t) { return t.id === taskId; });
++    if (idx >= 0) {
++      var t = state.tasks[idx];
++      var fromColumn = t.column_id;
++      t.column_id = columnId;
++      state.tasks.splice(idx, 1);
++      var insertAt = state.tasks.length;
++      if (nextId != null) {
++        var ni = state.tasks.findIndex(function (x) { return x.id === nextId; });
++        if (ni >= 0) insertAt = ni;
++      } else if (prevId != null) {
++        var pi = state.tasks.findIndex(function (x) { return x.id === prevId; });
++        if (pi >= 0) insertAt = pi + 1;
++      }
++      state.tasks.splice(insertAt, 0, t);
++      renderBoard();
++      if (fromColumn !== columnId) {
++        var col = columnById(columnId);
++        showBoardToast('#' + taskId + ': статус → «' + (col ? col.name : '') + '»', false);
++      }
++    }
++
++    KT.api.post('/api/v1/tasks/' + taskId + '/move', { column_id: columnId, prev_id: prevId, next_id: nextId })
++      .then(function (resp) {
++        state.lastKnownTasks = null;
++        applyTaskPatch(resp.task);
++        if (resp.warnings && resp.warnings.length) toastWarnings(resp.warnings);
++        KT.refreshNavBadge();
++      })
++      .catch(function (err) { handleMutationError(err, true); });
++  }
++
++  function applyTaskPatch(task) {
++    var idx = state.tasks.findIndex(function (t) { return t.id === task.id; });
++    if (idx >= 0) state.tasks[idx] = Object.assign({}, state.tasks[idx], task);
++    renderBoard();
++  }
++
++  function rollback() {
++    if (state.lastKnownTasks) {
++      state.tasks = state.lastKnownTasks;
++      state.lastKnownTasks = null;
++    }
++    renderBoard();
++  }
++
++  function handleMutationError(err, isMove) {
++    if (isMove) rollback();
++    if (err && err.code === 'SUBTASKS_NOT_DONE') {
++      var subs = (err.details && err.details.subtasks) || [];
++      var list = subs.map(function (s) { return s.service_name + ' (' + statusLabel(s.status) + ')'; }).join('\n• ');
++      KT.uiAlert((list ? '• ' + list : '') , 'Есть незавершённые услуги');
++      return;
++    }
++    if (err && err.code === 'TASK_VERSION_CONFLICT') {
++      KT.uiAlert(err.message || 'Заказ уже изменён, обновите', 'Конфликт версии');
++      reloadAndRender();
++      return;
++    }
++    KT.uiAlert((err && err.message) || 'Не удалось выполнить операцию', 'Ошибка');
++  }
++  function statusLabel(s) {
++    return { new: 'новая', in_progress: 'в работе', done: 'завершена' }[s] || s;
++  }
++
++  function showBoardToast(msg, isWarning) {
++    $$('.board-toast').forEach(function (el) { el.remove(); });
++    var el = document.createElement('div');
++    el.className = 'board-toast alert ' + (isWarning ? 'alert-warning' : 'alert-secondary') + ' shadow';
++    el.setAttribute('role', 'status');
++    el.textContent = msg;
++    document.body.appendChild(el);
++    setTimeout(function () { el.remove(); }, isWarning ? 6000 : 2500);
++  }
++
++  function toastWarnings(warnings) {
++    $$('.board-toast').forEach(function (el) { el.remove(); });
++    var el = document.createElement('div');
++    el.className = 'board-toast alert alert-warning shadow';
++    el.setAttribute('data-testid', 'toast-warnings');
++    el.setAttribute('role', 'alert');
++    var text = document.createElement('div');
++    text.textContent = '⚠ Внимание, товары на минимуме: ' + warnings.map(function (w) {
++      return w.name + ' (' + (w.kind === 'negative' ? 'не хватает' : 'на минимуме') + ')';
++    }).join(', ');
++    el.appendChild(text);
++    var link = document.createElement('a');
++    link.href = '/stock';
++    link.className = 'alert-link';
++    link.textContent = 'Открыть «Остатки»';
++    el.appendChild(link);
++    document.body.appendChild(el);
++    setTimeout(function () { el.remove(); }, 8000);
++  }
++
++  // ---------- форма заказа ----------
++  var taskModal = null;
++  var taskSaving = false;
++
++  function fillTaskFormOptions() {
++    var clientSel = $('#task-client');
++    clientSel.innerHTML = '<option value="">Выберите клиента</option>' + state.clients.map(function (c) {
++      return '<option value="' + esc(c.id) + '">' + esc(c.company_name) + '</option>';
++    }).join('');
++    wireClientCombobox(clientSel);
++
++    var colSel = $('#task-column');
++    colSel.innerHTML = state.columns.map(function (c) {
++      return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>';
++    }).join('');
++
++    var aSel = $('#task-assignee');
++    aSel.innerHTML = '<option value="">Не назначен</option>' + state.assignees.map(function (a) {
++      return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>';
++    }).join('');
++  }
++
++  // loadStatic грузит только первую страницу клиентов (limit=200) — не гарантирует, что
++  // клиент открываемого заказа/фильтра в неё попал. Без этого клиент в форме молча
++  // остаётся невыбранным (select.value не находит option), и PUT/POST уходит с пустым
++  // client_id → 400 VALIDATION. Подгружаем недостающего клиента отдельным запросом и
++  // добавляем в список перед тем, как выставлять .value.
++  function ensureClientOption(clientId) {
++    if (!clientId) return Promise.resolve();
++    var known = state.clients.some(function (c) { return c.id === clientId; });
++    if (known) return Promise.resolve();
++    return KT.api.get('/api/v1/clients/' + clientId, reqOpts()).then(function (c) {
++      state.clients = [c].concat(state.clients);
++    }).catch(function () { /* клиент мог быть удалён — оставляем список как есть */ });
++  }
++
++  function openTaskForm(task, defaultColumnId) {
++    ensureClientOption(task ? task.client_id : null).then(function () {
++      fillTaskFormOptions();
++      state.editingTaskId = task ? task.id : null;
++      $('#task-modal-title').textContent = task ? ('Заказ #' + task.id) : 'Новый заказ';
++      $('#task-title').value = task ? task.title : '';
++      $('#task-client').value = task ? task.client_id : '';
++      $('#task-column').value = task ? task.column_id : (defaultColumnId || (state.columns[0] && state.columns[0].id) || '');
++      $('#task-assignee').value = task && task.assignee_id ? task.assignee_id : '';
++      $('#task-due').value = task && task.due_date ? task.due_date : '';
++      var paid = $('#task-paid');
++      paid.checked = !!(task && task.is_paid);
++      paid.disabled = !state.isAdmin;
++      ['#task-client', '#task-column', '#task-assignee'].forEach(function (sel) {
++        var el = $(sel);
++        if (el._cbSync) el._cbSync();
++      });
++      $('#task-error').classList.add('d-none');
++      $('#task-error').textContent = '';
++      finishOpenTaskForm(task);
++    });
++  }
++
++  function finishOpenTaskForm(task) {
++    var canDeleteTask = !!(task && state.isAdmin);
++    var deleteBtn = $('#task-delete-btn');
++    deleteBtn.classList.toggle('d-none', !canDeleteTask);
++    // testid снимается вместе с видимостью — «кнопки нет» у executor не только визуально,
++    // но и по контракту testid (AC-012, BD-012): узел статичен в HTML модалки, поэтому
++    // просто d-none недостаточно — getByTestId должен находить 0 элементов, не скрытый.
++    if (canDeleteTask) deleteBtn.setAttribute('data-testid', 'task-delete');
++    else deleteBtn.removeAttribute('data-testid');
++    $('#task-save-btn').disabled = false;
++    taskSaving = false;
++
++    if (!taskModal) taskModal = new bootstrap.Modal($('#task-modal'));
++    taskModal.show();
++  }
++
++  function taskFormPayload() {
++    var due = $('#task-due').value;
++    var assignee = $('#task-assignee').value;
++    // is_paid отправляется ВСЕГДА, даже когда чекбокс disabled у executor: сервис
++    // трактует отсутствующее поле как false (полная замена карточки, tasks_service.go
++    // Update), а не «оставить как было» — не послать текущее значение означало бы
++    // молча снять оплату при любой правке заказа исполнителем.
++    return {
++      title: $('#task-title').value.trim(),
++      client_id: $('#task-client').value,
++      column_id: $('#task-column').value,
++      assignee_id: assignee || null,
++      due_date: due || null,
++      is_paid: $('#task-paid').checked
++    };
++  }
++
++  function showTaskError(msg) {
++    var el = $('#task-error');
++    el.textContent = msg;
++    el.classList.remove('d-none');
++  }
++
++  function bindTaskForm() {
++    $('#task-form-el').addEventListener('submit', function (e) {
++      e.preventDefault();
++      if (taskSaving) return; // защита от двойного клика/двойного submit
++      taskSaving = true;
++      $('#task-save-btn').disabled = true;
++
++      var payload = taskFormPayload();
++      var req;
++      if (state.editingTaskId) {
++        var current = taskById(state.editingTaskId);
++        payload.version = current ? current.version : null;
++        req = KT.api.put('/api/v1/tasks/' + state.editingTaskId, payload);
++      } else {
++        req = KT.api.post('/api/v1/tasks', payload);
++      }
++      var wasCreate = !state.editingTaskId;
++      req.then(function (resp) {
++        taskModal.hide();
++        applyTaskPatch(resp.task);
++        var after = wasCreate ? reloadAndRender() : Promise.resolve();
++        return after.then(function () {
++          if (resp.warnings && resp.warnings.length) toastWarnings(resp.warnings);
++          KT.refreshNavBadge();
++        });
++      }).catch(function (err) {
++        taskSaving = false;
++        $('#task-save-btn').disabled = false;
++        if (err && err.code === 'TASK_VERSION_CONFLICT') {
++          taskModal.hide();
++          KT.uiAlert(err.message || 'Заказ уже изменён, обновите', 'Конфликт версии');
++          reloadAndRender();
++          return;
++        }
++        if (err && err.fields && err.fields.length) {
++          showTaskError(err.fields.map(function (f) { return f.message; }).join('; '));
++          return;
++        }
++        showTaskError((err && err.message) || 'Не удалось сохранить заказ');
++      });
++    });
++
++    $('#task-delete-btn').addEventListener('click', function () {
++      var id = state.editingTaskId;
++      if (!id) return;
++      KT.uiConfirm('Удалить заказ #' + id + '? Товары вернутся на склад.').then(function (ok) {
++        if (!ok) return;
++        KT.api.del('/api/v1/tasks/' + id).then(function (resp) {
++          taskModal.hide();
++          state.tasks = state.tasks.filter(function (t) { return t.id !== id; });
++          renderBoard();
++          if (resp.warnings && resp.warnings.length) toastWarnings(resp.warnings);
++          KT.refreshNavBadge();
++        }).catch(function (err) {
++          showTaskError((err && err.message) || 'Не удалось удалить заказ');
++        });
++      });
++    });
++
++    $('#task-add-btn').addEventListener('click', function () { openTaskForm(null); });
++  }
++
++  // ---------- форма колонки ----------
++  var columnModal = null;
++
++  function openColumnForm(col) {
++    state.editingColumnId = col ? col.id : null;
++    $('#column-modal-title').textContent = col ? 'Колонка «' + col.name + '»' : 'Новая колонка';
++    $('#column-name').value = col ? col.name : '';
++    $('#column-color').value = col ? col.color : COLORS[0];
++    $('#column-position').value = col ? col.position : (state.columns.length + 1);
++    $('#column-final').checked = !!(col && col.is_final);
++    $('#column-consumes').checked = !!(col && col.consumes_stock);
++    $('#column-error').classList.add('d-none');
++    $('#column-error').textContent = '';
++    // hasTasks — «есть заказы в колонке» для клиентского гарда кнопки «Удалить»: НЕ по
++    // одному state.tasks (список доски обрезан limit=500 и фильтрами — на выросшем стенде
++    // задачи дальней/новой колонки могли не попасть в первые 500 строк, хотя физически
++    // существуют, из-за чего гард молча включал кнопку для непустой колонки, BD-006).
++    // col.tasks_count — точный COUNT(*) с сервера (columns_repo.go List), не режется
++    // limit/фильтрами доски, но обновляется только при полном reload/column CRUD; OR с
++    // state.tasks подстраховывает противоположный случай — заказ перенесён В колонку
++    // локально (DnD/меню) в этой же сессии без полного reload, col.tasks_count ещё не
++    // обновился, но в state.tasks перенос уже отражён.
++    var hasTasks = !!(col && (col.tasks_count > 0 || state.tasks.some(function (t) { return t.column_id === col.id; })));
++    $('#column-delete-btn').classList.toggle('d-none', !col);
++    $('#column-delete-btn').disabled = !!hasTasks;
++    $('#column-delete-btn').title = hasTasks ? 'Сначала перенесите заказы из колонки' : '';
++    $('#column-save-btn').disabled = false;
++
++    var sw = $('#column-swatches');
++    sw.innerHTML = COLORS.map(function (c) {
++      return '<button type="button" class="swatch' + (c.toUpperCase() === $('#column-color').value.toUpperCase() ? ' on' : '') + '" data-color="' + c + '" style="background:' + c + '" aria-label="' + c + '"></button>';
++    }).join('');
++    $$('.swatch', sw).forEach(function (b) {
++      b.addEventListener('click', function () {
++        $('#column-color').value = b.dataset.color;
++        $$('.swatch', sw).forEach(function (s) { s.classList.toggle('on', s === b); });
++      });
++    });
++
++    if (!columnModal) columnModal = new bootstrap.Modal($('#column-modal'));
++    columnModal.show();
++  }
++
++  function showColumnError(msg) {
++    var el = $('#column-error');
++    el.textContent = msg;
++    el.classList.remove('d-none');
++  }
++
++  function bindColumnForm() {
++    $('#column-form-el').addEventListener('submit', function (e) {
++      e.preventDefault();
++      var btn = $('#column-save-btn');
++      if (btn.disabled) return;
++      btn.disabled = true;
++
++      var payload = {
++        name: $('#column-name').value.trim(),
++        color: $('#column-color').value.trim(),
++        is_final: $('#column-final').checked,
++        consumes_stock: $('#column-consumes').checked,
++        position: $('#column-position').value ? +$('#column-position').value : null
++      };
++      var req = state.editingColumnId
++        ? KT.api.put('/api/v1/columns/' + state.editingColumnId, payload)
++        : KT.api.post('/api/v1/columns', payload);
++      req.then(function (resp) {
++        columnModal.hide();
++        return loadStatic().then(function () {
++          // loadStatic() перечитал state.clients заново (только первая страница) — если
++          // клиент текущего фильтра был найден раньше через remoteClientSearch/
++          // ensureClientOption и лежал за пределами первой страницы, он потерялся бы молча
++          // (BD-009 повторно, теперь через column CRUD).
++          return ensureClientOption(state.filters.client_id);
++        }).then(function () {
++          fillFilterOptions();
++          return reloadAndRender();
++        }).then(function () {
++          if (resp.warnings && resp.warnings.length) toastWarnings(resp.warnings);
++        });
++      }).catch(function (err) {
++        btn.disabled = false;
++        if (err && err.fields && err.fields.length) {
++          showColumnError(err.fields.map(function (f) { return f.message; }).join('; '));
++          return;
++        }
++        showColumnError((err && err.message) || 'Не удалось сохранить колонку');
++      });
++    });
++
++    $('#column-add-btn').addEventListener('click', function () { openColumnForm(null); });
++
++    $('#column-delete-btn').addEventListener('click', function () {
++      var id = state.editingColumnId;
++      if (!id) return;
++      deleteColumn(id).then(function (ok) { if (ok) columnModal.hide(); });
++    });
++  }
++
++  // Возвращает Promise<boolean> — true, если колонка удалена (для закрытия формы вызывающим).
++  function deleteColumn(id) {
++    var col = columnById(id);
++    return KT.uiConfirm('Удалить колонку «' + (col ? col.name : '') + '»?').then(function (ok) {
++      if (!ok) return false;
++      return KT.api.del('/api/v1/columns/' + id)
++        .then(function () { return loadStatic(); })
++        .then(function () { return ensureClientOption(state.filters.client_id); })
++        .then(function () { fillFilterOptions(); return reloadAndRender(); })
++        .then(function () { return true; })
++        .catch(function (err) {
++          KT.uiAlert((err && err.message) || 'Не удалось удалить колонку', 'Нельзя удалить колонку');
++          return false;
++        });
++    });
++  }
++
++  // ---------- инициализация ----------
++  function init() {
++    var root = $('#board');
++    if (!root) return; // страница без доски
++    state.isAdmin = root.dataset.isAdmin === 'true';
++    state.viewerId = root.dataset.viewerId || '';
++    state.filters = parseFilters();
++
++    loadStatic().then(function () {
++      // клиент фильтра из URL мог не попасть в первую страницу state.clients (BD-009) —
++      // догружаем его отдельно, иначе #filter-client молча остаётся на «Все клиенты».
++      return ensureClientOption(state.filters.client_id);
++    }).then(function () {
++      fillFilterOptions();
++      applyFiltersToForm();
++      bindFilters();
++      bindTaskForm();
++      if (state.isAdmin) bindColumnForm();
++      return reloadAndRender();
++    }).catch(function (err) {
++      if (isAbortError(err)) return; // страница уходит (logout/навигация) — доска больше не нужна
++      root.innerHTML = '<div class="empty-state">Не удалось загрузить доску' + (err && err.message ? ': ' + esc(err.message) : '') + '</div>';
++    });
++  }
++
++  KT.board = { init: init };
++  document.addEventListener('DOMContentLoaded', init);
++})();
+diff --git a/web/ssr/_shared/js/combobox.js b/web/ssr/_shared/js/combobox.js
+index 1e0b0bc..9688399 100644
+--- a/web/ssr/_shared/js/combobox.js
++++ b/web/ssr/_shared/js/combobox.js
+@@ -83,8 +83,18 @@
+         var a = list.querySelector('.cb-opt.active');
+         if (a) a.scrollIntoView({ block: 'nearest' });
+       }
+-      function draw() {
+-        var q = inp.value.trim().toLowerCase();
++      function renderFlatItems(opts, q) {
++        // Плоский рендер (без optgroup) — общий хвост для локального и серверного поиска.
++        items = opts;
++        var html = opts.map(function (o, i) {
++          return '<div class="cb-opt' + (o.value === sel.value ? ' sel' : '') + '" role="option" data-i="' + i + '">' +
++            highlight(o.textContent, q) + (o.dataset.hint ? '<small>' + highlight(o.dataset.hint, q) + '</small>' : '') + '</div>';
++        }).join('');
++        list.innerHTML = html || '<div class="cb-empty">Ничего не найдено</div>';
++        active = q ? 0 : Math.max(0, items.findIndex(function (o) { return o.value === sel.value; }));
++        mark();
++      }
++      function drawLocal(q) {
+         var html = '';
+         items = [];
+         [].forEach.call(sel.children, function (node) {
+@@ -104,6 +114,29 @@
+         active = q ? 0 : Math.max(0, items.findIndex(function (o) { return o.value === sel.value; }));
+         mark();
+       }
++      // remoteToken — защита от гонки: ответ устаревшего запроса (юзер уже допечатал
++      // дальше) игнорируется, если пришёл после более свежего запроса.
++      var remoteToken = 0, remoteTimer = null;
++      function drawRemote(q) {
++        clearTimeout(remoteTimer);
++        var token = ++remoteToken;
++        list.innerHTML = '<div class="cb-empty">Поиск…</div>';
++        remoteTimer = setTimeout(function () {
++          sel._cbFetchOptions(q).then(function (results) {
++            if (token !== remoteToken) return;
++            var opts = results.map(function (r) { return ensureOption(sel, r.value, r.text); });
++            renderFlatItems(opts, q);
++          }).catch(function () {
++            if (token !== remoteToken) return;
++            list.innerHTML = '<div class="cb-empty">Ошибка поиска</div>';
++          });
++        }, 250);
++      }
++      function draw() {
++        var q = inp.value.trim().toLowerCase();
++        if (sel._cbFetchOptions && q) { drawRemote(q); return; }
++        drawLocal(q);
++      }
+       function choose(i) {
+         var o = items[i];
+         if (!o) return;
+@@ -112,8 +145,20 @@
+         if (btn.isConnected) btn.focus();
+       }
+       function onOutside(e) { if (!dd.contains(e.target) && !btn.contains(e.target)) close(); }
+-      function onScroll(e) { if (!dd.contains(e.target)) close(); }
++      // openedAt — короткая «защита» сразу после открытия: клик по кнопке, которая была
++      // не полностью видна (частично за нижним краем экрана — обычный случай на длинных
++      // страницах: список клиентов на сотни строк, доска со множеством карточек), браузер
++      // сначала докручивает страницу к кнопке САМ (программный scrollIntoView реального
++      // клика или Playwright-действия), и это НАСТОЯЩЕЕ событие `scroll` документа иногда
++      // долетает уже ПОСЛЕ open() — без защиты список закрывался тем же кликом, которым
++      // был открыт (найдено регрессией SH-020/022: список клиентов вырос настолько, что
++      // внедрённый тестом select уходил на тысячи пикселей вниз). Игнорируем scroll-закрытие
++      // первые 300мс — реальный «пользователь скроллит мимо» после этого работает как раньше.
++      var openedAt = Date.now();
++      function onScroll(e) { if (Date.now() - openedAt < 300) return; if (!dd.contains(e.target)) close(); }
+       function close() {
++        clearTimeout(remoteTimer);
++        remoteToken++; // гасит уже летящий remote-запрос — его ответ больше некуда рисовать
+         dd.remove();
+         document.removeEventListener('mousedown', onOutside, true);
+         document.removeEventListener('scroll', onScroll, true);
+@@ -142,6 +187,21 @@
+     }
+   }
+ 
++  // ensureOption — добавляет <option> в скрытый select, если такого value ещё нет
++  // (используется удалённым поиском ниже — найденную по вводу запись нужно сделать
++  // настоящей option, иначе sel.value = o.value молча не применится, DOM select
++  // игнорирует значения без соответствующего option).
++  function ensureOption(sel, value, text) {
++    var existing = sel.querySelector('option[value="' + CSS.escape(String(value)) + '"]');
++    if (existing) { existing.textContent = text; return existing; }
++    var o = document.createElement('option');
++    o.value = value;
++    o.textContent = text;
++    sel.appendChild(o);
++    return o;
++  }
++  KT.comboboxEnsureOption = ensureOption;
++
+   function scan(root) {
+     if (root.matches && root.matches(SELECTOR)) enhanceSelect(root);
+     if (root.querySelectorAll) root.querySelectorAll(SELECTOR).forEach(enhanceSelect);
+diff --git a/web/ssr/_shared/js/nav-badge.js b/web/ssr/_shared/js/nav-badge.js
+new file mode 100644
+index 0000000..a77f528
+--- /dev/null
++++ b/web/ssr/_shared/js/nav-badge.js
+@@ -0,0 +1,25 @@
++/* KT.refreshNavBadge — счётчик рисковых товаров в пункте меню «Остатки» (ADR-004, AC-016):
++   GET /api/v1/stock/summary → risk_count → [data-nav-badge="/stock"] (hidden при 0).
++   Подключается после api.js; на страницах, где элемента нет (гость/раздел скрыт), — no-op.
++   Инвалидация после мутаций доски/остатков — вызовом KT.refreshNavBadge() из board.js/
++   stock.js (design-go-layers.md §Frontend Modules). */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  KT.refreshNavBadge = function () {
++    var el = document.querySelector('[data-nav-badge="/stock"]');
++    if (!el || !KT.api) return;
++    KT.api.get('/api/v1/stock/summary').then(function (summary) {
++      var n = (summary && summary.risk_count) || 0;
++      el.textContent = n;
++      el.hidden = n === 0;
++    }).catch(function () {
++      /* бейдж — не критичная функциональность страницы, ошибку тихо игнорируем */
++    });
++  };
++
++  document.addEventListener('DOMContentLoaded', function () {
++    KT.refreshNavBadge();
++  });
++})();
+diff --git a/web/ssr/_shared/js/stock.js b/web/ssr/_shared/js/stock.js
+new file mode 100644
+index 0000000..f8c1952
+--- /dev/null
++++ b/web/ssr/_shared/js/stock.js
+@@ -0,0 +1,209 @@
++/* KT.stock — экран «Остатки» «/stock» (rich-экран поверх JSON API, D30; эталон логики —
++   renderStock в prototype/index.html, переложенный на Bootstrap 5 + KT.api/KT.enhanceSelect
++   этого проекта).
++
++   Данные — GET /api/v1/stock/summary (KPI-плитки) + GET /api/v1/stock?scope=&q= (таблица,
++   переключатель «рисковые/все», design-go-layers.md §Enum StockScope). Правка остатка —
++   PUT /api/v1/stock/:product_id, доступна только admin (кнопка правки не рендерится
++   в DOM для executor — testid отсутствует, а не просто скрыт, тот же приём, что и
++   task-delete в board.js). После успешной правки — KT.refreshNavBadge() (ADR-004).
++
++   Весь пользовательский текст выводится через esc() (HTML-экранирование, Security §). */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++
++  var state = {
++    rows: [],
++    summary: null,
++    scope: 'risky',
++    q: '',
++    isAdmin: false,
++    editingProductId: null
++  };
++
++  // ---------- загрузка ----------
++  function loadSummary() {
++    return KT.api.get('/api/v1/stock/summary').then(function (r) {
++      state.summary = r;
++      renderKpis();
++    });
++  }
++
++  function loadList() {
++    var p = new URLSearchParams();
++    p.set('scope', state.scope);
++    if (state.q) p.set('q', state.q);
++    p.set('limit', '1000');
++    return KT.api.get('/api/v1/stock?' + p.toString()).then(function (r) {
++      state.rows = r.items;
++      renderTable();
++    });
++  }
++
++  function reloadAll() {
++    return Promise.all([loadSummary(), loadList()]);
++  }
++
++  // ---------- KPI ----------
++  function renderKpis() {
++    var s = state.summary;
++    if (!s) return;
++    $('#stock-kpi-total').textContent = s.products_total;
++    $('#stock-kpi-low').textContent = s.low_count;
++    $('#stock-kpi-out').textContent = s.out_count;
++    $('#stock-kpi-will-low').textContent = s.will_low_count;
++  }
++
++  // ---------- таблица ----------
++  function stateBadge(row) {
++    switch (row.state) {
++      case 'out': return '<span class="stock-out">нет в наличии</span>';
++      case 'low': return '<span class="stock-low">⚠ на минимуме</span>';
++      case 'will_low': return '<span class="stock-low">станет минимумом после заказов</span>';
++      default: return '<span class="text-body-secondary">норма</span>';
++    }
++  }
++
++  function rowHTML(r) {
++    var whereabouts = [r.place, r.box ? ('коробка ' + r.box) : ''].filter(Boolean).join(' · ') || '—';
++    var stockCls = Number(r.stock) < 0 ? 'stock-out' : (r.state === 'low' ? 'stock-low' : '');
++    var forecastCls = r.state === 'will_low' ? 'stock-low' : '';
++    return '' +
++      '<tr data-testid="stock-row-' + esc(r.product_id) + '">' +
++      '  <td><b>' + esc(r.name) + '</b></td>' +
++      '  <td class="d-none d-md-table-cell text-body-secondary small">' + esc(whereabouts) + '</td>' +
++      '  <td class="' + stockCls + '">' + esc(String(r.stock)) + ' ' + esc(r.unit) + (Number(r.stock) < 0 ? ' (долг)' : '') + '</td>' +
++      '  <td>' + esc(String(r.min_stock)) + '</td>' +
++      '  <td class="d-none d-md-table-cell">' + esc(String(r.pending)) + '</td>' +
++      '  <td class="d-none d-md-table-cell ' + forecastCls + '">' + esc(String(r.forecast)) + '</td>' +
++      '  <td>' + stateBadge(r) + '</td>' +
++      '  <td class="text-end">' + (state.isAdmin ?
++        '<button type="button" class="btn btn-sm btn-outline-secondary stock-edit-btn" data-product-id="' + esc(r.product_id) + '" data-testid="stock-edit-' + esc(r.product_id) + '">Изменить</button>' : '') +
++      '  </td>' +
++      '</tr>';
++  }
++
++  function renderTable() {
++    $('#stock-tbody').innerHTML = state.rows.map(rowHTML).join('');
++    $('#stock-empty').classList.toggle('d-none', state.rows.length > 0);
++    bindRowButtons();
++  }
++
++  function bindRowButtons() {
++    $$('.stock-edit-btn').forEach(function (btn) {
++      btn.addEventListener('click', function () { openEditModal(btn.dataset.productId); });
++    });
++  }
++
++  function rowById(productId) {
++    return state.rows.filter(function (r) { return r.product_id === productId; })[0];
++  }
++
++  // ---------- фильтры ----------
++  function bindScope() {
++    $('#stock-scope').addEventListener('change', function (e) {
++      state.scope = e.target.value;
++      loadList();
++    });
++  }
++
++  function bindSearch() {
++    var timer = null;
++    $('#stock-q').addEventListener('input', function (e) {
++      var v = e.target.value;
++      clearTimeout(timer);
++      timer = setTimeout(function () {
++        state.q = v;
++        loadList();
++      }, 250);
++    });
++  }
++
++  // ---------- модалка правки остатка (admin) ----------
++  var stockModal = null;
++  var stockSaving = false;
++
++  function openEditModal(productId) {
++    var row = rowById(productId);
++    if (!row) return;
++    state.editingProductId = productId;
++    $('#stock-modal-title').textContent = 'Остаток «' + row.name + '»';
++    $('#stock-value').value = row.stock;
++    $('#stock-error').classList.add('d-none');
++    $('#stock-error').textContent = '';
++    $('#stock-save-btn').disabled = false;
++    stockSaving = false;
++    if (!stockModal) stockModal = new bootstrap.Modal($('#stock-modal'));
++    stockModal.show();
++  }
++
++  function showError(msg) {
++    var el = $('#stock-error');
++    el.textContent = msg;
++    el.classList.remove('d-none');
++  }
++
++  function bindForm() {
++    $('#stock-form-el').addEventListener('submit', function (e) {
++      e.preventDefault();
++      if (stockSaving) return; // защита от двойного клика/двойного submit
++
++      var raw = $('#stock-value').value.trim();
++      var n = Number(raw);
++      if (raw === '' || Number.isNaN(n)) {
++        showError('Введите число');
++        return;
++      }
++
++      stockSaving = true;
++      $('#stock-save-btn').disabled = true;
++
++      KT.api.put('/api/v1/stock/' + state.editingProductId, { stock: n })
++        .then(function () {
++          stockModal.hide();
++          // строка могла выйти из scope=risky (перестала быть рисковой) или наоборот —
++          // проще перезагрузить и таблицу, и KPI, чем патчить локально.
++          return reloadAll();
++        })
++        .then(function () {
++          KT.refreshNavBadge();
++        })
++        .catch(function (err) {
++          stockSaving = false;
++          $('#stock-save-btn').disabled = false;
++          if (err && err.fields && err.fields.length) {
++            showError(err.fields.map(function (f) { return f.message; }).join('; '));
++            return;
++          }
++          showError((err && err.message) || 'Не удалось сохранить остаток');
++        });
++    });
++  }
++
++  // ---------- инициализация ----------
++  function init() {
++    var root = $('#stock');
++    if (!root) return; // страница без экрана остатков
++    state.isAdmin = root.dataset.isAdmin === 'true';
++
++    bindScope();
++    bindSearch();
++    bindForm();
++
++    reloadAll().catch(function (err) {
++      root.innerHTML = '<div class="empty-state">Не удалось загрузить остатки' + (err && err.message ? ': ' + esc(err.message) : '') + '</div>';
++    });
++  }
++
++  KT.stock = { init: init };
++  document.addEventListener('DOMContentLoaded', init);
++})();
+diff --git a/web/ssr/board/templates/pages/board.html b/web/ssr/board/templates/pages/board.html
+new file mode 100644
+index 0000000..76766b7
+--- /dev/null
++++ b/web/ssr/board/templates/pages/board.html
+@@ -0,0 +1,133 @@
++{{ define "actions" }}
++<button type="button" class="btn btn-primary btn-sm" id="task-add-btn" data-testid="task-add">+ Заказ</button>
++{{ if .IsAdmin }}
++<button type="button" class="btn btn-outline-secondary btn-sm" id="column-add-btn" data-testid="column-add">+ Колонка</button>
++{{ end }}
++{{ end }}
++
++{{ define "content" }}
++<div class="board-filters d-flex flex-wrap gap-2 align-items-center mb-3" data-testid="board-filters">
++  <select class="form-select form-select-sm" id="filter-client" data-testid="filter-client" style="max-width:220px">
++    <option value="">Все клиенты</option>
++  </select>
++  <input type="search" class="form-control form-control-sm" id="filter-q" data-testid="filter-q"
++         placeholder="Поиск: №, название, клиент" style="max-width:260px" autocomplete="off">
++  <select class="form-select form-select-sm" id="filter-category" data-testid="filter-category" style="max-width:200px">
++    <option value="">Все виды работ</option>
++  </select>
++  <select class="form-select form-select-sm" id="filter-paid" data-testid="filter-paid" style="max-width:160px">
++    <option value="all">Оплата: все</option>
++    <option value="paid">Оплачен</option>
++    <option value="unpaid">Не оплачен</option>
++  </select>
++  <select class="form-select form-select-sm" id="filter-assignee" data-testid="filter-assignee" style="max-width:200px">
++    <option value="all">Все исполнители</option>
++    <option value="me">Мои</option>
++  </select>
++  <select class="form-select form-select-sm" id="filter-due" data-testid="filter-due" style="max-width:180px">
++    <option value="all">Любой срок</option>
++    <option value="soon">Горит (сегодня/завтра, просрочено)</option>
++    <option value="overdue">Только просроченные</option>
++  </select>
++  <button type="button" class="btn btn-outline-secondary btn-sm" id="filter-reset" data-testid="filter-reset">Сбросить</button>
++  <span class="text-body-secondary small ms-auto" data-testid="board-found"></span>
++</div>
++
++<div id="board" class="board-columns" data-testid="board-root"
++     data-viewer-id="{{ .ViewerID }}" data-is-admin="{{ .IsAdmin }}">
++  <div class="empty-state" data-testid="board-loading">Загрузка доски…</div>
++</div>
++
++<!-- Модалка заказа (D25) -->
++<div class="modal fade" id="task-modal" tabindex="-1" aria-hidden="true" data-testid="task-form">
++  <div class="modal-dialog">
++    <form class="modal-content" id="task-form-el" novalidate>
++      <div class="modal-header">
++        <h2 class="modal-title fs-5" id="task-modal-title">Новый заказ</h2>
++        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++      </div>
++      <div class="modal-body">
++        <div class="alert alert-danger d-none" id="task-error" data-testid="task-error"></div>
++        <div class="mb-3">
++          <label class="form-label" for="task-title">Название *</label>
++          <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
++        </div>
++        <div class="mb-3">
++          <label class="form-label" for="task-client">Клиент *</label>
++          <select class="form-select" id="task-client" data-testid="task-client" required>
++            <option value="">Выберите клиента</option>
++          </select>
++        </div>
++        <div class="mb-3">
++          <label class="form-label" for="task-column">Колонка *</label>
++          <select class="form-select" id="task-column" data-testid="task-column" required></select>
++        </div>
++        <div class="mb-3">
++          <label class="form-label" for="task-assignee">Ответственный</label>
++          <select class="form-select" id="task-assignee" data-testid="task-assignee">
++            <option value="">Не назначен</option>
++          </select>
++        </div>
++        <div class="mb-3">
++          <label class="form-label" for="task-due">Срок</label>
++          <input type="date" class="form-control" id="task-due" data-testid="task-due">
++        </div>
++        <div class="form-check">
++          <input type="checkbox" class="form-check-input" id="task-paid" data-testid="task-paid">
++          <label class="form-check-label" for="task-paid">Оплачен</label>
++        </div>
++      </div>
++      <div class="modal-footer">
++        <button type="button" class="btn btn-outline-danger me-auto d-none" id="task-delete-btn" data-testid="task-delete">Удалить</button>
++        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
++        <button type="submit" class="btn btn-primary" id="task-save-btn" data-testid="task-save">Сохранить</button>
++      </div>
++    </form>
++  </div>
++</div>
++
++<!-- Модалка колонки (admin, SD-005) -->
++<div class="modal fade" id="column-modal" tabindex="-1" aria-hidden="true" data-testid="column-form">
++  <div class="modal-dialog">
++    <form class="modal-content" id="column-form-el" novalidate>
++      <div class="modal-header">
++        <h2 class="modal-title fs-5" id="column-modal-title">Новая колонка</h2>
++        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++      </div>
++      <div class="modal-body">
++        <div class="alert alert-danger d-none" id="column-error" data-testid="column-error"></div>
++        <div class="mb-3">
++          <label class="form-label" for="column-name">Название *</label>
++          <input class="form-control" id="column-name" data-testid="column-name" maxlength="60" required>
++        </div>
++        <div class="mb-3">
++          <label class="form-label" for="column-color">Цвет *</label>
++          <input class="form-control" id="column-color" data-testid="column-color" pattern="^#[0-9A-Fa-f]{6}$" required placeholder="#RRGGBB">
++          <div class="swatches d-flex gap-2 mt-2" id="column-swatches" data-testid="column-swatches"></div>
++        </div>
++        <div class="mb-3">
++          <label class="form-label" for="column-position">Позиция</label>
++          <input type="number" min="1" step="1" class="form-control" id="column-position" data-testid="column-position">
++        </div>
++        <div class="form-check">
++          <input type="checkbox" class="form-check-input" id="column-final" data-testid="column-final">
++          <label class="form-check-label" for="column-final">Финальная колонка — заказы считаются выполненными</label>
++        </div>
++        <div class="form-check">
++          <input type="checkbox" class="form-check-input" id="column-consumes" data-testid="column-consumes">
++          <label class="form-check-label" for="column-consumes">Списывать товары со склада</label>
++        </div>
++      </div>
++      <div class="modal-footer">
++        <button type="button" class="btn btn-outline-danger me-auto d-none" id="column-delete-btn" data-testid="column-delete">Удалить</button>
++        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
++        <button type="submit" class="btn btn-primary" id="column-save-btn" data-testid="column-save">Сохранить</button>
++      </div>
++    </form>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/board.js"></script>
++{{ end }}
+diff --git a/web/ssr/board/templates/pages/stock.html b/web/ssr/board/templates/pages/stock.html
+new file mode 100644
+index 0000000..572bbe1
+--- /dev/null
++++ b/web/ssr/board/templates/pages/stock.html
+@@ -0,0 +1,78 @@
++{{ define "content" }}
++<div id="stock" class="stock-view" data-testid="stock-root" data-is-admin="{{ .Shell.IsAdmin }}">
++  <div class="stock-kpis" data-testid="stock-kpis">
++    <div class="stock-kpi">
++      <span>Товаров</span>
++      <b id="stock-kpi-total" data-testid="stock-kpi-total">0</b>
++    </div>
++    <div class="stock-kpi">
++      <span>На минимуме</span>
++      <b class="stock-low" id="stock-kpi-low" data-testid="stock-kpi-low">0</b>
++    </div>
++    <div class="stock-kpi">
++      <span>Нет в наличии</span>
++      <b class="stock-out" id="stock-kpi-out" data-testid="stock-kpi-out">0</b>
++    </div>
++    <div class="stock-kpi">
++      <span>Уйдут в минимум после заказов</span>
++      <b id="stock-kpi-will-low" data-testid="stock-kpi-will-low">0</b>
++    </div>
++  </div>
++
++  <div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="stock-filters">
++    <select class="form-select form-select-sm" id="stock-scope" data-testid="stock-scope" style="max-width:220px">
++      <option value="risky">Только рисковые</option>
++      <option value="all">Все товары</option>
++    </select>
++    <input type="search" class="form-control form-control-sm" id="stock-q" data-testid="stock-q"
++           placeholder="Поиск по названию" style="max-width:260px" autocomplete="off">
++  </div>
++
++  <div class="table-responsive">
++    <table class="table table-hover align-middle" data-testid="stock-table">
++      <thead>
++        <tr>
++          <th>Товар</th>
++          <th class="d-none d-md-table-cell">Где лежит</th>
++          <th>В наличии</th>
++          <th>Минимум</th>
++          <th class="d-none d-md-table-cell" title="Товары в заказах, которые ещё не взяты в работу">В новых заказах</th>
++          <th class="d-none d-md-table-cell">Прогноз</th>
++          <th>Состояние</th>
++          <th></th>
++        </tr>
++      </thead>
++      <tbody id="stock-tbody"></tbody>
++    </table>
++  </div>
++  <div class="empty-state d-none" id="stock-empty" data-testid="stock-empty">Все товары выше минимального остатка 👍</div>
++  <p class="text-body-secondary small">Товары списываются со склада, когда заказ попадает в колонку с признаком «Списывать товары». «Прогноз» — остаток после списания товаров из заказов, которые ещё не взяты в работу.</p>
++</div>
++
++<!-- Модалка правки остатка (admin, ADR-004) -->
++<div class="modal fade" id="stock-modal" tabindex="-1" aria-hidden="true" data-testid="stock-form">
++  <div class="modal-dialog">
++    <form class="modal-content" id="stock-form-el" novalidate>
++      <div class="modal-header">
++        <h2 class="modal-title fs-5" id="stock-modal-title">Остаток товара</h2>
++        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++      </div>
++      <div class="modal-body">
++        <div class="alert alert-danger d-none" id="stock-error" data-testid="stock-error"></div>
++        <div class="mb-3">
++          <label class="form-label" for="stock-value">Остаток *</label>
++          <input type="number" step="any" class="form-control" id="stock-value" data-testid="stock-value" required>
++        </div>
++      </div>
++      <div class="modal-footer">
++        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
++        <button type="submit" class="btn btn-primary" id="stock-save-btn" data-testid="stock-save">Сохранить</button>
++      </div>
++    </form>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/stock.js"></script>
++{{ end }}
+diff --git a/web/ssr/home/templates/pages/index.html b/web/ssr/home/templates/pages/index.html
+deleted file mode 100644
+index fcc85a3..0000000
+--- a/web/ssr/home/templates/pages/index.html
++++ /dev/null
+@@ -1,6 +0,0 @@
+-{{ define "content" }}
+-<div class="empty-state" data-testid="home-placeholder">
+-  <p class="mb-1 fw-semibold">Доска заказов появится в фазе 5.</p>
+-  <p class="mb-0">Сейчас собран каркас приложения: layout, тема, общие компоненты.</p>
+-</div>
+-{{ end }}

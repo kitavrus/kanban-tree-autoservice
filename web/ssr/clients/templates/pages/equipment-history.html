@@ -1,0 +1,126 @@
+{{ define "content" }}
+<div class="mw-760">
+  <div class="card mb-3" data-testid="equipment-history-head">
+    <div class="card-body">
+      <div class="d-flex align-items-start gap-2">
+        <div>
+          <div class="text-body-secondary small"><a href="/clients/{{ .Equipment.ClientID }}" data-testid="history-client-link">{{ .ClientName }}</a></div>
+          <h2 class="fs-5 mb-1" data-testid="history-equipment-model">{{ if .Equipment.Brand }}{{ .Equipment.Brand }} {{ end }}{{ .Equipment.Model }}</h2>
+          <div class="text-body-secondary small">
+            {{ .Equipment.TypeName }}{{ if .Equipment.Serial }} · S/N {{ .Equipment.Serial }}{{ end }}{{ if .Equipment.SKU }} · арт. {{ .Equipment.SKU }}{{ end }}
+          </div>
+        </div>
+        <a href="/equipment/{{ .Equipment.ID }}" class="btn btn-outline-secondary btn-sm ms-auto" data-testid="history-edit">Редактировать</a>
+      </div>
+      <div class="d-flex align-items-center gap-2 flex-wrap mt-2">
+        <span class="badge {{ .Location.BadgeClass }}" data-testid="history-location" data-location-status="{{ .Location.Status }}">{{ .Location.Label }}</span>
+        {{ if .Location.ActiveTransferID }}<a class="small" href="/transfers?id={{ .Location.ActiveTransferID }}" data-testid="history-active-transfer">перемещение #{{ .Location.ActiveTransferID }}</a>{{ end }}
+      </div>
+      <div class="small mt-2" data-testid="history-summary">Заказов: {{ len .Orders }} · услуг: {{ .Services }}</div>
+    </div>
+  </div>
+
+  {{ if .Transfers }}
+  <div class="card mb-3" data-testid="history-transfers">
+    <div class="card-body">
+      <h3 class="fs-6 mb-2">Перемещения</h3>
+      <ul class="list-unstyled mb-0 small">
+        {{ range .Transfers }}
+        <li class="d-flex align-items-center gap-2 flex-wrap py-1" data-testid="history-transfer" data-transfer-id="{{ .ID }}">
+          <a href="/transfers?id={{ .ID }}" class="fw-semibold" data-testid="history-transfer-link">#{{ .ID }}</a>
+          <span>{{ .FromName }} → {{ .ToName }}</span>
+          <span class="badge {{ .StatusClass }}" data-testid="history-transfer-status">{{ .StatusLabel }}</span>
+          <span class="text-body-secondary ms-auto" data-testid="history-transfer-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
+        </li>
+        {{ end }}
+      </ul>
+    </div>
+  </div>
+  {{ end }}
+
+  {{ range .Orders }}
+  <div class="card mb-3" data-testid="history-order" data-task-id="{{ .TaskID }}">
+    <div class="card-body">
+      <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+        <a href="/?task={{ .TaskID }}" class="fw-semibold" data-testid="history-order-link">#{{ .TaskID }} {{ .Title }}</a>
+        <span class="badge" style="background-color: {{ .ColumnColor }}">{{ .ColumnName }}</span>
+        {{ if .IsPaid }}<span class="badge text-bg-success">Оплачен</span>{{ end }}
+        <span class="text-body-secondary small ms-auto" data-testid="history-order-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
+      </div>
+      {{ if .Accepted }}
+      <div class="small mb-2" data-testid="history-intake" data-intake data-task-id="{{ .TaskID }}" data-equipment-id="{{ $.Equipment.ID }}">
+        <div class="d-flex align-items-start gap-2" data-intake-view>
+          <div>
+            <span class="text-body-secondary">Принято:</span>
+            <span data-intake-text>{{ if .Completeness }}комплектность — {{ .Completeness }}{{ end }}{{ if and .Completeness .Condition }}; {{ end }}{{ if .Condition }}состояние — {{ .Condition }}{{ end }}{{ if not (or .Completeness .Condition) }}без замечаний{{ end }}</span>
+          </div>
+          <button type="button" class="btn btn-link btn-sm p-0 ms-auto text-nowrap" data-intake-edit aria-label="Изменить комплектность и состояние" data-testid="history-intake-edit">✎ Изменить</button>
+        </div>
+        <form class="border rounded p-2 mt-1" data-intake-form hidden novalidate data-testid="history-intake-form">
+          <div class="mb-2">
+            <label class="form-label small mb-1" for="intake-c-{{ .TaskID }}">Комплектность</label>
+            <textarea id="intake-c-{{ .TaskID }}" name="completeness" class="form-control form-control-sm" rows="2" maxlength="1000" data-testid="history-intake-completeness">{{ .Completeness }}</textarea>
+            <div class="invalid-feedback" data-field-error="completeness"></div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small mb-1" for="intake-s-{{ .TaskID }}">Состояние</label>
+            <textarea id="intake-s-{{ .TaskID }}" name="condition" class="form-control form-control-sm" rows="2" maxlength="1000" data-testid="history-intake-condition">{{ .Condition }}</textarea>
+            <div class="invalid-feedback" data-field-error="condition"></div>
+          </div>
+          <div class="text-danger small mb-2" data-intake-error hidden data-testid="history-intake-error"></div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary btn-sm" data-testid="history-intake-save">Сохранить</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-intake-cancel>Отмена</button>
+          </div>
+        </form>
+      </div>
+      {{ end }}
+      {{ if .Services }}
+      <ul class="list-unstyled mb-0">
+        {{ range .Services }}
+        <li class="border-top pt-2 mt-2" data-testid="history-service">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="fw-semibold">{{ .Name }}</span>
+            <span class="badge {{ .StatusClass }}" data-testid="history-service-status">{{ .StatusLabel }}</span>
+            {{ if .Assignee }}<span class="text-body-secondary small">{{ .Assignee }}</span>{{ end }}
+            {{ if .Price }}<span class="small ms-auto">{{ .Price }} ₽</span>{{ end }}
+          </div>
+          {{ if .Products }}
+          <table class="table table-sm small mt-2 mb-1" data-testid="history-products">
+            <tbody>
+            {{ range .Products }}
+              <tr data-testid="history-product">
+                <td>{{ .Name }}</td>
+                <td class="text-end text-nowrap">{{ .Qty }}{{ if .Unit }} {{ .Unit }}{{ end }}</td>
+                <td class="text-end text-nowrap">{{ if .Price }}{{ .Price }} ₽{{ end }}</td>
+              </tr>
+            {{ end }}
+            </tbody>
+          </table>
+          {{ end }}
+          {{ if .Logs }}
+          <div class="small mt-1" data-testid="history-logs">
+            {{ range .Logs }}
+            <div class="mb-1" data-testid="history-log">
+              <span class="text-body-secondary"><span data-testid="history-log-time">{{ timeIn $.Shell.User.Timezone "02.01.2006 15:04" .CreatedAt }}</span> · {{ .Author }}:</span>
+              <span style="white-space: pre-wrap">{{ .Text }}</span>
+            </div>
+            {{ end }}
+          </div>
+          {{ end }}
+        </li>
+        {{ end }}
+      </ul>
+      {{ else }}
+      <div class="text-body-secondary small">Услуг по этому оборудованию в заказе нет</div>
+      {{ end }}
+    </div>
+  </div>
+  {{ else }}
+  <div class="card"><div class="card-body empty-state" data-testid="history-empty">По этому оборудованию ещё ничего не делали</div></div>
+  {{ end }}
+</div>
+{{ end }}
+{{ define "scripts" }}
+<script src="/assets/ssr-shared/js/equipment-history.js"></script>
+{{ end }}

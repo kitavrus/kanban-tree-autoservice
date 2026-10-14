@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/contract_check.py --feature phase-2-auth --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9
+(exit 0)
+
+contract phase-2-auth: SKIP-NO-GO-DIRS (ни internal/features/{f}, ни модулей в design-go-layers.md — если backend фичи ЕСТЬ, это дырка резолва: передай --go)

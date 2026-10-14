@@ -1,0 +1,1076 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index a147495..5edfd89 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -192,6 +192,8 @@ export type Transfer = {
+   to_warehouse_name: string | null;
+   task_id: number | null;
+   task_title: string | null;
++  /** Заказ документа мягко удалён — бейдж «заказ удалён» (soft-delete-transfers §6.3); false, если заказа нет. */
++  task_is_deleted: boolean;
+   client_id: string | null;
+   client_name: string | null;
+   supplier_id: string | null;
+@@ -220,6 +222,7 @@ export type TransferSummary = {
+   to_warehouse_id: string | null;
+   to_warehouse_name: string | null;
+   task_id: number | null;
++  task_is_deleted: boolean;
+   client_id: string | null;
+   client_name: string | null;
+   supplier_id: string | null;
+@@ -238,8 +241,18 @@ export type TransferSummary = {
+ };
+ /** Тело POST /api/v1/transfers/:id/unreceive (TransferUnreceiveRequest). */
+ export type TransferUnreceive = { version: number; reason: string };
+-/** Ответ DELETE /api/v1/transfers/:id (TransferDeleteResponse). */
+-export type TransferDeleteResponse = { id: number };
++/** Тело DELETE /api/v1/transfers/:id (TransferDeleteRequest, soft-delete-transfers §6.1):
++ *  причина 1–500 символов и версия документа (раньше version шёл в query). */
++export type TransferDeleteBody = { reason: string; version: number };
++/** Ответ DELETE /api/v1/transfers/:id (TransferDeleteResponse): мягкое удаление. */
++export type TransferDeleteResponse = { id: number; deleted_at: string };
++/** Ответ POST /api/v1/transfers/:id/restore (TransferRestoreResponse). */
++export type TransferRestoreResponse = { id: number };
++/** Отказы восстановления документа (soft-delete-transfers §6.2). */
++export type TransferRestoreError = {
++  code: 'NOT_DELETED' | 'EQUIPMENT_IN_TRANSFER' | 'TRANSFER_CLIENT_MISMATCH' | 'TRANSFER_EQUIPMENT_NOT_IN_TASK' | 'TRANSFER_NOT_FOUND' | 'FORBIDDEN';
++  message: string;
++};
+ /** 409 отмены проведения: единицу увёз более поздний документ либо она в другом незавершённом. */
+ export type TransferUnreceiveBlocked = {
+   code: 'TRANSFER_UNRECEIVE_BLOCKED';
+@@ -514,20 +527,50 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  /** Удаление документа (transfers-revert §6.2; «Заявка» / «Отменён») с актуальным version. */
+-  async deleteTransfer(id: number): Promise<TransferDeleteResponse> {
++  /** МЯГКОЕ удаление документа (soft-delete-transfers §6.1; «Заявка» / «Отменён») с актуальным
++   *  version: причина и version — в теле. Документ уходит в раздел «Удалённые»; физическая
++   *  уборка тестовых данных — purgeTransfer. */
++  async deleteTransfer(id: number, reason = 'e2e: создан по ошибке'): Promise<TransferDeleteResponse> {
+     const cur = await this.getTransfer(id);
+-    const res = await this.ctx.delete(`/api/v1/transfers/${id}?version=${cur.version}`, { headers: await this.headers() });
++    const data: TransferDeleteBody = { reason, version: cur.version };
++    const res = await this.ctx.delete(`/api/v1/transfers/${id}`, { data, headers: await this.headers() });
+     expect(res.status(), `удаление перемещения #${id}: ${await res.text()}`).toBe(200);
+     return res.json();
+   }
+ 
++  /** Восстановление документа: POST /api/v1/transfers/:id/restore. Статус не проверяется —
++   *  отказы (409 EQUIPMENT_IN_TRANSFER, TRANSFER_CLIENT_MISMATCH, TRANSFER_EQUIPMENT_NOT_IN_TASK,
++   *  NOT_DELETED) ждёт сам тест. */
++  async restoreTransfer(id: number): Promise<{ status: number; body: TransferRestoreResponse | TransferRestoreError }> {
++    const res = await this.ctx.post(`/api/v1/transfers/${id}/restore`, { headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /** HTTP-статус GET /api/v1/transfers/:id (удалённый документ для обычных адресов — 404). */
++  async transferHttpStatus(id: number): Promise<number> {
++    return (await this.ctx.get(`/api/v1/transfers/${id}`)).status();
++  }
++
++  /**
++   * ФИЗИЧЕСКАЯ уборка документа — служебный адрес DELETE /api/v1/test/purge/transfers/:id
++   * (soft-delete-transfers §6.3, DS-038; стенд — с TEST_PURGE_ENABLED=true): документ в
++   * «Заявка» / «Отменён», действующий или мягко удалённый. Возвращает HTTP-статус: 200 —
++   * убран, 404 — документа нет, 409 — документ проведён («в пути» / «получено»).
++   */
++  async purgeTransfer(id: number): Promise<number> {
++    const res = await this.ctx.delete(`/api/v1/test/purge/transfers/${id}`, { headers: await this.headers() });
++    return res.status();
++  }
++
+   /**
+    * Уборка одного документа (best-effort, никогда не бросает): привести к удаляемому статусу
+-   * и удалить — «Получено» → отмена проведения, «В пути» / «Заявка» → отмена, затем DELETE.
++   * и убрать ФИЗИЧЕСКИ — «Получено» → отмена проведения, «В пути» → отмена, затем служебный
++   * адрес purge (обычный DELETE документа теперь мягкий: тестовые документы копились бы в
++   * разделе «Удалённые» и держали бы заказ от физической уборки — DS-038). Мягко удалённый
++   * документ для GET не существует (404) — он убирается тем же служебным адресом сразу.
+    * Откат идёт в обратном порядке (DS-023): на 409 TRANSFER_UNRECEIVE_BLOCKED сначала так же
+-   * убирается мешающий документ (details.transfer_id), затем попытка повторяется. Документ уже
+-   * удалён (404) либо изменён параллельно (409) — не ошибка: шаг пропускается.
++   * убирается мешающий документ (details.transfer_id), затем попытка повторяется. Документа
++   * уже нет (404) либо он изменён параллельно (409) — не ошибка: шаг пропускается.
+    * guard — общий на одну уборку: visiting — документы, уборка которых уже идёт выше по
+    * цепочке (мешающий документ не убирается повторно — цикл), attempts — общий лимит попыток
+    * отката на всю цепочку; при «залипшем» блокере — console.warn и выход, без лавины запросов.
+@@ -542,6 +585,11 @@ export class AdminApi {
+     };
+     try {
+       let cur = await read();
++      if (!cur) {
++        // документа нет либо он мягко удалён — служебная уборка разберётся (404 — не ошибка).
++        await this.ctx.delete(`/api/v1/test/purge/transfers/${id}`, { headers: h });
++        return;
++      }
+       let lastBlocker = 0;
+       while (cur && cur.status === 'received') {
+         if (guard.attempts <= 0) {
+@@ -567,12 +615,12 @@ export class AdminApi {
+         }
+         cur = await read();
+       }
+-      if (cur && (cur.status === 'in_transit' || cur.status === 'requested')) {
++      if (cur && cur.status === 'in_transit') {
+         await this.ctx.post(`/api/v1/transfers/${id}/cancel`, { data: { version: cur.version }, headers: h });
+         cur = await read();
+       }
+-      if (cur && cur.status === 'cancelled') {
+-        await this.ctx.delete(`/api/v1/transfers/${id}?version=${cur.version}`, { headers: h });
++      if (cur && (cur.status === 'cancelled' || cur.status === 'requested')) {
++        await this.ctx.delete(`/api/v1/test/purge/transfers/${id}`, { headers: h });
+       }
+     } catch {
+       /* уборка не должна валить тест: остаток покажет предупреждение удаления заказа */
+@@ -586,11 +634,13 @@ export class AdminApi {
+    * DELETE /api/v1/test/purge/tasks/:id (soft-delete-core §6.5, DS-027, DS-036; стенд обязан
+    * быть запущен с TEST_PURGE_ENABLED=true). Обычный DELETE заказа теперь мягкий — тестовые
+    * заказы копились бы в разделе «Удалённые». Работает и для действующего, и для мягко
+-   * удалённого заказа. Заказ с неотменённым документом не убирается (409 TASK_HAS_TRANSFERS),
+-   * поэтому сначала каждый документ заказа приводится к «Отменён» и удаляется (новые — первыми:
+-   * откат в обратном порядке). Бросает только финальное удаление: 404 «Не найдено» — заказа
+-   * уже нет (сообщение содержит TASK_NOT_FOUND — _boardCleanup его не логирует); любой другой
+-   * 404 — адрес не зарегистрирован, уборка выключена на стенде (ошибка с подсказкой).
++   * удалённого заказа. Заказ с действующим неотменённым документом не убирается (409
++   * TASK_HAS_TRANSFERS), поэтому сначала каждый действующий документ заказа приводится к
++   * удаляемому статусу и убирается служебным адресом (новые — первыми: откат в обратном
++   * порядке); мягко удалённые документы заказа уборка заказа удаляет сама (DS-038). Бросает
++   * только финальное удаление: 404 «Не найдено» — заказа уже нет (сообщение содержит
++   * TASK_NOT_FOUND — _boardCleanup его не логирует); любой другой 404 — адрес не
++   * зарегистрирован, уборка выключена на стенде (ошибка с подсказкой).
+    */
+   async purgeTask(id: number): Promise<void> {
+     const res = await this.ctx.get('/api/v1/transfers', { params: { task_id: String(id), limit: '500' } }).catch(() => null);
+@@ -612,21 +662,27 @@ export class AdminApi {
+ 
+   // ---- мягкое удаление (soft-delete-core §6.1–§6.4; типы — board-types.ts, §TD-6.2) ----
+ 
+-  /** Адрес ресурса вида kind. В части 1 мягко удаляются только заказы. */
++  /** Адрес ресурса вида kind: заказы (часть 1) и документы перемещения (часть 2). */
+   private softDeletePath(kind: import('./board-types').DeletedKind, id: number | string): string {
+-    if (kind !== 'tasks') throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);
+-    return `/api/v1/tasks/${id}`;
++    if (kind === 'tasks') return `/api/v1/tasks/${id}`;
++    if (kind === 'transfers') return `/api/v1/transfers/${id}`;
++    throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);
+   }
+ 
+-  /** Мягкое удаление записи с причиной: DELETE /api/v1/{ресурс}/:id, тело {reason}. */
+-  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<import('./board-types').TaskDeleteResponse> {
++  /** Мягкое удаление записи с причиной: DELETE /api/v1/{ресурс}/:id, тело {reason}; у документа
++   *  перемещения в теле ещё и актуальный version (DS-028). */
++  async softDelete(kind: 'transfers', id: number | string, reason?: string): Promise<TransferDeleteResponse>;
++  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason?: string): Promise<import('./board-types').TaskDeleteResponse>;
++  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<import('./board-types').TaskDeleteResponse | TransferDeleteResponse> {
++    if (kind === 'transfers') return this.deleteTransfer(Number(id), reason);
+     const data: import('./board-types').DeleteBody = { reason };
+     const res = await this.ctx.delete(this.softDeletePath(kind, id), { data, headers: await this.headers() });
+     expect(res.status(), `мягкое удаление ${kind} ${id}: ${await res.text()}`).toBe(200);
+     return res.json();
+   }
+ 
+-  /** Восстановление записи: POST /api/v1/{ресурс}/:id/restore. Статус не проверяется — повтор ждёт 409. */
++  /** Восстановление записи: POST /api/v1/{ресурс}/:id/restore. Статус не проверяется — повтор ждёт 409.
++   *  У документа перемещения тело успеха — {id} (warnings / notices есть только у заказа). */
+   async restore(kind: import('./board-types').DeletedKind, id: number | string): Promise<{ status: number; body: import('./board-types').TaskRestoreResponse }> {
+     const res = await this.ctx.post(`${this.softDeletePath(kind, id)}/restore`, { headers: await this.headers() });
+     return { status: res.status(), body: await res.json() };
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index e53287e..c412b9d 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -119,7 +119,8 @@ export type DeletedSummaryResponse = {
+     services: number; catalog_categories: number; equipment_types: number; warehouses: number; suppliers: number;
+   };
+ };
+-/** 409 DELETE /api/v1/tasks/:id (transfers-revert §6.3): у заказа есть документы «Перемещение»
++/** 409 служебной уборки DELETE /api/v1/test/purge/tasks/:id (soft-delete-core DS-036; мягкое удаление
++ *  заказа этот отказ больше не отдаёт — soft-delete-transfers DS-006): у заказа есть действующие документы
+  *  в requested / in_transit / received; transfer_ids — их номера по возрастанию. */
+ export type ApiErrorTaskHasTransfers = { code: 'TASK_HAS_TRANSFERS'; message: string; details: { transfer_ids: number[] } };
+ 
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index b6fd3cc..6dbb57c 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -86,8 +86,15 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+     async ({ adminApi }, use) => {
+       const createdTasks: number[] = [];
+       const createdColumns: string[] = [];
++      const createdTransfers: number[] = [];
+       const origCreateTask = adminApi.createTask.bind(adminApi);
+       const origCreateColumn = adminApi.createColumn.bind(adminApi);
++      const origCreateTransfer = adminApi.createTransfer.bind(adminApi);
++      adminApi.createTransfer = (async (t) => {
++        const doc = await origCreateTransfer(t);
++        createdTransfers.push(doc.id);
++        return doc;
++      }) as typeof adminApi.createTransfer;
+       adminApi.createTask = (async (t) => {
+         const task = await origCreateTask(t);
+         createdTasks.push(task.id);
+@@ -105,6 +112,18 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+ 
+       adminApi.createTask = origCreateTask;
+       adminApi.createColumn = origCreateColumn;
++      adminApi.createTransfer = origCreateTransfer;
++      // Документы перемещения, МЯГКО удалённые тестом (soft-delete-transfers DS-038, TS-F7):
++      // обычный DELETE документа теперь мягкий — без уборки они копились бы во вкладке
++      // «Перемещения» раздела «Удалённые». Убираются служебным адресом purge; действующие
++      // документы без заказа остаются как раньше (документы заказа убирает purgeTask ниже).
++      for (const id of createdTransfers) {
++        try {
++          if ((await adminApi.transferHttpStatus(id)) === 404) await adminApi.purgeTransfer(id);
++        } catch (e) {
++          console.warn(`_boardCleanup: не удалось убрать перемещение #${id}: ${e instanceof Error ? e.message : String(e)}`);
++        }
++      }
+       // Уборка — ФИЗИЧЕСКАЯ, служебным адресом DELETE /api/v1/test/purge/tasks/:id
+       // (soft-delete-core DS-027; стенд — с TEST_PURGE_ENABLED=true): обычный DELETE заказа
+       // теперь мягкий, и тестовые заказы копились бы в разделе «Удалённые» (а мягко удалённый
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 4aa10b8..fc0ad14 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -355,7 +355,7 @@ export class OrderCardPage {
+     await this.attachmentInput.setInputFiles(file);
+   }
+ 
+-  /** Ссылки на мешающие документы в отказе удаления заказа (409 TASK_HAS_TRANSFERS). */
++  /** Ссылки на документы в отказе смены клиента заказа (409 TASK_CLIENT_LOCKED_BY_TRANSFERS). */
+   get errorTransferLinks(): Locator {
+     return this.error.getByTestId('task-error-transfer-link');
+   }
+@@ -366,8 +366,10 @@ export class OrderCardPage {
+   get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
+   get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
+   get deleteReasonCounter(): Locator { return this.page.getByTestId('delete-reason-counter'); }
+-  /** Красный блок над кнопками: отказ 409 (напр. «Сначала отмените перемещения: #N»). */
++  /** Красный блок над кнопками: отказ 409 с текстом сервера. */
+   get deleteDialogError(): Locator { return this.page.getByTestId('delete-dialog-error'); }
++  /** Вторая строка пояснения: у заказа есть документы перемещения (soft-delete-transfers §8.3). */
++  get deleteDialogNote(): Locator { return this.page.getByTestId('ui-dialog-note'); }
+   get deleteDialogOk(): Locator { return this.page.getByTestId('ui-dialog-ok'); }
+ 
+   /** «Удалить» заказ → окно «Удаление» открыто (пояснение — ui-dialog-text). */
+diff --git a/e2e/pages/TransfersPage.ts b/e2e/pages/TransfersPage.ts
+index 7e57f18..a4ca0bd 100644
+--- a/e2e/pages/TransfersPage.ts
++++ b/e2e/pages/TransfersPage.ts
+@@ -183,14 +183,47 @@ export class TransfersPage {
+     await this.unreceiveConfirm.click();
+   }
+ 
+-  /** «Удалить» → диалог подтверждения (текст проверяется) → подтвердить либо отказаться. */
+-  async deleteDocument(id: number, confirm = true) {
++  // ---- окно «Удаление» с причиной (общее, soft-delete-core §8.2; документ — soft-delete-transfers §8.1) ----
++  get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
++  get deleteDialogText(): Locator { return this.uiDialog.getByTestId('ui-dialog-text'); }
++  get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
++  get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
++  /** Красный блок над кнопками: отказ 409 (статус, версия). */
++  get deleteDialogError(): Locator { return this.page.getByTestId('delete-dialog-error'); }
++
++  /** «Удалить» → окно «Удаление» открыто: заголовок и пояснение проверяются. */
++  async openDelete(id: number) {
+     await this.deleteBtn.click();
+-    await expect(this.uiDialog.getByTestId('ui-dialog-text')).toHaveText(`Удалить перемещение #${id}? Восстановить будет нельзя`);
+-    await this.uiDialog.getByTestId(confirm ? 'ui-dialog-ok' : 'ui-dialog-cancel').click();
++    await expect(this.uiDialog).toBeVisible();
++    await expect(this.deleteDialogTitle).toHaveText(`Удалить «Перемещение #${id}»?`);
++    await expect(this.deleteDialogText).toHaveText('Документ можно восстановить в разделе «Удалённые»');
++  }
++
++  /** Причина + «Удалить» в открытом окне «Удаление» (окно может остаться открытым — отказ). */
++  async submitDelete(reason: string) {
++    await this.deleteReason.fill(reason);
++    await this.uiDialog.getByTestId('ui-dialog-ok').click();
++  }
++
++  async cancelDelete() {
++    await this.uiDialog.getByTestId('ui-dialog-cancel').click();
+     await expect(this.uiDialog).toHaveCount(0);
+   }
+ 
++  /** «Удалить» → окно «Удаление» → причина и подтверждение либо отказ (документ на месте). */
++  async deleteDocument(id: number, confirm = true, reason = 'e2e: создан по ошибке') {
++    await this.openDelete(id);
++    if (!confirm) return this.cancelDelete();
++    await this.submitDelete(reason);
++    await expect(this.uiDialog).toHaveCount(0);
++  }
++
++  /** Бейдж «заказ удалён» в строке списка и в шапке документа (soft-delete-transfers §8.1). */
++  rowTaskDeleted(id: number): Locator { return this.row(id).getByTestId('st-row-task-deleted'); }
++  get taskDeletedBadge(): Locator { return this.page.getByTestId('st-task-deleted'); }
++  /** Номер удалённого заказа — текстом, без ссылки. */
++  get taskText(): Locator { return this.page.getByTestId('st-task-text'); }
++
+   async goto(id?: number) {
+     await this.page.goto(id ? `/transfers?id=${id}` : '/transfers');
+     await expect(this.root).toBeVisible();
+diff --git a/e2e/tests/soft-delete-core.spec.ts b/e2e/tests/soft-delete-core.spec.ts
+index b4c8770..c7c9e4e 100644
+--- a/e2e/tests/soft-delete-core.spec.ts
++++ b/e2e/tests/soft-delete-core.spec.ts
+@@ -39,6 +39,20 @@ async function goods(adminApi: AdminApi, uniq: Uniq, tag: string, stock: number)
+   return { product, service };
+ }
+ 
++/** Мягко удалённая заявка «склад → склад» (вкладка «Перемещения», soft-delete-transfers §8.2);
++ *  физически убирает _boardCleanup (purgeTransfer). */
++async function deletedTransfer(adminApi: AdminApi, uniq: Uniq, tag: string, reason: string) {
++  const almaty = await adminApi.warehouseByName('Алматы');
++  const moscow = await adminApi.warehouseByName('Москва');
++  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${tag} категория документа`) });
++  const product = await adminApi.createProduct({ category_id: cat.id, name: uniq(`${tag} товар документа`), stock: 1 });
++  const doc = await adminApi.createTransfer({
++    from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'product', product_id: product.id, qty_sent: 1 }],
++  });
++  await adminApi.softDelete('transfers', doc.id, reason);
++  return doc;
++}
++
+ async function stockOf(adminApi: AdminApi, productName: string): Promise<number> {
+   const list = await adminApi.getStock({ q: productName, scope: 'all' });
+   return Number(list.items[0]?.stock ?? NaN);
+@@ -418,6 +432,13 @@ test.describe('SD: мягкое удаление заказа и раздел «
+     await del.dialogCancel.click();
+     await expect(del.dialog).toBeHidden();
+ 
++    // вкладка «Перемещения» (soft-delete-transfers §8.2, TS-046 расширением): то же на 360×640.
++    const doc = await deletedTransfer(adminApi, uniq, 'SD-007', uniq('SD-007 ' + 'оченьдлиннаяпричинадокументабезпробелов'.repeat(5)));
++    await del.goto(`kind=transfers&q=${encodeURIComponent(`#${doc.id}`)}`);
++    await expect(del.tab('transfers')).toHaveClass(/active/);
++    await expect(del.row(doc.id)).toBeVisible();
++    await del.expectNoHorizontalScroll();
++
+     // окно «Удаление» из карточки заказа помещается в экран по ширине, кнопки доступны.
+     const board = new BoardPage(page);
+     const card = new OrderCardPage(page);
+@@ -473,6 +494,15 @@ test.describe('SD: мягкое удаление заказа и раздел «
+       expect(await contrastOf(del.warningLines.first()), `${theme}: жёлтый блок`).toBeGreaterThanOrEqual(4.5);
+       expect(await contrastOf(del.warningOpen), `${theme}: ссылка в жёлтом блоке`).toBeGreaterThanOrEqual(4.5);
+ 
++      // вкладка «Перемещения» (soft-delete-transfers §8.2, TS-047 расширением).
++      const doc = await deletedTransfer(adminApi, uniq, `SD-008 ${theme}`, uniq(`SD-008 причина документа ${theme}`));
++      await del.goto(`kind=transfers&q=${encodeURIComponent(`#${doc.id}`)}`);
++      await expect(del.rowTitle(doc.id)).toHaveText(`Перемещение #${doc.id}`);
++      expect(await contrastOf(del.tab('transfers')), `${theme}: вкладка «Перемещения»`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.rowTitle(doc.id)), `${theme}: документ`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.rowSubtitle(doc.id)), `${theme}: направление и статус`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.restoreBtn(doc.id)), `${theme}: «Восстановить» документа`).toBeGreaterThanOrEqual(3);
++
+       // окно «Удаление»: пояснение, текст ошибки поля, красная кнопка.
+       await board.goto(`?client_id=${client.id}&task=${task.id}`);
+       await card.waitOpen();
+diff --git a/e2e/tests/soft-delete-transfers.spec.ts b/e2e/tests/soft-delete-transfers.spec.ts
+new file mode 100644
+index 0000000..dd86002
+--- /dev/null
++++ b/e2e/tests/soft-delete-transfers.spec.ts
+@@ -0,0 +1,357 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import type { AdminApi, TransferDeleteBody } from '../fixtures/auth';
++import { contrastOf } from '../fixtures/contrast';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { TransfersPage } from '../pages/TransfersPage';
++import { DeletedPage } from '../pages/DeletedPage';
++
++// Мягкое удаление — документы перемещения и заказы с документами
++// (docs/features/soft-delete-transfers/draft-spec.md §8.1–§8.3, §11): заказ с документами
++// (TS-040), удалить и восстановить документ (TS-041). Адаптив и темы вкладки «Перемещения»
++// раздела «Удалённые» — расширением SD-007 / SD-008 (soft-delete-core.spec.ts); окно удаления
++// заказа с документами — TR-024 (transfers-revert.spec.ts). Общая dev-БД (§TD-6.2): свои
++// клиенты, оборудование, заказы и товары через uniq()+adminApi, склады — сид «Алматы» /
++// «Москва». Уборка — _boardCleanup: заказы вместе с документами (purgeTask), мягко удалённые
++// документы без заказа — служебным адресом purge (стенд с TEST_PURGE_ENABLED=true).
++test.use({ colorScheme: 'light' });
++
++const THEMES = ['light', 'dark'] as const;
++const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
++const TOAST_DELETED = 'Удалено. Восстановить можно в разделе «Удалённые»';
++
++type Uniq = (s: string) => string;
++
++/** Клиент + заказ + count единиц оборудования в заказе — все «у клиента». */
++async function orderWithUnits(adminApi: AdminApi, uniq: Uniq, tag: string, count: number, assigneeId?: string) {
++  const almaty = await adminApi.warehouseByName('Алматы');
++  const moscow = await adminApi.warehouseByName('Москва');
++  const client = await adminApi.createClient({ company_name: uniq(`${tag} клиент`), phones: [{ phone: '9990000801', note: '' }] });
++  const type = await adminApi.createEquipmentType({ name: uniq(`${tag} тип`) });
++  const columns = (await adminApi.listColumns()).items;
++  const task = await adminApi.createTask({
++    title: uniq(`${tag} заказ`), client_id: client.id, column_id: columnByName(columns, 'Новые').id, ...(assigneeId ? { assignee_id: assigneeId } : {}),
++  });
++  const units = [];
++  for (let i = 0; i < count; i++) {
++    const eq = await adminApi.createEquipment(client.id, {
++      type_id: type.id, brand: `Brand${tag}`, model: uniq(`${tag} модель ${i}`), serial: uniq(`sn-${tag}-${i}`),
++    });
++    await adminApi.addTaskEquipment(task.id, eq.id);
++    units.push(eq);
++  }
++  return { almaty, moscow, client, columns, task, units };
++}
++
++async function newProduct(adminApi: AdminApi, uniq: Uniq, label: string, stock: number) {
++  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${label} категория`) });
++  return adminApi.createProduct({ category_id: cat.id, name: uniq(`${label} товар`), stock }); // остаток — на «Алматы»
++}
++
++async function unitState(adminApi: AdminApi, serial: string) {
++  const found = (await adminApi.searchEquipment({ q: serial })).items.find((e) => e.serial === serial);
++  expect(found, `единица ${serial} найдена`).toBeTruthy();
++  return { location: found!.location_status, warehouse: found!.warehouse_name, transfer: found!.active_transfer_id };
++}
++
++test.describe('SDT: мягкое удаление документов перемещения', () => {
++  test('SDT-001 (TS-040): заказ с документом «в пути» удаляется — документ остаётся в «Перемещениях» с бейджем «заказ удалён» (номер заказа без ссылки), «Принять» работает; бейдж читаем в обеих темах; удалённого заказа нет в выборе нового документа; заказ удалили при открытой форме → тост «Заказ удалён — сначала восстановите его», форма остаётся', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const { almaty, client, columns, task, units } = await orderWithUnits(adminApi, uniq, 'SDT001', 1);
++    const unit = units[0];
++    const doc = await adminApi.createTransfer({
++      direction: 'client_to_warehouse', to_warehouse_id: almaty.id, task_id: task.id, send: true,
++      items: [{ kind: 'equipment', equipment_id: unit.id }],
++    });
++    expect(doc.status).toBe('in_transit');
++    expect(doc.task_is_deleted).toBe(false);
++
++    // заказ с документом «в пути» удаляется из карточки: отказа нет, в окне — строка о перемещениях.
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    const tr = new TransfersPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await card.openDeleteTask();
++    await expect(card.deleteDialogNote).toHaveText('Перемещения заказа останутся в разделе «Перемещения» с пометкой «заказ удалён»');
++    await card.submitDelete(uniq('SDT-001 заказ создан по ошибке'));
++    await expect(card.modal).toBeHidden();
++    expect(await adminApi.taskHttpStatus(task.id), 'заказ удалён').toBe(404);
++    const kept = await adminApi.getTransfer(doc.id);
++    expect(kept).toMatchObject({ status: 'in_transit', version: doc.version, task_id: task.id, task_is_deleted: true });
++    expect(await unitState(adminApi, unit.serial)).toMatchObject({ location: 'in_transit', transfer: doc.id });
++
++    // «Перемещения»: документ в списке и в шапке — с бейджем, номер заказа — текст без ссылки.
++    for (const theme of THEMES) {
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      await tr.goto(doc.id);
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      await expect(tr.rowTaskDeleted(doc.id)).toHaveText('заказ удалён');
++      await expect(tr.row(doc.id).getByTestId('st-row-party')).toContainText(`заказ #${task.id}`);
++      await expect(tr.taskDeletedBadge).toHaveText('заказ удалён');
++      await expect(tr.taskText).toHaveText(`Заказ #${task.id}`);
++      await expect(tr.taskLink).toHaveCount(0);
++      expect(await contrastOf(tr.taskDeletedBadge), `${theme}: бейдж в документе`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.taskText), `${theme}: номер заказа`).toBeGreaterThanOrEqual(4.5);
++    }
++
++    // документ удалённого заказа доводится до конца: «Принять» работает как обычно.
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await tr.confirmReceive('Оборудование на складе?');
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.taskDeletedBadge).toBeVisible();
++    expect((await adminApi.getTransfer(doc.id)).status).toBe('received');
++    expect(await unitState(adminApi, unit.serial)).toMatchObject({ location: 'at_warehouse', warehouse: 'Алматы', transfer: null });
++
++    // негатив 1: удалённого заказа нет в выборе нового документа — «Заказ не найден».
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}/card`) && status === 404);
++    await tr.newDocument('client_to_warehouse');
++    await tr.task.fill(String(task.id));
++    await expect(tr.taskError).toHaveText('Заказ не найден');
++    await expect(tr.taskInfo).toHaveText('');
++
++    // негатив 2: заказ удалили, пока форма нового документа открыта → 409 TASK_DELETED тостом.
++    const type = await adminApi.createEquipmentType({ name: uniq('SDT001 тип второй') });
++    const late = await adminApi.createTask({ title: uniq('SDT001 заказ удалят при открытой форме'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    const lateUnit = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'BrandSDT001', model: uniq('SDT001 модель поздняя'), serial: uniq('sn-SDT001-late') });
++    await adminApi.addTaskEquipment(late.id, lateUnit.id);
++    await tr.gotoNew('client_to_warehouse', late.id);
++    await expect(tr.itemRow('equipment', lateUnit.id)).toBeVisible();
++    await tr.choose(tr.to, 'Алматы');
++    await adminApi.deleteTask(late.id, uniq('SDT-001 удалён при открытой форме'));
++    allowHttpErrors((url, status) => url.endsWith('/api/v1/transfers') && status === 409);
++    await tr.save.click();
++    await expect(tr.toastError.filter({ hasText: 'Заказ удалён — сначала восстановите его' })).toBeVisible();
++    await expect(tr.cardTitle).toHaveText('Новое перемещение'); // форма остаётся
++    await expect(tr.itemRow('equipment', lateUnit.id)).toBeVisible();
++    expect((await adminApi.listTransfers({ task_id: late.id })).total, 'документ не создан').toBe(0);
++  });
++
++  test('SDT-002 (TS-041): заявка → «Удалить»: пустая причина → «Укажите причину удаления»; с причиной → тост, строки нет, прямая ссылка — «Перемещение не найдено»; «Удалённые» → вкладка «Перемещения» со счётчиком → «Восстановить» → документ снова в списке со своими строками; документ отправили при открытом окне — «Перемещение уже изменено, обновите», у документа «в пути» — «Перемещение в пути — сначала отмените его»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const { almaty, moscow, task, units } = await orderWithUnits(adminApi, uniq, 'SDT002', 1);
++    const unit = units[0];
++    await adminApi.receiveFromClient(task.id, almaty.id, [unit.id]); // единица на «Алматы»
++    const product = await newProduct(adminApi, uniq, 'SDT-002', 5);
++    const request = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id,
++      items: [{ kind: 'equipment', equipment_id: unit.id }, { kind: 'product', product_id: product.id, qty_sent: 2 }],
++    });
++    const reason = uniq('SDT-002 причина: документ создан по ошибке');
++
++    const tr = new TransfersPage(page);
++    const del = new DeletedPage(page);
++    await tr.goto(request.id);
++    await expect(tr.cardStatus).toHaveText('Заявка');
++
++    // пустая причина — ошибка под полем, окно открыто, документ на месте; «Отмена» ничего не удаляет.
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/transfers/${request.id}`) && status === 400);
++    await tr.openDelete(request.id);
++    await tr.submitDelete('   ');
++    await expect(tr.deleteReasonError).toHaveText('Укажите причину удаления');
++    await expect(tr.uiDialog).toBeVisible();
++    await tr.cancelDelete();
++    await expect(tr.cardTitle).toHaveText(`Перемещение #${request.id}`);
++    expect((await adminApi.getTransfer(request.id)).version, 'документ не изменён').toBe(request.version);
++
++    // с причиной — документ уходит в «Удалённые», единица заявки свободна, остаток не менялся.
++    await tr.deleteDocument(request.id, true, reason);
++    await expect(tr.toast.filter({ hasText: TOAST_DELETED })).toBeVisible();
++    await expect(tr.placeholder).toBeVisible();
++    await expect(tr.row(request.id)).toHaveCount(0);
++    await expect(page).toHaveURL(/\/transfers$/);
++    expect(await adminApi.transferHttpStatus(request.id), 'удалённый документ для обычных адресов не существует').toBe(404);
++    expect(await unitState(adminApi, unit.serial)).toMatchObject({ location: 'at_warehouse', warehouse: 'Алматы', transfer: null });
++
++    // прямая ссылка на удалённый документ — «Перемещение не найдено».
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/transfers/${request.id}`) && status === 404);
++    await page.goto(`/transfers?id=${request.id}`);
++    await expect(tr.toastError.filter({ hasText: 'Перемещение не найдено' })).toBeVisible();
++    await expect(tr.placeholder).toBeVisible();
++
++    // «Удалённые» → вкладка «Перемещения»: счётчик, строка, «Восстановить».
++    await del.goto();
++    const summary = await adminApi.deletedSummary();
++    await expect(del.tab('transfers')).toContainText('Перемещения');
++    await expect(del.tabCount('transfers')).toHaveText(String(summary.counts.transfers));
++    await del.tab('transfers').click();
++    await expect(page).toHaveURL(/kind=transfers/);
++    await del.search(`#${request.id}`);
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.rowTitle(request.id)).toHaveText(`Перемещение #${request.id}`);
++    await expect(del.rowSubtitle(request.id)).toHaveText('Склад → склад · Заявка');
++    await expect(del.rowReason(request.id)).toHaveText(reason);
++    await expect(del.rowBy(request.id)).not.toHaveText('');
++    await expect(del.rowAt(request.id)).toHaveText(DATE_TIME);
++    const listed = await adminApi.listDeleted('transfers', { q: `#${request.id}` });
++    expect(listed.items.map((i) => i.id)).toEqual([String(request.id)]);
++    expect(listed.items[0]).toMatchObject({ kind: 'transfers', is_archived: false, deleted_with: null, delete_reason: reason });
++
++    const countBefore = Number(await del.tabCount('transfers').textContent());
++    await del.restoreBtn(request.id).click();
++    await expect(del.dialogText).toHaveText(`Восстановить «Перемещение #${request.id}»?`);
++    await del.dialogOk.click();
++    await expect(del.toast.filter({ hasText: 'Восстановлено' })).toBeVisible();
++    await expect(del.row(request.id)).toHaveCount(0);
++    await expect(del.tabCount('transfers')).toHaveText(String(countBefore - 1));
++    await expect(del.warnings).toBeHidden(); // у документа предупреждений восстановления нет
++
++    // документ снова в списке со своими строками, единица снова занята им.
++    await tr.goto(request.id);
++    await expect(tr.cardStatus).toHaveText('Заявка');
++    await expect(tr.row(request.id)).toHaveCount(1);
++    await expect(tr.itemRows).toHaveCount(2);
++    await expect(tr.itemRow('equipment', unit.id)).toBeVisible();
++    await expect(tr.itemRow('product', product.id)).toBeVisible();
++    await expect(tr.itemQty(product.id)).toHaveValue('2');
++    const restored = await adminApi.getTransfer(request.id);
++    expect(restored).toMatchObject({ status: 'requested', version: request.version + 2 });
++    expect(await unitState(adminApi, unit.serial)).toMatchObject({ location: 'at_warehouse', transfer: request.id });
++
++    // негатив: документ отправили, пока окно удаления открыто. Кнопки «Удалить» у «В пути» нет,
++    // поэтому запрос уходит из уже открытого окна. Без подмены — как у пользователя: в окне
++    // устаревшая версия → «Перемещение уже изменено, обновите», окно и причина остаются.
++    await tr.openDelete(request.id);
++    const sent = await adminApi.transferAction(request.id, 'send');
++    expect(sent.status).toBe('in_transit');
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/transfers/${request.id}`) && status === 409);
++    const staleReason = uniq('SDT-002 удаляем по устаревшей версии');
++    await tr.submitDelete(staleReason);
++    await expect(tr.deleteDialogError).toHaveText('Перемещение уже изменено, обновите');
++    await expect(tr.uiDialog).toBeVisible();
++    await expect(tr.deleteReason).toHaveValue(staleReason);
++    expect((await adminApi.getTransfer(request.id)).status, 'отказ документ не тронул').toBe('in_transit');
++    // чтобы сервер дошёл до проверки статуса (версия сверяется раньше), в запрос подставляется
++    // актуальная версия (abuse case 4).
++    await page.route(`**/api/v1/transfers/${request.id}`, async (route) => {
++      if (route.request().method() !== 'DELETE') return route.continue();
++      const body = route.request().postDataJSON() as TransferDeleteBody;
++      const fresh: TransferDeleteBody = { reason: body.reason, version: sent.version };
++      await route.continue({ postData: JSON.stringify(fresh) });
++    });
++    await tr.submitDelete(uniq('SDT-002 удаляем отправленный'));
++    await expect(tr.deleteDialogError).toHaveText('Перемещение в пути — сначала отмените его');
++    await expect(tr.uiDialog).toBeVisible(); // окно остаётся открытым
++    await page.unroute(`**/api/v1/transfers/${request.id}`);
++    await tr.cancelDelete();
++    // после отказа документ перечитан: «В пути», кнопки «Удалить» нет, остаток списан отправкой один раз.
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.deleteBtn).toHaveCount(0);
++    expect((await adminApi.getTransfer(request.id)).status).toBe('in_transit');
++    expect(await adminApi.transferHttpStatus(request.id)).toBe(200);
++    // уборка: документ без заказа — отмена отправки и физическое удаление служебным адресом.
++    await adminApi.removeTransferForCleanup(request.id);
++  });
++
++  test('SDT-003 (TS-041): восстановление заявки, чья единица уже в другом документе, — тост «Оборудование уже в перемещении #N», строка остаётся; устаревшая версия в окне удаления — «Перемещение уже изменено, обновите»; повторное восстановление из второй вкладки — «Запись уже восстановлена», строка исчезает', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++    context,
++  }) => {
++    const { almaty, moscow, task, units } = await orderWithUnits(adminApi, uniq, 'SDT003', 1);
++    const unit = units[0];
++    await adminApi.receiveFromClient(task.id, almaty.id, [unit.id]);
++    const gone = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'equipment', equipment_id: unit.id }],
++    });
++
++    // устаревшая версия: документ правят, пока окно удаления открыто → 409 в окне, документ цел.
++    const tr = new TransfersPage(page);
++    await tr.goto(gone.id);
++    await tr.openDelete(gone.id);
++    await adminApi.transferAction(gone.id, 'cancel');
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/transfers/${gone.id}`) && status === 409);
++    await tr.submitDelete(uniq('SDT-003 устаревшая версия'));
++    await expect(tr.deleteDialogError).toHaveText('Перемещение уже изменено, обновите');
++    await tr.cancelDelete();
++    await expect(tr.cardStatus).toHaveText('Отменён'); // документ перечитан
++    expect(await adminApi.transferHttpStatus(gone.id)).toBe(200);
++    await adminApi.removeTransferForCleanup(gone.id);
++
++    // заявка удалена, её единицу заняла другая заявка → восстановление отказано.
++    const request = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'equipment', equipment_id: unit.id }],
++    });
++    await adminApi.softDelete('transfers', request.id, uniq('SDT-003 причина'));
++    const blocker = await adminApi.createTransfer({
++      from_warehouse_id: almaty.id, to_warehouse_id: moscow.id, items: [{ kind: 'equipment', equipment_id: unit.id }],
++    });
++
++    const del = new DeletedPage(page);
++    await del.goto(`kind=transfers&q=${encodeURIComponent(`#${request.id}`)}`);
++    await expect(del.row(request.id)).toBeVisible();
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/transfers/${request.id}/restore`) && status === 409);
++    await del.restore(request.id);
++    await expect(del.toastError.filter({ hasText: `Оборудование уже в перемещении #${blocker.id}` })).toBeVisible();
++    await expect(del.row(request.id)).toBeVisible(); // строка остаётся
++    await expect(del.restoreBtn(request.id)).toBeEnabled();
++    expect(await adminApi.transferHttpStatus(request.id), 'документ остался удалённым').toBe(404);
++    expect(await unitState(adminApi, unit.serial)).toMatchObject({ transfer: blocker.id });
++
++    // мешающая заявка убрана; документ восстановили в другой вкладке → здесь «Запись уже восстановлена».
++    await adminApi.removeTransferForCleanup(blocker.id);
++    const other = await context.newPage();
++    const del2 = new DeletedPage(other);
++    await del2.goto(`kind=transfers&q=${encodeURIComponent(`#${request.id}`)}`);
++    await del2.restore(request.id);
++    await expect(del2.toast.filter({ hasText: 'Восстановлено' })).toBeVisible();
++    await other.close();
++
++    await del.restore(request.id);
++    await expect(del.toastError.filter({ hasText: 'Запись уже восстановлена' })).toBeVisible();
++    await expect(del.row(request.id)).toHaveCount(0);
++    expect((await adminApi.getTransfer(request.id)).status).toBe('requested');
++    expect(await unitState(adminApi, unit.serial)).toMatchObject({ transfer: request.id });
++    await adminApi.removeTransferForCleanup(request.id);
++  });
++
++  test('SDT-004 (TS-040): исполнитель видит бейдж «заказ удалён» у документа своего направления и доводит его до конца; кнопки «Удалить» у него нет, раздел «Удалённые» — «Нет доступа»', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const exec = await makeUser({ login: uniq('sdt004-exec'), name: uniq('SDT-004 Исполнитель') });
++    const { almaty, task, units } = await orderWithUnits(adminApi, uniq, 'SDT004', 1, exec.id);
++    const doc = await adminApi.createTransfer({
++      direction: 'client_to_warehouse', to_warehouse_id: almaty.id, task_id: task.id, items: [{ kind: 'equipment', equipment_id: units[0].id }],
++    });
++    await adminApi.deleteTask(task.id, uniq('SDT-004 заказ удалён'));
++
++    await loginAs(page, exec.login, exec.password);
++    const tr = new TransfersPage(page);
++    await tr.goto(doc.id);
++    await expect(tr.rowTaskDeleted(doc.id)).toHaveText('заказ удалён');
++    await expect(tr.taskDeletedBadge).toHaveText('заказ удалён');
++    await expect(tr.taskLink).toHaveCount(0);
++    await expect(tr.deleteBtn).toHaveCount(0); // удаляет только администратор
++
++    // заявку удалённого заказа исполнитель отправляет и принимает как обычно.
++    await tr.send.click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await tr.confirmReceive('Оборудование на складе?');
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.taskDeletedBadge).toBeVisible();
++    expect(await adminApi.getTransfer(doc.id)).toMatchObject({ status: 'received', task_is_deleted: true });
++
++    // раздел «Удалённые» исполнителю закрыт.
++    allowHttpErrors((url, status) => url.includes('/deleted') && status === 403);
++    const resp = await page.goto('/deleted?kind=transfers');
++    expect(resp?.status()).toBe(403);
++    await expect(page.locator('body')).toContainText('Нет доступа');
++    const api = await page.request.get('/api/v1/deleted?kind=transfers');
++    expect(api.status()).toBe(403);
++  });
++});
+diff --git a/e2e/tests/transfers-revert.spec.ts b/e2e/tests/transfers-revert.spec.ts
+index 17b340d..b3ec623 100644
+--- a/e2e/tests/transfers-revert.spec.ts
++++ b/e2e/tests/transfers-revert.spec.ts
+@@ -7,7 +7,8 @@ import { contrastOf } from '../fixtures/contrast';
+ 
+ // Отмена проведения и удаление документа «Перемещение» (docs/features/transfers-revert/
+ // draft-spec.md §8.1, §8.2): «Отменить проведение» с причиной и повторная приёмка (TS-033),
+-// запрет удаления заказа с документами (TS-037), удаление документа (TS-038). Общая dev-БД
++// удаление заказа с документами (TS-037 → soft-delete-transfers TS-014: отказ снят), удаление
++// документа (TS-038; теперь мягкое, с причиной). Общая dev-БД
+ // (§TD-6.2): свои клиенты, оборудование, заказы, товары и поставщики через uniq()+adminApi,
+ // склады — сид «Алматы» / «Москва». Заказы вместе с документами убирает _boardCleanup
+ // (purgeTask).
+@@ -177,11 +178,10 @@ test.describe('TR: перемещения — отмена проведения
+     expect((await adminApi.getTransfer(first.id)).status).toBe('in_transit');
+   });
+ 
+-  test('TR-024 (TS-037; soft-delete-core DS-034): удаление заказа с проведённым документом — в окне «Удаление» отказ «Сначала отмените перемещения: #N», заказ на месте; после отката и отмены документа заказ удаляется мягко, отменённые документы остаются', async ({
++  test('TR-024 (TS-014; soft-delete-transfers DS-006): удаление заказа с проведённым и отменённым документами — отказа «Сначала отмените перемещения» больше нет: в окне «Удаление» вторая строка о перемещениях, заказ удаляется, документы остаются с пометкой «заказ удалён»; у заказа без документов второй строки нет', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+-    allowHttpErrors,
+   }) => {
+     const { almaty, client, task, units } = await orderWithUnits(adminApi, uniq, 'TR024', 2);
+     const received = await adminApi.receiveFromClient(task.id, almaty.id, [units[0].id]);
+@@ -197,42 +197,40 @@ test.describe('TR: перемещения — отмена проведения
+     await card.waitOpen();
+     await expect(card.transferRows).toHaveCount(2);
+ 
+-    // окно «Удаление» об отменённых документах больше не предупреждает (они остаются, DS-034);
+-    // отказ 409 — красным блоком в окне, окно и карточка остаются открытыми.
+-    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 409);
++    // окно «Удаление»: пояснение + вторая строка о документах заказа (§8.3); отказа 409 нет.
+     const dialogText = await card.openDeleteTask();
+     await expect(card.deleteDialogTitle).toContainText(`#${task.id}`);
+     await expect(dialogText).toContainText('Товары заказа вернутся на склад');
+-    await expect(dialogText).not.toContainText('будут удалены вместе с заказом');
++    await expect(card.deleteDialogNote).toHaveText('Перемещения заказа останутся в разделе «Перемещения» с пометкой «заказ удалён»');
+     await card.submitDelete('удаляем заказ с документами');
+-    await expect(card.deleteDialogError).toHaveText(`Сначала отмените перемещения: #${received.id}`); // отменённый документ не мешает
+-    await expect(card.deleteDialog).toBeVisible();
+-    await expect(card.deleteReason).toHaveValue('удаляем заказ с документами');
+-    await card.cancelUiDialog();
+     await expect(card.deleteDialog).toBeHidden();
+-    await expect(card.modal).toBeVisible();
+-    expect(await adminApi.taskHttpStatus(task.id), 'заказ на месте').toBe(200);
+-    expect((await adminApi.getTransfer(received.id)).status).toBe('received');
+-    expect((await adminApi.listTransfers({ task_id: task.id })).total).toBe(2);
+-
+-    // после отката и отмены документа заказ удаляется мягко; отменённые документы остаются.
+-    await adminApi.unreceiveTransfer(received.id, 'удаляем заказ');
+-    await adminApi.transferAction(received.id, 'cancel');
+-    await board.goto(`?client_id=${client.id}&task=${task.id}`);
+-    await card.waitOpen();
+-    await card.confirmDeleteTask('документы отменены');
+     await expect(card.modal).toBeHidden();
+     expect(await adminApi.taskHttpStatus(task.id), 'заказ удалён').toBe(404);
+-    expect((await adminApi.listTransfers({ task_id: task.id })).total, 'отменённые документы остались у удалённого заказа').toBe(2);
+     expect((await adminApi.listDeleted('tasks', { q: `#${task.id}` })).items.map((i) => i.id)).toEqual([String(task.id)]);
+ 
++    // документы не изменились и остались у удалённого заказа.
++    const after = await adminApi.listTransfers({ task_id: task.id });
++    expect(after.total, 'документы остались у удалённого заказа').toBe(2);
++    expect(after.items.every((t) => t.task_is_deleted)).toBe(true);
++    expect((await adminApi.getTransfer(received.id)).status).toBe('received');
++    expect((await adminApi.getTransfer(cancelled.id)).status).toBe('cancelled');
++
+     await tr.goto();
+     await expect(tr.list).toBeVisible();
+-    await expect(tr.row(received.id)).toHaveCount(1);
+-    await expect(tr.row(cancelled.id)).toHaveCount(1);
++    await expect(tr.rowTaskDeleted(received.id)).toHaveText('заказ удалён');
++    await expect(tr.rowTaskDeleted(cancelled.id)).toHaveText('заказ удалён');
++
++    // негатив: у заказа без документов второй строки пояснения нет.
++    const columns = (await adminApi.listColumns()).items;
++    const plain = await adminApi.createTask({ title: uniq('TR024 без документов'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    await board.goto(`?client_id=${client.id}&task=${plain.id}`);
++    await card.waitOpen();
++    await card.openDeleteTask();
++    await expect(card.deleteDialogNote).toHaveCount(0);
++    await card.cancelUiDialog();
+   });
+ 
+-  test('TR-025 (TS-038): «Удалить» у заявки — подтверждение, строка исчезла, тост «Удалено», единица снова свободна; у «В пути» и «Получено» кнопки нет; у «Отменён» — есть; красная кнопка читаема в обеих темах', async ({
++  test('TR-025 (TS-038): «Удалить» у заявки — окно «Удаление» с причиной, строка исчезла, тост «Удалено», единица снова свободна; у «В пути» и «Получено» кнопки нет; у «Отменён» — есть; красная кнопка читаема в обеих темах', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+@@ -260,7 +258,8 @@ test.describe('TR: перемещения — отмена проведения
+     }
+     await expect(tr.unreceiveBtn).toHaveCount(0);
+ 
+-    // отказ в диалоге — документ на месте; подтверждение — документ удалён.
++    // отказ в окне «Удаление» — документ на месте; причина и подтверждение — документ удалён
++    // (мягко: soft-delete-transfers DS-018).
+     await tr.deleteDocument(request.id, false);
+     await expect(tr.cardTitle).toHaveText(`Перемещение #${request.id}`);
+     await expect(tr.row(request.id)).toHaveCount(1);
+diff --git a/web/ssr/_shared/js/deleted.js b/web/ssr/_shared/js/deleted.js
+index 1779466..8c02d26 100644
+--- a/web/ssr/_shared/js/deleted.js
++++ b/web/ssr/_shared/js/deleted.js
+@@ -24,6 +24,15 @@
+       restoreUrl: function (id) { return '/api/v1/tasks/' + encodeURIComponent(id) + '/restore'; },
+       notFound: 'Заказ не найден',
+       openLink: function (id) { return { href: '/?task=' + encodeURIComponent(id), text: 'Открыть заказ #' + id }; }
++    },
++    {
++      // часть 2 (soft-delete-transfers §8.2): документы перемещения. Отказы восстановления 409
++      // EQUIPMENT_IN_TRANSFER, TRANSFER_CLIENT_MISMATCH и TRANSFER_EQUIPMENT_NOT_IN_TASK — тост с
++      // текстом сервера, строка остаётся.
++      kind: 'transfers', label: 'Перемещения', countKey: 'transfers',
++      restoreUrl: function (id) { return '/api/v1/transfers/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Перемещение не найдено',
++      openLink: function (id) { return { href: '/transfers?id=' + encodeURIComponent(id), text: 'Открыть перемещение #' + id }; }
+     }
+   ];
+ 
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 31003b4..4f04ac4 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -1357,13 +1357,13 @@
+     el.classList.remove('d-none');
+   }
+ 
+-  // showTransfersError — отказ удаления заказа (409 TASK_HAS_TRANSFERS, transfers-revert
+-  // DS-025): «Сначала отмените перемещения: #12, #14», номера — ссылками на документы. Как и
+-  // прочие ошибки карточки — в шапке; не скрывается, пока карточка не перечитана. Тем же
+-  // видом — отказ смены клиента (409 TASK_CLIENT_LOCKED_BY_TRANSFERS, D84): свой prefix.
++  // showTransfersError — отказ смены клиента заказа с действующими документами (409
++  // TASK_CLIENT_LOCKED_BY_TRANSFERS, D84): текст prefix и номера документов ссылками. Как и
++  // прочие ошибки карточки — в шапке; не скрывается, пока карточка не перечитана. (Отказа
++  // удаления заказа «Сначала отмените перемещения» больше нет — soft-delete-transfers DS-006.)
+   function showTransfersError(ids, prefix) {
+     var el = $('#task-error');
+-    el.textContent = prefix || 'Сначала отмените перемещения: ';
++    el.textContent = prefix;
+     ids.forEach(function (n, i) {
+       if (i) el.appendChild(document.createTextNode(', '));
+       var a = document.createElement('a');
+@@ -1450,12 +1450,16 @@
+       if (!taskId) return;
+       var id = taskId;
+       // Мягкое удаление с причиной (soft-delete-core §8.2, §8.3): окно «Удаление» само
+-      // показывает ошибку причины (400) и отказ TASK_HAS_TRANSFERS (409) и остаётся открытым;
+-      // отменённые документы заказа с ним не удаляются (DS-034).
++      // показывает ошибку причины (400) и остаётся открытым. Заказ удаляется с документами
++      // перемещения в любом статусе (soft-delete-transfers §8.3, DS-006): они остаются в
++      // «Перемещениях» с пометкой «заказ удалён» — об этом вторая строка пояснения (число
++      // документов — из уже загруженного блока перемещений карточки).
+       var title = (card && card.task && card.task.title) || '';
++      var hasTransfers = !!(card && card.transfers && card.transfers.length);
+       KT.uiDeleteDialog({
+         title: 'Удалить «#' + id + (title ? ' ' + title : '') + '»?',
+         text: 'Товары заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».',
++        note: hasTransfers ? 'Перемещения заказа останутся в разделе «Перемещения» с пометкой «заказ удалён»' : '',
+         submit: function (reason) { return KT.api.delWith('/api/v1/tasks/' + id, { reason: reason }); },
+         onOffline: function () { KT.uiToast('Нет связи с сервером', true); }
+       }).then(function (out) {
+diff --git a/web/ssr/_shared/js/transfers.js b/web/ssr/_shared/js/transfers.js
+index 9a9c60e..b848624 100644
+--- a/web/ssr/_shared/js/transfers.js
++++ b/web/ssr/_shared/js/transfers.js
+@@ -301,7 +301,9 @@
+     if (!t || !(t.new || t.status === 'requested')) return Promise.resolve();
+     var d = dirOf(t);
+     if (d.supplier) return loadActiveSuppliers();
+-    if (d.task && t.task_id) return loadTaskCard(t.task_id, false);
++    // у заявки удалённого заказа карточки заказа нет (404): её строки правятся как есть,
++    // оборудование заказа для «+ Оборудование» не загружается (soft-delete-transfers DS-007).
++    if (d.task && t.task_id && !(t.task_is_deleted && !t.new)) return loadTaskCard(t.task_id, false);
+     return Promise.resolve();
+   }
+ 
+@@ -391,7 +393,9 @@
+         // документ, возвращённый откатом в «В пути» (transfers-revert §8.1 п.3)
+         (t.status === 'in_transit' && t.unreceived_at ? '<span data-testid="st-row-unreceived" title="Проведение отменено" aria-label="Проведение отменено">↩</span>' : '') +
+         '</span></div>' +
+-        (party ? '<div class="small text-break" data-testid="st-row-party">' + esc(party) + '</div>' : '') +
++        (party ? '<div class="small text-break" data-testid="st-row-party">' + esc(party) +
++          // документ мягко удалённого заказа (soft-delete-transfers §8.1 п.1)
++          (t.task_is_deleted ? ' ' + taskDeletedBadge('st-row-task-deleted') : '') + '</div>' : '') +
+         // сумма накладной — справа под маршрутом, только у «возврата клиенту» с товарами (§8.1 п.1)
+         (dirOf(t).priced && Number(t.amount) > 0 ? '<div class="small fw-semibold text-end" data-testid="st-row-amount">' + esc(money(t.amount)) + '</div>' : '') +
+         '<div class="small' + (active ? '' : ' text-body-secondary') + '">' +
+@@ -569,9 +573,19 @@
+       '<span class="fw-semibold" data-testid="st-direction" data-direction="' + esc(t.direction) + '">' + esc(dirOf(t).label) + '</span></div>';
+   }
+ 
++  // taskDeletedBadge — серый бейдж «заказ удалён» справа от номера заказа (soft-delete-transfers
++  // §8.1, UI-конвенции DS-033).
++  function taskDeletedBadge(testid) {
++    return '<span class="badge text-bg-secondary" data-testid="' + testid + '">заказ удалён</span>';
++  }
++
+   // taskLinkHTML — заказ документа: ссылка на карточку + название и клиент (только чтение).
++  // Заказ мягко удалён — номер текстом без ссылки (карточки у него нет) и бейдж «заказ удалён».
+   function taskLinkHTML(t) {
+-    return '<a href="/?task=' + encodeURIComponent(t.task_id) + '" data-testid="st-task-link">Заказ #' + esc(t.task_id) + '</a>' +
++    var head = t.task_is_deleted
++      ? '<span data-testid="st-task-text">Заказ #' + esc(t.task_id) + '</span> ' + taskDeletedBadge('st-task-deleted')
++      : '<a href="/?task=' + encodeURIComponent(t.task_id) + '" data-testid="st-task-link">Заказ #' + esc(t.task_id) + '</a>';
++    return head +
+       (t.task_title ? ' «' + esc(t.task_title) + '»' : '') +
+       (t.client_name ? ' · <span data-testid="st-task-client">' + esc(t.client_name) + '</span>' : '');
+   }
+@@ -676,7 +690,8 @@
+     return html;
+   }
+ 
+-  // deleteButtonHTML — «Удалить» (только admin; «Заявка» и «Отменён», transfers-revert DS-025).
++  // deleteButtonHTML — «Удалить» (только admin; «Заявка» и «Отменён», transfers-revert DS-025;
++  // удаление мягкое, с причиной — soft-delete-transfers DS-018).
+   function deleteButtonHTML() {
+     return state.isAdmin ? '<button type="button" class="btn btn-danger" data-testid="st-delete" data-act="delete">Удалить</button>' : '';
+   }
+@@ -827,7 +842,9 @@
+     var c = state.taskCard;
+     if (!c) {
+       box.innerHTML = '<div class="list-group-item text-body-secondary small" data-testid="st-task-equipment-none">' +
+-        (state.taskLoading ? 'Загрузка…' : 'Укажите заказ — здесь появится его оборудование') + '</div>';
++        (state.taskLoading ? 'Загрузка…'
++          : (state.current && state.current.task_is_deleted ? 'Заказ удалён — добавить его оборудование нельзя'
++            : 'Укажите заказ — здесь появится его оборудование')) + '</div>';
+       return;
+     }
+     var added = {};
+@@ -1259,28 +1276,57 @@
+   }
+ 
+   // ---------- удаление и отмена проведения (transfers-revert §8.1) ----------
+-  // doDelete — «Удалить» (admin; «Заявка» / «Отменён»): документ закрывается, строка уходит из
+-  // списка. 404 / 409 — тост и перечитывание (handleError).
++  // doDelete — «Удалить» (admin; «Заявка» / «Отменён»): мягкое удаление с причиной
++  // (soft-delete-transfers §8.1) через общее окно «Удаление» (KT.uiDeleteDialog, часть 1).
++  // Окно само показывает ошибку причины (400, под полем) и отказы 409 (статус, версия — красный
++  // блок) и остаётся открытым; 200 — документ закрывается, строка уходит из списка; 404 / 403
++  // — тост. После отказа 409 документ и список перечитываются при закрытии окна.
+   function doDelete() {
+     var t = state.current;
+-    return KT.uiDialog({
+-      title: 'Удаление перемещения', text: 'Удалить перемещение #' + t.id + '? Восстановить будет нельзя',
+-      ok: 'Удалить', cancel: 'Отмена', danger: true
+-    }).then(function (ok) {
+-      if (!ok) return;
+-      clearErrors();
+-      setBusy(true);
+-      return KT.api.del(API + '/' + t.id + '?version=' + encodeURIComponent(t.version)).then(function () {
+-        // карточка закрывается — её кнопки разблокировать уже не нужно
+-        state.busy = false;
++    var stale = false;
++    clearErrors();
++    return KT.uiDeleteDialog({
++      title: 'Удалить «Перемещение #' + t.id + '»?',
++      text: 'Документ можно восстановить в разделе «Удалённые»',
++      submit: function (reason) {
++        return KT.api.delWith(API + '/' + t.id, { reason: reason, version: t.version }).catch(function (err) {
++          if (err && err.status === 409) stale = true;
++          throw err;
++        });
++      },
++      onOffline: function () { toast('Нет связи', true); }
++    }).then(function (out) {
++      var refresh = function () {
+         state.warnings = [];
+-        setCurrent(null);
+-        setUrl(null);
+-        renderCard();
+-        toast('Удалено', false);
+-        if (KT.refreshNavBadge) KT.refreshNavBadge();
++        loadTransfer(t.id).catch(function () { /* 404 — документ пропал; список ниже */ });
+         return reloadList();
+-      }, function (err) { setBusy(false); handleError(err); });
++      };
++      if (!out) return stale ? refresh() : undefined; // отмена — причина не сохраняется
++      if (out.error) {
++        var err = out.error;
++        if (err.status === 404) {
++          toast('Перемещение не найдено', true);
++          state.warnings = [];
++          setCurrent(null);
++          setUrl(null);
++          renderCard();
++          return reloadList();
++        }
++        if (err.status === 400 && (err.fields || []).some(function (f) { return f.name === 'version'; })) {
++          toast('Обновите страницу', true);
++          return refresh();
++        }
++        toast(err.status === 403 ? 'Нет доступа' : failureText(err), true);
++        return;
++      }
++      state.busy = false;
++      state.warnings = [];
++      setCurrent(null);
++      setUrl(null);
++      renderCard();
++      toast('Удалено. Восстановить можно в разделе «Удалённые»', false);
++      if (KT.refreshNavBadge) KT.refreshNavBadge();
++      return reloadList();
+     });
+   }
+ 
+diff --git a/web/ssr/_shared/js/ui-dialog.js b/web/ssr/_shared/js/ui-dialog.js
+index 361fa22..a399554 100644
+--- a/web/ssr/_shared/js/ui-dialog.js
++++ b/web/ssr/_shared/js/ui-dialog.js
+@@ -105,7 +105,7 @@
+ 
+   /* Окно «Удаление» с обязательной причиной (soft-delete-core §8.2, DS-020) — общее для всех
+      видов записей:
+-       KT.uiDeleteDialog({title, text, submit(reason) → Promise, onOffline()}) → Promise
++       KT.uiDeleteDialog({title, text, note, submit(reason) → Promise, onOffline()}) → Promise
+          → null                — отмена (кнопка, крестик, Esc);
+          → {result: ответ}     — submit выполнен, окно закрыто;
+          → {error: ApiError}   — отказ, после которого окно закрывается (404, 403, прочее).
+@@ -150,6 +150,11 @@
+         p.setAttribute('data-testid', 'ui-dialog-text');
+         body.append(p);
+       }
++      if (opts.note) { // вторая строка пояснения (soft-delete-transfers §8.3)
++        var note = el('p', null, opts.note);
++        note.setAttribute('data-testid', 'ui-dialog-note');
++        body.append(note);
++      }
+       var label = el('label', 'form-label', 'Причина *');
+       label.htmlFor = 'kt-delete-reason';
+       var ta = el('textarea', 'form-control');
+diff --git a/web/ssr/softdelete/templates/pages/list.html b/web/ssr/softdelete/templates/pages/list.html
+index 11ebc8d..d2c2a38 100644
+--- a/web/ssr/softdelete/templates/pages/list.html
++++ b/web/ssr/softdelete/templates/pages/list.html
+@@ -1,6 +1,6 @@
+ {{ define "content" }}
+ <div id="del" data-testid="deleted-root" style="min-width:0">
+-  <!-- Вкладки по видам записей со счётчиками (рисует js/deleted.js; в части 1 — «Заказы») -->
++  <!-- Вкладки по видам записей со счётчиками (рисует js/deleted.js: «Заказы», «Перемещения») -->
+   <ul class="nav nav-tabs mb-3" id="del-tabs" data-testid="deleted-tabs" role="tablist"></ul>
+ 
+   <!-- Фильтры: сочетание по «И», значения — в адресной строке -->

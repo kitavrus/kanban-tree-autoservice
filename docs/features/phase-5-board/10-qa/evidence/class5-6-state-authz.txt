@@ -1,0 +1,34 @@
+# Класс 5 (state machine колонки/статусы) + Класс 6 (authz depth: executor vs admin, IDOR)
+
+## Класс 5: SUBTASKS_NOT_DONE -> done -> move проходит (AC-003, LV-050/052 style)
+$ curl -s -X POST .../tasks/675/move -d '{"column_id":"f844a03f-...-done"}'   # subtask status=new
+{"code":"SUBTASKS_NOT_DONE","message":"...","details":{"subtasks":[{"id":"2222...202","service_name":"qa-service-phase5","status":"new"}]}}  HTTP:409
+$ docker exec ... psql -c "UPDATE subtasks SET status='done' WHERE id='2222...202';"
+UPDATE 1
+$ curl -s -X POST .../tasks/675/move -d '{"column_id":"f844a03f-...-done"}'   # subtask теперь done
+{"task":{"id":675,"column_id":"f844a03f-...","version":2,"subtasks_total":1,"subtasks_done":1,...}}  HTTP:200
+Результат: переход блокируется при незавершённых услугах и проходит после done — состояние-машина колонок работает корректно.
+
+## Класс 5: попытка финализировать non-final колонку с другими non-final колонками в наличии — не триггерит LAST_NON_FINAL (много non-final колонок на общем dev-стенде из-за E2E-истории)
+$ curl -s -X PUT .../columns/fed84d85-... -d '{"name":"qa-col-work","color":"#222222","is_final":false,"consumes_stock":true,"position":78}'
+{"column":{...,"is_final":false,...}}  HTTP:200
+(LAST_NON_FINAL_COLUMN сценарий требует изолированной доски — на общем стенде с 70+ колонками невозможно физически довести до последней non-final без разрушения shared-данных; LV-054 в validation уже покрывает это на выделенном live-suite — design-tests.md явно фиксирует это ограничение E2E-стенда.)
+
+## Класс 6: authz depth
+$ curl -s -b exec.jar -X POST .../columns -d '{"name":"x","color":"#111111"}'
+{"code":"FORBIDDEN","message":"admin only"}  HTTP:403
+$ curl -s -b exec.jar -X DELETE .../tasks/675
+{"code":"FORBIDDEN","message":"admin only"}  HTTP:403
+$ curl -s -b exec.jar -X PUT .../stock/11111111-...-103 -d '{"stock":5}'
+{"code":"FORBIDDEN","message":"admin only"}  HTTP:403
+$ curl -s -b exec.jar .../stock/summary
+{"products_total":256,...}  HTTP:200   (GET разрешён executor)
+$ curl -s .../tasks   # без cookie
+{"code":"UNAUTHORIZED","message":"no session"}  HTTP:401
+
+## Класс 6 / AC-014: IDOR-подобная проверка видимости — executor видит только «свои» заказы по умолчанию
+$ curl -s -b exec.jar "http://localhost:8080/api/v1/tasks?limit=1000"   # sidorov — ответственный на task id=1, НЕ на task 675 (qa-client)
+total=2, 675 in? False, 1 in? True
+$ curl -s -b admin.jar "http://localhost:8080/api/v1/tasks?limit=1000"  # admin по умолчанию видит всё
+total=641, 675 in? True
+Результат: серверная фильтрация по assignee=me для executor работает, чужой заказ (675) не утекает в дефолтном списке — AC-014 подтверждена, отсутствие IDOR по assignee-скоупу.

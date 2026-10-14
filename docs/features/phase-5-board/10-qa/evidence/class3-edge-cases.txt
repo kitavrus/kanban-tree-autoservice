@@ -1,0 +1,56 @@
+# Класс 3 — edge cases (минимум 5 для tier M). qa-col-new=b883eeea..., qa-col-work=fed84d85..., qa-col-done=f844a03f...
+
+## EC1: move в ту же позицию (нет prev/next, единственный заказ в колонке) — идемпотентно, 200
+$ curl -s -X POST .../tasks/674/move -d '{"column_id":"fed84d85-650c-4a26-bdee-9fc11c934412"}'
+{"task":{...,"position":"1024","version":3,...}}  HTTP:200
+
+## EC2: move с prev_id=next_id=id самой карточки (674) — сосед-самоссылка игнорируется (ADR-001: id<>$2), 200
+$ curl -s -X POST .../tasks/674/move -d '{"column_id":"fed84d85-...","prev_id":674,"next_id":674}'
+{"task":{...,"position":"1024","version":4,...}}  HTTP:200
+
+## EC3: move с prev_id из ДРУГОЙ колонки (task id=1 в колонке «Новые») — «чужой» сосед игнорируется (LV-036)
+$ curl -s -X POST .../tasks/674/move -d '{"column_id":"fed84d85-...","prev_id":1}'
+{"task":{...,"position":"1024","version":5,...}}  HTTP:200   (позиция как append, сосед не из этой колонки не подставлен)
+
+## EC4: DELETE непустой колонки qa-col-work (в ней task 674) — 409 COLUMN_NOT_EMPTY
+$ curl -s -X DELETE .../columns/fed84d85-650c-4a26-bdee-9fc11c934412
+{"code":"COLUMN_NOT_EMPTY","message":"В колонке есть заказы"}  HTTP:409
+
+## EC5: query-фильтры с мусором — все 400 VALIDATION field, не 500
+$ curl -s ".../tasks?paid=maybe"    -> {"code":"VALIDATION",...,"fields":[{"name":"paid","message":"invalid"}]}   HTTP:400
+$ curl -s ".../tasks?due=xxx"       -> {"code":"VALIDATION",...,"fields":[{"name":"due","message":"invalid"}]}    HTTP:400
+$ curl -s ".../tasks?assignee=bad-uuid" -> {"code":"VALIDATION",...,"fields":[{"name":"assignee","message":"invalid"}]} HTTP:400
+$ curl -s ".../tasks?limit=-1"      -> {"code":"VALIDATION",...,"fields":[{"name":"limit","message":"invalid"}]}  HTTP:400
+$ curl -s ".../stock?scope=zzz"     -> {"code":"VALIDATION",...,"fields":[{"name":"scope","message":"invalid"}]}  HTTP:400
+
+## EC6: смена consumes_stock туда-обратно (qa-col-work) — остаток возвращается точно
+$ до: stock=8.000 (после Reconcile demand=2)
+$ PUT columns/fed84d85 consumes_stock:false -> stock=10.000 (возврат)
+$ PUT columns/fed84d85 consumes_stock:true  -> stock=8.000  (повторное списание, без дублирования)
+
+## EC7: удаление заказа из списывающей колонки — товары вернулись, FK task_id SET NULL
+$ curl -s -X DELETE .../tasks/674   -> {"warnings":[]}  HTTP:200
+$ stock после delete: 10.000 (возврат подтверждён)
+$ task_stock WHERE task_id=674 -> 0 rows (cascade)
+$ subtasks WHERE task_id=674 -> 0 rows (cascade)
+$ stock_movements.task_id -> NULL для всех движений по товару (FK ON DELETE SET NULL сработал)
+
+## EC8: manual stock adjust — >3 знака после запятой -> 400; отрицательный остаток разрешён (AC-005)
+$ curl -s -X PUT .../stock/11111111-...-103 -d '{"stock":1.2345}'
+{"code":"VALIDATION","message":"validation failed","details":{"fields":[{"name":"stock","message":"too_precise"}]}}  HTTP:400
+$ curl -s -X PUT .../stock/11111111-...-103 -d '{"stock":-5}'
+{"product_id":...,"stock":-5.000,...,"state":"out"}  HTTP:200
+
+## EC9: адверсариальные тела на move — 400, не 500
+$ curl -s -X POST .../tasks/675/move -d '{"column_id":"fed84d85-...","prev_id":"x"}'  -> {"code":"BAD_REQUEST",...} HTTP:400
+$ curl -s -X POST .../tasks/675/move -d 'not-json'  -> {"code":"BAD_REQUEST",...} HTTP:400
+$ curl -s -X POST .../tasks/675/move -d '[]'         -> {"code":"BAD_REQUEST",...} HTTP:400
+
+## EC10: not-found пути (числовой id заказа)
+$ curl -s .../tasks/abc -> {"code":"TASK_NOT_FOUND",...} HTTP:404
+$ curl -s .../tasks/-1  -> {"code":"TASK_NOT_FOUND",...} HTTP:404
+$ curl -s .../tasks/99999999999999999999 -> {"code":"TASK_NOT_FOUND",...} HTTP:404
+$ curl -s -X DELETE .../columns/not-uuid -> {"code":"COLUMN_NOT_FOUND",...} HTTP:404
+$ curl -s -X PUT .../stock/not-uuid -d '{"stock":1}' -> {"code":"PRODUCT_NOT_FOUND",...} HTTP:404
+
+Итог: 10 edge cases проверено (требование tier M — минимум 5), все совпадают с ожиданием design-tests/design-errors, ни одного 500.

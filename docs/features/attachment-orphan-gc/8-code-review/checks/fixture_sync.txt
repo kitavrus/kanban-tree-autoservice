@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fixture_sync_check.py --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/jovial-babbage-3d79d4 --base d24b7cb2e490d331936a6601151c3da8807fb6bb
+(exit 0)
+
+fixture-sync: PASS (схемных изменений в diff нет)

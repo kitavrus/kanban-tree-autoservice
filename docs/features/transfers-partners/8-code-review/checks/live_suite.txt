@@ -1,0 +1,5 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/live_suite_check.py --feature transfers-partners --repo /Users/igorpotema/mycode/kanban-tree --paths internal/features/transfers internal/features/board internal/features/clients internal/seeddemo pkg/timezone
+(exit 0)
+
+live-suite internal/features/transfers,internal/features/board,internal/features/clients,internal/seeddemo,pkg/timezone: HTTP-слоя в модулях нет (repository/service-only) — live-сьюта не требуется
+live-suite internal/features/transfers,internal/features/board,internal/features/clients,internal/seeddemo,pkg/timezone: PASS

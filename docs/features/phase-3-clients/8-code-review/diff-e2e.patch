@@ -1,0 +1,1231 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index c19dc93..d8fcfe5 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -16,6 +16,61 @@ export type Role = 'admin' | 'executor';
+ export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean };
+ export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean };
+ 
++// Wire-типы equipment-types (internal/features/equipmenttypes/dto.go, §TD-6.2).
++export type NewEquipmentType = { name: string; spec_keys?: string[] };
++export type EquipmentType = {
++  id: string;
++  name: string;
++  spec_keys: string[];
++  is_active: boolean;
++  equipment_count: number;
++};
++
++// Wire-типы clients (internal/features/clients/dto.go, §TD-6.2).
++export type Phone = { phone: string; note: string };
++export type NewClient = {
++  company_name: string;
++  address?: string;
++  contact_name?: string;
++  contact_position?: string;
++  phones: Phone[];
++};
++export type Client = {
++  id: string;
++  company_name: string;
++  address: string;
++  contact_name: string;
++  contact_position: string;
++  phones: Phone[];
++  equipment_count: number;
++  version: number;
++};
++
++// Wire-типы equipment (internal/features/clients/dto.go `## DTO Equipment`, §TD-6.2).
++export type Spec = { k: string; v: string };
++export type NewEquipment = {
++  type_id: string;
++  brand?: string;
++  model: string;
++  sku?: string;
++  serial?: string;
++  specs?: Spec[];
++  note?: string;
++};
++export type Equipment = {
++  id: string;
++  client_id: string;
++  type_id: string;
++  type_name: string;
++  type_is_active: boolean;
++  brand: string;
++  model: string;
++  sku: string;
++  serial: string;
++  specs: Spec[];
++  note: string;
++};
++
+ type Cookies = { cookies(): Promise<Array<{ name: string; value: string }>> };
+ 
+ async function csrfOf(jar: Cookies, get: () => Promise<unknown>): Promise<string> {
+@@ -67,6 +122,42 @@ export class AdminApi {
+     return res.json();
+   }
+ 
++  async createEquipmentType(t: NewEquipmentType): Promise<EquipmentType> {
++    const res = await this.ctx.post('/api/v1/equipment-types', { data: { spec_keys: [], ...t }, headers: await this.headers() });
++    expect(res.status(), `создание типа ${t.name}: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
++  async updateEquipmentType(id: string, t: NewEquipmentType & { is_active: boolean }): Promise<EquipmentType> {
++    const res = await this.ctx.put(`/api/v1/equipment-types/${id}`, { data: { spec_keys: [], ...t }, headers: await this.headers() });
++    expect(res.status(), `правка типа ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async createClient(c: NewClient): Promise<Client> {
++    const res = await this.ctx.post('/api/v1/clients', { data: c, headers: await this.headers() });
++    expect(res.status(), `создание клиента ${c.company_name}: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
++  async updateClient(id: string, c: Omit<NewClient, 'phones'> & { phones: Phone[]; version: number }): Promise<Client> {
++    const res = await this.ctx.put(`/api/v1/clients/${id}`, { data: c, headers: await this.headers() });
++    expect(res.status(), `правка клиента ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async getClient(id: string): Promise<Client> {
++    const res = await this.ctx.get(`/api/v1/clients/${id}`);
++    expect(res.status(), `клиент ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async createEquipment(clientId: string, e: NewEquipment): Promise<Equipment> {
++    const res = await this.ctx.post(`/api/v1/clients/${clientId}/equipment`, { data: { specs: [], ...e }, headers: await this.headers() });
++    expect(res.status(), `создание оборудования ${e.model}: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
+   async findByLogin(login: string): Promise<User> {
+     const res = await this.ctx.get(`/api/v1/users?q=${encodeURIComponent(login)}`);
+     expect(res.status()).toBe(200);
+diff --git a/e2e/pages/ClientsPage.ts b/e2e/pages/ClientsPage.ts
+new file mode 100644
+index 0000000..40f1a60
+--- /dev/null
++++ b/e2e/pages/ClientsPage.ts
+@@ -0,0 +1,112 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана «Клиенты»: список /clients и форма /clients/new, /clients/:id
++// (создание/правка/удаление, конфликт версии — ADR-005).
++export class ClientsPage {
++  readonly table: Locator;
++  readonly addButton: Locator;
++  readonly flash: Locator;
++  readonly search: Locator;
++  readonly empty: Locator;
++  readonly total: Locator;
++  // форма
++  readonly form: Locator;
++  readonly companyName: Locator;
++  readonly address: Locator;
++  readonly contactName: Locator;
++  readonly contactPosition: Locator;
++  readonly phonesRows: Locator;
++  readonly phoneAdd: Locator;
++  readonly save: Locator;
++  readonly formError: Locator;
++  readonly conflictReload: Locator;
++  readonly deleteButton: Locator;
++  readonly equipmentEmpty: Locator;
++
++  constructor(readonly page: Page) {
++    this.table = page.getByTestId('clients-table');
++    this.addButton = page.getByTestId('client-add');
++    this.flash = page.getByTestId('flash');
++    this.search = page.getByTestId('filter-q');
++    this.empty = page.getByTestId('clients-empty');
++    this.total = page.getByTestId('clients-total');
++    this.form = page.getByTestId('client-form');
++    this.companyName = page.locator('#company_name');
++    this.address = page.locator('#address');
++    this.contactName = page.locator('#contact_name');
++    this.contactPosition = page.locator('#contact_position');
++    this.phonesRows = page.getByTestId('phone-row');
++    this.phoneAdd = page.getByTestId('phone-add');
++    this.save = page.getByTestId('client-save');
++    this.formError = page.getByTestId('form-error');
++    this.conflictReload = page.getByTestId('client-conflict-reload');
++    this.deleteButton = page.getByTestId('client-delete');
++    this.equipmentEmpty = page.getByTestId('equipment-empty');
++  }
++
++  async goto(query = '') {
++    await this.page.goto(`/clients${query}`);
++    await expect(this.page.locator('.app-title')).toHaveText('Клиенты');
++  }
++
++  async gotoNew() {
++    await this.page.goto('/clients/new');
++    await expect(this.page.locator('.app-title')).toHaveText('Новый клиент');
++  }
++
++  row(company: string): Locator {
++    return this.page.locator(`[data-testid="client-row"][data-company="${company}"]`);
++  }
++
++  equipmentCount(company: string): Locator {
++    return this.row(company).getByTestId('client-equipment-count');
++  }
++
++  fieldError(field: 'company_name' | 'address' | 'contact_name' | 'contact_position' | 'phones'): Locator {
++    return this.page.getByTestId(`error-${field}`);
++  }
++
++  phoneFieldError(index: number): Locator {
++    return this.page.getByTestId(`error-phones-${index}`);
++  }
++
++  phoneRow(index: number): Locator {
++    return this.phonesRows.nth(index);
++  }
++
++  phoneInput(index: number): Locator {
++    return this.phoneRow(index).getByTestId('phone-input');
++  }
++
++  phoneNote(index: number): Locator {
++    return this.phoneRow(index).getByTestId('phone-note');
++  }
++
++  phoneDel(index: number): Locator {
++    return this.phoneRow(index).getByTestId('phone-del');
++  }
++
++  async open(company: string) {
++    await this.row(company).getByRole('link').click();
++    await expect(this.form).toBeVisible();
++  }
++
++  async fill(c: { companyName?: string; address?: string; contactName?: string; contactPosition?: string }) {
++    if (c.companyName !== undefined) await this.companyName.fill(c.companyName);
++    if (c.address !== undefined) await this.address.fill(c.address);
++    if (c.contactName !== undefined) await this.contactName.fill(c.contactName);
++    if (c.contactPosition !== undefined) await this.contactPosition.fill(c.contactPosition);
++  }
++
++  async fillPhone(index: number, p: { phone?: string; note?: string }) {
++    if (p.phone !== undefined) await this.phoneInput(index).fill(p.phone);
++    if (p.note !== undefined) await this.phoneNote(index).fill(p.note);
++  }
++
++  /** Подтверждает удаление через KT.uiConfirm (делегированный submit-обработчик формы). */
++  async confirmDelete() {
++    await this.deleteButton.click();
++    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
++    await this.page.getByTestId('ui-dialog-ok').click();
++  }
++}
+diff --git a/e2e/pages/EquipmentPage.ts b/e2e/pages/EquipmentPage.ts
+new file mode 100644
+index 0000000..f9a8a2e
+--- /dev/null
++++ b/e2e/pages/EquipmentPage.ts
+@@ -0,0 +1,96 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM формы единицы оборудования — /clients/:id/equipment/new и /equipment/:id
++// (EQ-001..007). Комбобокс типа (D6) переносит data-testid на видимую кнопку —
++// selectType() ведёт диалог поиска, а не работает с исходным <select> напрямую.
++export class EquipmentPage {
++  readonly form: Locator;
++  readonly clientName: Locator;
++  readonly typeButton: Locator;
++  readonly brand: Locator;
++  readonly model: Locator;
++  readonly sku: Locator;
++  readonly serial: Locator;
++  readonly note: Locator;
++  readonly specsRows: Locator;
++  readonly specAdd: Locator;
++  readonly save: Locator;
++  readonly formError: Locator;
++  readonly deleteButton: Locator;
++
++  constructor(readonly page: Page) {
++    this.form = page.getByTestId('equipment-form');
++    this.clientName = page.getByTestId('equipment-client-name');
++    this.typeButton = page.getByTestId('equipment-type');
++    this.brand = page.locator('#brand');
++    this.model = page.locator('#model');
++    this.sku = page.locator('#sku');
++    this.serial = page.locator('#serial');
++    this.note = page.locator('#note');
++    this.specsRows = page.getByTestId('spec-row');
++    this.specAdd = page.getByTestId('spec-add');
++    this.save = page.getByTestId('equipment-save');
++    this.formError = page.getByTestId('form-error');
++    this.deleteButton = page.getByTestId('equipment-delete');
++  }
++
++  async gotoNew(clientId: string) {
++    await this.page.goto(`/clients/${clientId}/equipment/new`);
++    await expect(this.page.locator('.app-title')).toHaveText('Новое оборудование');
++  }
++
++  async gotoEdit(equipmentId: string) {
++    await this.page.goto(`/equipment/${equipmentId}`);
++    await expect(this.page.locator('.app-title')).toHaveText('Оборудование');
++  }
++
++  fieldError(field: 'type_id' | 'model' | 'brand' | 'sku' | 'serial' | 'note' | 'specs'): Locator {
++    return this.page.getByTestId(`error-${field}`);
++  }
++
++  specKeyError(index: number): Locator {
++    return this.page.getByTestId(`error-specs-${index}`);
++  }
++
++  specRow(index: number): Locator {
++    return this.specsRows.nth(index);
++  }
++
++  specKey(index: number): Locator {
++    return this.specRow(index).getByTestId('spec-key');
++  }
++
++  specValue(index: number): Locator {
++    return this.specRow(index).getByTestId('spec-value');
++  }
++
++  specDel(index: number): Locator {
++    return this.specRow(index).getByTestId('spec-del');
++  }
++
++  /** Выбор типа в комбобоксе (D6) — по видимому названию опции. */
++  async selectType(name: string) {
++    await this.typeButton.click();
++    await this.page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: name }).click();
++  }
++
++  async fill(e: { brand?: string; model?: string; sku?: string; serial?: string; note?: string }) {
++    if (e.brand !== undefined) await this.brand.fill(e.brand);
++    if (e.model !== undefined) await this.model.fill(e.model);
++    if (e.sku !== undefined) await this.sku.fill(e.sku);
++    if (e.serial !== undefined) await this.serial.fill(e.serial);
++    if (e.note !== undefined) await this.note.fill(e.note);
++  }
++
++  async fillSpec(index: number, s: { key?: string; value?: string }) {
++    if (s.key !== undefined) await this.specKey(index).fill(s.key);
++    if (s.value !== undefined) await this.specValue(index).fill(s.value);
++  }
++
++  /** Подтверждает удаление через KT.uiConfirm (делегированный submit-обработчик формы). */
++  async confirmDelete() {
++    await this.deleteButton.click();
++    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
++    await this.page.getByTestId('ui-dialog-ok').click();
++  }
++}
+diff --git a/e2e/pages/EquipmentTypesPage.ts b/e2e/pages/EquipmentTypesPage.ts
+new file mode 100644
+index 0000000..d76a6f6
+--- /dev/null
++++ b/e2e/pages/EquipmentTypesPage.ts
+@@ -0,0 +1,77 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана «Каталог: типы оборудования» — /catalog/equipment-types (+ /new, /:id).
++export class EquipmentTypesPage {
++  readonly table: Locator;
++  readonly addButton: Locator;
++  readonly flash: Locator;
++  readonly search: Locator;
++  readonly archivedFilter: Locator;
++  readonly empty: Locator;
++  // форма
++  readonly form: Locator;
++  readonly name: Locator;
++  readonly specKeys: Locator;
++  readonly save: Locator;
++  readonly formError: Locator;
++  readonly deleteButton: Locator;
++  readonly archiveButton: Locator;
++  readonly archivedLink: Locator;
++
++  constructor(readonly page: Page) {
++    this.table = page.getByTestId('types-table');
++    this.addButton = page.getByTestId('type-add');
++    this.flash = page.getByTestId('flash');
++    this.search = page.getByTestId('filter-q');
++    this.archivedFilter = page.getByTestId('filter-archived');
++    this.empty = page.getByTestId('types-empty');
++    this.form = page.getByTestId('type-form');
++    this.name = page.getByTestId('type-name');
++    this.specKeys = page.getByTestId('type-spec-keys');
++    this.save = page.getByTestId('type-save');
++    this.formError = page.getByTestId('form-error');
++    this.deleteButton = page.getByTestId('type-delete');
++    this.archiveButton = page.getByTestId('type-archive');
++    this.archivedLink = page.getByTestId('show-archived-link');
++  }
++
++  async goto(query = '') {
++    await this.page.goto(`/catalog/equipment-types${query}`);
++    await expect(this.page.locator('.app-title')).toHaveText('Каталог: типы оборудования');
++  }
++
++  async gotoNew() {
++    await this.page.goto('/catalog/equipment-types/new');
++    await expect(this.page.locator('.app-title')).toHaveText('Новый тип оборудования');
++  }
++
++  row(name: string): Locator {
++    return this.page.locator(`[data-testid="type-row"][data-name="${name}"]`);
++  }
++
++  /** Кнопка «В архив»/«Вернуть» в строке списка. */
++  rowToggle(name: string): Locator {
++    return this.row(name).getByTestId('type-toggle-active');
++  }
++
++  fieldError(field: 'name' | 'spec_keys'): Locator {
++    return this.page.getByTestId(`error-${field}`);
++  }
++
++  async open(name: string) {
++    await this.row(name).getByRole('link').click();
++    await expect(this.form).toBeVisible();
++  }
++
++  async fill(t: { name?: string; specKeys?: string }) {
++    if (t.name !== undefined) await this.name.fill(t.name);
++    if (t.specKeys !== undefined) await this.specKeys.fill(t.specKeys);
++  }
++
++  /** Подтверждает удаление через KT.uiConfirm (Bootstrap-модалка, не нативный confirm). */
++  async confirmDelete() {
++    await this.deleteButton.click();
++    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
++    await this.page.getByTestId('ui-dialog-ok').click();
++  }
++}
+diff --git a/e2e/tests/clients.spec.ts b/e2e/tests/clients.spec.ts
+new file mode 100644
+index 0000000..39e5251
+--- /dev/null
++++ b/e2e/tests/clients.spec.ts
+@@ -0,0 +1,403 @@
++import { test, expect } from '../fixtures/test';
++import { ClientsPage } from '../pages/ClientsPage';
++import { EquipmentPage } from '../pages/EquipmentPage';
++import { EquipmentTypesPage } from '../pages/EquipmentTypesPage';
++
++// Фаза 6: экран «Клиенты» (admin) — AC-001..006, ADR-005 (конфликт версии),
++// ADR-103 (confirm-удаление). Сортировка списка фиксированная (AC-004, Tech Spec В-4 —
++// по компании, без UI-переключателя) — CL-006 проверяет именно это, sort-параметр в API
++// не нужен (fix-loop 1, ответ оркестратора).
++// CL-011 (XSS), CL-020 (конкурентность), CL-021 (адаптив) — Phase 9.
++test.use({ colorScheme: 'light' });
++
++test.describe('CL: создание и валидация', () => {
++  test('CL-001: админ создаёт клиента с несколькими телефонами через форму (PRG + flash)', async ({ adminPage: page, uniq }) => {
++    const name = uniq('Ромашка');
++    const clients = new ClientsPage(page);
++    await clients.goto();
++    await clients.addButton.click();
++    await expect(page.locator('.app-title')).toHaveText('Новый клиент');
++
++    await clients.fill({ companyName: name, address: 'г. Москва, ул. Ленина, 1', contactName: 'Иванов Иван', contactPosition: 'Директор' });
++    await clients.fillPhone(0, { phone: '+7 (999) 123-45-67', note: 'основной' });
++    await clients.phoneAdd.click();
++    await clients.fillPhone(1, { phone: '8001234567', note: 'доп.' });
++    await clients.save.click();
++
++    // PRG — на карточку созданного клиента (design-go-layers.md §SSR Routes), не на список.
++    await expect(page).toHaveURL(/\/clients\/[^/]+\?flash=created$/);
++    await expect(clients.flash).toHaveText('Клиент создан');
++
++    await clients.goto(`?q=${name}`);
++    await expect(clients.row(name)).toContainText(name);
++    await expect(clients.row(name)).toContainText('+7 (999) 123-45-67');
++    await expect(clients.row(name)).toContainText('8001234567');
++    await expect(clients.row(name)).toContainText('Иванов Иван');
++  });
++
++  test('CL-002: обязательные поля, формат и лимит телефонов — ошибки под полями, ввод сохраняется', async ({ adminPage: page, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.endsWith('/clients') && status === 422);
++    const clients = new ClientsPage(page);
++    await clients.gotoNew();
++
++    await expect(clients.companyName).toHaveAttribute('maxlength', '200');
++    await expect(clients.address).toHaveAttribute('maxlength', '500');
++    await expect(clients.contactName).toHaveAttribute('maxlength', '200');
++    await expect(clients.contactPosition).toHaveAttribute('maxlength', '200');
++    await expect(clients.phoneInput(0)).toHaveAttribute('maxlength', '32');
++    await expect(clients.phoneNote(0)).toHaveAttribute('maxlength', '200');
++
++    // пустая форма — company_name и phones обязательны (пустая строка телефона отбрасывается).
++    await clients.save.click();
++    await expect(clients.fieldError('company_name')).toHaveText('Обязательное поле');
++    await expect(clients.fieldError('phones')).toHaveText('Укажите хотя бы один телефон');
++    await expect(clients.companyName).toHaveClass(/is-invalid/);
++
++    // телефон без цифр — invalid_format, введённое сохраняется.
++    await clients.fill({ companyName: 'Валидация Клиент' });
++    await clients.fillPhone(0, { phone: 'abc', note: 'заметка' });
++    await clients.save.click();
++    await expect(clients.phoneFieldError(0)).toHaveText('Номер должен содержать цифры');
++    await expect(clients.fieldError('company_name')).toHaveCount(0);
++    await expect(clients.companyName).toHaveValue('Валидация Клиент');
++    await expect(clients.phoneInput(0)).toHaveValue('abc');
++    await expect(clients.phoneNote(0)).toHaveValue('заметка');
++
++    // больше 20 телефонов — too_many.
++    await clients.fillPhone(0, { phone: '1' });
++    for (let i = 0; i < 20; i++) await clients.phoneAdd.click();
++    await expect(clients.phonesRows).toHaveCount(21);
++    for (let i = 1; i < 21; i++) await clients.fillPhone(i, { phone: String(1000 + i) });
++    await clients.save.click();
++    await expect(clients.fieldError('phones')).toHaveText('Не больше 20 телефонов');
++  });
++
++  test('CL-003: исправление после ошибки валидации — форма сохраняется', async ({ adminPage: page, uniq, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.endsWith('/clients') && status === 422);
++    const name = uniq('Исправленный Клиент');
++    const clients = new ClientsPage(page);
++    await clients.gotoNew();
++    await clients.save.click();
++    await expect(clients.fieldError('company_name')).toBeVisible();
++
++    await clients.fill({ companyName: name });
++    await clients.fillPhone(0, { phone: '9990001122' });
++    await clients.save.click();
++
++    await expect(page).toHaveURL(/\/clients\/[^/]+\?flash=created$/);
++    await expect(clients.flash).toHaveText('Клиент создан');
++
++    await clients.goto(`?q=${name}`);
++    await expect(clients.row(name)).toBeVisible();
++  });
++
++  test('CL-004: добавление и удаление строк телефонов — последняя строка очищается, не удаляется', async ({ adminPage: page, uniq }) => {
++    const name = uniq('Телефоны Клиент');
++    const clients = new ClientsPage(page);
++    await clients.gotoNew();
++    await clients.fill({ companyName: name });
++    await clients.fillPhone(0, { phone: '1110000000', note: 'первый' });
++
++    await clients.phoneAdd.click();
++    await expect(clients.phonesRows).toHaveCount(2);
++    await clients.fillPhone(1, { phone: '2220000000', note: 'второй' });
++
++    await clients.phoneAdd.click();
++    await expect(clients.phonesRows).toHaveCount(3);
++    await clients.fillPhone(2, { phone: '3330000000' });
++
++    // удаление средней строки — остальные сдвигаются, значения не путаются.
++    await clients.phoneDel(1).click();
++    await expect(clients.phonesRows).toHaveCount(2);
++    await expect(clients.phoneInput(0)).toHaveValue('1110000000');
++    await expect(clients.phoneInput(1)).toHaveValue('3330000000');
++
++    // осталась ровно одна строка (data-row-min=1) — «удаление» очищает, а не убирает её.
++    await clients.phoneDel(1).click();
++    await expect(clients.phonesRows).toHaveCount(1);
++    await clients.phoneDel(0).click();
++    await expect(clients.phonesRows).toHaveCount(1);
++    await expect(clients.phoneInput(0)).toHaveValue('');
++
++    await clients.fillPhone(0, { phone: '1110000000', note: 'первый' });
++    await clients.save.click();
++    await expect(clients.flash).toHaveText('Клиент создан');
++
++    await clients.goto(`?q=${name}`);
++    await expect(clients.row(name)).toContainText('1110000000');
++  });
++});
++
++test.describe('CL: список, поиск, правка, удаление', () => {
++  test('CL-005: поиск живёт в URL — reload и «назад» сохраняют', async ({ adminPage: page, adminApi, uniq }) => {
++    const tag = uniq('search-tag');
++    await adminApi.createClient({ company_name: `Найди ${tag} Один`, phones: [{ phone: '1112223344', note: '' }] });
++    await adminApi.createClient({ company_name: `Другой Клиент ${tag}`, phones: [{ phone: '5556667788', note: '' }] });
++    const clients = new ClientsPage(page);
++    await clients.goto();
++
++    await clients.search.fill(tag);
++    await clients.search.press('Enter');
++    await expect(page).toHaveURL(new RegExp(`q=${tag}`));
++    await expect(clients.table).toContainText(tag);
++
++    await page.reload();
++    await expect(clients.search).toHaveValue(tag);
++
++    await page.goto('/clients');
++    await expect(clients.search).toHaveValue('');
++
++    await page.goBack();
++    await expect(clients.search).toHaveValue(tag);
++
++    await page.getByTestId('filter-reset').click();
++    await expect(page).toHaveURL(/\/clients$/);
++  });
++
++  test('CL-006: список отсортирован по названию компании, регистронезависимо (AC-004); колонка «Оборудование» — счётчик единиц', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const tag = uniq('order');
++    // созданы в обратном алфавитном порядке, с разным регистром первой буквы — проверяем
++    // и сам порядок, и регистронезависимость (`ORDER BY lower(company_name)`, repo.go).
++    await adminApi.createClient({ company_name: `cherry ${tag}`, phones: [{ phone: '1000000001', note: '' }] });
++    await adminApi.createClient({ company_name: `Apple ${tag}`, phones: [{ phone: '1000000002', note: '' }] });
++    await adminApi.createClient({ company_name: `banana ${tag}`, phones: [{ phone: '1000000003', note: '' }] });
++
++    const clients = new ClientsPage(page);
++    await clients.goto(`?q=${tag}`);
++    const rows = page.getByTestId('client-row');
++    await expect(rows).toHaveCount(3);
++
++    const companies = await rows.evaluateAll((els) => els.map((el) => el.getAttribute('data-company')));
++    expect(companies).toEqual([`Apple ${tag}`, `banana ${tag}`, `cherry ${tag}`]);
++
++    // единиц оборудования пока 0 — API оборудования появляется в Phase 7, привязка к
++    // клиенту и ненулевой счётчик в списке — Phase 8 (EQ-*).
++    for (const company of companies) {
++      await expect(clients.equipmentCount(company!)).toHaveText('0');
++    }
++  });
++
++  test('CL-007: правка карточки — поля и телефон обновляются', async ({ adminPage: page, adminApi, uniq }) => {
++    const company = uniq('Правка Клиент');
++    await adminApi.createClient({
++      company_name: company,
++      address: 'Старый адрес',
++      phones: [{ phone: '1000000000', note: '' }],
++    });
++    const clients = new ClientsPage(page);
++    await clients.goto(`?q=${company}`);
++    await clients.open(company);
++    await expect(clients.companyName).toHaveValue(company);
++    await expect(clients.address).toHaveValue('Старый адрес');
++
++    await clients.fill({ address: 'Новый адрес', contactName: 'Новый Представитель' });
++    await clients.fillPhone(0, { phone: '2000000000', note: 'обновлён' });
++    await clients.save.click();
++
++    // PRG — на карточку (design-go-layers.md §SSR Routes), не на список.
++    await expect(page).toHaveURL(/\/clients\/[^/]+\?flash=saved$/);
++    await expect(clients.flash).toHaveText('Изменения сохранены');
++
++    await clients.goto(`?q=${company}`);
++    await expect(clients.row(company)).toContainText('2000000000');
++    await expect(clients.row(company)).toContainText('Новый Представитель');
++  });
++
++  test('CL-008: удаление клиента — подтверждение через диалог, PRG на список', async ({ adminPage: page, adminApi, uniq }) => {
++    const company = uniq('Удаляемый Клиент');
++    await adminApi.createClient({ company_name: company, phones: [{ phone: '1234567890', note: '' }] });
++    const clients = new ClientsPage(page);
++    await clients.goto(`?q=${company}`);
++    await clients.open(company);
++
++    await clients.confirmDelete();
++    await expect(page).toHaveURL(/\/clients\?flash=deleted$/);
++    await expect(clients.flash).toHaveText('Клиент удалён');
++    await expect(clients.row(company)).toHaveCount(0);
++  });
++});
++
++test.describe('CL: права исполнителя', () => {
++  test('CL-010: исполнитель не видит «Клиенты» в меню и получает «Нет доступа» по прямым URL', async ({
++    page,
++    makeUser,
++    uniq,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/clients') && status === 403);
++    const exec = await makeUser({ login: uniq('exec-clients') });
++    await loginAs(page, exec.login, exec.password);
++
++    await page.goto('/');
++    await expect(page.getByTestId('sidebar').getByRole('link', { name: 'Клиенты' })).toHaveCount(0);
++
++    await page.goto('/clients');
++    await expect(page.getByTestId('status-page')).toContainText('Нет доступа');
++    await page.goto('/clients/new');
++    await expect(page.getByTestId('status-page')).toContainText('Нет доступа');
++  });
++});
++
++// Phase 9: хардening — конкурентность (CL-020), XSS (CL-011), adaptive/themes (CL-021).
++test.describe('CL: хардening', () => {
++  test('CL-011: HTML/скрипт в компании, телефоне, модели, характеристике и названии типа — отображается текстом, не исполняется', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const payload = '<img src=x onerror=window.xssTriggered=1>';
++    const clientTag = uniq('xss-client');
++    const typeTag = uniq('xss-type');
++    const company = `${payload} ${clientTag}`;
++    const typeName = `${payload} ${typeTag}`;
++
++    const client = await adminApi.createClient({
++      company_name: company,
++      phones: [{ phone: '9990002222', note: payload }],
++    });
++    const type = await adminApi.createEquipmentType({ name: typeName, spec_keys: [payload] });
++    await adminApi.createEquipment(client.id, {
++      type_id: type.id,
++      model: payload,
++      specs: [{ k: payload, v: payload }],
++    });
++
++    const noXss = () => expect(page.evaluate(() => (window as unknown as { xssTriggered?: unknown }).xssTriggered)).resolves.toBeUndefined();
++
++    // список клиентов — компания и примечание телефона текстом.
++    const clients = new ClientsPage(page);
++    await clients.goto(`?q=${clientTag}`);
++    await expect(clients.row(company)).toContainText(company);
++    await expect(clients.row(company)).toContainText(payload);
++    await noXss();
++
++    // карточка клиента — значение поля формы и таблица оборудования текстом.
++    await clients.open(company);
++    await expect(clients.companyName).toHaveValue(company);
++    await expect(page.getByTestId('equipment-table')).toContainText(payload);
++    await noXss();
++
++    // карточка единицы оборудования — модель, тип (комбобокс), характеристика текстом.
++    await page.getByTestId('equipment-table').getByRole('link').first().click();
++    await expect(page.locator('.app-title')).toHaveText('Оборудование');
++    const eq = new EquipmentPage(page);
++    await expect(eq.model).toHaveValue(payload);
++    await expect(eq.typeButton).toContainText(payload);
++    await expect(eq.specKey(0)).toHaveValue(payload);
++    await expect(eq.specValue(0)).toHaveValue(payload);
++    await noXss();
++
++    // список типов оборудования — название типа текстом.
++    const types = new EquipmentTypesPage(page);
++    await types.goto(`?q=${typeTag}`);
++    await expect(types.row(typeName)).toContainText(typeName);
++    await noXss();
++  });
++
++  test('CL-020: два браузерных контекста правят одну карточку — победитель сохраняется, проигравший видит конфликт и не теряет ввод', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    browser,
++    runAdmin,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/clients/') && status === 409);
++    const company = uniq('Конкурентный Клиент');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990004444', note: '' }] });
++
++    const ctx2 = await browser.newContext({ colorScheme: 'light' });
++    const page2 = await ctx2.newPage();
++    await loginAs(page2, runAdmin.login, runAdmin.password);
++
++    const one = new ClientsPage(page);
++    const two = new ClientsPage(page2);
++    await one.goto(`?q=${company}`);
++    await one.open(company);
++    await two.goto(`?q=${company}`);
++    await two.open(company);
++
++    // оба открыли карточку со старой version — правят разные поля, сохраняются по очереди.
++    await one.fill({ companyName: `${company} Победитель` });
++    await two.fill({ companyName: `${company} Проигравший` });
++
++    await one.save.click();
++    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=saved$`));
++
++    // второй сохраняет со старым version — 409, форма перерисована с его вводом, не потеряна.
++    await two.save.click();
++    await expect(page2).toHaveURL(new RegExp(`/clients/${client.id}$`));
++    await expect(two.formError).toContainText('Карточку уже изменил другой пользователь — ваши правки не сохранены');
++    await expect(two.conflictReload).toBeVisible();
++    await expect(two.companyName).toHaveValue(`${company} Проигравший`);
++
++    // карточка в БД содержит правку победителя, не проигравшего.
++    const winner = await adminApi.getClient(client.id);
++    expect(winner.company_name).toBe(`${company} Победитель`);
++
++    // «Открыть актуальную версию» ведёт к данным победителя.
++    await two.conflictReload.click();
++    await expect(two.companyName).toHaveValue(`${company} Победитель`);
++
++    await ctx2.close();
++  });
++
++  test('CL-021: 360×640 и 1280×800 — список и карточка (телефоны + оборудование) без overflow; тёмная тема без overflow', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const company = uniq('Адаптив Клиент Оборудование');
++    const client = await adminApi.createClient({
++      company_name: company,
++      address: 'г. Москва, очень длинный адрес для проверки переноса строк в узкой карточке, дом 1, офис 100500',
++      contact_name: 'Очень-Длинное-Имя-Представителя-Без-Пробелов Иванович',
++      contact_position: 'Генеральный директор по особо важным вопросам снабжения и логистики',
++      phones: [
++        { phone: '+7 (999) 111-22-33', note: 'основной номер телефона с длинным примечанием' },
++        { phone: '+7 (999) 444-55-66', note: 'запасной номер' },
++        { phone: '9997778899', note: '' },
++      ],
++    });
++    const type = await adminApi.createEquipmentType({ name: uniq('Тип Адаптив Клиент') });
++    await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Очень-Длинное-Название-Модели-Без-Пробелов-XL9000' });
++    await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Вторая единица оборудования клиента' });
++
++    const clients = new ClientsPage(page);
++    const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
++
++    for (const [width, height] of [
++      [360, 640],
++      [1280, 800],
++    ] as const) {
++      await page.setViewportSize({ width, height });
++      await clients.goto(`?q=${company}`);
++      await expect(clients.row(company)).toBeVisible();
++      expect(await noOverflow()).toBe(false);
++
++      await clients.open(company);
++      await expect(page.getByTestId('equipment-table')).toBeVisible();
++      expect(await noOverflow()).toBe(false);
++    }
++
++    // тёмная тема (themes:both) — ключевые элементы видимы, без overflow.
++    await page.addInitScript(() => localStorage.setItem('kt-theme', 'dark'));
++    await page.setViewportSize({ width: 360, height: 640 });
++    await clients.goto(`?q=${company}`);
++    await expect(page.locator('html')).toHaveAttribute('data-bs-theme', 'dark');
++    await expect(clients.row(company)).toBeVisible();
++    expect(await noOverflow()).toBe(false);
++
++    await clients.open(company);
++    await expect(page.locator('html')).toHaveAttribute('data-bs-theme', 'dark');
++    await expect(clients.form).toBeVisible();
++    await expect(page.getByTestId('equipment-table')).toBeVisible();
++    expect(await noOverflow()).toBe(false);
++  });
++});
+diff --git a/e2e/tests/equipment-types.spec.ts b/e2e/tests/equipment-types.spec.ts
+new file mode 100644
+index 0000000..9c2660c
+--- /dev/null
++++ b/e2e/tests/equipment-types.spec.ts
+@@ -0,0 +1,130 @@
++import { test, expect } from '../fixtures/test';
++import { EquipmentTypesPage } from '../pages/EquipmentTypesPage';
++
++// Фаза 4: экран «Каталог → Типы оборудования» (admin) — AC-011, AC-012, ADR-006/007.
++// ET-021 (адаптив) — Phase 9.
++test.use({ colorScheme: 'light' });
++
++test.describe('ET: типы оборудования', () => {
++  test('ET-001: админ создаёт тип через форму, тот виден в списке', async ({ adminPage: page, uniq }) => {
++    const name = uniq('Чиллер');
++    const types = new EquipmentTypesPage(page);
++    await types.goto();
++    await types.addButton.click();
++    await expect(page.locator('.app-title')).toHaveText('Новый тип оборудования');
++
++    await types.fill({ name, specKeys: 'Мощность, Хладагент, Объём бака' });
++    await types.save.click();
++
++    await expect(page).toHaveURL(/\/catalog\/equipment-types\?flash=created$/);
++    await expect(types.flash).toHaveText('Тип оборудования создан');
++    await expect(types.row(name)).toContainText(name);
++    await expect(types.row(name)).toContainText('Мощность, Хладагент, Объём бака');
++  });
++
++  test('ET-002: дубль имени активного и архивного типа — ошибка под полем + ссылка «Показать архивные»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.endsWith('/catalog/equipment-types') && (status === 409 || status === 422));
++    const name = uniq('Компрессор');
++    const active = await adminApi.createEquipmentType({ name });
++    const types = new EquipmentTypesPage(page);
++
++    await types.gotoNew();
++    await types.fill({ name });
++    await types.save.click();
++    await expect(types.fieldError('name')).toHaveText('Такой тип уже есть');
++    await expect(types.name).toHaveValue(name); // введённое сохраняется
++
++    await adminApi.updateEquipmentType(active.id, { name, is_active: false });
++    await types.gotoNew();
++    await types.fill({ name });
++    await types.save.click();
++    await expect(types.fieldError('name')).toHaveText('Такой тип уже есть в архиве — верните его из архива');
++    await expect(types.archivedLink).toBeVisible();
++    await types.archivedLink.click();
++    await expect(page).toHaveURL(/archived=1/);
++    await expect(types.row(name)).toBeVisible();
++  });
++
++  test('ET-003: удаление свободного типа и архивирование из списка', async ({ adminPage: page, uniq }) => {
++    const free = uniq('Свободный тип');
++    const types = new EquipmentTypesPage(page);
++    await types.gotoNew();
++    await types.fill({ name: free });
++    await types.save.click();
++    await types.open(free);
++
++    await types.confirmDelete();
++    await expect(page).toHaveURL(/\/catalog\/equipment-types\?flash=deleted$/);
++    await expect(types.flash).toHaveText('Тип удалён');
++    await expect(types.row(free)).toHaveCount(0);
++
++    const toArchive = uniq('Тип для архива');
++    await types.gotoNew();
++    await types.fill({ name: toArchive });
++    await types.save.click();
++    await types.goto(`?q=${toArchive}`);
++    await types.rowToggle(toArchive).click();
++    await expect(types.flash).toHaveText('Тип отправлен в архив');
++    // архивирование сохраняет фильтр, с которым отправлена форма (design-go-layers.md
++    // §SSR Routes) — активный список без `archived=1` не форсируется в него; тип пропадает
++    // из активного списка.
++    expect(page.url()).not.toContain('archived=1');
++    await expect(types.row(toArchive)).toHaveCount(0);
++
++    await types.goto(`?archived=1&q=${toArchive}`);
++    await expect(types.row(toArchive).getByTestId('type-archived-badge')).toHaveText('в архиве');
++  });
++
++  test('ET-004: «Показать архивные» + «Вернуть» — archived=1 в URL переживает reload', async ({ adminPage: page, adminApi, uniq }) => {
++    const name = uniq('Архивный тип');
++    const created = await adminApi.createEquipmentType({ name });
++    await adminApi.updateEquipmentType(created.id, { name, is_active: false });
++
++    const types = new EquipmentTypesPage(page);
++    await types.goto();
++    await expect(types.row(name)).toHaveCount(0);
++
++    await types.archivedFilter.check();
++    await expect(page).toHaveURL(/archived=1/);
++    await expect(types.row(name)).toBeVisible();
++
++    await page.reload();
++    await expect(types.archivedFilter).toBeChecked();
++    await expect(types.row(name)).toBeVisible();
++
++    await page.goBack();
++    await expect(types.row(name)).toHaveCount(0);
++
++    await page.goForward();
++    await types.rowToggle(name).click();
++    await expect(types.flash).toHaveText('Тип возвращён из архива');
++    await expect(types.row(name)).toBeVisible();
++  });
++});
++
++// Phase 9: хардение — adaptive:min.
++test.describe('ET: адаптив', () => {
++  test('ET-021: 360×640 и 1280×800 — список типов оборудования без горизонтального overflow', async ({ adminPage: page, adminApi, uniq }) => {
++    const name = uniq('Очень-Длинное-Название-Типа-Оборудования-Без-Пробелов-XL');
++    await adminApi.createEquipmentType({
++      name,
++      spec_keys: ['Очень-Длинная-Характеристика-Раз-Без-Пробелов', 'Очень-Длинная-Характеристика-Два-Без-Пробелов', 'Три'],
++    });
++
++    const types = new EquipmentTypesPage(page);
++    for (const [width, height] of [
++      [360, 640],
++      [1280, 800],
++    ] as const) {
++      await page.setViewportSize({ width, height });
++      await types.goto(`?q=${name}`);
++      await expect(types.row(name)).toBeVisible();
++      expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
++    }
++  });
++});
+diff --git a/e2e/tests/equipment.spec.ts b/e2e/tests/equipment.spec.ts
+new file mode 100644
+index 0000000..b0dc9bb
+--- /dev/null
++++ b/e2e/tests/equipment.spec.ts
+@@ -0,0 +1,252 @@
++import { test, expect } from '../fixtures/test';
++import { ClientsPage } from '../pages/ClientsPage';
++import { EquipmentPage } from '../pages/EquipmentPage';
++
++// Фаза 8: форма единицы оборудования — /clients/:id/equipment/new, /equipment/:id
++// (AC-007..AC-010, AC-012 equipment-часть, ADR-002 подстановка шаблона характеристик,
++// ADR-004 архивный тип). EQ-021 (адаптив) — Phase 9.
++test.use({ colorScheme: 'light' });
++
++test.describe('EQ: создание и валидация', () => {
++  test('EQ-001: создание оборудования — выбор типа через комбобокс, карточка клиента показывает единицу и счётчик', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const typeName = uniq('Компрессор');
++    await adminApi.createEquipmentType({ name: typeName, spec_keys: ['Мощность'] });
++    const company = uniq('Оборудование Клиент');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000001', note: '' }] });
++
++    const clients = new ClientsPage(page);
++    await clients.goto(`?q=${company}`);
++    await clients.open(company);
++    await page.getByTestId('equipment-add').click();
++    await expect(page.locator('.app-title')).toHaveText('Новое оборудование');
++
++    const eq = new EquipmentPage(page);
++    await expect(eq.clientName).toHaveText(company);
++    await eq.selectType(typeName);
++    await eq.fill({ brand: 'Danfoss', model: 'M100', sku: 'SKU1', serial: 'SN1' });
++    await eq.save.click();
++
++    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_created$`));
++    await expect(page.getByTestId('equipment-table')).toContainText('M100');
++    await expect(page.getByTestId('equipment-table')).toContainText(typeName);
++
++    await clients.goto(`?q=${company}`);
++    await expect(clients.equipmentCount(company)).toHaveText('1');
++  });
++
++  test('EQ-002: тип и модель обязательны — ошибки под полями, исправление проходит', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/equipment') && status === 422);
++    const company = uniq('Валидация Оборудование');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000002', note: '' }] });
++    const typeName = uniq('Тип Валидации');
++    await adminApi.createEquipmentType({ name: typeName });
++
++    const eq = new EquipmentPage(page);
++    await eq.gotoNew(client.id);
++
++    await expect(eq.model).toHaveAttribute('maxlength', '200');
++    await expect(eq.brand).toHaveAttribute('maxlength', '200');
++    await expect(eq.sku).toHaveAttribute('maxlength', '200');
++    await expect(eq.serial).toHaveAttribute('maxlength', '200');
++    await expect(eq.note).toHaveAttribute('maxlength', '1000');
++
++    // пустая форма — тип и модель обязательны.
++    await eq.save.click();
++    await expect(eq.fieldError('type_id')).toHaveText('Выберите тип');
++    await expect(eq.fieldError('model')).toHaveText('Обязательное поле');
++
++    // исправление — форма проходит.
++    await eq.selectType(typeName);
++    await eq.fill({ model: 'Модель X' });
++    await eq.save.click();
++    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_created$`));
++  });
++});
++
++test.describe('EQ: правка, шаблон характеристик, свои характеристики', () => {
++  test('EQ-003: правка карточки оборудования — поля обновляются, PRG на карточку клиента', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const company = uniq('Правка Оборудование');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000003', note: '' }] });
++    const type = await adminApi.createEquipmentType({ name: uniq('Тип Правки') });
++    const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Старая модель' });
++
++    const eq = new EquipmentPage(page);
++    await eq.gotoEdit(equipment.id);
++    await expect(eq.model).toHaveValue('Старая модель');
++    await expect(eq.clientName).toHaveText(company);
++
++    await eq.fill({ model: 'Новая модель', brand: 'НовыйБренд' });
++    await eq.save.click();
++
++    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_saved$`));
++    await expect(page.getByTestId('equipment-table')).toContainText('Новая модель');
++  });
++
++  test('EQ-004: смена типа подставляет шаблон характеристик — заполненные значения сохраняются, пустые заменяются (AC-009)', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const company = uniq('Шаблон Оборудование');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000004', note: '' }] });
++    const typeA = uniq('Тип А');
++    const typeB = uniq('Тип Б');
++    await adminApi.createEquipmentType({ name: typeA, spec_keys: ['Мощность', 'Напряжение'] });
++    await adminApi.createEquipmentType({ name: typeB, spec_keys: ['Объём'] });
++
++    const eq = new EquipmentPage(page);
++    await eq.gotoNew(client.id);
++    await eq.fill({ model: 'Модель шаблона' });
++
++    await eq.selectType(typeA);
++    await expect(eq.specsRows).toHaveCount(2);
++    await expect(eq.specKey(0)).toHaveValue('Мощность');
++    await expect(eq.specKey(1)).toHaveValue('Напряжение');
++    await eq.fillSpec(0, { value: '5 кВт' });
++
++    // смена типа: заполненная «Мощность» сохраняется, пустая «Напряжение» заменяется
++    // характеристикой шаблона нового типа «Объём».
++    await eq.selectType(typeB);
++    await expect(eq.specsRows).toHaveCount(2);
++    await expect(eq.specKey(0)).toHaveValue('Мощность');
++    await expect(eq.specValue(0)).toHaveValue('5 кВт');
++    await expect(eq.specKey(1)).toHaveValue('Объём');
++
++    await eq.save.click();
++    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_created$`));
++
++    // сохранение подтверждаем повторным открытием формы правки.
++    await page.getByTestId('equipment-table').getByRole('link', { name: 'Модель шаблона' }).click();
++    await expect(page.locator('.app-title')).toHaveText('Оборудование');
++    await expect(eq.specsRows).toHaveCount(2);
++    await expect(eq.specKey(0)).toHaveValue('Мощность');
++    await expect(eq.specValue(0)).toHaveValue('5 кВт');
++    await expect(eq.specKey(1)).toHaveValue('Объём');
++  });
++
++  test('EQ-005: своя характеристика — добавление/удаление строки; значение без названия не проходит тихо (key_required)', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.includes('/equipment') && status === 422);
++    const company = uniq('Своя Характеристика');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000005', note: '' }] });
++    const typeName = uniq('Тип Своей Характеристики');
++    await adminApi.createEquipmentType({ name: typeName });
++
++    const eq = new EquipmentPage(page);
++    await eq.gotoNew(client.id);
++    await eq.fill({ model: 'Модель Своя' });
++    await eq.selectType(typeName);
++    await expect(eq.specsRows).toHaveCount(1);
++
++    await eq.specAdd.click();
++    await expect(eq.specsRows).toHaveCount(2);
++    await eq.specDel(1).click();
++    await expect(eq.specsRows).toHaveCount(1);
++
++    // значение без ключа — сервер не принимает тихо, а возвращает key_required.
++    await eq.fillSpec(0, { value: '5' });
++    await eq.save.click();
++    await expect(eq.specsRows).toHaveCount(1);
++    await expect(eq.specKeyError(0)).toHaveText('Укажите характеристику');
++    await expect(eq.specValue(0)).toHaveValue('5');
++
++    await eq.fillSpec(0, { key: 'Своя характеристика' });
++    await eq.save.click();
++    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_created$`));
++  });
++});
++
++test.describe('EQ: удаление, архивный тип', () => {
++  test('EQ-006: удаление единицы оборудования — подтверждение через диалог, PRG на карточку клиента', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const company = uniq('Удаление Оборудование');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000006', note: '' }] });
++    const type = await adminApi.createEquipmentType({ name: uniq('Тип Удаления') });
++    const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Удаляемая модель' });
++
++    const eq = new EquipmentPage(page);
++    await eq.gotoEdit(equipment.id);
++    await eq.confirmDelete();
++
++    await expect(page).toHaveURL(new RegExp(`/clients/${client.id}\\?flash=eq_deleted$`));
++    await expect(page.getByTestId('equipment-empty')).toBeVisible();
++  });
++
++  test('EQ-007: архивный тип недоступен для новой единицы, но сохраняется у существующей (ADR-004)', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const company = uniq('Архивный Тип Оборудование');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990000007', note: '' }] });
++    const typeName = uniq('Тип В Архиве');
++    const type = await adminApi.createEquipmentType({ name: typeName });
++    const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: 'Оборудование Архивного Типа' });
++    await adminApi.updateEquipmentType(type.id, { name: typeName, spec_keys: [], is_active: false });
++
++    const eq = new EquipmentPage(page);
++    await eq.gotoNew(client.id);
++    await eq.typeButton.click();
++    await expect(page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: typeName })).toHaveCount(0);
++    await page.keyboard.press('Escape');
++
++    await eq.gotoEdit(equipment.id);
++    await expect(eq.typeButton).toContainText(typeName);
++    await expect(eq.typeButton).toContainText('в архиве');
++  });
++});
++
++// Phase 9: хардение — adaptive:min.
++test.describe('EQ: адаптив', () => {
++  test('EQ-021: 360×640 и 1280×800 — форма единицы (несколько характеристик) без горизонтального overflow', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const company = uniq('Адаптив Оборудование');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990005555', note: '' }] });
++    const typeName = uniq('Тип Адаптив Оборудование Много Характеристик');
++    await adminApi.createEquipmentType({
++      name: typeName,
++      spec_keys: [
++        'Очень-Длинное-Название-Характеристики-Без-Пробелов-Раз',
++        'Очень-Длинное-Название-Характеристики-Без-Пробелов-Два',
++        'Мощность',
++        'Напряжение',
++        'Объём бака',
++      ],
++    });
++
++    const eq = new EquipmentPage(page);
++    for (const [width, height] of [
++      [360, 640],
++      [1280, 800],
++    ] as const) {
++      await page.setViewportSize({ width, height });
++      await eq.gotoNew(client.id);
++      await eq.selectType(typeName);
++      await expect(eq.specsRows).toHaveCount(5);
++      expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
++    }
++  });
++});
+diff --git a/e2e/tests/shell.spec.ts b/e2e/tests/shell.spec.ts
+index 10dae1c..2f05b9e 100644
+--- a/e2e/tests/shell.spec.ts
++++ b/e2e/tests/shell.spec.ts
+@@ -14,8 +14,9 @@ test.describe('SH: каркас приложения', () => {
+     await expect(page).toHaveTitle('Доска заказов — Kanban-tree');
+     await expect(shell.title).toHaveText('Доска заказов');
+     await expect(shell.navLink('Доска')).toHaveAttribute('aria-current', 'page');
+-    // нереализованные разделы не показываются: admin видит «Доска» и «Сотрудники»
+-    await expect(shell.sidebar.getByRole('link')).toHaveText(['▦ Доска', '👥 Сотрудники']);
++    // реализованные разделы admin видит; нереализованные («Остатки» — фаза 5) скрыты
++    for (const title of ['Доска', 'Сотрудники']) await expect(shell.navLink(title)).toBeVisible();
++    await expect(shell.navLink('Остатки')).toHaveCount(0);
+     await expect(page.getByTestId('home-placeholder')).toBeVisible();
+     await expect(page.locator('meta[name="csrf-token"]')).toHaveCount(1);
+   });

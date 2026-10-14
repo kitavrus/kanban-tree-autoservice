@@ -1,0 +1,1717 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanban-tree — прототип</title>
+<script>
+  try { const t = localStorage.getItem('kt-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<style>
+:root {
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --text-xs: 12px; --text-sm: 14px; --text-md: 15px; --text-lg: 20px; --text-xl: 24px;
+  --radius: 8px; --radius-sm: 6px;
+  --bg: #F8FAFC; --surface: #FFFFFF; --surface-2: #F1F5F9; --border: #E2E8F0;
+  --text: #0F172A; --muted: #64748B;
+  --primary: #2563EB; --primary-soft: #DBEAFE; --on-primary: #FFFFFF;
+  --success: #047857; --success-soft: #D1FAE5;
+  --danger: #DC2626; --danger-soft: #FEE2E2;
+  --warn: #B45309; --warn-soft: #FEF3C7;
+  --shadow: 0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.08);
+  --shadow-lg: 0 10px 30px rgba(15,23,42,.18);
+  --col-bg: #EEF2F7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0B1120; --surface: #111827; --surface-2: #1E293B; --border: #273449;
+    --text: #E2E8F0; --muted: #94A3B8;
+    --primary: #60A5FA; --primary-soft: #1E3A5F; --on-primary: #0B1120;
+    --success: #34D399; --success-soft: #064E3B; --danger: #F87171; --danger-soft: #4C1D1D;
+    --warn: #FBBF24; --warn-soft: #451A03; --col-bg: #0F172A;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0B1120; --surface: #111827; --surface-2: #1E293B; --border: #273449;
+  --text: #E2E8F0; --muted: #94A3B8;
+  --primary: #60A5FA; --primary-soft: #1E3A5F; --on-primary: #0B1120;
+  --success: #34D399; --success-soft: #064E3B; --danger: #F87171; --danger-soft: #4C1D1D;
+  --warn: #FBBF24; --warn-soft: #451A03; --col-bg: #0F172A;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: var(--text-sm)/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--primary); }
+
+/* buttons & inputs */
+.btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface); padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; }
+.btn:hover { background: var(--surface-2); }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.btn-primary:hover { background: var(--primary); filter: brightness(1.08); }
+.btn-ghost { border-color: transparent; background: transparent; }
+.btn-danger { color: var(--danger); }
+.btn-sm { padding: 3px 8px; font-size: var(--text-xs); }
+.input, .select, textarea.input { width: 100%; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm); padding: 7px 10px; }
+.input:focus, .select:focus, .rte:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+label.field { display: block; margin-bottom: var(--space-3); }
+label.field > span { display: block; font-size: var(--text-xs); color: var(--muted); margin-bottom: 4px; }
+.row { display: flex; gap: var(--space-2); align-items: center; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); }
+.hidden { display: none !important; }
+
+/* shell */
+.app-shell { display: flex; min-height: 100vh; }
+.app-sidebar { width: 240px; flex-shrink: 0; background: var(--surface-2); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: var(--space-4); position: sticky; top: 0; height: 100vh; }
+.brand { font-size: var(--text-lg); font-weight: 700; margin-bottom: var(--space-5); display: flex; align-items: center; gap: 8px; }
+.brand-logo { width: 28px; height: 28px; border-radius: 7px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; font-size: 15px; }
+.nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: var(--space-3) 0 var(--space-1); }
+.nav-link { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text); text-decoration: none; }
+.nav-link:hover { background: var(--border); }
+.nav-link.active { background: var(--primary); color: var(--on-primary); }
+.sidebar-footer { margin-top: auto; border-top: 1px solid var(--border); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.topbar { display: flex; align-items: center; gap: var(--space-3); padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface); flex-wrap: wrap; }
+.topbar h1 { font-size: var(--text-lg); margin: 0; margin-right: auto; }
+.menu-btn { display: none; }
+.content { padding: var(--space-5); flex: 1; min-width: 0; }
+.backdrop { display: none; }
+
+/* filters */
+.filters { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; padding: var(--space-3) var(--space-5); border-bottom: 1px solid var(--border); background: var(--surface); }
+.filters .input, .filters .select { width: auto; min-width: 180px; }
+.filters .search { min-width: 260px; }
+.found { font-size: var(--text-xs); color: var(--muted); margin-left: auto; }
+
+/* board */
+.board { display: flex; gap: var(--space-4); align-items: flex-start; overflow-x: auto; padding: var(--space-5); height: calc(100vh - 124px); }
+.column { width: 300px; flex-shrink: 0; background: var(--col-bg); border-radius: var(--radius); display: flex; flex-direction: column; max-height: 100%; border: 1px solid var(--border); }
+.column-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; font-weight: 600; }
+.column-head .count { background: var(--surface); color: var(--muted); border-radius: 10px; padding: 0 8px; font-size: var(--text-xs); font-weight: 500; }
+.column-head .btn { margin-left: auto; }
+.column-body { padding: 0 8px 8px; overflow-y: auto; min-height: 60px; display: flex; flex-direction: column; gap: 8px; }
+.column-body.drag-over { background: color-mix(in srgb, var(--primary) 8%, transparent); border-radius: var(--radius-sm); }
+.add-task { margin: 0 8px 8px; justify-content: center; border-style: dashed; background: transparent; color: var(--muted); }
+.add-column { width: 260px; flex-shrink: 0; border: 2px dashed var(--border); border-radius: var(--radius); padding: 14px; text-align: center; color: var(--muted); cursor: pointer; background: transparent; }
+.add-column:hover { border-color: var(--primary); color: var(--primary); }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; box-shadow: var(--shadow); cursor: grab; user-select: none; }
+.card:hover { border-color: var(--primary); }
+.card.dragging { opacity: .4; }
+.card-title { font-weight: 600; margin-bottom: 6px; }
+.card-client { font-size: var(--text-xs); color: var(--muted); display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.chip { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--primary-soft); color: var(--primary); }
+.chip.cat-1 { background: var(--warn-soft); color: var(--warn); }
+.chip.cat-2 { background: var(--success-soft); color: var(--success); }
+.chip.cat-3 { background: var(--danger-soft); color: var(--danger); }
+.card-meta { display: flex; align-items: center; gap: 10px; font-size: var(--text-xs); color: var(--muted); }
+.progress { flex: 1; height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.progress > i { display: block; height: 100%; background: var(--success); }
+.drop-placeholder { height: 56px; border: 2px dashed var(--primary); border-radius: var(--radius); background: color-mix(in srgb, var(--primary) 6%, transparent); }
+
+/* tables / panels */
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: var(--text-xs); color: var(--muted); font-weight: 600; background: var(--surface-2); }
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-2); cursor: pointer; }
+.two-pane { display: grid; grid-template-columns: 260px 1fr; gap: var(--space-4); align-items: start; }
+.cat-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.cat-item:last-child { border-bottom: 0; }
+.cat-item.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+.cat-item .count { margin-left: auto; font-size: var(--text-xs); color: var(--muted); }
+
+/* modal */
+.modal-wrap { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; z-index: 50; }
+.modal { background: var(--surface); border-radius: 12px; width: 100%; max-width: 560px; box-shadow: var(--shadow-lg); }
+.modal.wide { max-width: 980px; }
+.modal-head { display: flex; align-items: center; gap: 8px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.modal-head h2 { font-size: 17px; margin: 0; margin-right: auto; }
+.modal-body { padding: 20px; }
+.modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 14px 20px; border-top: 1px solid var(--border); }
+.modal-foot .left { margin-right: auto; }
+.task-grid { display: grid; grid-template-columns: 1fr 300px; gap: var(--space-5); }
+.section-title { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: var(--space-4) 0 var(--space-2); display: flex; align-items: center; gap: 8px; }
+.section-title:first-child { margin-top: 0; }
+.title-input { font-size: var(--text-lg); font-weight: 600; border-color: transparent; padding-left: 4px; }
+.title-input:hover { border-color: var(--border); }
+
+.rte-toolbar { display: flex; gap: 2px; border: 1px solid var(--border); border-bottom: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; padding: 4px; background: var(--surface-2); }
+.rte-toolbar button { border: 0; background: transparent; padding: 3px 8px; border-radius: 4px; cursor: pointer; }
+.rte-toolbar button:hover { background: var(--border); }
+.rte { min-height: 120px; border: 1px solid var(--border); border-radius: 0 0 var(--radius-sm) var(--radius-sm); padding: 10px 12px; background: var(--surface); }
+.rte:empty::before { content: attr(data-placeholder); color: var(--muted); }
+
+.subtask { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 6px; background: var(--surface); }
+.subtask .grow.done { text-decoration: line-through; color: var(--muted); }
+.subtask .input { border-color: transparent; padding: 3px 6px; }
+.subtask .input:hover { border-color: var(--border); }
+.status { border: 0; border-radius: 10px; padding: 2px 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.status-new { background: var(--surface-2); color: var(--muted); }
+.status-in_progress { background: var(--primary-soft); color: var(--primary); }
+.status-done { background: var(--success-soft); color: var(--success); }
+
+.svc-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.svc-row .qty { width: 64px; }
+
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.thumb { position: relative; aspect-ratio: 1; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); cursor: pointer; background: var(--surface-2); }
+.thumb img, .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .ph { width: 100%; height: 100%; display: grid; place-items: center; font-size: 28px; }
+.thumb .kind { position: absolute; left: 4px; bottom: 4px; background: rgba(0,0,0,.6); color: #fff; font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+.thumb .del { position: absolute; right: 4px; top: 4px; background: rgba(0,0,0,.6); color: #fff; border: 0; border-radius: 4px; width: 20px; height: 20px; cursor: pointer; display: none; }
+.thumb:hover .del { display: block; }
+.dropzone { border: 2px dashed var(--border); border-radius: var(--radius-sm); padding: 12px; text-align: center; color: var(--muted); cursor: pointer; font-size: var(--text-xs); margin-top: 8px; }
+.dropzone:hover, .dropzone.over { border-color: var(--primary); color: var(--primary); }
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: grid; place-items: center; z-index: 60; }
+.lightbox img, .lightbox video { max-width: 92vw; max-height: 88vh; border-radius: 8px; }
+.lightbox .ph { width: 70vw; height: 60vh; border-radius: 8px; display: grid; place-items: center; font-size: 80px; }
+
+.phone-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.phone-row .note { width: 140px; }
+
+.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login-card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; box-shadow: var(--shadow); }
+/* searchable select (combobox) */
+.cb { position: relative; min-width: 0; }
+.cb-btn { display: flex; align-items: center; gap: 8px; text-align: left; cursor: pointer; }
+.cb-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cb-caret { color: var(--muted); font-size: 11px; }
+.cb-dd { position: fixed; z-index: 70; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column; max-height: 340px; }
+.cb-search { margin-bottom: 6px; }
+.cb-list { overflow-y: auto; }
+.cb-group { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 8px 8px 2px; }
+.cb-opt { padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+.cb-opt small { display: block; color: var(--muted); font-size: 11px; }
+.cb-opt.active { background: var(--surface-2); }
+.cb-opt.sel { font-weight: 600; color: var(--primary); }
+.cb-opt mark { background: var(--warn-soft); color: inherit; border-radius: 2px; padding: 0 1px; }
+.cb-empty { padding: 12px; color: var(--muted); text-align: center; }
+.filters .cb { min-width: 200px; }
+.filters .cb .select { width: 100%; min-width: 0; }
+
+/* цвет задачи по статусу */
+.card { border-left-width: 4px; }
+.card.st-new { border-left-color: #94A3B8; }
+.card.st-in_progress { border-left-color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, var(--surface)); }
+.card.st-done { border-left-color: var(--success); background: color-mix(in srgb, var(--success) 9%, var(--surface)); }
+.card.st-done .card-title { color: var(--muted); }
+.card-client .status { margin-left: auto; font-size: 11px; padding: 0 7px; cursor: default; }
+.card-foot { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.card-foot .avatar { margin-left: auto; }
+.due { padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--muted); }
+.due-soon { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+.due-overdue { background: var(--danger-soft); color: var(--danger); font-weight: 600; }
+.card.overdue { box-shadow: 0 0 0 1px var(--danger); }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); display: inline-grid; place-items: center; font-weight: 700; font-size: 12px; flex-shrink: 0; }
+.avatar.sm { width: 24px; height: 24px; font-size: 10px; }
+.subtask .cb { width: 150px; flex-shrink: 0; }
+.subtask .cb .select { padding: 3px 8px; font-size: 12px; }
+.svc-row .price { width: 90px; }
+.svc-total { display: flex; justify-content: space-between; font-weight: 600; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
+.stock-low { color: var(--warn); font-weight: 600; }
+.stock-out { color: var(--danger); font-weight: 600; }
+.stock-hint { display: block; font-size: 11px; margin-top: 2px; }
+.nav-count { margin-left: auto; font-size: 11px; min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--danger); color: #fff; text-align: center; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-3); margin-bottom: var(--space-4); }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--space-3) var(--space-4); }
+.kpi b { display: block; font-size: 24px; }
+.low-list { margin: 8px 0 0; padding-left: 18px; }
+.low-list li { margin: 4px 0; }
+.badge-off { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--danger-soft); color: var(--danger); }
+.legend { display: flex; gap: 10px; align-items: center; font-size: var(--text-xs); color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+
+/* v3: колонка = статус, оплата, услуги-подзадачи с товарами */
+.card { border-left: 4px solid var(--c, var(--border)); background: color-mix(in srgb, var(--c, transparent) 7%, var(--surface)); }
+.card-client .pay { margin-left: auto; }
+.pay { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 10px; white-space: nowrap; }
+.pay-yes { background: var(--success-soft); color: var(--success); }
+.pay-no { background: var(--danger-soft); color: var(--danger); }
+.late { color: var(--danger); font-weight: 600; }
+.column-head .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex-shrink: 0; }
+.column { border-top: 3px solid var(--c); }
+.column-sum { padding: 0 12px 8px; margin-top: -6px; font-size: var(--text-xs); color: var(--muted); }
+.final-mark { color: var(--success); font-weight: 700; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; box-shadow: var(--shadow-lg); z-index: 80; font-size: 13px; }
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; outline: 2px solid transparent; }
+.swatch.on { outline-color: var(--text); border-color: var(--surface); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; width: 100%; margin-top: 4px; }
+.seg button { flex: 1; border: 0; background: var(--surface); padding: 7px 10px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[data-paid="0"].on { background: var(--danger-soft); color: var(--danger); font-weight: 600; }
+.seg button[data-paid="1"].on { background: var(--success-soft); color: var(--success); font-weight: 600; }
+.seg button:disabled { cursor: not-allowed; }
+.totals { background: var(--surface-2); border-radius: var(--radius-sm); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.totals .total { border-top: 1px solid var(--border); padding-top: 6px; margin-top: 2px; font-weight: 700; }
+.col-pill { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 10px; color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--surface)); }
+.sub { border: 1px solid var(--border); border-left: 4px solid #94A3B8; border-radius: var(--radius); margin-bottom: 10px; background: var(--surface); }
+.sub.st-in_progress { border-left-color: var(--primary); }
+.sub.st-done { border-left-color: var(--success); }
+.sub.st-done .sub-name b { text-decoration: line-through; color: var(--muted); }
+.sub-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; flex-wrap: wrap; }
+.sub-name small { display: block; font-size: 11px; color: var(--muted); }
+.sub-head .cb { width: 170px; flex-shrink: 0; }
+.sub-head .cb .select, .goods-foot .cb .select { padding: 4px 8px; font-size: 13px; }
+.sub-due { width: 140px; padding: 4px 8px; font-size: 13px; }
+.late-input { border-color: var(--danger); color: var(--danger); }
+.price-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.sub-price { width: 100px; padding: 4px 8px; }
+.goods { border-top: 1px dashed var(--border); padding: 6px 10px 8px 24px; background: color-mix(in srgb, var(--surface-2) 50%, var(--surface)); border-radius: 0 0 var(--radius) var(--radius); }
+.goods-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.goods-table td:nth-child(2) { width: 110px; }
+.goods-table td:nth-child(3) { width: 130px; }
+.goods-table td:nth-child(4) { width: 100px; }
+.goods-table td:last-child { width: 40px; }
+.goods-table td:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goods-table td { padding: 3px 6px; border: 0; vertical-align: middle; }
+.goods-table tr:hover { background: transparent; cursor: default; }
+.goods-table .num { white-space: nowrap; text-align: right; }
+.goods-table .sum { min-width: 90px; }
+.goods-table .qty { width: 64px; padding: 3px 6px; }
+.goods-table .price { width: 84px; padding: 3px 6px; }
+.goods-foot { margin-top: 6px; font-size: 13px; }
+.goods-foot .cb { width: 240px; }
+.toast-error { background: var(--danger); color: #fff; max-width: min(640px, 92vw); text-align: center; }
+.worklog { border-top: 1px dashed var(--border); padding: 8px 10px 10px 24px; }
+.worklog-title { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.log-entry { display: flex; gap: 10px; font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--surface-2); }
+.log-meta { color: var(--muted); white-space: nowrap; font-size: 12px; min-width: 150px; }
+.log-add { margin-top: 6px; align-items: flex-start; }
+.log-add textarea { resize: vertical; min-height: 34px; padding: 6px 10px; font-size: 13px; }
+.card-log { font-size: 12px; color: var(--muted); margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.eq-add { margin-bottom: 4px; }
+.sub-head .sub-eq { width: 210px; }
+.sub-head .sub-name { min-width: 200px; }
+.eq-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 8px; background: var(--surface); }
+.eq-head { display: flex; align-items: center; gap: 8px; }
+.eq-props { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; margin: 6px 0; }
+.eq-props i { font-style: normal; color: var(--muted); font-size: 12px; margin-right: 2px; }
+.eq-accept { gap: 8px; }
+.eq-accept label span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.eq-accept .input { padding: 5px 8px; font-size: 13px; }
+.eq-history { font-size: 12px; color: var(--warn); margin-top: 6px; }
+.card-eq { font-size: 12px; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eq-table td { border-bottom: 1px solid var(--surface-2); }
+.tabs { display: flex; gap: 6px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.tab { border: 1px solid var(--border); background: var(--surface); padding: 7px 14px; border-radius: var(--radius-sm); cursor: pointer; font-weight: 600; }
+.tab.on { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.tab .count { font-weight: 400; opacity: .8; }
+@media (max-width: 900px) {
+  .sub-head .cb, .sub-due { width: 100%; }
+  .goods, .worklog { padding-left: 10px; }
+  .eq-accept, .eq-add { flex-direction: column; align-items: stretch; }
+  .log-entry { flex-direction: column; gap: 2px; }
+  .goods-table { table-layout: auto; }
+  .goods-table td { width: auto !important; }
+  .goods-table td:first-child { white-space: normal; }
+  .goods-foot .cb { width: 100%; }
+}
+
+.proto-note { position: fixed; right: 12px; bottom: 12px; font-size: 11px; background: var(--warn-soft); color: var(--warn); padding: 4px 10px; border-radius: 6px; z-index: 40; }
+
+@media (max-width: 900px) {
+  .app-sidebar { position: fixed; left: 0; top: 0; z-index: 30; transform: translateX(-100%); transition: transform .2s; }
+  body.nav-open .app-sidebar { transform: none; }
+  body.nav-open .backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 20; }
+  .menu-btn { display: inline-flex; }
+  .topbar, .filters { padding-left: 16px; padding-right: 16px; }
+  .board { padding: 16px; height: auto; min-height: 60vh; }
+  .content { padding: 16px; }
+  .filters .input, .filters .cb, .filters .search { min-width: 0; flex: 1 1 100%; }
+  .legend { display: none; }
+  .task-grid, .two-pane { grid-template-columns: 1fr; }
+  .hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div class="proto-note">Прототип · данные в памяти</div>
+
+<script>
+/* ---------- утилиты ---------- */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let seq = 1000;
+const id = () => ++seq;
+const STATUS = { new: 'Новая', in_progress: 'В работе', done: 'Завершена' };
+const STATUS_ORDER = ['new', 'in_progress', 'done'];
+const ROLE = { admin: 'Администратор', executor: 'Исполнитель' };
+const UNITS = ['шт', 'л', 'м', 'кг', 'компл', 'час'];
+const COLORS = ['#94A3B8', '#2563EB', '#7C3AED', '#DB2777', '#DC2626', '#D97706', '#0891B2', '#059669'];
+
+const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const dayOffset = n => { const d = new Date(); d.setDate(d.getDate() + n); return isoDay(d); };
+const fmtDate = iso => iso ? iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.' + iso.slice(0, 4) : '';
+const money = n => (+n || 0).toLocaleString('ru-RU') + ' ₽';
+const initials = name => name.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+const textOf = html => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent; };
+
+/* ---------- выпадающий список с поиском ----------
+   Любой <select class="select"> автоматически превращается в комбобокс.
+   Нативный select остаётся в DOM (скрыт) — value и событие change работают как раньше.
+   Доп. текст для поиска — option[data-search], подпись под пунктом — option[data-hint]. */
+let closeOpenCombo = null;
+
+function highlight(text, q) {
+  if (!q) return esc(text);
+  const i = text.toLowerCase().indexOf(q);
+  if (i < 0) return esc(text);
+  return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + q.length)) + '</mark>' + esc(text.slice(i + q.length));
+}
+
+function enhanceSelect(sel) {
+  sel.dataset.cb = '1';
+  const wrap = document.createElement('div');
+  wrap.className = ['cb', ...[...sel.classList].filter(c => c !== 'select')].join(' ');
+  sel.before(wrap);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'select cb-btn';
+  btn.disabled = sel.disabled;
+  wrap.append(btn, sel);
+  sel.hidden = true;
+
+  const sync = () => {
+    const o = sel.selectedOptions[0];
+    btn.innerHTML = `<span class="cb-label ${!o || !o.value ? 'muted' : ''}">${esc(o ? o.textContent : '')}</span><span class="cb-caret">▾</span>`;
+  };
+  sel._cbSync = sync;
+  sync();
+  sel.addEventListener('change', sync);
+
+  btn.onclick = () => open('');
+  btn.onkeydown = e => {
+    if (['ArrowDown', 'Enter', ' '].includes(e.key)) { e.preventDefault(); open(''); }
+    else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); open(e.key); }
+  };
+
+  function open(initial) {
+    closeOpenCombo?.();
+    const dd = document.createElement('div');
+    dd.className = 'cb-dd';
+    dd.innerHTML = `<input class="input cb-search" placeholder="Поиск…" autocomplete="off"><div class="cb-list"></div>`;
+    document.body.appendChild(dd);
+    const inp = $('input', dd), list = $('.cb-list', dd);
+    let items = [], active = 0;
+
+    const r = btn.getBoundingClientRect();
+    const w = Math.max(r.width, 280);
+    dd.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + 'px';
+    dd.style.width = w + 'px';
+    if (innerHeight - r.bottom < 300 && r.top > innerHeight - r.bottom) dd.style.bottom = (innerHeight - r.top + 4) + 'px';
+    else dd.style.top = (r.bottom + 4) + 'px';
+
+    const mark = () => {
+      $$('.cb-opt', list).forEach((el, i) => el.classList.toggle('active', i === active));
+      $('.cb-opt.active', list)?.scrollIntoView({ block: 'nearest' });
+    };
+    const draw = () => {
+      const q = inp.value.trim().toLowerCase();
+      let html = '';
+      items = [];
+      for (const node of sel.children) {
+        const group = node.tagName === 'OPTGROUP';
+        const opts = (group ? [...node.children] : [node])
+          .filter(o => !q || (o.textContent + ' ' + (o.dataset.search || '') + ' ' + (o.dataset.hint || '')).toLowerCase().includes(q));
+        if (!opts.length) continue;
+        if (group) html += `<div class="cb-group">${esc(node.label)}</div>`;
+        for (const o of opts) {
+          html += `<div class="cb-opt ${o.value === sel.value ? 'sel' : ''}" data-i="${items.length}">${highlight(o.textContent, q)}${o.dataset.hint ? `<small>${highlight(o.dataset.hint, q)}</small>` : ''}</div>`;
+          items.push(o);
+        }
+      }
+      list.innerHTML = html || '<div class="cb-empty">Ничего не найдено</div>';
+      active = q ? 0 : Math.max(0, items.findIndex(o => o.value === sel.value));
+      mark();
+    };
+    const choose = i => {
+      const o = items[i];
+      if (!o) return;
+      close();
+      if (sel.value !== o.value) { sel.value = o.value; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+      btn.isConnected && btn.focus();
+    };
+    const onOutside = e => { if (!dd.contains(e.target) && !btn.contains(e.target)) close(); };
+    const onScroll = e => { if (!dd.contains(e.target)) close(); };
+    function close() {
+      dd.remove();
+      document.removeEventListener('mousedown', onOutside, true);
+      document.removeEventListener('scroll', onScroll, true);
+      removeEventListener('resize', close);
+      closeOpenCombo = null;
+    }
+    closeOpenCombo = close;
+    document.addEventListener('mousedown', onOutside, true);
+    document.addEventListener('scroll', onScroll, true);
+    addEventListener('resize', close);
+
+    list.onmousedown = e => { const o = e.target.closest('.cb-opt'); if (o) { e.preventDefault(); choose(+o.dataset.i); } };
+    list.onmousemove = e => { const o = e.target.closest('.cb-opt'); if (o && +o.dataset.i !== active) { active = +o.dataset.i; mark(); } };
+    inp.oninput = draw;
+    inp.onkeydown = e => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, items.length - 1); mark(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); mark(); }
+      else if (e.key === 'Enter') { e.preventDefault(); choose(active); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); btn.focus(); }
+      else if (e.key === 'Tab') close();
+    };
+    inp.value = initial;
+    draw();
+    inp.focus();
+  }
+}
+
+new MutationObserver(() => $$('select.select:not([data-cb])').forEach(enhanceSelect))
+  .observe(document.body, { childList: true, subtree: true });
+
+/* ---------- демо-данные ---------- */
+const state = {
+  user: null,
+  view: 'board',
+  filters: { client: '', q: '', category: '', paid: '', assignee: '', due: '' },
+  catalogTab: 'services',
+  activeCategory: null,
+  users: [
+    { id: 1, name: 'Администратор', login: 'admin', role: 'admin', phone: '', active: true },
+    { id: 2, name: 'Сидоров Олег', login: 'sidorov', role: 'executor', phone: '+7 916 400-00-01', active: true },
+    { id: 3, name: 'Волков Павел', login: 'volkov', role: 'executor', phone: '+7 916 400-00-02', active: true },
+    { id: 4, name: 'Егорова Ирина', login: 'egorova', role: 'executor', phone: '+7 916 400-00-03', active: true },
+  ],
+  clients: [
+    { id: 1, company: 'ООО «Северный склад»', address: 'г. Москва, ул. Складская, 12, стр. 3', contact: 'Иванов Пётр Сергеевич', position: 'Главный инженер', phones: [{ phone: '+7 916 123-45-67', note: 'мобильный' }, { phone: '+7 495 111-22-33', note: 'офис' }] },
+    { id: 2, company: 'АО «Техно-Логистик»', address: 'г. Химки, Ленинградское ш., 1', contact: 'Смирнова Анна Олеговна', position: 'Руководитель АХО', phones: [{ phone: '+7 903 555-66-77', note: '' }] },
+    { id: 3, company: 'ИП Кузнецов', address: 'г. Подольск, ул. Мира, 5', contact: 'Кузнецов Дмитрий', position: 'Владелец', phones: [{ phone: '+7 926 000-11-22', note: 'WhatsApp' }] },
+    { id: 4, company: 'ООО «Альфа-Трейд»', address: 'г. Москва, Варшавское ш., 118', contact: 'Орлов Игорь', position: 'Завхоз', phones: [{ phone: '+7 915 222-33-44', note: '' }] },
+    { id: 5, company: 'ООО «Балтика-Сервис»', address: 'г. Санкт-Петербург, пр. Обуховской Обороны, 70', contact: 'Лебедева Мария', position: 'Менеджер', phones: [{ phone: '+7 812 300-40-50', note: 'офис' }] },
+    { id: 6, company: 'ЗАО «ВолгаПромСклад»', address: 'г. Тверь, ул. Индустриальная, 9', contact: 'Никитин Сергей', position: 'Начальник склада', phones: [{ phone: '+7 910 777-88-99', note: '' }] },
+    { id: 7, company: 'ООО «Гранит»', address: 'г. Люберцы, Котельнический пр-д, 14', contact: 'Фёдоров Алексей', position: 'Директор', phones: [{ phone: '+7 925 123-00-00', note: '' }] },
+    { id: 8, company: 'ООО «Дельта Логистик»', address: 'г. Домодедово, ул. Логистическая, 1', contact: 'Попова Елена', position: 'Инженер по ТО', phones: [{ phone: '+7 999 456-78-90', note: 'после 10:00' }] },
+  ],
+  categories: [
+    { id: 1, kind: 'service', name: 'Ремонт' },
+    { id: 2, kind: 'service', name: 'Замена узлов' },
+    { id: 3, kind: 'service', name: 'Диагностика' },
+    { id: 4, kind: 'service', name: 'Покраска / кузов' },
+    { id: 11, kind: 'product', name: 'Фильтры' },
+    { id: 12, kind: 'product', name: 'Масла и жидкости' },
+    { id: 13, kind: 'product', name: 'Запчасти' },
+    { id: 14, kind: 'product', name: 'Лакокраска' },
+  ],
+  products: [
+    { id: 101, categoryId: 11, name: 'Фильтр масляный', sku: 'FM-100', unit: 'шт', price: 450, stock: 12, box: 'К-01', place: 'Стеллаж A, полка 1', minStock: 3 },
+    { id: 102, categoryId: 11, name: 'Фильтр воздушный', sku: 'FV-220', unit: 'шт', price: 700, stock: 8, box: 'К-01', place: 'Стеллаж A, полка 1', minStock: 3 },
+    { id: 103, categoryId: 12, name: 'Масло моторное 5W-40', sku: 'OIL-540', unit: 'л', price: 650, stock: 40, box: '', place: 'Стеллаж B, полка 3', minStock: 10 },
+    { id: 104, categoryId: 13, name: 'Двигатель 1.6 (контрактный)', sku: 'ENG-16', unit: 'шт', price: 85000, stock: 1, box: '', place: 'Склад, паллет 2', minStock: 1 },
+    { id: 105, categoryId: 13, name: 'Прокладка ГБЦ', sku: 'GBC-16', unit: 'шт', price: 1800, stock: 4, box: 'К-07', place: 'Стеллаж A, полка 2', minStock: 2 },
+    { id: 106, categoryId: 14, name: 'Грунт акриловый', sku: 'PR-01', unit: 'л', price: 900, stock: 10, box: '', place: 'Стеллаж C, полка 1', minStock: 3 },
+    { id: 107, categoryId: 14, name: 'Краска RAL 5005', sku: 'RAL5005', unit: 'л', price: 1500, stock: 6, box: '', place: 'Стеллаж C, полка 1', minStock: 2 },
+    { id: 108, categoryId: 13, name: 'Хомут усиленный рессоры', sku: 'HR-40', unit: 'шт', price: 350, stock: 0, box: 'К-12', place: 'Стеллаж A, полка 4', minStock: 2 },
+    { id: 109, categoryId: 13, name: 'Линза фокусирующая 20 мм', sku: 'LZ-20', unit: 'шт', price: 4200, stock: 3, box: 'К-03', place: 'Шкаф оптики, полка 1', minStock: 3 },
+    { id: 110, categoryId: 13, name: 'Сопло лазерное', sku: 'NZ-15', unit: 'шт', price: 600, stock: 25, box: 'К-04', place: 'Шкаф оптики, полка 2', minStock: 5 },
+    { id: 111, categoryId: 13, name: 'Кабель ПВС 3×1.5', sku: 'PVS-315', unit: 'м', price: 120, stock: 150, box: '', place: 'Стеллаж B, полка 1', minStock: 30 },
+  ],
+  services: [
+    { id: 201, categoryId: 2, name: 'Замена двигателя', price: 25000, goods: [{ productId: 104, qty: 1 }, { productId: 105, qty: 1 }, { productId: 103, qty: 5 }, { productId: 101, qty: 1 }] },
+    { id: 202, categoryId: 1, name: 'Калибровка головы', price: 6000, goods: [{ productId: 109, qty: 1 }, { productId: 110, qty: 2 }] },
+    { id: 203, categoryId: 3, name: 'Проверка электрики', price: 3000, goods: [] },
+    { id: 204, categoryId: 4, name: 'Покраска', price: null, goods: [{ productId: 106, qty: 2 }, { productId: 107, qty: 3 }] },
+    { id: 205, categoryId: 1, name: 'Усиление рессор', price: 8000, goods: [{ productId: 108, qty: 4 }] },
+    { id: 206, categoryId: 2, name: 'Замена фильтров', price: 1500, goods: [{ productId: 101, qty: 1 }, { productId: 102, qty: 1 }] },
+    { id: 207, categoryId: 3, name: 'Компьютерная диагностика', price: 2000, goods: [] },
+    { id: 208, categoryId: 1, name: 'Плановое ТО', price: 6000, goods: [{ productId: 101, qty: 1 }, { productId: 102, qty: 1 }, { productId: 103, qty: 5 }] },
+  ],
+  columns: [
+    { id: 1, name: 'Новые', color: '#94A3B8', final: false, consume: false },
+    { id: 2, name: 'В работе', color: '#2563EB', final: false, consume: true },
+    { id: 3, name: 'Ждёт запчасти', color: '#D97706', final: false, consume: true },
+    { id: 4, name: 'Готово', color: '#059669', final: true, consume: true },
+  ],
+  equipmentTypes: [
+    { id: 1, name: 'Лазерный станок', keys: ['Рабочее поле', 'Мощность источника', 'Год выпуска'] },
+    { id: 2, name: 'Лазерный источник', keys: ['Мощность', 'Длина волны', 'Длина кабеля', 'Разъём'] },
+    { id: 3, name: 'Аппарат лазерной сварки', keys: ['Мощность', 'Тип охлаждения', 'Напряжение'] },
+    { id: 4, name: 'Сварочный пистолет / головка', keys: ['Линзы', 'Разъём', 'Длина кабеля'] },
+    { id: 5, name: 'Кабель / оптоволокно', keys: ['Длина', 'Разъём', 'Диаметр жилы'] },
+    { id: 6, name: 'Транспорт / спецтехника', keys: ['Госномер', 'VIN', 'Пробег / моточасы'] },
+    { id: 7, name: 'Другое', keys: [] },
+  ],
+  equipment: [
+    { id: 501, clientId: 1, typeId: 1, brand: 'Bodor', model: 'i5', sku: 'i5-1530', serial: 'BD21-04417', note: '', specs: [{ k: 'Рабочее поле', v: '1500×3000 мм' }, { k: 'Мощность источника', v: '1,5 кВт' }, { k: 'Год выпуска', v: '2021' }] },
+    { id: 502, clientId: 1, typeId: 2, brand: 'Raycus', model: 'RFL-C1500', sku: 'RFL-C1500', serial: 'RC2103A118', note: 'Стоит в станке Bodor i5', specs: [{ k: 'Мощность', v: '1500 Вт' }, { k: 'Длина волны', v: '1080 нм' }, { k: 'Длина кабеля', v: '15 м' }, { k: 'Разъём', v: 'QBH' }] },
+    { id: 503, clientId: 2, typeId: 3, brand: 'Qilin', model: 'QL-W1500', sku: 'QLW-1500-4', serial: 'QL-22-0931', note: '', specs: [{ k: 'Мощность', v: '1500 Вт' }, { k: 'Тип охлаждения', v: 'водяное' }, { k: 'Напряжение', v: '220 В' }] },
+    { id: 504, clientId: 2, typeId: 4, brand: 'Qilin', model: 'QHW-3', sku: 'QHW-3', serial: 'QH-7781', note: '', specs: [{ k: 'Линзы', v: 'D20 F150 / F60' }, { k: 'Разъём', v: 'QBH' }] },
+    { id: 505, clientId: 3, typeId: 5, brand: '—', model: 'Кабель QBH', sku: 'QBH-10', serial: '', note: 'Привезли только кабель', specs: [{ k: 'Длина', v: '10 м' }, { k: 'Разъём', v: 'QBH' }] },
+    { id: 506, clientId: 2, typeId: 6, brand: 'Toyota', model: '8FBE15 (погрузчик)', sku: '', serial: 'VIN 8FBE15-60123', note: '', specs: [{ k: 'Моточасы', v: '12 400' }] },
+    { id: 507, clientId: 3, typeId: 6, brand: 'ГАЗ', model: 'ГАЗель NEXT', sku: '', serial: 'X96A21R32M0001234', note: '', specs: [{ k: 'Госномер', v: 'А123ВС 750' }, { k: 'Пробег / моточасы', v: '148 000 км' }] },
+    { id: 508, clientId: 1, typeId: 6, brand: 'МЗСА', model: 'Прицеп 817701', sku: '', serial: 'X43817701L0004567', note: '', specs: [{ k: 'Госномер', v: 'ВА 4521 50' }] },
+  ],
+  tasks: [],
+};
+
+const clientById = id => state.clients.find(c => c.id === +id);
+const serviceById = id => state.services.find(s => s.id === +id);
+const productById = id => state.products.find(p => p.id === +id);
+const categoryById = id => state.categories.find(c => c.id === +id);
+const columnById = id => state.columns.find(c => c.id === +id);
+const userById = id => state.users.find(u => u.id === +id);
+const isAdmin = () => state.user?.role === 'admin';
+const eqById = id => state.equipment.find(e => e.id === +id);
+const eqTypeById = id => state.equipmentTypes.find(x => x.id === +id);
+const eqTitle = e => [e.brand && e.brand !== '—' ? e.brand : '', e.model].filter(Boolean).join(' ');
+const eqSearch = e => [eqTypeById(e.typeId)?.name, e.brand, e.model, e.sku, e.serial, ...e.specs.map(x => x.v)].join(' ');
+const eqOrders = eqId => state.tasks.filter(t => (t.equipment || []).some(x => x.equipmentId === eqId));
+const categoriesOf = kind => state.categories.filter(c => c.kind === kind);
+
+/* подзадача = услуга из каталога; товары копируются из комплекта услуги с текущими ценами */
+function newSubtask(serviceId, extra = {}) {
+  const svc = serviceById(serviceId);
+  return {
+    id: id(), serviceId, status: 'new', assigneeId: null, due: null, price: svc.price,
+    goods: svc.goods.map(g => ({ productId: g.productId, qty: g.qty, price: productById(g.productId).price })),
+    log: [],
+    ...extra,
+  };
+}
+const subServicesSum = s => +s.price || 0;
+const subGoodsSum = s => s.goods.reduce((a, g) => a + g.qty * (+g.price || 0), 0);
+const subSum = s => subServicesSum(s) + subGoodsSum(s);
+const taskSum = t => t.subtasks.reduce((a, s) => a + subSum(s), 0);
+const isFinal = t => !!columnById(t.columnId)?.final;
+const isLate = (due, done) => !!due && !done && due < dayOffset(0);
+
+/* Срок задачи: overdue — просрочен, soon — сегодня/завтра, ok */
+function dueState(t) {
+  if (!t.due || isFinal(t)) return 'ok';
+  if (t.due < dayOffset(0)) return 'overdue';
+  if (t.due <= dayOffset(1)) return 'soon';
+  return 'ok';
+}
+const fmtStamp = iso => iso.slice(8, 10) + '.' + iso.slice(5, 7) + ' ' + iso.slice(11, 16);
+const nowStamp = () => { const d = new Date(); return isoDay(d) + 'T' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+/* в финальную колонку можно только когда все услуги завершены; возвращает текст ошибки или null */
+function finalBlock(t, columnId) {
+  const col = columnById(columnId);
+  if (!col?.final) return null;
+  const open = t.subtasks.filter(s => s.status !== 'done');
+  if (!open.length) return null;
+  return `Нельзя перевести в «${col.name}»: не завершены услуги — ${open.map(s => serviceById(s.serviceId)?.name).join(', ')}`;
+}
+const lateSubtasks = t => isFinal(t) ? 0 : t.subtasks.filter(s => isLate(s.due, s.status === 'done')).length;
+
+state.tasks = [
+  { id: 11, columnId: 1, clientId: 1, title: 'Лазерный станок Bodor — не режет металл', assigneeId: 2, due: dayOffset(1), paid: false,
+    desc: '<p>Со слов клиента: после замены листа станок перестал прорезать 3 мм сталь.</p><ul><li>Модель: Bodor i5, 2021 г.</li><li>Проверить линзу и сопло</li></ul>',
+    subtasks: [newSubtask(207, { assigneeId: 2 }), newSubtask(202, { assigneeId: 2, due: dayOffset(3), status: 'in_progress', log: [
+      { id: 401, userId: 2, at: dayOffset(-1) + 'T18:40', text: 'Почистили головку, поставили новую линзу и 2 сопла. Рез 3 мм пошёл, но нестабильно.' },
+      { id: 402, userId: 2, at: dayOffset(0) + 'T10:15', text: 'Нашли перетёртый кабель к усилителю. Осталось: заменить кабель, спаять усилитель, повторная калибровка.' }] })],
+    attachments: [{ id: 301, kind: 'photo', name: 'станок.jpg', color: '#93C5FD' }] },
+  { id: 12, columnId: 1, clientId: 3, title: 'ТО грузовика ГАЗель NEXT', assigneeId: 3, due: dayOffset(6), paid: true, desc: '',
+    subtasks: [newSubtask(208, { assigneeId: 3 })], attachments: [] },
+  { id: 13, columnId: 2, clientId: 2, title: 'Замена двигателя погрузчика №2', assigneeId: 2, due: dayOffset(-1), paid: false,
+    desc: '<p>Двигатель заклинило. Клиент согласовал контрактный.</p>',
+    subtasks: [newSubtask(201, { status: 'in_progress', assigneeId: 2, due: dayOffset(-1), log: [{ id: 403, userId: 2, at: dayOffset(-2) + 'T17:05', text: 'Сняли старый двигатель, ждём прокладку ГБЦ.' }] }), newSubtask(203, { status: 'done', assigneeId: 3 }), newSubtask(206, { assigneeId: 3 })],
+    attachments: [{ id: 302, kind: 'photo', name: 'двигатель.jpg', color: '#FCD34D' }, { id: 303, kind: 'video', name: 'звук.mp4', color: '#A7F3D0' }] },
+  { id: 14, columnId: 3, clientId: 1, title: 'Прицеп: усиление рессор и покраска рамы', assigneeId: 4, due: dayOffset(7), paid: false,
+    desc: '<p>Ждём краску RAL 5005 — поставка в пятницу.</p>',
+    subtasks: [newSubtask(205, { status: 'done', assigneeId: 4 }), newSubtask(204, { assigneeId: 4, price: 12000, due: dayOffset(8) })],
+    attachments: [{ id: 304, kind: 'photo', name: 'рама.jpg', color: '#FCA5A5' }] },
+  { id: 15, columnId: 4, clientId: 2, title: 'Диагностика электрики станка ЧПУ', assigneeId: 3, due: dayOffset(-5), paid: true, desc: '',
+    subtasks: [newSubtask(207, { status: 'done', assigneeId: 3 }), newSubtask(203, { status: 'done', assigneeId: 3, goods: [{ productId: 111, qty: 10, price: 120 }] })],
+    attachments: [] },
+];
+
+/* ---------- склад: списание товаров заказа ----------
+   Колонка с признаком consume = заказ согласован и выполняется → товары заказа списаны со склада.
+   t.writtenOff — сколько уже списано по заказу {productId: qty}; stockSync доводит его до целевого
+   (весь комплект заказа, если колонка списывающая, иначе ноль) и правит остатки на разницу:
+   добавили/убрали товар в заказе — доcписали/вернули, вернули заказ в «Новые» — всё вернулось на склад. */
+const consumes = t => !!columnById(t.columnId)?.consume;
+function taskDemand(t) {
+  const d = {};
+  t.subtasks.forEach(s => s.goods.forEach(g => { d[g.productId] = (d[g.productId] || 0) + (+g.qty || 0); }));
+  return d;
+}
+const isLow = p => p.stock <= (p.minStock || 0);
+function refreshLowBadge() {
+  const link = $('.nav-link[data-view="stock"]');
+  if (!link) return;
+  const n = state.products.filter(isLow).length;
+  link.innerHTML = `📊 Остатки ${n ? `<span class="nav-count" title="Товаров на минимуме">${n}</span>` : ''}`;
+}
+function stockSync(t, removed = false) {
+  const target = !removed && consumes(t) ? taskDemand(t) : {};
+  const prev = t.writtenOff || {};
+  const crossed = [];
+  new Set([...Object.keys(target), ...Object.keys(prev)]).forEach(k => {
+    const delta = (target[k] || 0) - (prev[k] || 0);
+    const p = productById(+k);
+    if (!delta || !p) return;
+    p.stock = +(p.stock - delta).toFixed(3);
+    if (delta > 0 && isLow(p)) crossed.push(p);
+  });
+  t.writtenOff = target;
+  refreshLowBadge();
+  return crossed;
+}
+/* после операции с заказами: если товары дошли до минимума — предупредить */
+function stockAfter(tasks, what) {
+  const crossed = [...new Set(tasks.flatMap(t => stockSync(t)))];
+  if (!crossed.length) return;
+  const list = crossed.map(p => `${p.name}${p.place ? ' (' + p.place + (p.box ? ', коробка ' + p.box : '') + ')' : ''} — ${p.stock < 0 ? `не хватает ${-p.stock} ${p.unit} (нужно докупить)` : `осталось ${p.stock} ${p.unit}`}, минимум ${p.minStock || 0}`);
+  uiDialog({ title: '⚠ Товары на минимальном остатке', text: `После операции (${what}) достигнут минимальный остаток:\n• ${list.join('\n• ')}`, ok: 'Открыть «Остатки»', cancel: 'Понятно' })
+    .then(go => { if (go) { state.view = 'stock'; render(); } });
+}
+/* демо: заказы, уже стоящие в списывающих колонках, считаем списанными (остатки в сиде — уже после списания) */
+state.tasks.forEach(t => { t.writtenOff = consumes(t) ? taskDemand(t) : {}; });
+
+/* демо: принятое оборудование в заказах (комплектность и состояние фиксируются при приёмке) */
+[[11, [[501, 'Станок, пульт, ключ', 'Без видимых повреждений. Со слов клиента — не прорезает 3 мм'], [502, 'Источник в составе станка', '']]],
+ [12, [[507, 'Автомобиль, ключи, СТС', 'Скол на бампере']]],
+ [13, [[506, 'Погрузчик, АКБ, зарядное', 'Двигатель заклинен']]],
+ [14, [[508, 'Прицеп без тента', 'Провисание рессор, ржавчина на раме']]],
+ [15, [[503, 'Аппарат, пистолет, кабель', ''], [504, 'Пистолет, 2 линзы в футляре', 'Царапины на корпусе']]]]
+  .forEach(([tid, list]) => { state.tasks.find(t => t.id === tid).equipment = list.map(([equipmentId, completeness, condition]) => ({ equipmentId, completeness, condition })); });
+state.tasks.forEach(t => { t.equipment ??= []; });
+state.tasks.forEach(t => t.subtasks.forEach(s => { s.equipmentId ??= t.equipment[0]?.equipmentId ?? null; }));
+state.tasks.find(t => t.id === 15).subtasks[1].equipmentId = 504;  // проверка электрики — по пистолету
+
+const eqOptions = (clientId, exclude, placeholder) => `<option value="">${placeholder}</option>` +
+  state.equipment.filter(e => e.clientId === +clientId && !exclude.includes(e.id)).map(e =>
+    `<option value="${e.id}" data-hint="${esc(eqTypeById(e.typeId)?.name)}${e.serial ? ' · SN ' + esc(e.serial) : ''}" data-search="${esc(eqSearch(e))}">${esc(eqTitle(e))}</option>`).join('');
+
+const clientOption = (c, selected) =>
+  `<option value="${c.id}" ${selected ? 'selected' : ''} data-hint="${esc(c.contact)}" data-search="${esc([c.address, ...c.phones.map(p => p.phone)].join(' '))}">${esc(c.company)}</option>`;
+const userOptions = (selectedId, emptyLabel) =>
+  `<option value="">${emptyLabel}</option>` + state.users.filter(u => u.active).map(u =>
+    `<option value="${u.id}" ${+selectedId === u.id ? 'selected' : ''} data-hint="${ROLE[u.role]}" data-search="${esc(u.login + ' ' + u.phone)}">${esc(u.name)}</option>`).join('');
+const serviceOptions = placeholder => `<option value="">${placeholder}</option>` +
+  categoriesOf('service').map(cat => `<optgroup label="${esc(cat.name)}">${state.services.filter(s => s.categoryId === cat.id).map(s =>
+    `<option value="${s.id}" data-hint="${s.price != null ? money(s.price) : 'цена по факту'}${s.goods.length ? ' · товаров в комплекте: ' + s.goods.length : ''}" data-search="${esc(cat.name)}">${esc(s.name)}</option>`).join('')}</optgroup>`).join('');
+const productOptions = placeholder => `<option value="">${placeholder}</option>` +
+  categoriesOf('product').map(cat => `<optgroup label="${esc(cat.name)}">${state.products.filter(p => p.categoryId === cat.id).map(p =>
+    `<option value="${p.id}" data-hint="${esc(p.sku)} · ${money(p.price)} / ${esc(p.unit)}" data-search="${esc(cat.name)}">${esc(p.name)}</option>`).join('')}</optgroup>`).join('');
+
+/* ---------- рендер ---------- */
+function render() {
+  const root = $('#root');
+  if (!state.user) { root.innerHTML = loginView(); bindLogin(); return; }
+  if (!isAdmin() && !['board', 'stock'].includes(state.view)) state.view = 'board';
+  const titles = { board: 'Доска заказов', stock: 'Остатки товаров', clients: 'Клиенты', catalog: 'Каталог услуг и товаров', users: 'Сотрудники' };
+  const lowCount = state.products.filter(isLow).length;
+  root.innerHTML = `
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="brand"><span class="brand-logo">▦</span> Kanban-tree</div>
+      <div class="nav-label">Работа</div>
+      <a class="nav-link ${state.view === 'board' ? 'active' : ''}" data-view="board">▦ Доска</a>
+        <a class="nav-link ${state.view === 'stock' ? 'active' : ''}" data-view="stock">📊 Остатки ${lowCount ? `<span class="nav-count" title="Товаров на минимуме">${lowCount}</span>` : ''}</a>
+      ${isAdmin() ? `<div class="nav-label">Справочники</div>
+      <a class="nav-link ${state.view === 'clients' ? 'active' : ''}" data-view="clients">🏢 Клиенты</a>
+      <a class="nav-link ${state.view === 'catalog' ? 'active' : ''}" data-view="catalog">🧰 Услуги и товары</a>
+      <div class="nav-label">Администрирование</div>
+      <a class="nav-link ${state.view === 'users' ? 'active' : ''}" data-view="users">👥 Сотрудники</a>` : ''}
+      <div class="sidebar-footer">
+        <div class="row"><span class="avatar">${esc(initials(state.user.name))}</span><div><b>${esc(state.user.name)}</b><div class="muted" style="font-size:12px">${ROLE[state.user.role]}</div></div></div>
+        <button class="btn btn-sm" id="themeBtn">◐ Тема</button>
+        <button class="btn btn-sm" id="logoutBtn">Выйти</button>
+      </div>
+    </aside>
+    <div class="backdrop" id="backdrop"></div>
+    <div class="app-main">
+      <div class="topbar">
+        <button class="btn btn-ghost menu-btn" id="menuBtn">☰</button>
+        <h1>${titles[state.view]}</h1>
+        ${state.view === 'board' ? `${isAdmin() ? '<button class="btn" id="addColumnTop">+ Колонка</button>' : ''}<button class="btn btn-primary" id="addTaskTop">+ Заказ</button>` : ''}
+        ${state.view === 'clients' ? `<button class="btn btn-primary" id="addClient">+ Клиент</button>` : ''}
+        ${state.view === 'catalog' ? (state.catalogTab === 'eqtypes' ? `<button class="btn btn-primary" id="addEqType">+ Тип оборудования</button>` : `<button class="btn" id="addCategory">+ Категория</button><button class="btn btn-primary" id="addCatalogItem">+ ${state.catalogTab === 'services' ? 'Услуга' : 'Товар'}</button>`) : ''}
+        ${state.view === 'users' ? `<button class="btn btn-primary" id="addUser">+ Сотрудник</button>` : ''}
+      </div>
+      <div id="view"></div>
+    </div>
+  </div>`;
+  $$('.nav-link').forEach(a => a.onclick = () => { state.view = a.dataset.view; state.activeCategory = null; document.body.classList.remove('nav-open'); render(); });
+  $('#logoutBtn').onclick = () => { state.user = null; render(); };
+  $('#themeBtn').onclick = toggleTheme;
+  $('#menuBtn').onclick = () => document.body.classList.add('nav-open');
+  $('#backdrop').onclick = () => document.body.classList.remove('nav-open');
+  ({ board: renderBoardView, stock: renderStock, clients: renderClients, catalog: renderCatalog, users: renderUsers })[state.view]();
+}
+
+function toggleTheme() {
+  const cur = document.documentElement.dataset.theme
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('kt-theme', next); } catch (e) {}
+}
+
+/* ---------- логин ---------- */
+function loginView() {
+  return `<div class="login-wrap"><form class="login-card" id="loginForm">
+    <div class="brand" style="justify-content:center"><span class="brand-logo">▦</span> Kanban-tree</div>
+    <label class="field"><span>Логин</span><input class="input" name="login" value="admin" autocomplete="username"></label>
+    <label class="field"><span>Пароль</span><input class="input" name="password" type="password" value="••••••" autocomplete="current-password"></label>
+    <button class="btn btn-primary" style="width:100%;justify-content:center">Войти</button>
+    <p class="muted" style="font-size:12px;text-align:center;margin:12px 0 0">Прототип: <b>admin</b> — администратор, <b>sidorov</b> / <b>volkov</b> / <b>egorova</b> — исполнители. Пароль любой.<br>В реальной версии — сессия в Redis, cookie <code>sid</code>.</p>
+  </form></div>`;
+}
+function bindLogin() {
+  $('#loginForm').onsubmit = e => {
+    e.preventDefault();
+    const login = e.target.login.value.trim().toLowerCase();
+    const u = state.users.find(x => x.login === login && x.active);
+    if (!u) { e.target.login.style.borderColor = 'var(--danger)'; return; }
+    state.user = u;
+    state.filters.assignee = u.role === 'executor' ? String(u.id) : '';
+    render();
+  };
+}
+
+/* ---------- доска ---------- */
+function taskMatches(t) {
+  const f = state.filters;
+  if (f.client && t.clientId !== +f.client) return false;
+  if (f.paid && String(!!t.paid) !== f.paid) return false;
+  if (f.category && !t.subtasks.some(s => serviceById(s.serviceId)?.categoryId === +f.category)) return false;
+  if (f.assignee && t.assigneeId !== +f.assignee && !t.subtasks.some(s => s.assigneeId === +f.assignee)) return false;
+  if (f.due === 'overdue' && dueState(t) !== 'overdue' && !lateSubtasks(t)) return false;
+  if (f.due === 'soon' && dueState(t) === 'ok' && !lateSubtasks(t)) return false;
+  if (f.q) {
+    const q = f.q.toLowerCase();
+    const hay = [t.title, textOf(t.desc), clientById(t.clientId)?.company, '#' + t.id,
+      ...t.subtasks.map(s => serviceById(s.serviceId)?.name),
+      ...t.subtasks.flatMap(s => s.goods.map(g => productById(g.productId)?.name)), ...t.equipment.map(x => eqSearch(eqById(x.equipmentId)))].join(' ').toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+function renderBoardView() {
+  const f = state.filters;
+  $('#view').innerHTML = `
+    <div class="filters">
+      <select class="select" id="fClient"><option value="">Все клиенты</option>${state.clients.map(c => clientOption(c, +f.client === c.id)).join('')}</select>
+      <input class="input search" id="fQ" placeholder="🔍 Поиск: заказ, оборудование, SN, услуга, товар, #номер" value="${esc(f.q)}">
+      <select class="select" id="fCat"><option value="">Все виды работ</option>${categoriesOf('service').map(c => `<option value="${c.id}" ${+f.category === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      <select class="select" id="fPaid">
+        <option value="">Оплата: все</option>
+        <option value="false" ${f.paid === 'false' ? 'selected' : ''}>Не оплачен</option>
+        <option value="true" ${f.paid === 'true' ? 'selected' : ''}>Оплачен</option>
+      </select>
+      <select class="select" id="fAssignee">${userOptions(f.assignee, 'Все исполнители')}</select>
+      <select class="select" id="fDue">
+        <option value="">Любой срок</option>
+        <option value="soon" ${f.due === 'soon' ? 'selected' : ''}>Горит (сегодня/завтра и просрочено)</option>
+        <option value="overdue" ${f.due === 'overdue' ? 'selected' : ''}>Только просроченные</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" id="fReset">Сбросить</button>
+      <span class="found" id="found"></span>
+    </div>
+    <div class="board" id="board"></div>`;
+  const bind = (sel, key) => $(sel).onchange = e => { f[key] = e.target.value; renderBoard(); };
+  bind('#fClient', 'client'); bind('#fCat', 'category'); bind('#fPaid', 'paid'); bind('#fAssignee', 'assignee'); bind('#fDue', 'due');
+  $('#fQ').oninput = e => { f.q = e.target.value; renderBoard(); };
+  $('#fReset').onclick = () => { state.filters = { client: '', q: '', category: '', paid: '', assignee: '', due: '' }; renderBoardView(); };
+  $('#addTaskTop').onclick = () => openTask(null, state.columns[0]?.id);
+  if (isAdmin()) $('#addColumnTop').onclick = () => openColumn(null);
+  renderBoard();
+}
+
+const lastLog = t => t.subtasks.flatMap(s => s.log).sort((a, b) => a.at < b.at ? -1 : 1).pop();
+function cardHTML(t) {
+  const c = clientById(t.clientId);
+  const col = columnById(t.columnId);
+  const a = userById(t.assigneeId);
+  const sum = taskSum(t);
+  const done = t.subtasks.filter(s => s.status === 'done').length;
+  const svc = t.subtasks.map(s => serviceById(s.serviceId)).filter(Boolean);
+  const photos = t.attachments.filter(x => x.kind === 'photo').length;
+  const videos = t.attachments.filter(x => x.kind === 'video').length;
+  const ds = dueState(t);
+  const late = lateSubtasks(t);
+  return `<div class="card ${ds === 'overdue' ? 'overdue' : ''}" style="--c:${col.color}" draggable="true" data-id="${t.id}">
+    <div class="card-title">${esc(t.title)}</div>
+    <div class="card-client">🏢 ${esc(c?.company || '—')}<span class="pay ${t.paid ? 'pay-yes' : 'pay-no'}">${t.paid ? '✓ Оплачен' : 'Не оплачен'}</span></div>
+    ${svc.length ? `<div class="chips">${svc.slice(0, 3).map(s => `<span class="chip cat-${s.categoryId % 4}">${esc(s.name)}</span>`).join('')}${svc.length > 3 ? `<span class="chip">+${svc.length - 3}</span>` : ''}</div>` : ''}
+    ${t.equipment.length ? `<div class="card-eq">🔧 ${esc(eqTitle(eqById(t.equipment[0].equipmentId)))}${eqById(t.equipment[0].equipmentId).serial ? ` <span class="muted">· ${esc(eqById(t.equipment[0].equipmentId).serial)}</span>` : ''}${t.equipment.length > 1 ? ` <span class="chip">+${t.equipment.length - 1}</span>` : ''}</div>` : ''}
+    <div class="card-meta">
+      <span>#${t.id}</span>
+      ${t.subtasks.length ? `<span title="Выполнено услуг">☑ ${done}/${t.subtasks.length}</span><span class="progress"><i style="width:${Math.round(done / t.subtasks.length * 100)}%"></i></span>` : '<span class="grow"></span>'}
+      ${late ? `<span class="late" title="Просрочено услуг">⚠ ${late}</span>` : ''}
+      ${photos ? `<span title="Фото">🖼 ${photos}</span>` : ''}
+      ${videos ? `<span title="Видео">🎬 ${videos}</span>` : ''}
+    </div>
+    ${lastLog(t) ? `<div class="card-log" title="Последняя запись журнала">📝 ${esc(lastLog(t).text)}</div>` : ''}
+    <div class="card-foot">
+      ${t.due ? `<span class="due due-${ds}" title="Срок заказа">📅 ${fmtDate(t.due).slice(0, 5)}${ds === 'overdue' ? ' · просрочен' : ''}</span>` : ''}
+      <b>${sum ? money(sum) : ''}</b>
+      ${a ? `<span class="avatar sm" title="Ответственный: ${esc(a.name)}">${esc(initials(a.name))}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+let dragId = null;
+function renderBoard() {
+  const board = $('#board');
+  let shown = 0;
+  board.innerHTML = state.columns.map(col => {
+    const tasks = state.tasks.filter(t => t.columnId === col.id && taskMatches(t));
+    shown += tasks.length;
+    const sum = tasks.reduce((a, t) => a + taskSum(t), 0);
+    return `<section class="column" data-col="${col.id}" style="--c:${col.color}">
+      <div class="column-head">
+        <i class="dot"></i><span>${esc(col.name)}</span><span class="count">${tasks.length}</span>
+        ${col.final ? '<span class="final-mark" title="Финальная колонка: заказы считаются выполненными">✓</span>' : ''}
+        ${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-col-menu="${col.id}" title="Настроить колонку">⋯</button>` : ''}
+      </div>
+      ${sum ? `<div class="column-sum">${money(sum)}</div>` : ''}
+      <div class="column-body" data-col-body="${col.id}">${tasks.map(cardHTML).join('')}</div>
+      <button class="btn add-task" data-add-task="${col.id}">+ Добавить заказ</button>
+    </section>`;
+  }).join('') + (isAdmin() ? `<button class="add-column" id="addColumn">+ Добавить колонку</button>` : '');
+  const total = state.tasks.length;
+  $('#found').textContent = shown === total ? `Заказов: ${total}` : `Найдено: ${shown} из ${total}`;
+
+  if (isAdmin()) $('#addColumn').onclick = () => openColumn(null);
+  $$('[data-add-task]').forEach(b => b.onclick = () => openTask(null, +b.dataset.addTask));
+  $$('[data-col-menu]').forEach(b => b.onclick = () => openColumn(+b.dataset.colMenu));
+  $$('.card').forEach(el => {
+    el.onclick = () => openTask(+el.dataset.id);
+    el.ondragstart = e => { e.dataTransfer.setData('text/plain', el.dataset.id); e.dataTransfer.effectAllowed = 'move'; el.classList.add('dragging'); dragId = +el.dataset.id; };
+    el.ondragend = () => { el.classList.remove('dragging'); $$('.drop-placeholder').forEach(p => p.remove()); $$('.drag-over').forEach(b => b.classList.remove('drag-over')); };
+  });
+  $$('.column-body').forEach(body => {
+    body.ondragover = e => {
+      e.preventDefault();
+      $$('.drag-over').forEach(b => b !== body && b.classList.remove('drag-over'));
+      body.classList.add('drag-over');
+      const after = $$('.card:not(.dragging)', body).find(c => { const r = c.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; }) || null;
+      const ph = $('.drop-placeholder') || Object.assign(document.createElement('div'), { className: 'drop-placeholder' });
+      if (after) body.insertBefore(ph, after); else body.appendChild(ph);
+    };
+    body.ondrop = e => {
+      e.preventDefault();
+      const ph = $('.drop-placeholder');
+      const next = ph?.nextElementSibling?.classList.contains('card') ? +ph.nextElementSibling.dataset.id : null;
+      moveTask(dragId, +body.dataset.colBody, next);
+    };
+  });
+}
+
+function moveTask(taskId, columnId, beforeId) {
+  const t = state.tasks.find(x => x.id === taskId);
+  if (!t) return;
+  const err = t.columnId !== columnId && finalBlock(t, columnId);
+  if (err) { renderBoard(); toast(err, true); return; }
+  const from = t.columnId;
+  state.tasks = state.tasks.filter(x => x !== t);
+  t.columnId = columnId;
+  const idx = beforeId ? state.tasks.findIndex(x => x.id === beforeId) : -1;
+  if (idx >= 0) state.tasks.splice(idx, 0, t); else state.tasks.push(t);
+  renderBoard();
+  if (from !== columnId) { toast(`#${t.id}: статус → «${columnById(columnId).name}»`); stockAfter([t], `заказ #${t.id} → «${columnById(columnId).name}»`); }
+}
+
+function toast(msg, error = false) {
+  $$('.toast').forEach(x => x.remove());
+  const el = Object.assign(document.createElement('div'), { className: 'toast' + (error ? ' toast-error' : ''), textContent: msg });
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), error ? 4500 : 2200);
+}
+
+/* колонка = статус заказа: название, цвет, признак «финальная» */
+function openColumn(colId) {
+  const src = colId ? columnById(colId) : null;
+  const c = src ? { ...src } : { name: '', color: COLORS[1], final: false, consume: false };
+  const has = src && state.tasks.some(t => t.columnId === src.id);
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? 'Колонка (статус заказа)' : 'Новая колонка'}</h2><button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Название *</span><input class="input" id="colName" value="${esc(c.name)}" placeholder="Например: Ждёт оплаты"></label>
+      <div class="field"><span class="muted" style="font-size:12px">Цвет карточек в колонке</span>
+        <div class="swatches">${COLORS.map(x => `<button type="button" class="swatch ${x === c.color ? 'on' : ''}" data-color="${x}" style="background:${x}"></button>`).join('')}</div></div>
+      <label class="row" style="cursor:pointer"><input type="checkbox" id="colFinal" ${c.final ? 'checked' : ''}> Финальная колонка — заказы в ней считаются выполненными (не подсвечиваются как просроченные)</label>
+      <label class="row" style="cursor:pointer"><input type="checkbox" id="colConsume" ${c.consume ? 'checked' : ''}> Списывать товары со склада — заказ согласован с клиентом и выполняется (при возврате в колонку без списания товары возвращаются на склад)</label>
+    </div>
+    <div class="modal-foot">
+      ${src ? `<button class="btn btn-danger left" id="colDelete" ${has ? 'disabled title="Сначала перенесите заказы из колонки"' : ''}>Удалить</button>` : ''}
+      <button class="btn" data-close>Отмена</button><button class="btn btn-primary" id="colSave">Сохранить</button>
+    </div>`);
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+  $$('[data-color]', el).forEach(b => b.onclick = () => { c.color = b.dataset.color; $$('.swatch', el).forEach(s => s.classList.toggle('on', s === b)); });
+  $('#colSave', el).onclick = () => {
+    c.name = $('#colName', el).value.trim();
+    if (!c.name) { $('#colName', el).style.borderColor = 'var(--danger)'; $('#colName', el).focus(); return; }
+    c.final = $('#colFinal', el).checked;
+    const consumeChanged = !!c.consume !== $('#colConsume', el).checked;
+    c.consume = $('#colConsume', el).checked;
+    if (src) Object.assign(src, c); else { c.id = id(); state.columns.push(c); }
+    m.close(); renderBoard();
+    if (src && consumeChanged) stockAfter(state.tasks.filter(t => t.columnId === src.id), `колонка «${src.name}»`);
+  };
+  if (src && !has) $('#colDelete', el).onclick = () => { state.columns = state.columns.filter(x => x !== src); m.close(); renderBoard(); };
+  if (!src) $('#colName', el).focus();
+}
+
+/* ---------- модалки ---------- */
+function modal(html, cls = '') {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-wrap';
+  wrap.innerHTML = `<div class="modal ${cls}">${html}</div>`;
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) close(); });
+  const onKey = e => { if (e.key === 'Escape' && !$('.lightbox') && !$('.cb-dd') && $$('.modal-wrap').pop() === wrap) close(); };
+  document.addEventListener('keydown', onKey);
+  function close() { wrap.remove(); document.removeEventListener('keydown', onKey); closeOpenCombo?.(); }
+  document.body.appendChild(wrap);
+  return { el: wrap, close };
+}
+
+/* Диалоги вместо нативных prompt/confirm/alert (во встроенных браузерах они подавляются) */
+function uiDialog({ title, text = '', input = null, ok = 'OK', cancel = 'Отмена', danger = false }) {
+  return new Promise(resolve => {
+    const m = modal(`
+      <div class="modal-head"><h2>${esc(title)}</h2><button class="btn btn-ghost" data-close>✕</button></div>
+      <div class="modal-body">
+        ${text ? `<p style="margin:0;white-space:pre-line">${esc(text)}</p>` : ''}
+        ${input !== null ? `<label class="field"><input class="input" id="dlgInput" value="${esc(input)}"></label>` : ''}
+      </div>
+      <div class="modal-foot">
+        ${cancel ? `<button class="btn" data-close>${esc(cancel)}</button>` : ''}
+        <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" id="dlgOk">${esc(ok)}</button>
+      </div>`);
+    let done = false;
+    const finish = v => { if (done) return; done = true; m.close(); resolve(v); };
+    const origClose = m.close;
+    m.close = () => { origClose(); if (!done) { done = true; resolve(input !== null ? null : false); } };
+    $$('[data-close]', m.el).forEach(b => b.onclick = () => m.close());
+    m.el.addEventListener('mousedown', e => { if (e.target === m.el && !done) { done = true; resolve(input !== null ? null : false); } });
+    const inp = $('#dlgInput', m.el);
+    $('#dlgOk', m.el).onclick = () => finish(inp ? inp.value : true);
+    if (inp) { inp.focus(); inp.select(); inp.onkeydown = e => { if (e.key === 'Enter') finish(inp.value); }; }
+    else $('#dlgOk', m.el).focus();
+  });
+}
+const uiPrompt = (title, value = '') => uiDialog({ title, input: value });
+const uiConfirm = (text, ok = 'Удалить') => uiDialog({ title: 'Подтверждение', text, ok, danger: true });
+const uiAlert = text => uiDialog({ title: 'Нельзя', text, cancel: null });
+
+/* ---------- карточка заказа ---------- */
+function openTask(taskId, columnId) {
+  const src = taskId ? state.tasks.find(t => t.id === taskId) : null;
+  const t = src ? structuredClone(src) : { id: null, columnId, clientId: +state.filters.client || state.clients[0]?.id, title: '', desc: '', assigneeId: isAdmin() ? null : state.user.id, due: null, paid: false, equipment: [], subtasks: [], attachments: [] };
+  if (src) t.attachments = src.attachments.map(a => ({ ...a }));
+  const col = columnById(t.columnId);
+
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? `Заказ #${t.id}` : 'Новый заказ'}</h2>
+      ${src ? `<span class="col-pill" style="--c:${col.color}">${esc(col.name)}</span>` : ''}
+      <button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <input class="input title-input" id="tTitle" placeholder="Что делаем: например «Лазерный станок — не режет»" value="${esc(t.title)}">
+      <div class="section-title" style="margin-top:16px">🔧 Принятое оборудование <span class="muted" style="text-transform:none;letter-spacing:0">— что клиент привёз в ремонт</span></div>
+      <div id="eqList"></div>
+      <div class="row eq-add"><div class="grow" id="eqPickWrap"></div><button class="btn" id="eqNew">+ Новое оборудование</button></div>
+      <div class="task-grid" style="margin-top:16px">
+        <div>
+          <div class="section-title">Описание</div>
+          <div class="rte-toolbar">
+            <button data-cmd="bold"><b>Ж</b></button><button data-cmd="italic"><i>К</i></button>
+            <button data-cmd="insertUnorderedList">• Список</button><button data-cmd="insertOrderedList">1. Список</button>
+            <button data-cmd="createLink">🔗 Ссылка</button>
+          </div>
+          <div class="rte" id="tDesc" contenteditable="true" data-placeholder="Подробное описание: что случилось, где, что нужно сделать…">${t.desc}</div>
+
+          <div class="section-title">Фото и видео</div>
+          <div class="gallery" id="gallery"></div>
+          <label class="dropzone" id="dropzone">📎 Перетащите фото/видео сюда или нажмите, чтобы выбрать
+            <input type="file" id="fileInput" accept="image/*,video/*" multiple hidden></label>
+        </div>
+        <div>
+          <div class="section-title">Параметры</div>
+          <label class="field"><span>Клиент *</span><select class="select" id="tClient">${state.clients.map(c => clientOption(c, c.id === t.clientId)).join('')}</select></label>
+          <div id="clientCard" class="muted" style="font-size:12px;margin:-6px 0 12px"></div>
+          <label class="field"><span>Статус (колонка)</span><select class="select" id="tCol">${state.columns.map(c => `<option value="${c.id}" ${c.id === t.columnId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+          <label class="field"><span>Ответственный</span><select class="select" id="tAssignee">${userOptions(t.assigneeId, '— не назначен —')}</select></label>
+          <label class="field"><span>Срок заказа</span><input class="input" type="date" id="tDue" value="${esc(t.due || '')}"></label>
+          <div class="field"><span class="muted" style="font-size:12px">Оплата${isAdmin() ? '' : ' (меняет администратор)'}</span>
+            <div class="seg" id="tPaid">
+              <button type="button" data-paid="0" ${isAdmin() ? '' : 'disabled'}>Не оплачен</button>
+              <button type="button" data-paid="1" ${isAdmin() ? '' : 'disabled'}>✓ Оплачен</button>
+            </div></div>
+          <div class="totals" id="totals"></div>
+        </div>
+      </div>
+
+      <div class="section-title" style="margin-top:24px">Услуги (подзадачи) <span id="subCount"></span></div>
+      <div id="subList"></div>
+      <select class="select" id="subPick">${serviceOptions('+ Добавить услугу из каталога…')}</select>
+    </div>
+    <div class="modal-foot">
+      ${src && isAdmin() ? '<button class="btn btn-danger left" id="tDelete">Удалить заказ</button>' : ''}
+      <button class="btn" data-close>Отмена</button>
+      <button class="btn btn-primary" id="tSave">Сохранить</button>
+    </div>`, 'wide');
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+
+  // описание
+  $$('[data-cmd]', el).forEach(b => b.onmousedown = e => {
+    e.preventDefault();
+    const cmd = b.dataset.cmd;
+    if (cmd === 'createLink') {
+      const sel = getSelection(); const range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+      uiPrompt('Ссылка', 'https://').then(url => { if (!url) return; if (range) { sel.removeAllRanges(); sel.addRange(range); } document.execCommand(cmd, false, url); });
+    }
+    else document.execCommand(cmd);
+  });
+
+  // клиент
+  const showClient = () => {
+    const c = clientById($('#tClient', el).value);
+    $('#clientCard', el).innerHTML = c ? `${esc(c.contact)}, ${esc(c.position)}<br>${c.phones.map(p => esc(p.phone)).join(', ')}<br>${esc(c.address)}` : '';
+  };
+  let subsInit = false;
+  const renderEq = () => {
+    t.subtasks.forEach(s => { if (s.equipmentId && !t.equipment.some(x => x.equipmentId === s.equipmentId)) s.equipmentId = null; });
+    if (subsInit) renderSubs();
+    $('#eqList', el).innerHTML = t.equipment.map((x, i) => {
+      const e = eqById(x.equipmentId);
+      const other = eqOrders(e.id).filter(o => o.id !== t.id);
+      return `<div class="eq-item">
+        <div class="eq-head">
+          <span class="chip">${esc(eqTypeById(e.typeId)?.name)}</span>
+          <b class="grow">${esc(eqTitle(e))}</b>
+          ${t.subtasks.some(s => s.equipmentId === e.id) ? `<span class="muted" style="font-size:12px">услуг: ${t.subtasks.filter(s => s.equipmentId === e.id).length}</span>` : ''}
+          <button class="btn btn-ghost btn-sm" data-eq-edit="${i}" title="Изменить карточку оборудования">✎</button>
+          <button class="btn btn-ghost btn-sm" data-eq-del="${i}" title="Убрать из заказа">✕</button>
+        </div>
+        <div class="eq-props">
+          ${e.sku ? `<span><i>Артикул</i> ${esc(e.sku)}</span>` : ''}
+          ${e.serial ? `<span><i>Серийный №</i> ${esc(e.serial)}</span>` : ''}
+          ${e.specs.filter(p => p.v).map(p => `<span><i>${esc(p.k)}</i> ${esc(p.v)}</span>`).join('')}
+          ${e.note ? `<span><i>Примечание</i> ${esc(e.note)}</span>` : ''}
+        </div>
+        <div class="row eq-accept">
+          <label class="grow"><span>Комплектность при приёмке</span><input class="input" value="${esc(x.completeness)}" data-eq-comp="${i}" placeholder="Что именно привезли: блок, кабель, пульт…"></label>
+          <label class="grow"><span>Состояние / дефекты со слов клиента</span><input class="input" value="${esc(x.condition)}" data-eq-cond="${i}" placeholder="Внешний вид, что не работает…"></label>
+        </div>
+        ${other.length ? `<div class="eq-history">↺ Уже был в ремонте: ${other.map(o => `#${o.id} ${esc(o.title)}`).join('; ')}</div>` : ''}
+      </div>`;
+    }).join('') || '<div class="muted" style="font-size:13px;margin-bottom:8px">Оборудование не указано</div>';
+    $('#eqPickWrap', el).innerHTML = `<select class="select" id="eqPick">${eqOptions($('#tClient', el).value, t.equipment.map(x => x.equipmentId), '+ Выбрать оборудование клиента (модель, SN)…')}</select>`;
+    $('#eqPick', el).onchange = e => { if (+e.target.value) { t.equipment.push({ equipmentId: +e.target.value, completeness: '', condition: '' }); renderEq(); } };
+    $$('[data-eq-comp]', el).forEach(inp => inp.oninput = e => t.equipment[+inp.dataset.eqComp].completeness = e.target.value);
+    $$('[data-eq-cond]', el).forEach(inp => inp.oninput = e => t.equipment[+inp.dataset.eqCond].condition = e.target.value);
+    $$('[data-eq-del]', el).forEach(b => b.onclick = () => { t.equipment.splice(+b.dataset.eqDel, 1); renderEq(); });
+    $$('[data-eq-edit]', el).forEach(b => b.onclick = () => openEquipment(t.equipment[+b.dataset.eqEdit].equipmentId, null, renderEq));
+  };
+  $('#eqNew', el).onclick = () => openEquipment(null, +$('#tClient', el).value, e => { t.equipment.push({ equipmentId: e.id, completeness: '', condition: '' }); renderEq(); });
+  $('#tClient', el).onchange = () => {
+    showClient();
+    const cid = +$('#tClient', el).value;
+    const foreign = t.equipment.filter(x => eqById(x.equipmentId).clientId !== cid);
+    if (foreign.length) { t.equipment = t.equipment.filter(x => !foreign.includes(x)); toast('Оборудование другого клиента убрано из заказа', true); }
+    renderEq();
+  };
+  showClient(); renderEq();
+
+  // оплата
+  const drawPaid = () => $$('[data-paid]', el).forEach(b => b.classList.toggle('on', (b.dataset.paid === '1') === !!t.paid));
+  $$('[data-paid]', el).forEach(b => b.onclick = () => { t.paid = b.dataset.paid === '1'; drawPaid(); });
+  drawPaid();
+
+  // итоги
+  const drawTotals = () => {
+    const svcSum = t.subtasks.reduce((a, s) => a + subServicesSum(s), 0);
+    const goodsSum = t.subtasks.reduce((a, s) => a + subGoodsSum(s), 0);
+    $('#totals', el).innerHTML = `
+      <div class="row"><span class="grow muted">Работы (услуги)</span><span>${money(svcSum)}</span></div>
+      <div class="row"><span class="grow muted">Товары</span><span>${money(goodsSum)}</span></div>
+      <div class="row total"><span class="grow">Итого по заказу</span><span>${money(svcSum + goodsSum)}</span></div>`;
+    t.subtasks.forEach(s => { const c = $(`[data-sub-sum="${s.id}"]`, el); if (c) c.textContent = money(subSum(s)); });
+    t.subtasks.forEach(s => s.goods.forEach((g, i) => { const c = $(`[data-line="${s.id}-${i}"]`, el); if (c) c.textContent = money(g.qty * (+g.price || 0)); }));
+  };
+
+  // подзадачи = услуги
+  const renderSubs = () => {
+    const done = t.subtasks.filter(s => s.status === 'done').length;
+    $('#subCount', el).textContent = t.subtasks.length ? `· выполнено ${done} из ${t.subtasks.length}` : '';
+    $('#subList', el).innerHTML = t.subtasks.map(s => {
+      const svc = serviceById(s.serviceId);
+      const late = isLate(s.due, s.status === 'done');
+      return `<div class="sub st-${s.status}" data-sub="${s.id}">
+        <div class="sub-head">
+          <select class="status status-${s.status}" data-f="status" title="Статус услуги">${STATUS_ORDER.map(k => `<option value="${k}" ${k === s.status ? 'selected' : ''}>${STATUS[k]}</option>`).join('')}</select>
+          <div class="sub-name grow"><b>${esc(svc.name)}</b><small>${esc(categoryById(svc.categoryId)?.name)}</small></div>
+          <select class="select sub-eq" data-f="eq" title="К какой единице оборудования относится услуга">
+            <option value="">— к заказу в целом —</option>
+            ${t.equipment.map(x => { const e = eqById(x.equipmentId); return `<option value="${e.id}" ${e.id === s.equipmentId ? 'selected' : ''} data-hint="${esc(eqTypeById(e.typeId)?.name)}${e.serial ? ' · SN ' + esc(e.serial) : ''}">🔧 ${esc(eqTitle(e))}</option>`; }).join('')}
+          </select>
+          <select class="select sub-assignee" data-f="assignee">${userOptions(s.assigneeId, '— исполнитель —')}</select>
+          <input class="input sub-due ${late ? 'late-input' : ''}" type="date" value="${esc(s.due || '')}" data-f="due" title="Срок услуги (необязательно)">
+          <span class="price-wrap"><input class="input sub-price" type="number" min="0" placeholder="без цены" value="${s.price ?? ''}" data-f="price" title="Цена работы (необязательно)"><span class="muted">₽</span></span>
+          <button class="btn btn-ghost btn-sm" data-f="del" title="Удалить услугу">✕</button>
+        </div>
+        <div class="goods">
+          ${s.goods.length ? `<table class="goods-table"><tbody>${s.goods.map((g, i) => {
+            const p = productById(g.productId);
+            return `<tr>
+              <td>📦 ${esc(p.name)} <span class="muted">${esc(p.sku)}</span></td>
+              <td class="num"><input class="input qty" type="number" min="0" step="any" value="${g.qty}" data-g="qty" data-i="${i}"> <span class="muted">${esc(p.unit)}</span>${(() => {
+                const avail = +(p.stock + (src?.writtenOff?.[p.id] || 0)).toFixed(3);
+                const need = taskDemand(t)[p.id] || 0;
+                if (need > avail) return `<span class="stock-hint stock-out">в наличии только ${avail} ${esc(p.unit)}</span>`;
+                if (avail - need <= (p.minStock || 0)) return `<span class="stock-hint stock-low">останется ${+(avail - need).toFixed(3)} — минимум ${p.minStock}</span>`;
+                return `<span class="stock-hint muted">в наличии ${avail}</span>`;
+              })()}</td>
+              <td class="num">× <input class="input price" type="number" min="0" value="${g.price}" data-g="price" data-i="${i}"> ₽</td>
+              <td class="num sum" data-line="${s.id}-${i}"></td>
+              <td><button class="btn btn-ghost btn-sm" data-g="del" data-i="${i}">✕</button></td>
+            </tr>`;
+          }).join('')}</tbody></table>` : ''}
+          <div class="row goods-foot">
+            <select class="select goods-pick" data-f="goods">${productOptions('+ товар…')}</select>
+            <span class="grow"></span>
+            <span class="muted">Итого по услуге:</span><b data-sub-sum="${s.id}"></b>
+          </div>
+        </div>
+        <div class="worklog">
+          <div class="worklog-title">📝 Журнал работ ${s.log.length ? `<span class="muted">(${s.log.length})</span>` : ''}</div>
+          ${s.log.map(e => `<div class="log-entry"><span class="log-meta">${fmtStamp(e.at)} · ${esc(userById(e.userId)?.name || '—')}</span><span class="log-text">${esc(e.text)}</span></div>`).join('')}
+          <div class="row log-add">
+            <textarea class="input grow" rows="1" placeholder="Что сделано / что осталось… (Ctrl+Enter — добавить)" data-f="log"></textarea>
+            <button class="btn btn-sm" data-f="log-add">Добавить запись</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('') || '<div class="muted" style="font-size:13px;margin-bottom:8px">Услуг пока нет — добавьте из каталога ниже. Товары из комплекта услуги подставятся автоматически.</div>';
+
+    $$('[data-sub]', el).forEach(row => {
+      const s = t.subtasks.find(x => x.id === +row.dataset.sub);
+      $('[data-f="status"]', row).onchange = e => { s.status = e.target.value; renderSubs(); };
+      $('[data-f="assignee"]', row).onchange = e => { s.assigneeId = +e.target.value || null; };
+      $('[data-f="eq"]', row).onchange = e => { s.equipmentId = +e.target.value || null; };
+      $('[data-f="due"]', row).onchange = e => { s.due = e.target.value || null; renderSubs(); };
+      $('[data-f="price"]', row).oninput = e => { s.price = e.target.value === '' ? null : Math.max(0, +e.target.value); drawTotals(); };
+      $('[data-f="del"]', row).onclick = () => { t.subtasks = t.subtasks.filter(x => x !== s); renderSubs(); };
+      const addLog = () => {
+        const v = $('[data-f="log"]', row).value.trim();
+        if (!v) return;
+        s.log.push({ id: id(), userId: state.user.id, at: nowStamp(), text: v });
+        renderSubs();
+      };
+      $('[data-f="log-add"]', row).onclick = addLog;
+      $('[data-f="log"]', row).onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addLog(); } };
+      $('[data-f="goods"]', row).onchange = e => {
+        const pid = +e.target.value;
+        if (!pid) return;
+        const ex = s.goods.find(g => g.productId === pid);
+        if (ex) ex.qty++; else s.goods.push({ productId: pid, qty: 1, price: productById(pid).price });
+        renderSubs();
+      };
+      $$('[data-g="qty"]', row).forEach(inp => inp.oninput = e => { s.goods[+inp.dataset.i].qty = Math.max(0, +e.target.value || 0); drawTotals(); });
+      $$('[data-g="price"]', row).forEach(inp => inp.oninput = e => { s.goods[+inp.dataset.i].price = Math.max(0, +e.target.value || 0); drawTotals(); });
+      $$('[data-g="del"]', row).forEach(b => b.onclick = () => { s.goods.splice(+b.dataset.i, 1); renderSubs(); });
+    });
+    drawTotals();
+  };
+  $('#subPick', el).onchange = e => {
+    const v = +e.target.value;
+    if (!v) return;
+    t.subtasks.push(newSubtask(v, { assigneeId: t.assigneeId, equipmentId: t.equipment.length === 1 ? t.equipment[0].equipmentId : null }));
+    e.target.value = ''; e.target._cbSync?.();
+    renderSubs();
+  };
+  renderSubs();
+  subsInit = true;
+
+  // вложения
+  const renderGallery = () => {
+    $('#gallery', el).innerHTML = t.attachments.map(a => `
+      <div class="thumb" data-att="${a.id}" title="${esc(a.name)}">
+        ${a.url ? (a.kind === 'video' ? `<video src="${a.url}" muted></video>` : `<img src="${a.url}" alt="">`) : `<div class="ph" style="background:${a.color}">${a.kind === 'video' ? '🎬' : '🖼'}</div>`}
+        <span class="kind">${a.kind === 'video' ? 'видео' : 'фото'}</span>
+        <button class="del" data-att-del="${a.id}" title="Удалить">✕</button>
+      </div>`).join('');
+    $$('[data-att]', el).forEach(th => th.onclick = e => {
+      if (e.target.dataset.attDel) { t.attachments = t.attachments.filter(a => a.id !== +e.target.dataset.attDel); renderGallery(); return; }
+      openLightbox(t.attachments.find(a => a.id === +th.dataset.att));
+    });
+  };
+  const addFiles = files => {
+    [...files].forEach(f => {
+      const kind = f.type.startsWith('video/') ? 'video' : f.type.startsWith('image/') ? 'photo' : null;
+      if (kind) t.attachments.push({ id: id(), kind, name: f.name, url: URL.createObjectURL(f) });
+    });
+    renderGallery();
+  };
+  $('#fileInput', el).onchange = e => addFiles(e.target.files);
+  const dz = $('#dropzone', el);
+  dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); };
+  dz.ondragleave = () => dz.classList.remove('over');
+  dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); addFiles(e.dataTransfer.files); };
+  renderGallery();
+
+  // сохранить / удалить
+  $('#tSave', el).onclick = () => {
+    t.title = $('#tTitle', el).value.trim();
+    if (!t.title) { $('#tTitle', el).focus(); $('#tTitle', el).style.borderColor = 'var(--danger)'; return; }
+    t.desc = $('#tDesc', el).innerHTML;
+    t.clientId = +$('#tClient', el).value;
+    const err = finalBlock(t, +$('#tCol', el).value);
+    if (err) { toast(err, true); return; }
+    const moved = t.columnId !== +$('#tCol', el).value;
+    t.columnId = +$('#tCol', el).value;
+    t.assigneeId = +$('#tAssignee', el).value || null;
+    t.due = $('#tDue', el).value || null;
+    if (src) {
+      Object.assign(src, t);
+      if (moved) { state.tasks = state.tasks.filter(x => x !== src); state.tasks.push(src); }
+    } else { t.id = id(); state.tasks.push(t); }
+    m.close(); renderBoard();
+    const saved = src || t;
+    stockAfter([saved], `заказ #${saved.id}`);
+  };
+  if (src && isAdmin()) $('#tDelete', el).onclick = async () => {
+    if (!await uiConfirm('Удалить заказ?')) return;
+    stockSync(src, true);
+    state.tasks = state.tasks.filter(x => x !== src); m.close(); renderBoard();
+  };
+  if (!src) $('#tTitle', el).focus();
+}
+
+function openLightbox(a) {
+  const lb = document.createElement('div');
+  lb.className = 'lightbox';
+  lb.innerHTML = a.url
+    ? (a.kind === 'video' ? `<video src="${a.url}" controls autoplay></video>` : `<img src="${a.url}" alt="">`)
+    : `<div class="ph" style="background:${a.color}">${a.kind === 'video' ? '🎬' : '🖼'}</div>`;
+  const close = () => { lb.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  lb.onclick = e => { if (e.target === lb) close(); };
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(lb);
+}
+
+/* ---------- клиенты ---------- */
+function renderClients() {
+  $('#addClient').onclick = () => openClient(null);
+  $('#view').innerHTML = `<div class="content">
+    <div class="row" style="margin-bottom:12px"><input class="input" id="cQ" placeholder="🔍 Поиск по компании, представителю, телефону" style="max-width:420px"></div>
+    <div class="panel"><table>
+      <thead><tr><th>Компания</th><th class="hide-sm">Адрес</th><th>Представитель</th><th>Телефоны</th><th class="hide-sm">Оборудование</th><th class="hide-sm">Заказов</th></tr></thead>
+      <tbody id="cBody"></tbody>
+    </table></div></div>`;
+  const draw = () => {
+    const q = $('#cQ').value.toLowerCase();
+    const rows = state.clients.filter(c => !q || [c.company, c.contact, c.address, ...c.phones.map(p => p.phone)].join(' ').toLowerCase().includes(q));
+    $('#cBody').innerHTML = rows.map(c => `<tr data-client="${c.id}">
+      <td><b>${esc(c.company)}</b></td>
+      <td class="hide-sm">${esc(c.address)}</td>
+      <td>${esc(c.contact)}<div class="muted" style="font-size:12px">${esc(c.position)}</div></td>
+      <td>${c.phones.map(p => `${esc(p.phone)}${p.note ? ` <span class="muted" style="font-size:12px">(${esc(p.note)})</span>` : ''}`).join('<br>')}</td>
+      <td class="hide-sm">${state.equipment.filter(e => e.clientId === c.id).length}</td>
+      <td class="hide-sm">${state.tasks.filter(t => t.clientId === c.id).length}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="muted" style="text-align:center;padding:32px">Клиенты не найдены</td></tr>`;
+    $$('[data-client]').forEach(tr => tr.onclick = () => openClient(+tr.dataset.client));
+  };
+  $('#cQ').oninput = draw; draw();
+}
+
+function openClient(clientId) {
+  const src = clientId ? clientById(clientId) : null;
+  const c = src ? structuredClone(src) : { company: '', address: '', contact: '', position: '', phones: [{ phone: '', note: '' }] };
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? 'Клиент' : 'Новый клиент'}</h2><button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Название компании *</span><input class="input" id="cCompany" value="${esc(c.company)}"></label>
+      <label class="field"><span>Адрес</span><input class="input" id="cAddress" value="${esc(c.address)}" placeholder="Одной строкой"></label>
+      <div class="row">
+        <label class="field grow"><span>Представитель (ФИО)</span><input class="input" id="cContact" value="${esc(c.contact)}"></label>
+        <label class="field grow"><span>Должность</span><input class="input" id="cPosition" value="${esc(c.position)}"></label>
+      </div>
+      <div class="section-title">Телефоны</div>
+      <div id="phones"></div>
+      <button class="btn btn-sm" id="addPhone">+ Телефон</button>
+      ${src ? `<div class="section-title">🔧 Оборудование клиента</div><div id="cEq"></div><button class="btn btn-sm" id="cEqAdd">+ Оборудование</button>` : ''}
+    </div>
+    <div class="modal-foot">
+      ${src ? '<button class="btn btn-danger left" id="cDelete">Удалить</button>' : ''}
+      <button class="btn" data-close>Отмена</button><button class="btn btn-primary" id="cSave">Сохранить</button>
+    </div>`);
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+  const drawPhones = () => {
+    $('#phones', el).innerHTML = c.phones.map((p, i) => `<div class="phone-row">
+      <input class="input grow" value="${esc(p.phone)}" placeholder="+7 …" data-ph="${i}">
+      <input class="input note" value="${esc(p.note)}" placeholder="комментарий" data-note="${i}">
+      <button class="btn btn-ghost btn-sm" data-ph-del="${i}">✕</button></div>`).join('');
+    $$('[data-ph]', el).forEach(i => i.oninput = e => c.phones[+i.dataset.ph].phone = e.target.value);
+    $$('[data-note]', el).forEach(i => i.oninput = e => c.phones[+i.dataset.note].note = e.target.value);
+    $$('[data-ph-del]', el).forEach(b => b.onclick = () => { c.phones.splice(+b.dataset.phDel, 1); drawPhones(); });
+  };
+  $('#addPhone', el).onclick = () => { c.phones.push({ phone: '', note: '' }); drawPhones(); };
+  const drawEq = () => {
+    const list = state.equipment.filter(e => e.clientId === src.id);
+    $('#cEq', el).innerHTML = list.length ? `<table class="goods-table eq-table"><tbody>${list.map(e => `<tr data-eq="${e.id}" style="cursor:pointer">
+      <td><b>${esc(eqTitle(e))}</b> <span class="muted">${esc(eqTypeById(e.typeId)?.name)}</span></td>
+      <td class="muted">${e.serial ? 'SN ' + esc(e.serial) : ''}</td>
+      <td class="num muted">заказов: ${eqOrders(e.id).length}</td></tr>`).join('')}</tbody></table>` : '<div class="muted" style="font-size:13px;margin-bottom:8px">Оборудования пока нет</div>';
+    $$('[data-eq]', el).forEach(tr => tr.onclick = () => openEquipment(+tr.dataset.eq, null, drawEq));
+  };
+  if (src) { drawEq(); $('#cEqAdd', el).onclick = () => openEquipment(null, src.id, drawEq); }
+  drawPhones();
+  $('#cSave', el).onclick = () => {
+    c.company = $('#cCompany', el).value.trim();
+    if (!c.company) { $('#cCompany', el).style.borderColor = 'var(--danger)'; $('#cCompany', el).focus(); return; }
+    c.address = $('#cAddress', el).value.trim(); c.contact = $('#cContact', el).value.trim(); c.position = $('#cPosition', el).value.trim();
+    c.phones = c.phones.filter(p => p.phone.trim());
+    if (src) Object.assign(src, c); else { c.id = id(); state.clients.push(c); }
+    m.close(); renderClients();
+  };
+  if (src) $('#cDelete', el).onclick = async () => {
+    if (state.tasks.some(t => t.clientId === src.id)) { uiAlert('У клиента есть заказы — удаление запрещено.'); return; }
+    if (!await uiConfirm('Удалить клиента?')) return;
+    state.clients = state.clients.filter(x => x !== src); m.close(); renderClients();
+  };
+}
+
+/* ---------- оборудование клиента ---------- */
+function openEquipment(eqId, clientId, onSave) {
+  const src = eqId ? eqById(eqId) : null;
+  const e = src ? structuredClone(src) : { clientId, typeId: state.equipmentTypes[0].id, brand: '', model: '', sku: '', serial: '', note: '', specs: state.equipmentTypes[0].keys.map(k => ({ k, v: '' })) };
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? 'Оборудование клиента' : 'Новое оборудование'}</h2><span class="muted">${esc(clientById(e.clientId)?.company)}</span><button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Тип *</span><select class="select" id="eType">${state.equipmentTypes.map(x => `<option value="${x.id}" ${x.id === e.typeId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+      <div class="row">
+        <label class="field grow"><span>Производитель</span><input class="input" id="eBrand" value="${esc(e.brand)}" placeholder="Raycus, Qilin, IPG…"></label>
+        <label class="field grow"><span>Модель *</span><input class="input" id="eModel" value="${esc(e.model)}" placeholder="RFL-C1500"></label>
+      </div>
+      <div class="row">
+        <label class="field grow"><span>Артикул / партномер</span><input class="input" id="eSku" value="${esc(e.sku)}"></label>
+        <label class="field grow"><span>Серийный номер / VIN</span><input class="input" id="eSerial" value="${esc(e.serial)}"></label>
+      </div>
+      <div class="section-title">Характеристики</div>
+      <datalist id="specKeys"></datalist>
+      <div id="eSpecs"></div>
+      <button class="btn btn-sm" id="eSpecAdd">+ Характеристика</button>
+      <label class="field" style="margin-top:12px"><span>Примечание</span><input class="input" id="eNote" value="${esc(e.note)}" placeholder="Например: стоит в станке Bodor i5"></label>
+      ${src ? `<div class="muted" style="font-size:12px">Заказы с этим оборудованием: ${eqOrders(src.id).map(o => `#${o.id}`).join(', ') || 'нет'}</div>` : ''}
+    </div>
+    <div class="modal-foot"><button class="btn" data-close>Отмена</button><button class="btn btn-primary" id="eSave">Сохранить</button></div>`);
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+  const drawSpecs = () => {
+    $('#specKeys', el).innerHTML = (eqTypeById(e.typeId)?.keys || []).map(k => `<option value="${esc(k)}">`).join('');
+    $('#eSpecs', el).innerHTML = e.specs.map((p, i) => `<div class="phone-row">
+      <input class="input" style="width:40%" list="specKeys" value="${esc(p.k)}" placeholder="Характеристика" data-sk="${i}">
+      <input class="input grow" value="${esc(p.v)}" placeholder="Значение" data-sv="${i}">
+      <button class="btn btn-ghost btn-sm" data-sdel="${i}">✕</button></div>`).join('');
+    $$('[data-sk]', el).forEach(i => i.oninput = ev => e.specs[+i.dataset.sk].k = ev.target.value);
+    $$('[data-sv]', el).forEach(i => i.oninput = ev => e.specs[+i.dataset.sv].v = ev.target.value);
+    $$('[data-sdel]', el).forEach(b => b.onclick = () => { e.specs.splice(+b.dataset.sdel, 1); drawSpecs(); });
+  };
+  $('#eType', el).onchange = ev => {
+    e.typeId = +ev.target.value;
+    // незаполненные поля заменяем шаблоном нового типа, заполненные оставляем
+    const filled = e.specs.filter(p => p.v.trim());
+    e.specs = [...filled, ...(eqTypeById(e.typeId)?.keys || []).filter(k => !filled.some(p => p.k === k)).map(k => ({ k, v: '' }))];
+    drawSpecs();
+  };
+  $('#eSpecAdd', el).onclick = () => { e.specs.push({ k: '', v: '' }); drawSpecs(); };
+  drawSpecs();
+  $('#eSave', el).onclick = () => {
+    e.model = $('#eModel', el).value.trim();
+    if (!e.model) { $('#eModel', el).style.borderColor = 'var(--danger)'; $('#eModel', el).focus(); return; }
+    Object.assign(e, { brand: $('#eBrand', el).value.trim(), sku: $('#eSku', el).value.trim(), serial: $('#eSerial', el).value.trim(), note: $('#eNote', el).value.trim(), specs: e.specs.filter(p => p.k.trim() || p.v.trim()) });
+    let saved = src;
+    if (src) Object.assign(src, e); else { e.id = id(); state.equipment.push(e); saved = e; }
+    m.close(); onSave?.(saved);
+  };
+  if (!src) $('#eModel', el).focus();
+}
+
+/* ---------- каталог: услуги (с комплектом товаров) и товары ---------- */
+function renderCatalog() {
+  const tab = state.catalogTab;
+  if (tab === 'eqtypes') return renderEqTypes();
+  const kind = tab === 'services' ? 'service' : 'product';
+  const items = tab === 'services' ? state.services : state.products;
+  const active = state.activeCategory;
+  const list = items.filter(x => !active || x.categoryId === active);
+  $('#addCategory').onclick = async () => {
+    const name = await uiPrompt(`Новая категория ${tab === 'services' ? 'услуг' : 'товаров'}`, '');
+    const n = name?.trim();
+    if (!n) return;
+    if (categoriesOf(kind).some(c => c.name.trim().toLowerCase() === n.toLowerCase())) { uiAlert(`Категория «${n}» уже есть.`); return; }
+    state.categories.push({ id: id(), kind, name: n }); renderCatalog();
+  };
+  $('#addCatalogItem').onclick = () => tab === 'services' ? openService(null) : openProduct(null);
+
+  const goodsText = s => s.goods.map(g => `${esc(productById(g.productId)?.name)} ×${g.qty}`).join(', ');
+  $('#view').innerHTML = `<div class="content">
+    <div class="tabs">
+      <button class="tab ${tab === 'services' ? 'on' : ''}" data-tab="services">🛠 Услуги <span class="count">${state.services.length}</span></button>
+      <button class="tab ${tab === 'products' ? 'on' : ''}" data-tab="products">📦 Товары <span class="count">${state.products.length}</span></button>
+      <button class="tab" data-tab="eqtypes">🔧 Типы оборудования <span class="count">${state.equipmentTypes.length}</span></button>
+      <input class="input" id="catQ" placeholder="🔍 Поиск по названию${tab === 'products' ? ' или артикулу' : ''}" style="max-width:320px;margin-left:auto">
+    </div>
+    <div class="two-pane">
+      <div class="panel">
+        <div class="cat-item ${!active ? 'active' : ''}" data-cat="">Все категории <span class="count">${items.length}</span></div>
+        ${categoriesOf(kind).map(c => `<div class="cat-item ${active === c.id ? 'active' : ''}" data-cat="${c.id}">${esc(c.name)} <span class="count">${items.filter(s => s.categoryId === c.id).length}</span></div>`).join('')}
+      </div>
+      <div class="panel"><table>
+        ${tab === 'services'
+          ? `<thead><tr><th>Услуга</th><th>Категория</th><th>Цена работы</th><th class="hide-sm">Товары в комплекте</th></tr></thead>
+             <tbody id="catBody">${list.map(s => `<tr data-svc="${s.id}" data-text="${esc(s.name.toLowerCase())}"><td><b>${esc(s.name)}</b></td><td><span class="chip cat-${s.categoryId % 4}">${esc(categoryById(s.categoryId)?.name)}</span></td><td>${s.price != null ? money(s.price) : '<span class="muted">по факту</span>'}</td><td class="hide-sm muted" style="font-size:12px">${goodsText(s) || '—'}</td></tr>`).join('')}</tbody>`
+          : `<thead><tr><th>Товар</th><th>Артикул</th><th>Категория</th><th class="hide-sm">Ед.</th><th>Цена</th><th>В наличии</th><th class="hide-sm">Где лежит</th></tr></thead>
+             <tbody id="catBody">${list.map(p => `<tr data-prod="${p.id}" data-text="${esc((p.name + ' ' + p.sku + ' ' + (p.box || '') + ' ' + (p.place || '')).toLowerCase())}"><td><b>${esc(p.name)}</b></td><td class="muted">${esc(p.sku)}</td><td><span class="chip cat-${p.categoryId % 4}">${esc(categoryById(p.categoryId)?.name)}</span></td><td class="hide-sm">${esc(p.unit)}</td><td>${money(p.price)}</td><td>${p.stock > 0 ? `<span class="${isLow(p) ? 'stock-low' : ''}" title="Минимум: ${p.minStock || 0}">${p.stock} ${esc(p.unit)}${isLow(p) ? ' ⚠' : ''}</span>` : '<span class="stock-out">нет</span>'}</td><td class="hide-sm muted" style="font-size:12px">${[p.place, p.box && 'коробка ' + p.box].filter(Boolean).map(esc).join(' · ') || '—'}</td></tr>`).join('')}</tbody>`}
+      </table>
+      <div class="muted" id="catEmpty" style="text-align:center;padding:32px;${list.length ? 'display:none' : ''}">Ничего не найдено</div></div>
+    </div></div>`;
+  $$('[data-tab]').forEach(b => b.onclick = () => { state.catalogTab = b.dataset.tab; state.activeCategory = null; render(); });
+  $$('[data-cat]').forEach(d => d.onclick = () => { state.activeCategory = d.dataset.cat ? +d.dataset.cat : null; renderCatalog(); });
+  $$('[data-svc]').forEach(tr => tr.onclick = () => openService(+tr.dataset.svc));
+  $$('[data-prod]').forEach(tr => tr.onclick = () => openProduct(+tr.dataset.prod));
+  $('#catQ').oninput = e => {
+    const q = e.target.value.trim().toLowerCase();
+    let n = 0;
+    $$('#catBody tr').forEach(tr => { const ok = tr.dataset.text.includes(q); tr.style.display = ok ? '' : 'none'; n += ok; });
+    $('#catEmpty').style.display = n ? 'none' : '';
+  };
+}
+
+function openService(svcId) {
+  const src = svcId ? serviceById(svcId) : null;
+  const s = src ? structuredClone(src) : { name: '', categoryId: state.activeCategory || categoriesOf('service')[0]?.id, price: null, goods: [] };
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? 'Услуга' : 'Новая услуга'}</h2><button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Название *</span><input class="input" id="sName" value="${esc(s.name)}" placeholder="Например: Замена двигателя"></label>
+      <div class="row">
+        <label class="field grow"><span>Категория (вид работ)</span><select class="select" id="sCat">${categoriesOf('service').map(c => `<option value="${c.id}" ${c.id === s.categoryId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        <label class="field grow"><span>Цена работы, ₽ (пусто — по факту)</span><input class="input" id="sPrice" type="number" min="0" value="${s.price ?? ''}"></label>
+      </div>
+      <div class="section-title">Товары в комплекте <span class="muted" style="text-transform:none;letter-spacing:0">— подставляются в заказ при выборе услуги</span></div>
+      <div id="sGoods"></div>
+      <select class="select" id="sGoodsPick">${productOptions('+ Добавить товар в комплект…')}</select>
+    </div>
+    <div class="modal-foot">
+      ${src ? '<button class="btn btn-danger left" id="sDelete">Удалить</button>' : ''}
+      <button class="btn" data-close>Отмена</button><button class="btn btn-primary" id="sSave">Сохранить</button>
+    </div>`);
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+  const drawGoods = () => {
+    $('#sGoods', el).innerHTML = s.goods.length ? `<table class="goods-table"><tbody>${s.goods.map((g, i) => {
+      const p = productById(g.productId);
+      return `<tr><td>📦 ${esc(p.name)} <span class="muted">${esc(p.sku)}</span></td>
+        <td class="num"><input class="input qty" type="number" min="0" step="any" value="${g.qty}" data-i="${i}"> <span class="muted">${esc(p.unit)}</span></td>
+        <td class="num muted">${money(p.price)} / ${esc(p.unit)}</td>
+        <td><button class="btn btn-ghost btn-sm" data-del="${i}">✕</button></td></tr>`;
+    }).join('')}</tbody></table>` : '<div class="muted" style="font-size:13px;margin-bottom:8px">Комплект пуст — услуга без товаров</div>';
+    $$('input[data-i]', el).forEach(inp => inp.oninput = e => s.goods[+inp.dataset.i].qty = Math.max(0, +e.target.value || 0));
+    $$('[data-del]', el).forEach(b => b.onclick = () => { s.goods.splice(+b.dataset.del, 1); drawGoods(); });
+  };
+  $('#sGoodsPick', el).onchange = e => {
+    const pid = +e.target.value;
+    if (!pid) return;
+    const ex = s.goods.find(g => g.productId === pid);
+    if (ex) ex.qty++; else s.goods.push({ productId: pid, qty: 1 });
+    e.target.value = ''; e.target._cbSync?.(); drawGoods();
+  };
+  drawGoods();
+  $('#sSave', el).onclick = () => {
+    s.name = $('#sName', el).value.trim();
+    if (!s.name) { $('#sName', el).style.borderColor = 'var(--danger)'; $('#sName', el).focus(); return; }
+    s.categoryId = +$('#sCat', el).value;
+    s.price = $('#sPrice', el).value === '' ? null : +$('#sPrice', el).value;
+    if (src) Object.assign(src, s); else { s.id = id(); state.services.push(s); }
+    m.close(); renderCatalog();
+  };
+  if (src) $('#sDelete', el).onclick = async () => {
+    if (state.tasks.some(t => t.subtasks.some(x => x.serviceId === src.id))) { uiAlert('Услуга используется в заказах — удаление запрещено (в реальной версии — архивирование).'); return; }
+    if (!await uiConfirm('Удалить услугу?')) return;
+    state.services = state.services.filter(x => x !== src); m.close(); renderCatalog();
+  };
+}
+
+function openProduct(prodId) {
+  const src = prodId ? productById(prodId) : null;
+  const p = src ? { ...src } : { name: '', sku: '', categoryId: state.activeCategory || categoriesOf('product')[0]?.id, unit: 'шт', price: 0, stock: 0, minStock: 0, box: '', place: '' };
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? 'Товар' : 'Новый товар'}</h2><button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Название *</span><input class="input" id="pName" value="${esc(p.name)}" placeholder="Например: Фильтр масляный"></label>
+      <div class="row">
+        <label class="field grow"><span>Артикул</span><input class="input" id="pSku" value="${esc(p.sku)}"></label>
+        <label class="field grow"><span>Категория</span><select class="select" id="pCat">${categoriesOf('product').map(c => `<option value="${c.id}" ${c.id === p.categoryId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+      </div>
+      <div class="row">
+        <label class="field grow"><span>Единица</span><select class="select" id="pUnit">${UNITS.map(u => `<option ${u === p.unit ? 'selected' : ''}>${u}</option>`).join('')}</select></label>
+        <label class="field grow"><span>Цена за единицу, ₽</span><input class="input" id="pPrice" type="number" min="0" value="${p.price}"></label>
+      </div>
+      <div class="section-title">Наличие и хранение</div>
+      <div class="row">
+        <label class="field grow"><span>Количество в наличии</span><input class="input" id="pStock" type="number" step="any" value="${p.stock ?? 0}"></label>
+        <label class="field grow"><span>Минимальный остаток</span><input class="input" id="pMin" type="number" min="0" step="any" value="${p.minStock ?? 0}"></label>
+      </div>
+      <div class="row">
+        <label class="field grow"><span>Коробка</span><input class="input" id="pBox" value="${esc(p.box || '')}" placeholder="Например: К-07"></label>
+      </div>
+      <label class="field"><span>Место хранения</span><input class="input" id="pPlace" value="${esc(p.place || '')}" placeholder="Например: Стеллаж A, полка 2"></label>
+    </div>
+    <div class="modal-foot">
+      ${src ? '<button class="btn btn-danger left" id="pDelete">Удалить</button>' : ''}
+      <button class="btn" data-close>Отмена</button><button class="btn btn-primary" id="pSave">Сохранить</button>
+    </div>`);
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+  $('#pSave', el).onclick = () => {
+    p.name = $('#pName', el).value.trim();
+    if (!p.name) { $('#pName', el).style.borderColor = 'var(--danger)'; $('#pName', el).focus(); return; }
+    Object.assign(p, { sku: $('#pSku', el).value.trim(), categoryId: +$('#pCat', el).value, unit: $('#pUnit', el).value, price: +$('#pPrice', el).value || 0,
+      stock: +$('#pStock', el).value || 0, minStock: Math.max(0, +$('#pMin', el).value || 0), box: $('#pBox', el).value.trim(), place: $('#pPlace', el).value.trim() });
+    if (src) Object.assign(src, p); else { p.id = id(); state.products.push(p); }
+    m.close(); refreshLowBadge(); state.view === 'stock' ? renderStock() : renderCatalog();
+  };
+  if (src) $('#pDelete', el).onclick = async () => {
+    const used = state.services.some(s => s.goods.some(g => g.productId === src.id)) || state.tasks.some(t => t.subtasks.some(s => s.goods.some(g => g.productId === src.id)));
+    if (used) { uiAlert('Товар используется в комплектах услуг или заказах — удаление запрещено (в реальной версии — архивирование).'); return; }
+    if (!await uiConfirm('Удалить товар?')) return;
+    state.products = state.products.filter(x => x !== src); m.close(); refreshLowBadge(); state.view === 'stock' ? renderStock() : renderCatalog();
+  };
+}
+
+function renderEqTypes() {
+  $('#addEqType').onclick = () => openEqType(null);
+  $('#view').innerHTML = `<div class="content">
+    <div class="tabs">
+      <button class="tab" data-tab="services">🛠 Услуги <span class="count">${state.services.length}</span></button>
+      <button class="tab" data-tab="products">📦 Товары <span class="count">${state.products.length}</span></button>
+      <button class="tab on" data-tab="eqtypes">🔧 Типы оборудования <span class="count">${state.equipmentTypes.length}</span></button>
+    </div>
+    <div class="panel"><table>
+      <thead><tr><th>Тип оборудования</th><th>Характеристики по умолчанию</th><th class="hide-sm">Единиц у клиентов</th></tr></thead>
+      <tbody>${state.equipmentTypes.map(x => `<tr data-et="${x.id}"><td><b>${esc(x.name)}</b></td><td class="muted">${x.keys.map(esc).join(', ') || '—'}</td><td class="hide-sm">${state.equipment.filter(e => e.typeId === x.id).length}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <p class="muted" style="font-size:12px">Характеристики типа подставляются полями при заведении оборудования клиента — остаётся заполнить значения.</p></div>`;
+  $$('[data-tab]').forEach(b => b.onclick = () => { state.catalogTab = b.dataset.tab; state.activeCategory = null; render(); });
+  $$('[data-et]').forEach(tr => tr.onclick = () => openEqType(+tr.dataset.et));
+}
+
+function openEqType(typeId) {
+  const src = typeId ? eqTypeById(typeId) : null;
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? 'Тип оборудования' : 'Новый тип оборудования'}</h2><button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Название *</span><input class="input" id="etName" value="${esc(src?.name || '')}" placeholder="Например: Чиллер"></label>
+      <label class="field"><span>Характеристики по умолчанию (через запятую)</span><input class="input" id="etKeys" value="${esc((src?.keys || []).join(', '))}" placeholder="Мощность, Хладагент, Объём бака"></label>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close>Отмена</button><button class="btn btn-primary" id="etSave">Сохранить</button></div>`);
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+  $('#etSave', el).onclick = () => {
+    const name = $('#etName', el).value.trim();
+    if (!name) { $('#etName', el).style.borderColor = 'var(--danger)'; return; }
+    const keys = $('#etKeys', el).value.split(',').map(k => k.trim()).filter(Boolean);
+    if (src) Object.assign(src, { name, keys }); else state.equipmentTypes.push({ id: id(), name, keys });
+    m.close(); renderEqTypes();
+  };
+}
+
+/* ---------- сотрудники (только админ) ---------- */
+/* ---------- дашборд остатков ---------- */
+function renderStock() {
+  // потребность заказов, которые ещё не списаны (не в списывающих колонках) — «придёт в списание»
+  const pending = {};
+  state.tasks.filter(t => !consumes(t) && !isFinal(t)).forEach(t => Object.entries(taskDemand(t)).forEach(([k, q]) => { pending[k] = (pending[k] || 0) + q; }));
+  const rows = state.products.map(p => ({ p, pend: pending[p.id] || 0, fc: +(p.stock - (pending[p.id] || 0)).toFixed(3) }));
+  const risky = r => isLow(r.p) || r.fc <= (r.p.minStock || 0);
+  const all = state.stockAll;
+  const list = rows.filter(r => all || risky(r)).sort((a, b) => (a.p.stock - (a.p.minStock || 0)) - (b.p.stock - (b.p.minStock || 0)));
+  const st = r => r.p.stock <= 0 ? '<span class="badge-off">нет в наличии</span>'
+    : isLow(r.p) ? '<span class="stock-low">⚠ на минимуме</span>'
+    : r.fc <= (r.p.minStock || 0) ? '<span class="stock-low">станет минимумом после заказов</span>' : '<span class="muted">норма</span>';
+  $('#view').innerHTML = `<div class="content">
+    <div class="kpis">
+      <div class="kpi"><span class="muted">Товаров</span><b>${state.products.length}</b></div>
+      <div class="kpi"><span class="muted">На минимуме</span><b class="stock-low">${rows.filter(r => isLow(r.p) && r.p.stock > 0).length}</b></div>
+      <div class="kpi"><span class="muted">Нет в наличии</span><b class="stock-out">${rows.filter(r => r.p.stock <= 0).length}</b></div>
+      <div class="kpi"><span class="muted">Уйдут в минимум после заказов</span><b>${rows.filter(r => !isLow(r.p) && r.fc <= (r.p.minStock || 0)).length}</b></div>
+    </div>
+    <label class="row" style="cursor:pointer;margin-bottom:var(--space-3)"><input type="checkbox" id="stockAll" ${all ? 'checked' : ''}> Показать все товары</label>
+    <div class="panel"><table>
+      <thead><tr><th>Товар</th><th class="hide-sm">Где лежит</th><th>В наличии</th><th>Минимум</th><th class="hide-sm" title="Товары в заказах, которые ещё не взяты в работу">В новых заказах</th><th class="hide-sm">Прогноз</th><th>Состояние</th></tr></thead>
+      <tbody>${list.map(r => `<tr data-prod="${r.p.id}">
+        <td><b>${esc(r.p.name)}</b> <span class="muted">${esc(r.p.sku)}</span></td>
+        <td class="hide-sm muted" style="font-size:12px">${[r.p.place, r.p.box && 'коробка ' + r.p.box].filter(Boolean).map(esc).join(' · ') || '—'}</td>
+        <td class="${r.p.stock <= 0 ? 'stock-out' : isLow(r.p) ? 'stock-low' : ''}">${r.p.stock} ${esc(r.p.unit)}${r.p.stock < 0 ? ' (долг)' : ''}</td>
+        <td>${r.p.minStock || 0}</td>
+        <td class="hide-sm">${r.pend || '—'}</td>
+        <td class="hide-sm ${r.fc <= (r.p.minStock || 0) ? 'stock-low' : ''}">${r.fc}</td>
+        <td>${st(r)}</td></tr>`).join('')}</tbody></table>
+      <div class="muted" style="text-align:center;padding:32px;${list.length ? 'display:none' : ''}">Все товары выше минимального остатка 👍</div></div>
+    <p class="muted" style="font-size:12px">Товары списываются со склада, когда заказ попадает в колонку с признаком «Списывать товары» (по умолчанию — «В работе» и дальше). «Прогноз» — остаток после списания товаров из заказов, которые ещё не взяты в работу.</p>
+  </div>`;
+  $('#stockAll').onchange = e => { state.stockAll = e.target.checked; renderStock(); };
+  if (isAdmin()) $$('[data-prod]').forEach(tr => tr.onclick = () => openProduct(+tr.dataset.prod));
+}
+
+function renderUsers() {
+  $('#addUser').onclick = () => openUser(null);
+  const load = u => state.tasks.filter(t => !isFinal(t) && (t.assigneeId === u.id || t.subtasks.some(s => s.assigneeId === u.id && s.status !== 'done'))).length;
+  $('#view').innerHTML = `<div class="content"><div class="panel"><table>
+    <thead><tr><th>Сотрудник</th><th>Логин</th><th>Роль</th><th class="hide-sm">Телефон</th><th>Активных заказов</th></tr></thead>
+    <tbody>${state.users.map(u => `<tr data-user="${u.id}">
+      <td><div class="row"><span class="avatar sm">${esc(initials(u.name))}</span><b>${esc(u.name)}</b> ${u.active ? '' : '<span class="badge-off">заблокирован</span>'}</div></td>
+      <td>${esc(u.login)}</td><td>${ROLE[u.role]}</td><td class="hide-sm">${esc(u.phone)}</td><td>${load(u)}</td>
+    </tr>`).join('')}</tbody></table></div>
+    <p class="muted" style="font-size:12px">Администратор: справочники, сотрудники, колонки, оплата, удаление заказов. Исполнитель: доска (по умолчанию фильтр «мои»), создание и редактирование заказов, статусы услуг, вложения.</p>
+  </div>`;
+  $$('[data-user]').forEach(tr => tr.onclick = () => openUser(+tr.dataset.user));
+}
+
+function openUser(userId) {
+  const src = userId ? userById(userId) : null;
+  const u = src ? { ...src } : { name: '', login: '', role: 'executor', phone: '', active: true };
+  const m = modal(`
+    <div class="modal-head"><h2>${src ? 'Сотрудник' : 'Новый сотрудник'}</h2><button class="btn btn-ghost" data-close>✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>ФИО *</span><input class="input" id="uName" value="${esc(u.name)}"></label>
+      <div class="row">
+        <label class="field grow"><span>Логин *</span><input class="input" id="uLogin" value="${esc(u.login)}" autocomplete="off"></label>
+        <label class="field grow"><span>Роль</span><select class="select" id="uRole">${Object.entries(ROLE).map(([k, v]) => `<option value="${k}" ${k === u.role ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+      </div>
+      <div class="row">
+        <label class="field grow"><span>Телефон</span><input class="input" id="uPhone" value="${esc(u.phone)}"></label>
+        <label class="field grow"><span>${src ? 'Новый пароль (пусто — не менять)' : 'Пароль *'}</span><input class="input" id="uPass" type="password" autocomplete="new-password"></label>
+      </div>
+      <label class="row" style="cursor:pointer"><input type="checkbox" id="uActive" ${u.active ? 'checked' : ''}> Активен (может входить в систему)</label>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close>Отмена</button><button class="btn btn-primary" id="uSave">Сохранить</button></div>`);
+  const el = m.el;
+  $$('[data-close]', el).forEach(b => b.onclick = m.close);
+  $('#uSave', el).onclick = () => {
+    const req = ['#uName', '#uLogin', ...(src ? [] : ['#uPass'])].find(sel => !$(sel, el).value.trim());
+    if (req) { $(req, el).style.borderColor = 'var(--danger)'; $(req, el).focus(); return; }
+    Object.assign(u, { name: $('#uName', el).value.trim(), login: $('#uLogin', el).value.trim().toLowerCase(), role: $('#uRole', el).value, phone: $('#uPhone', el).value.trim(), active: $('#uActive', el).checked });
+    if (src) Object.assign(src, u); else { u.id = id(); state.users.push(u); }
+    m.close(); renderUsers();
+  };
+}
+
+render();
+</script>
+</body>
+</html>

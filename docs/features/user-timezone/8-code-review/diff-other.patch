@@ -1,0 +1,1039 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index dd04563..8b5ba8f 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -13,8 +13,14 @@ export const SEED_ADMIN = { login: 'admin', password: 'admin1234' };
+ export const RUN = (process.env.E2E_RUN ?? Date.now().toString(36)).toLowerCase();
+ 
+ export type Role = 'admin' | 'executor';
+-export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean };
+-export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean };
++// timezone — часовой пояс IANA (user-timezone DS-031/DS-056): не передан при создании → Asia/Almaty,
++// не передан при правке → не меняется (internal/features/users/dto.go, §TD-6.2).
++export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean; timezone?: string };
++export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean; timezone: string };
++/** GET /api/v1/auth/me и ответ входа (internal/features/auth/dto.go). */
++export type Me = { id: string; login: string; name: string; role: Role; timezone: string };
++/** PUT /api/v1/users/me/timezone — тело и ответ (internal/features/users/dto.go). */
++export type TimezoneBody = { timezone: string };
+ 
+ // Wire-типы equipment-types (internal/features/equipmenttypes/dto.go, §TD-6.2).
+ export type NewEquipmentType = { name: string; spec_keys?: string[] };
+@@ -610,6 +616,19 @@ export class AdminApi {
+     return res.json();
+   }
+ 
++  /** Пояс владельца сессии этого клиента (PUT /api/v1/users/me/timezone, DS-033). */
++  async setMyTimezone(body: TimezoneBody): Promise<TimezoneBody> {
++    const res = await this.ctx.put('/api/v1/users/me/timezone', { data: body, headers: await this.headers() });
++    expect(res.status(), `смена своего пояса: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async me(): Promise<Me> {
++    const res = await this.ctx.get('/api/v1/auth/me');
++    expect(res.status(), `auth/me: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
+   async findByLogin(login: string): Promise<User> {
+     const res = await this.ctx.get(`/api/v1/users?q=${encodeURIComponent(login)}`);
+     expect(res.status()).toBe(200);
+diff --git a/e2e/fixtures/timezone.ts b/e2e/fixtures/timezone.ts
+new file mode 100644
+index 0000000..1fd9dbb
+--- /dev/null
++++ b/e2e/fixtures/timezone.ts
+@@ -0,0 +1,93 @@
++import type { Page } from '@playwright/test';
++
++// TS-F5 — фикстура времени (docs/features/user-timezone/draft-spec.md §11): один момент
++// 2026-10-06T19:30:00Z — это 00:30 7 октября по Алматы и 22:30 6 октября по Москве: и время,
++// и КАЛЕНДАРНАЯ ДАТА у двух пользователей разные. Пояс браузера (TZ_BROWSER) намеренно
++// третий: тест падает, если экран форматирует время «по браузеру», а не по поясу пользователя.
++//
++// pg удалён из зависимостей e2e (ADR-101), а created_at/…_at сервер ставит сам (now()),
++// поэтому запись с точным моментом в E2E заводится так: данные — настоящие, через боевое
++// API; момент «прикалывается» в JSON-ответах GET (pinFixtureMoment) — форматирует его уже
++// настоящий код страницы. SSR-экраны (история оборудования, печать) приколоть нельзя — для
++// них проверяется сдвиг между двумя пользователями (minutesBetween); точный момент в БД для
++// SSR покрыт Go live-тестами (internal/features/{clients,board}/…TS041…).
++
++export const TZ_ALMATY = 'Asia/Almaty';
++export const TZ_MOSCOW = 'Europe/Moscow';
++/** Пояс браузера в спеках user-timezone — не совпадает ни с одним поясом пользователя. */
++export const TZ_BROWSER = 'America/New_York';
++
++export const TZ_LABEL = {
++  [TZ_ALMATY]: 'Алматы (UTC+5)',
++  [TZ_MOSCOW]: 'Москва (UTC+3)',
++} as const;
++
++export type ZoneView = {
++  zone: string;
++  /** «DD.MM.YYYY» момента фикстуры в поясе. */
++  date: string;
++  /** «DD.MM.YYYY HH:MM» момента фикстуры в поясе. */
++  dateTime: string;
++  /** Календарная дата «сегодня» (YYYY-MM-DD), если «сейчас» = момент фикстуры. */
++  today: string;
++};
++
++export const TZ_FIXTURE = {
++  moment: '2026-10-06T19:30:00Z',
++  almaty: { zone: TZ_ALMATY, date: '07.10.2026', dateTime: '07.10.2026 00:30', today: '2026-10-07' } satisfies ZoneView,
++  moscow: { zone: TZ_MOSCOW, date: '06.10.2026', dateTime: '06.10.2026 22:30', today: '2026-10-06' } satisfies ZoneView,
++  /** Алматы (UTC+5) впереди Москвы (UTC+3) на 2 часа. */
++  almatyAheadMinutes: 120,
++} as const;
++
++type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
++
++function pin(value: Json): Json {
++  if (Array.isArray(value)) return value.map(pin);
++  if (value !== null && typeof value === 'object') {
++    const out: { [key: string]: Json } = {};
++    for (const [key, v] of Object.entries(value)) {
++      out[key] = key.endsWith('_at') && typeof v === 'string' ? TZ_FIXTURE.moment : pin(v);
++    }
++    return out;
++  }
++  return value;
++}
++
++/**
++ * Во всех JSON-ответах GET /api/v1/** страницы заменяет значения полей `*_at` на момент
++ * фикстуры TS-F5. Остальное тело, статус и заголовки — настоящие; мутации не трогаются.
++ */
++export async function pinFixtureMoment(page: Page): Promise<void> {
++  await page.route('**/api/v1/**', async (route) => {
++    if (route.request().method() !== 'GET') {
++      await route.fallback();
++      return;
++    }
++    try {
++      const response = await route.fetch();
++      const type = response.headers()['content-type'] ?? '';
++      if (!response.ok() || !type.includes('application/json')) {
++        await route.fulfill({ response });
++        return;
++      }
++      await route.fulfill({ response, json: pin((await response.json()) as Json) });
++    } catch {
++      // Страница ушла/закрылась, пока запрос летел (фоновые запросы доски) — отменяем.
++      await route.abort().catch(() => undefined);
++    }
++  });
++}
++
++/** «DD.MM.YYYY HH:MM» → минуты условной шкалы (поле за полем, без пояса браузера). */
++export function wallMinutes(text: string): number {
++  const m = /(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})/.exec(text);
++  if (!m) throw new Error(`не дата-время «DD.MM.YYYY HH:MM»: «${text}»`);
++  const [, dd, mm, yyyy, hh, mi] = m;
++  return Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), Number(hh), Number(mi)) / 60_000;
++}
++
++/** На сколько минут показанное время `a` впереди показанного времени `b`. */
++export function minutesBetween(a: string, b: string): number {
++  return wallMinutes(a) - wallMinutes(b);
++}
+diff --git a/e2e/pages/ShellPage.ts b/e2e/pages/ShellPage.ts
+index 65c48e4..567f11a 100644
+--- a/e2e/pages/ShellPage.ts
++++ b/e2e/pages/ShellPage.ts
+@@ -6,6 +6,11 @@ export class ShellPage {
+   readonly sidebar: Locator;
+   readonly title: Locator;
+   readonly themeToggle: Locator;
++  /** Select «Часовой пояс» в сайдбаре — combobox-кнопка (combobox.js переносит testid). */
++  readonly timezoneSelect: Locator;
++  /** Скрытый нативный select под комбобоксом — источник value. */
++  readonly timezoneNative: Locator;
++  readonly timezoneToast: Locator;
+   readonly menuToggle: Locator;
+   readonly dialog: Locator;
+   readonly dialogOk: Locator;
+@@ -17,6 +22,9 @@ export class ShellPage {
+     this.sidebar = page.getByTestId('sidebar');
+     this.title = page.locator('.app-title');
+     this.themeToggle = page.getByTestId('theme-toggle');
++    this.timezoneSelect = page.getByTestId('timezone-select');
++    this.timezoneNative = page.locator('#app-timezone');
++    this.timezoneToast = page.getByTestId('timezone-toast-error');
+     this.menuToggle = page.getByTestId('menu-toggle');
+     this.dialog = page.getByTestId('ui-dialog');
+     this.dialogOk = page.getByTestId('ui-dialog-ok');
+@@ -69,6 +77,18 @@ export class ShellPage {
+     }, html);
+   }
+ 
++  /** Пояс пользователя, по которому страница форматирует время (<body data-timezone>). */
++  async expectTimezone(zone: string) {
++    await expect(this.page.locator('body')).toHaveAttribute('data-timezone', zone);
++    await expect(this.timezoneNative).toHaveValue(zone);
++  }
++
++  /** Выбор пояса в сайдбаре по подписи («Москва (UTC+3)») — PUT + перезагрузка страницы. */
++  async chooseTimezone(label: string) {
++    await this.timezoneSelect.click();
++    await this.dropdown.locator('.cb-opt', { hasText: label }).click();
++  }
++
+   async hasHorizontalOverflow(): Promise<boolean> {
+     return this.page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+   }
+diff --git a/e2e/pages/UsersPage.ts b/e2e/pages/UsersPage.ts
+index d466dbf..1d9bf3b 100644
+--- a/e2e/pages/UsersPage.ts
++++ b/e2e/pages/UsersPage.ts
+@@ -15,6 +15,9 @@ export class UsersPage {
+   readonly login: Locator;
+   readonly role: Locator;
+   readonly phone: Locator;
++  /** «Часовой пояс» — combobox-кнопка (testid переносится на неё) и скрытый нативный select. */
++  readonly timezone: Locator;
++  readonly timezoneNative: Locator;
+   readonly password: Locator;
+   readonly active: Locator;
+   readonly save: Locator;
+@@ -33,6 +36,8 @@ export class UsersPage {
+     this.login = page.getByLabel('Логин *');
+     this.role = page.getByTestId('role'); // кнопка комбобокса (testid переносится на неё)
+     this.phone = page.getByLabel('Телефон');
++    this.timezone = page.getByTestId('user-timezone');
++    this.timezoneNative = page.locator('#timezone');
+     this.password = page.locator('#password');
+     this.active = page.getByLabel('Активен (может входить в систему)');
+     this.save = page.getByTestId('user-save');
+@@ -53,7 +58,7 @@ export class UsersPage {
+     return this.page.locator(`[data-testid="user-row"][data-login="${login}"]`);
+   }
+ 
+-  fieldError(field: 'name' | 'login' | 'role' | 'phone' | 'password'): Locator {
++  fieldError(field: 'name' | 'login' | 'role' | 'phone' | 'password' | 'timezone'): Locator {
+     return this.page.getByTestId(`error-${field}`);
+   }
+ 
+@@ -63,6 +68,26 @@ export class UsersPage {
+     await this.page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: label }).click();
+   }
+ 
++  /** Выбор пояса в комбобоксе по подписи («Москва (UTC+3)»). */
++  async chooseTimezone(label: string) {
++    await this.timezone.click();
++    await this.page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: label }).click();
++    await expect(this.timezone).toHaveText(label);
++  }
++
++  /** Подмена значения select'а на то, чего нет в перечне (проверка серверной валидации). */
++  async forgeTimezone(value: string) {
++    await this.timezoneNative.evaluate((el, v) => {
++      const select = el as HTMLSelectElement;
++      const option = document.createElement('option');
++      option.value = v;
++      option.textContent = v;
++      select.append(option);
++      select.value = v;
++    }, value);
++    await expect(this.timezoneNative).toHaveValue(value);
++  }
++
+   async open(login: string) {
+     await this.row(login).getByRole('link').click();
+     await expect(this.form).toBeVisible();
+diff --git a/e2e/tests/user-timezone.spec.ts b/e2e/tests/user-timezone.spec.ts
+new file mode 100644
+index 0000000..36e6497
+--- /dev/null
++++ b/e2e/tests/user-timezone.spec.ts
+@@ -0,0 +1,424 @@
++import type { Page } from '@playwright/test';
++import { test, expect, columnByName } from '../fixtures/board';
++import { loginContext, type AdminApi, type User } from '../fixtures/auth';
++import {
++  TZ_ALMATY,
++  TZ_BROWSER,
++  TZ_FIXTURE,
++  TZ_LABEL,
++  TZ_MOSCOW,
++  minutesBetween,
++  pinFixtureMoment,
++  type ZoneView,
++} from '../fixtures/timezone';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { ExecutorPayoutsPage } from '../pages/ExecutorPayoutsPage';
++import { StockTransfersPage } from '../pages/StockTransfersPage';
++import { ShellPage } from '../pages/ShellPage';
++import { UsersPage } from '../pages/UsersPage';
++
++// Часовой пояс пользователя (docs/features/user-timezone/draft-spec.md §8.1, §11:
++// TS-040, TS-041, TS-042; фикстура времени TS-F5 — e2e/fixtures/timezone.ts).
++//
++// Браузер запущен в ТРЕТЬЕМ поясе (America/New_York): любой экран, который форматирует
++// время «по браузеру», а не по поясу пользователя, эти тесты роняет. Общая dev-БД
++// (§TD-6.2): свои клиент/услуга/сотрудники через uniq()+adminApi.
++test.use({ colorScheme: 'light', timezoneId: TZ_BROWSER });
++
++const DATE_RE = /^\d{2}\.\d{2}\.\d{4}$/;
++const DATE_TIME_RE = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
++
++type Seed = { adminApi: AdminApi; uniq: (s: string) => string; insertSubtask: (s: { taskId: number; serviceId: string }) => Promise<string> };
++
++/** Оплаченный заказ с оборудованием и выполненной услугой, выплаченной исполнителю. */
++async function seedPaidOrder({ adminApi, uniq, insertSubtask }: Seed, label: string, executorId: string) {
++  const client = await adminApi.createClient({ company_name: uniq(`TZ клиент ${label}`), phones: [{ phone: '9990000300', note: '' }] });
++  const columns = (await adminApi.listColumns()).items;
++  const cat = await adminApi.createCategory({ kind: 'service', name: uniq(`TZ услуги ${label}`) });
++  const service = await adminApi.createService({ category_id: cat.id, name: uniq(`TZ услуга ${label}`), price: 1000 });
++  const type = await adminApi.createEquipmentType({ name: uniq(`TZ тип ${label}`) });
++  const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq(`TZ модель ${label}`) });
++  const task = await adminApi.createTask({
++    title: uniq(`TZ заказ ${label}`),
++    client_id: client.id,
++    column_id: columnByName(columns, 'Новые').id,
++    assignee_id: executorId,
++    is_paid: true,
++  });
++  await adminApi.addTaskEquipment(task.id, equipment.id);
++  const subId = await insertSubtask({ taskId: task.id, serviceId: service.id });
++  await adminApi.updateSubtask(subId, { status: 'done', price: 1000, assignee_id: executorId, equipment_id: equipment.id, executor_payout: 500 });
++  await adminApi.markExecutorPayouts([subId], true);
++  return { client, columns, equipment, task, subId };
++}
++
++/** Карточка сотрудника для PUT /api/v1/users/:id (полная замена) с новым поясом. */
++function withTimezone(u: User, timezone: string) {
++  return { login: u.login, name: u.name, role: u.role, phone: u.phone, is_active: true, timezone };
++}
++
++test.describe('TZ: свой часовой пояс', () => {
++  test('TZ-001 (TS-040): исполнитель меняет пояс в сайдбаре — время сдвигается на −2 часа, значение переживает reload и повторный вход; 375×812 и обе темы', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    insertSubtask,
++    browser,
++    baseURL,
++  }) => {
++    const login = uniq('tz001');
++    const exec = await makeUser({ login, name: uniq('Исполнитель TZ-001') });
++    expect(exec.timezone, 'умолчание для нового сотрудника').toBe(TZ_ALMATY);
++    const { subId } = await seedPaidOrder({ adminApi, uniq, insertSubtask }, 'TZ-001', exec.id);
++
++    await loginAs(page, login, exec.password);
++    const shell = new ShellPage(page);
++    const ep = new ExecutorPayoutsPage(page);
++    await ep.goto(`assignee=${exec.id}`);
++    const paidAt = ep.row(subId).getByTestId('ep-row-paid-at');
++
++    // Алматы — умолчание: select показывает его, время записи — в нём.
++    await shell.expectTimezone(TZ_ALMATY);
++    await expect(shell.timezoneSelect).toHaveText(TZ_LABEL[TZ_ALMATY]);
++    await expect(paidAt).toHaveText(DATE_TIME_RE);
++    const inAlmaty = await paidAt.innerText();
++
++    // Смена пояса: PUT → страница перезагружается сама, все даты — в новом поясе.
++    const saved = page.waitForResponse((r) => r.url().endsWith('/api/v1/users/me/timezone') && r.request().method() === 'PUT');
++    const reloaded = page.waitForEvent('load');
++    await shell.chooseTimezone(TZ_LABEL[TZ_MOSCOW]);
++    expect((await saved).status()).toBe(200);
++    await reloaded;
++    await shell.expectTimezone(TZ_MOSCOW);
++    await expect(shell.timezoneSelect).toHaveText(TZ_LABEL[TZ_MOSCOW]);
++    await expect(shell.timezoneSelect).toBeEnabled();
++    await expect(paidAt).toHaveText(DATE_TIME_RE);
++    const inMoscow = await paidAt.innerText();
++    expect(minutesBetween(inAlmaty, inMoscow), `та же запись: Алматы «${inAlmaty}», Москва «${inMoscow}»`).toBe(TZ_FIXTURE.almatyAheadMinutes);
++
++    // Сохранено на сервере: reload и повторный вход (другой контекст) показывают Москву.
++    expect((await adminApi.findByLogin(login)).timezone).toBe(TZ_MOSCOW);
++    await page.reload();
++    await shell.expectTimezone(TZ_MOSCOW);
++    await expect(paidAt).toHaveText(inMoscow);
++
++    const again = await browser.newContext({ baseURL, locale: 'ru-RU', timezoneId: TZ_BROWSER });
++    await loginContext(again, login, exec.password);
++    const againPage = await again.newPage();
++    const againShell = new ShellPage(againPage);
++    await againShell.goto('/');
++    await againShell.expectTimezone(TZ_MOSCOW);
++    await expect(againShell.timezoneSelect).toHaveText(TZ_LABEL[TZ_MOSCOW]);
++    await again.close();
++
++    // Темы (US-1 themes:both): select читаем — текст есть и не сливается с фоном кнопки.
++    for (const scheme of ['light', 'dark'] as const) {
++      await page.emulateMedia({ colorScheme: scheme });
++      await shell.goto('/');
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', scheme);
++      await expect(shell.timezoneSelect).toBeVisible();
++      await expect(shell.timezoneSelect).toHaveText(TZ_LABEL[TZ_MOSCOW]);
++      const colors = await shell.timezoneSelect.evaluate((el) => {
++        const cs = getComputedStyle(el);
++        return { color: cs.color, background: cs.backgroundColor };
++      });
++      expect(colors.color, `тема ${scheme}: цвет текста ≠ фон`).not.toBe(colors.background);
++    }
++    await page.emulateMedia({ colorScheme: 'light' });
++
++    // Телефон 375×812 (US-1 adaptive:min): сайдбар с select'ом — без горизонтальной прокрутки.
++    await page.setViewportSize({ width: 375, height: 812 });
++    await shell.goto('/');
++    expect(await shell.hasHorizontalOverflow()).toBe(false);
++    await shell.menuToggle.click();
++    await expect(shell.sidebar).toBeInViewport();
++    await expect(shell.timezoneSelect).toBeInViewport();
++    expect(await shell.hasHorizontalOverflow()).toBe(false);
++    const fits = await shell.timezoneSelect.evaluate((el) => {
++      const r = el.getBoundingClientRect();
++      const side = el.closest('[data-testid="sidebar"]')!.getBoundingClientRect();
++      return r.left >= side.left && r.right <= side.right && r.right <= window.innerWidth;
++    });
++    expect(fits, 'select не вылезает за сайдбар и экран').toBe(true);
++    // Комбобокс на телефоне открывается в пределах экрана.
++    await shell.timezoneSelect.click();
++    await expect(shell.dropdown).toBeInViewport();
++    await expect(shell.dropdown.locator('.cb-opt').first()).toHaveText(TZ_LABEL[TZ_ALMATY]);
++    await expect(shell.dropdown.locator('.cb-opt').nth(1)).toHaveText(TZ_LABEL[TZ_MOSCOW]);
++    expect(await shell.hasHorizontalOverflow()).toBe(false);
++  });
++
++  test('TZ-002 (TS-040, TS-021): неизвестный пояс подменой значения — тост «Неизвестный часовой пояс», select возвращается к прежнему', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    allowHttpErrors((url, status) => url.endsWith('/api/v1/users/me/timezone') && status === 400);
++    const login = uniq('tz002');
++    const exec = await makeUser({ login, name: uniq('Исполнитель TZ-002') });
++    await loginAs(page, login, exec.password);
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await shell.expectTimezone(TZ_ALMATY);
++
++    const rejected = page.waitForResponse((r) => r.url().endsWith('/api/v1/users/me/timezone') && r.request().method() === 'PUT');
++    await shell.timezoneNative.evaluate((el) => {
++      const select = el as HTMLSelectElement;
++      const option = document.createElement('option');
++      option.value = 'Mars/Olympus';
++      option.textContent = 'Марс';
++      select.append(option);
++      select.value = option.value;
++      select.dispatchEvent(new Event('change', { bubbles: true }));
++    });
++    expect((await rejected).status()).toBe(400);
++
++    await expect(shell.timezoneToast).toHaveText('Неизвестный часовой пояс');
++    await expect(shell.timezoneNative).toHaveValue(TZ_ALMATY);
++    await expect(shell.timezoneSelect).toHaveText(TZ_LABEL[TZ_ALMATY]);
++    await expect(shell.timezoneSelect).toBeEnabled();
++    await shell.expectTimezone(TZ_ALMATY); // страница не перезагружалась в чужой пояс
++    expect((await adminApi.findByLogin(login)).timezone, 'запись не изменена').toBe(TZ_ALMATY);
++  });
++});
++
++test.describe('TZ: пояс применяется во всей системе', () => {
++  /** JS-экраны с моментом TS-F5: карточка заказа, «Выплаты», «Перемещения». */
++  async function expectJsScreens(
++    page: Page,
++    view: ZoneView,
++    other: ZoneView,
++    d: { clientId: string; taskId: number; subId: string; executorId: string; transferId: number },
++  ) {
++    await pinFixtureMoment(page);
++    const shell = new ShellPage(page);
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++
++    // Карточка заказа: дата оплаты исполнителю (дата+время) и дата записи журнала услуг.
++    await board.goto(`?client_id=${d.clientId}&task=${d.taskId}`);
++    await card.waitOpen();
++    await shell.expectTimezone(view.zone);
++    await expect(card.subtaskExecutorPaidAt(d.subId)).toHaveText(view.dateTime);
++    await expect(card.subtaskRow(d.subId).getByTestId('card-log-date')).toHaveText(view.date);
++
++    // «Выплаты»: дата и время отметки.
++    const ep = new ExecutorPayoutsPage(page);
++    await ep.goto(`assignee=${d.executorId}`);
++    await expect(ep.row(d.subId).getByTestId('ep-row-paid-at')).toHaveText(view.dateTime);
++
++    // «Перемещения» (старый экран): создан / отправлен.
++    const st = new StockTransfersPage(page);
++    await st.goto(d.transferId);
++    const meta = page.getByTestId('st-card-meta');
++    await expect(meta).toContainText(`Создал: `);
++    await expect(meta).toContainText(`Отправил: `);
++    await expect(meta).toContainText(view.dateTime);
++    await expect(meta).not.toContainText(other.dateTime);
++  }
++
++  /** SSR-экраны с настоящим «сейчас»: история оборудования и две печатные формы. */
++  async function readSsrScreens(page: Page, d: { taskId: number; equipmentId: string }) {
++    await page.goto(`/equipment/${d.equipmentId}/history`);
++    const order = page.locator(`[data-testid="history-order"][data-task-id="${d.taskId}"]`);
++    await expect(order.getByTestId('history-order-date')).toHaveText(DATE_RE);
++    await expect(order.getByTestId('history-log-time')).toHaveText(DATE_TIME_RE);
++    const orderDate = await order.getByTestId('history-order-date').innerText();
++    const logTime = await order.getByTestId('history-log-time').innerText();
++
++    await page.goto(`/tasks/${d.taskId}/print/intake`);
++    await expect(page.getByTestId('print-date')).toHaveText(/^Дата: \d{2}\.\d{2}\.\d{4}$/);
++    const intakeDate = await page.getByTestId('print-date').innerText();
++
++    await page.goto(`/tasks/${d.taskId}/print/handover`);
++    await expect(page.getByTestId('print-date')).toHaveText(/^Дата: \d{2}\.\d{2}\.\d{4}$/);
++    await expect(page.getByTestId('print-payment')).toHaveText(/Оплачено \d{2}\.\d{2}\.\d{4}/);
++    const handoverDate = await page.getByTestId('print-date').innerText();
++    const payment = (await page.getByTestId('print-payment').innerText()).trim();
++    return { orderDate, logTime, intakeDate, handoverDate, payment };
++  }
++
++  test('TZ-010 (TS-041): карточка заказа, «Выплаты», «Перемещения», история оборудования и печать — в поясе пользователя, не браузера', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    insertSubtask,
++    browser,
++    baseURL,
++  }) => {
++    test.slow(); // два пользователя × семь экранов
++    const almatyUser = await makeUser({ login: uniq('tz010-almaty'), name: uniq('Админ Алматы TZ-010'), role: 'admin', timezone: TZ_ALMATY });
++    const moscowUser = await makeUser({ login: uniq('tz010-moscow'), name: uniq('Админ Москва TZ-010'), role: 'admin', timezone: TZ_MOSCOW });
++    const exec = await makeUser({ login: uniq('tz010-exec'), name: uniq('Исполнитель TZ-010') });
++    expect(moscowUser.timezone).toBe(TZ_MOSCOW);
++
++    const { client, equipment, task, subId } = await seedPaidOrder({ adminApi, uniq, insertSubtask }, 'TZ-010', exec.id);
++    const productCat = await adminApi.createCategory({ kind: 'product', name: uniq('TZ-010 товары') });
++    const product = await adminApi.createProduct({ category_id: productCat.id, name: uniq('TZ-010 товар'), stock: 5 });
++    const transfer = await adminApi.createStockTransfer({
++      from_warehouse_id: (await adminApi.warehouseByName('Алматы')).id,
++      to_warehouse_id: (await adminApi.warehouseByName('Москва')).id,
++      items: [{ product_id: product.id, qty_sent: 1 }],
++      send: true,
++    });
++    const data = { clientId: client.id, taskId: task.id, subId, executorId: exec.id, transferId: transfer.id, equipmentId: equipment.id };
++
++    // Запись журнала услуги — настоящая, через UI (пользователь Алматы).
++    await loginAs(page, almatyUser.login, almatyUser.password);
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    const logText = uniq('TZ-010 запись журнала');
++    await card.logNewInput(subId).fill(logText);
++    await card.logAddBtn(subId).click();
++    await expect(card.subtaskRow(subId)).toContainText(logText);
++
++    const moscowContext = await browser.newContext({ baseURL, locale: 'ru-RU', timezoneId: TZ_BROWSER, colorScheme: 'light' });
++    await loginContext(moscowContext, moscowUser.login, moscowUser.password);
++    const moscowPage = await moscowContext.newPage();
++
++    // SSR — до «прикалывания» момента: настоящее время записи у двух пользователей.
++    const ssrAlmaty = await readSsrScreens(page, data);
++    const ssrMoscow = await readSsrScreens(moscowPage, data);
++    expect(minutesBetween(ssrAlmaty.logTime, ssrMoscow.logTime), `журнал в истории: Алматы «${ssrAlmaty.logTime}», Москва «${ssrMoscow.logTime}»`).toBe(
++      TZ_FIXTURE.almatyAheadMinutes,
++    );
++
++    // JS-экраны — точный момент TS-F5: 00:30 7 октября по Алматы = 22:30 6 октября по Москве.
++    await expectJsScreens(page, TZ_FIXTURE.almaty, TZ_FIXTURE.moscow, data);
++    await expectJsScreens(moscowPage, TZ_FIXTURE.moscow, TZ_FIXTURE.almaty, data);
++
++    // SSR, даты без времени (печать, дата заказа): администратор разводит пользователей в
++    // пояса UTC+14 и UTC−12 — между ними 26 часов, календарная дата различается ВСЕГДА,
++    // поэтому проверка не зависит от времени прогона. Заодно: пояс, изменённый
++    // администратором, применяется при следующей загрузке страницы (§8.1 «Состояния»).
++    await adminApi.updateUser(almatyUser.id, withTimezone(almatyUser, 'Pacific/Kiritimati'));
++    await adminApi.updateUser(moscowUser.id, withTimezone(moscowUser, 'Etc/GMT+12'));
++    const east = await readSsrScreens(page, data);
++    const west = await readSsrScreens(moscowPage, data);
++    expect(east.intakeDate, 'дата печати «Приём»').not.toBe(west.intakeDate);
++    expect(east.handoverDate, 'дата печати «Выдача»').not.toBe(west.handoverDate);
++    expect(east.payment, 'дата оплаты в «Выдаче»').not.toBe(west.payment);
++    expect(east.orderDate, 'дата заказа в истории оборудования').not.toBe(west.orderDate);
++    expect(minutesBetween(east.logTime, west.logTime)).toBe(26 * 60);
++
++    await moscowContext.close();
++  });
++
++  test('TZ-011 (TS-041): метка срока «сегодня / просрочен» на доске считается по поясу пользователя, не браузера', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    browser,
++    baseURL,
++  }) => {
++    const almatyUser = await makeUser({ login: uniq('tz011-almaty'), name: uniq('Админ Алматы TZ-011'), role: 'admin', timezone: TZ_ALMATY });
++    const moscowUser = await makeUser({ login: uniq('tz011-moscow'), name: uniq('Админ Москва TZ-011'), role: 'admin', timezone: TZ_MOSCOW });
++    const client = await adminApi.createClient({ company_name: uniq('TZ-011 клиент'), phones: [{ phone: '9990000301', note: '' }] });
++    const column = columnByName((await adminApi.listColumns()).items, 'Новые');
++    const mk = (label: string, due: string) => adminApi.createTask({ title: uniq(`TZ-011 ${label}`), client_id: client.id, column_id: column.id, due_date: due });
++    // «Сейчас» = момент TS-F5: в Алматы уже 7 октября, в Москве и в браузере (Нью-Йорк) — 6-е.
++    const due6 = await mk('срок 6 октября', TZ_FIXTURE.moscow.today);
++    const due8 = await mk('срок 8 октября', '2026-10-08');
++
++    const check = async (p: Page, expected: { due6: string; due8: string }) => {
++      await p.clock.setFixedTime(new Date(TZ_FIXTURE.moment));
++      const board = new BoardPage(p);
++      await board.goto(`?client_id=${client.id}`);
++      await expect(board.card(due6.id).getByTestId('task-card-due')).toHaveAttribute('data-due', expected.due6);
++      await expect(board.card(due8.id).getByTestId('task-card-due')).toHaveAttribute('data-due', expected.due8);
++      // Сама дата срока — календарная, по поясу не сдвигается.
++      await expect(board.card(due6.id).getByTestId('task-card-due')).toContainText('06.10.2026');
++      await expect(board.card(due8.id).getByTestId('task-card-due')).toContainText('08.10.2026');
++    };
++
++    // Алматы: сегодня 7-е → срок 6-го просрочен, 8-е — «завтра».
++    await loginAs(page, almatyUser.login, almatyUser.password);
++    await check(page, { due6: 'overdue', due8: 'soon' });
++    await expect(new BoardPage(page).card(due6.id)).toHaveClass(/overdue/);
++
++    // Москва: сегодня 6-е → срок 6-го — «сегодня» (не просрочен), 8-е — послезавтра.
++    const moscowContext = await browser.newContext({ baseURL, locale: 'ru-RU', timezoneId: TZ_BROWSER, colorScheme: 'light' });
++    await loginContext(moscowContext, moscowUser.login, moscowUser.password);
++    const moscowPage = await moscowContext.newPage();
++    await check(moscowPage, { due6: 'soon', due8: 'ok' });
++    await expect(new BoardPage(moscowPage).card(due6.id)).not.toHaveClass(/overdue/);
++    await moscowContext.close();
++  });
++});
++
++test.describe('TZ: администратор задаёт пояс сотруднику', () => {
++  test('TZ-020 (TS-042): форма сотрудника — по умолчанию «Алматы (UTC+5)»; админ меняет пояс → сотрудник видит даты и select в заданном поясе; невалидный пояс — ошибка под полем', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++    allowHttpErrors,
++    browser,
++    baseURL,
++  }) => {
++    allowHttpErrors((url, status) => /\/users\/[0-9a-f-]{36}$/.test(url) && status === 422);
++    const users = new UsersPage(page);
++    const login = uniq('tz020');
++    const name = uniq('Сотрудник TZ-020');
++
++    // Создание: поле есть, по умолчанию — Алматы.
++    await users.gotoNew();
++    await expect(users.timezone).toHaveText(TZ_LABEL[TZ_ALMATY]);
++    await expect(users.timezoneNative).toHaveValue(TZ_ALMATY);
++    await users.fill({ name, login, password: 'password1' });
++    await users.save.click();
++    await expect(users.flash).toHaveText('Сотрудник создан');
++    const created = await adminApi.findByLogin(login);
++    expect(created.timezone).toBe(TZ_ALMATY);
++
++    const { subId } = await seedPaidOrder({ adminApi, uniq, insertSubtask }, 'TZ-020', created.id);
++
++    // Правка: форма показывает текущий пояс; админ ставит Москву и сохраняет.
++    await users.goto(`?q=${login}`);
++    await users.open(login);
++    await expect(users.timezone).toHaveText(TZ_LABEL[TZ_ALMATY]);
++    await users.chooseTimezone(TZ_LABEL[TZ_MOSCOW]);
++    await users.save.click();
++    await expect(users.flash).toHaveText('Изменения сохранены');
++    expect((await adminApi.findByLogin(login)).timezone).toBe(TZ_MOSCOW);
++
++    // Сотрудник входит: select в сайдбаре — заданный пояс, даты — в нём (момент TS-F5).
++    const own = await browser.newContext({ baseURL, locale: 'ru-RU', timezoneId: TZ_BROWSER, colorScheme: 'light' });
++    await loginContext(own, login, 'password1');
++    const ownPage = await own.newPage();
++    await pinFixtureMoment(ownPage);
++    const ep = new ExecutorPayoutsPage(ownPage);
++    await ep.goto(`assignee=${created.id}`);
++    const ownShell = new ShellPage(ownPage);
++    await ownShell.expectTimezone(TZ_MOSCOW);
++    await expect(ownShell.timezoneSelect).toHaveText(TZ_LABEL[TZ_MOSCOW]);
++    await expect(ep.row(subId).getByTestId('ep-row-paid-at')).toHaveText(TZ_FIXTURE.moscow.dateTime);
++    await own.close();
++
++    // Негатив: значение select'а подменено на несуществующий пояс → 422, текст под полем,
++    // введённое не теряется, пояс сотрудника прежний.
++    await users.goto(`?q=${login}`);
++    await users.open(login);
++    await expect(users.timezone).toHaveText(TZ_LABEL[TZ_MOSCOW]);
++    await users.fill({ name: `${name} правка` });
++    await users.forgeTimezone('Mars/Olympus');
++    await users.save.click();
++    await expect(users.fieldError('timezone')).toHaveText('Неизвестный часовой пояс');
++    await expect(users.name).toHaveValue(`${name} правка`);
++    const after = await adminApi.findByLogin(login);
++    expect(after.timezone).toBe(TZ_MOSCOW);
++    expect(after.name, 'невалидная форма ничего не сохранила').toBe(name);
++  });
++});
+diff --git a/web/ssr/_layout/templates/layouts/base.html b/web/ssr/_layout/templates/layouts/base.html
+index f6b9f11..c4020eb 100644
+--- a/web/ssr/_layout/templates/layouts/base.html
++++ b/web/ssr/_layout/templates/layouts/base.html
+@@ -12,7 +12,9 @@
+ <link rel="stylesheet" href="/assets/ssr-shared/app.css">
+ <meta name="csrf-token" content="{{ .Shell.CSRFToken }}">
+ </head>
+-<body>
++<!-- data-timezone — часовой пояс пользователя (IANA, DS-031): по нему /assets/ssr-shared/js/timezone.js
++     (KT.time) форматирует все даты и время, а не по поясу браузера. -->
++<body data-timezone="{{ .Shell.User.Timezone }}">
+ <div class="app-shell">
+   <aside class="app-sidebar" id="app-sidebar" data-testid="sidebar">
+     <div class="app-brand"><span class="app-brand-logo">▦</span> Kanban-tree</div>
+@@ -30,6 +32,13 @@
+         <span class="app-avatar">{{ initials .Shell.User.Name }}</span>
+         <div><b>{{ .Shell.User.Name }}</b><div class="text-body-secondary small">{{ if .Shell.IsAdmin }}Администратор{{ else }}Исполнитель{{ end }}</div></div>
+       </div>
++      <div>
++        <label for="app-timezone" class="form-label small text-body-secondary mb-1">Часовой пояс</label>
++        <select id="app-timezone" class="form-select form-select-sm" data-timezone-select data-testid="timezone-select">
++          {{ range .Shell.Timezones }}<option value="{{ .Value }}"{{ if eq .Value $.Shell.User.Timezone }} selected{{ end }}>{{ .Label }}</option>
++          {{ end }}
++        </select>
++      </div>
+       {{ end }}
+       <button type="button" class="btn btn-sm btn-outline-secondary" data-theme-toggle data-testid="theme-toggle">◐ Тема</button>
+       {{ if .Shell.User.Name }}
+@@ -54,6 +63,7 @@
+ <script src="/assets/ssr-shared/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+ <script src="/assets/ssr-shared/js/theme.js"></script>
+ <script src="/assets/ssr-shared/js/api.js"></script>
++<script src="/assets/ssr-shared/js/timezone.js"></script>
+ <script src="/assets/ssr-shared/js/nav-badge.js"></script>
+ <script src="/assets/ssr-shared/js/ui-dialog.js"></script>
+ <script src="/assets/ssr-shared/js/combobox.js"></script>
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index dfe8b1f..7566231 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -382,11 +382,12 @@
+     if (!t.due_date) return '';
+     var col = columnById(t.column_id);
+     if (col && col.is_final) return '';
+-    var today = new Date(); today.setHours(0, 0, 0, 0);
+-    var tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+-    var due = new Date(t.due_date + 'T00:00:00');
++    // «Сегодня» — текущая дата в поясе ПОЛЬЗОВАТЕЛЯ, не браузера (DS-032). due_date —
++    // календарная дата без времени (не сдвигается); ISO-даты сравниваются как строки.
++    var today = KT.time.today();
++    var due = String(t.due_date).slice(0, 10);
+     if (due < today) return 'overdue';
+-    if (due <= tomorrow) return 'soon';
++    if (due <= KT.time.addDays(today, 1)) return 'soon';
+     return '';
+   }
+   function fmtDate(iso) {
+@@ -436,7 +437,7 @@
+       (totalAmount > 0 ? '<div class="small task-card-total" data-testid="task-card-total">Итог: ' + fmtMoneyCents(Math.round(totalAmount * 100)) + '</div>' : '') +
+       (t.last_log ? '<div class="small text-body-secondary task-card-last-log" data-testid="task-card-last-log">💬 ' + esc(t.last_log.text) + ' — ' + esc(t.last_log.author_name) + '</div>' : '') +
+       '  <div class="task-card-foot">' +
+-      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
++      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '" data-testid="task-card-due" data-due="' + esc(ds || 'ok') + '">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
+       (t.assignee_name ? '<span class="avatar" title="' + esc(t.assignee_name) + '">' + esc(initials(t.assignee_name)) + '</span>' : '') +
+       '  </div>' +
+       '</div>';
+diff --git a/web/ssr/_shared/js/executor-payouts.js b/web/ssr/_shared/js/executor-payouts.js
+index 0dc39ac..2e6c194 100644
+--- a/web/ssr/_shared/js/executor-payouts.js
++++ b/web/ssr/_shared/js/executor-payouts.js
+@@ -145,11 +145,8 @@
+   }
+ 
+   // ---------- отрисовка ----------
+-  function fmtDateTime(s) {
+-    if (!s) return '';
+-    var d = new Date(s);
+-    return isNaN(d) ? '' : d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+-  }
++  // Дата и время — только через KT.time (пояс пользователя, не браузера; DS-032).
++  function fmtDateTime(s) { return KT.time.fmtDateTime(s); }
+ 
+   function showError(msg) {
+     var el = $('#ep-error');
+diff --git a/web/ssr/_shared/js/stock-transfers.js b/web/ssr/_shared/js/stock-transfers.js
+index 1a11855..79a7a1c 100644
+--- a/web/ssr/_shared/js/stock-transfers.js
++++ b/web/ssr/_shared/js/stock-transfers.js
+@@ -115,11 +115,8 @@
+   }
+ 
+   // ---------- список ----------
+-  function fmtDate(s) {
+-    if (!s) return '';
+-    var d = new Date(s);
+-    return isNaN(d) ? '' : d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+-  }
++  // Дата и время — только через KT.time (пояс пользователя, не браузера; DS-032).
++  function fmtDate(s) { return KT.time.fmtDateTime(s); }
+ 
+   function badge(status) {
+     var s = STATUS[status] || { label: status, cls: 'text-bg-secondary' };
+@@ -136,7 +133,7 @@
+         '<span class="fw-semibold">#' + esc(t.id) + ' · ' + esc(t.from_warehouse_name) + ' → ' + esc(t.to_warehouse_name) + '</span>' +
+         badge(t.status) + '</div>' +
+         '<div class="small' + (t.id === curId ? '' : ' text-body-secondary') + '">' +
+-        esc(fmtDate(t.created_at)) + ' · позиций: ' + esc(t.items_count) + (t.note ? ' · ' + esc(t.note) : '') + '</div>' +
++        '<span data-testid="st-row-date">' + esc(fmtDate(t.created_at)) + '</span> · позиций: ' + esc(t.items_count) + (t.note ? ' · ' + esc(t.note) : '') + '</div>' +
+         '</button>';
+     }).join('');
+     $('#st-empty').classList.toggle('d-none', state.list.length > 0);
+@@ -200,7 +197,7 @@
+     return '<div class="d-flex justify-content-between align-items-center mb-2">' +
+       '<h2 class="fs-5 mb-0" data-testid="st-card-title">Перемещение #' + esc(t.id) + '</h2>' +
+       '<span data-testid="st-card-status">' + badge(t.status) + '</span></div>' +
+-      '<div class="small text-body-secondary mb-3">' + meta.join('<br>') + '</div>';
++      '<div class="small text-body-secondary mb-3" data-testid="st-card-meta">' + meta.join('<br>') + '</div>';
+   }
+ 
+   function renderCard() {
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index d1e449d..da95762 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -526,12 +526,8 @@
+ 
+   var SERVICE_STATUS = { 'new': ['Новая', 'text-bg-secondary'], in_progress: ['В работе', 'text-bg-primary'], done: ['Выполнена', 'text-bg-success'] };
+ 
+-  function fmtDateTime(iso) {
+-    var d = new Date(iso);
+-    if (isNaN(d.getTime())) return '';
+-    function p(n) { return String(n).padStart(2, '0'); }
+-    return fmtDate(iso) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+-  }
++  // Дата и время — только через KT.time (пояс пользователя, не браузера; DS-032).
++  function fmtDateTime(iso) { return KT.time.fmtDateTime(iso); }
+ 
+   // equipmentHistoryHtml — кнопка «История работ» + раскрытая панель: другие заказы с этой
+   // единицей (текущий исключён — его работы и так в карточке) с услугами по ней, товарами
+@@ -624,13 +620,7 @@
+       '</div>';
+   }
+ 
+-  function fmtDate(iso) {
+-    if (!iso) return '';
+-    var d = new Date(iso);
+-    if (isNaN(d.getTime())) return '';
+-    function p(n) { return String(n).padStart(2, '0'); }
+-    return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear();
+-  }
++  function fmtDate(iso) { return KT.time.fmtDate(iso); }
+ 
+   function wireEquipment(container) {
+     $$('[data-field="completeness"], [data-field="condition"]', container).forEach(function (input) {
+@@ -876,7 +866,7 @@
+       var lkey = reqKeyLog(l.id);
+       return '' +
+         '<div class="border-top py-1" data-testid="card-log-row" data-row-key="' + lkey + '" data-log-id="' + esc(l.id) + '">' +
+-        '  <div class="small text-body-secondary">' + esc(l.author_name) + ' · ' + fmtDate(l.created_at) + '</div>' +
++        '  <div class="small text-body-secondary">' + esc(l.author_name) + ' · <span data-testid="card-log-date">' + fmtDate(l.created_at) + '</span></div>' +
+         '  <div data-testid="card-log-text">' + esc(l.text) + '</div>' +
+         (l.can_edit
+           ? '  <div class="d-flex gap-2 mt-1">' +
+diff --git a/web/ssr/_shared/js/timezone.js b/web/ssr/_shared/js/timezone.js
+new file mode 100644
+index 0000000..fa5f935
+--- /dev/null
++++ b/web/ssr/_shared/js/timezone.js
+@@ -0,0 +1,117 @@
++/* KT.time — единый форматтер даты и времени в ЧАСОВОМ ПОЯСЕ ПОЛЬЗОВАТЕЛЯ (DS-031, DS-032).
++   Пояс (IANA) рендерит SSR-layout атрибутом <body data-timezone>; пояс браузера на показ
++   не влияет. Неизвестное браузеру имя пояса → Asia/Almaty, страница не ломается.
++
++     KT.time.zone            — действующий пояс
++     KT.time.fmtDate(iso)    — «07.10.2026»
++     KT.time.fmtDateTime(iso)— «07.10.2026 00:30»
++     KT.time.today()         — текущая календарная дата в поясе пользователя, «2026-10-07»
++     KT.time.addDays(ymd, n) — календарная дата ± n дней, «2026-10-08»
++
++   Экранам запрещено форматировать время сами (getHours/toLocaleString без timeZone) —
++   выйдет пояс браузера.
++
++   Плюс select «Часовой пояс» в сайдбаре ([data-timezone-select]): PUT
++   /api/v1/users/me/timezone → перезагрузка страницы; ошибка → тост и прежнее значение. */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++  var DEFAULT_ZONE = 'Asia/Almaty';
++  var TOAST_MS = 5000;
++
++  function supported(zone) {
++    try { new Intl.DateTimeFormat('ru-RU', { timeZone: zone }); return true; } catch (e) { return false; }
++  }
++
++  var raw = (document.body && document.body.getAttribute('data-timezone')) || '';
++  var zone = raw && supported(raw) ? raw : DEFAULT_ZONE;
++  // en-GB + h23: стабильные числовые части без «24:00» и без локальных разделителей.
++  var partsFmt = new Intl.DateTimeFormat('en-GB', {
++    timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit',
++    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
++  });
++
++  // parts — {year, month, day, hour, minute} момента d в поясе пользователя; null — не дата.
++  function parts(value) {
++    if (value === null || value === undefined || value === '') return null;
++    var d = value instanceof Date ? value : new Date(value);
++    if (isNaN(d.getTime())) return null;
++    var out = {};
++    partsFmt.formatToParts(d).forEach(function (p) { out[p.type] = p.value; });
++    return out;
++  }
++
++  function fmtDate(value) {
++    var p = parts(value);
++    return p ? p.day + '.' + p.month + '.' + p.year : '';
++  }
++
++  function fmtDateTime(value) {
++    var p = parts(value);
++    return p ? p.day + '.' + p.month + '.' + p.year + ' ' + p.hour + ':' + p.minute : '';
++  }
++
++  function today() {
++    var p = parts(new Date());
++    return p.year + '-' + p.month + '-' + p.day;
++  }
++
++  // addDays — календарная арифметика без пояса (UTC-полночь): дата не «съезжает».
++  function addDays(ymd, n) {
++    var a = String(ymd).split('-');
++    return new Date(Date.UTC(+a[0], +a[1] - 1, +a[2] + n)).toISOString().slice(0, 10);
++  }
++
++  KT.time = { zone: zone, fmtDate: fmtDate, fmtDateTime: fmtDateTime, today: today, addDays: addDays };
++
++  // ---------- select «Часовой пояс» в сайдбаре ----------
++  function toastError(msg) {
++    var box = document.getElementById('app-toasts');
++    if (!box) {
++      box = document.createElement('div');
++      box.id = 'app-toasts';
++      box.className = 'toast-container position-fixed top-0 end-0 p-3';
++      box.style.zIndex = '1090';
++      box.style.maxWidth = 'min(380px, 100vw)';
++      box.setAttribute('aria-live', 'polite');
++      document.body.appendChild(box);
++    }
++    var el = document.createElement('div');
++    el.className = 'alert alert-danger shadow py-2 mb-2';
++    el.setAttribute('role', 'alert');
++    el.setAttribute('data-testid', 'timezone-toast-error');
++    el.textContent = msg;
++    box.appendChild(el);
++    setTimeout(function () { el.remove(); }, TOAST_MS);
++  }
++
++  var select = document.querySelector('[data-timezone-select]');
++  if (!select) return;
++  var saved = select.value;
++
++  // Select превращён в комбобокс (combobox.js, D6): видимая кнопка берёт disabled/подпись
++  // из скрытого select только в _cbSync — зовём его после каждой программной правки.
++  function setState(value, disabled) {
++    if (value !== null) select.value = value;
++    select.disabled = disabled;
++    if (select._cbSync) select._cbSync();
++  }
++
++  select.addEventListener('change', function () {
++    var next = select.value;
++    if (next === saved) return;
++    setState(null, true);
++    KT.api.put('/api/v1/users/me/timezone', { timezone: next }).then(function () {
++      // Все даты страницы уже отрисованы в старом поясе — перерисовать проще и надёжнее reload'ом.
++      window.location.reload();
++    }).catch(function (err) {
++      if (err instanceof KT.ApiError && err.status === 401) { window.location.reload(); return; } // → /login
++      setState(saved, false);
++      if (err instanceof KT.ApiError && err.status === 400) {
++        var required = err.fields.some(function (f) { return (f.name || f.Name) === 'timezone' && (f.message || f.Message) === 'required'; });
++        toastError(required ? 'Выберите часовой пояс' : 'Неизвестный часовой пояс');
++      } else if (err instanceof KT.ApiError) toastError(err.message);
++      else toastError('Нет связи');
++    });
++  });
++})();
+diff --git a/web/ssr/board/templates/pages/print-handover.html b/web/ssr/board/templates/pages/print-handover.html
+index 8110de3..7a52b1e 100644
+--- a/web/ssr/board/templates/pages/print-handover.html
++++ b/web/ssr/board/templates/pages/print-handover.html
+@@ -9,7 +9,7 @@
+ </header>
+ 
+ <h1 data-testid="print-title">Акт выдачи №{{ .Card.Task.ID }}</h1>
+-<p class="print-date" data-testid="print-date">Дата: {{ .PrintedAt.Format "02.01.2006" }}</p>
++<p class="print-date" data-testid="print-date">Дата: {{ timeIn .Timezone "02.01.2006" .PrintedAt }}</p>
+ 
+ <section class="print-section">
+   <h2>Клиент</h2>
+@@ -78,7 +78,7 @@
+ <section class="print-section print-total" data-testid="print-total">
+   <h2>Итого: {{ .Card.Task.TotalAmount }}</h2>
+   <p data-testid="print-payment">
+-    {{ if .Card.Task.IsPaid }}Оплачено{{ if .Card.Task.PaidAt }} {{ .Card.Task.PaidAt.Format "02.01.2006" }}{{ end }}{{ else }}Не оплачено{{ end }}
++    {{ if .Card.Task.IsPaid }}Оплачено{{ if .Card.Task.PaidAt }} {{ timeIn .Timezone "02.01.2006" .Card.Task.PaidAt }}{{ end }}{{ else }}Не оплачено{{ end }}
+   </p>
+ </section>
+ 
+diff --git a/web/ssr/board/templates/pages/print-intake.html b/web/ssr/board/templates/pages/print-intake.html
+index 56db2ee..1fe69cf 100644
+--- a/web/ssr/board/templates/pages/print-intake.html
++++ b/web/ssr/board/templates/pages/print-intake.html
+@@ -8,7 +8,7 @@
+ </header>
+ 
+ <h1 data-testid="print-title">Акт приёма №{{ .Card.Task.ID }}</h1>
+-<p class="print-date" data-testid="print-date">Дата: {{ .PrintedAt.Format "02.01.2006" }}</p>
++<p class="print-date" data-testid="print-date">Дата: {{ timeIn .Timezone "02.01.2006" .PrintedAt }}</p>
+ 
+ <section class="print-section">
+   <h2>Клиент</h2>
+diff --git a/web/ssr/clients/templates/pages/equipment-history.html b/web/ssr/clients/templates/pages/equipment-history.html
+index b210f48..5e127d5 100644
+--- a/web/ssr/clients/templates/pages/equipment-history.html
++++ b/web/ssr/clients/templates/pages/equipment-history.html
+@@ -24,7 +24,7 @@
+         <span class="badge" style="background-color: {{ .ColumnColor }}">{{ .ColumnName }}</span>
+         {{ if .IsPaid }}<span class="badge text-bg-success">Оплачен</span>{{ end }}
+         {{ if .Location }}<span class="badge {{ if eq .EquipmentStatus "in_transit" }}text-bg-warning{{ else }}text-bg-light border{{ end }}" data-testid="history-order-location">{{ .Location }}</span>{{ end }}
+-        <span class="text-body-secondary small ms-auto">{{ .CreatedAt.Format "02.01.2006" }}</span>
++        <span class="text-body-secondary small ms-auto" data-testid="history-order-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
+       </div>
+       {{ if .Accepted }}
+       <div class="small mb-2" data-testid="history-intake" data-intake data-task-id="{{ .TaskID }}" data-equipment-id="{{ $.Equipment.ID }}">
+@@ -81,7 +81,7 @@
+           <div class="small mt-1" data-testid="history-logs">
+             {{ range .Logs }}
+             <div class="mb-1" data-testid="history-log">
+-              <span class="text-body-secondary">{{ .CreatedAt.Format "02.01.2006 15:04" }} · {{ .Author }}:</span>
++              <span class="text-body-secondary"><span data-testid="history-log-time">{{ timeIn $.Shell.User.Timezone "02.01.2006 15:04" .CreatedAt }}</span> · {{ .Author }}:</span>
+               <span style="white-space: pre-wrap">{{ .Text }}</span>
+             </div>
+             {{ end }}
+diff --git a/web/ssr/users/templates/pages/form.html b/web/ssr/users/templates/pages/form.html
+index 635dc04..3162b4a 100644
+--- a/web/ssr/users/templates/pages/form.html
++++ b/web/ssr/users/templates/pages/form.html
+@@ -35,6 +35,16 @@
+         {{ with index .Errors "password" }}<div class="invalid-feedback" data-testid="error-password">{{ . }}</div>{{ end }}
+       </div>
+     </div>
++    <div class="row g-3 mb-3">
++      <div class="col-sm-6">
++        <label for="timezone" class="form-label">Часовой пояс</label>
++        <select id="timezone" name="timezone" class="form-select{{ if index .Errors "timezone" }} is-invalid{{ end }}" data-testid="user-timezone">
++          {{ range .Timezones }}<option value="{{ .Value }}"{{ if eq .Value $.Timezone }} selected{{ end }}>{{ .Label }}</option>
++          {{ end }}
++        </select>
++        {{ with index .Errors "timezone" }}<div class="invalid-feedback d-block" data-testid="error-timezone">{{ . }}</div>{{ end }}
++      </div>
++    </div>
+     <div class="form-check mb-4">
+       <input class="form-check-input" type="checkbox" id="is_active" name="is_active"{{ if .IsActive }} checked{{ end }}>
+       <label class="form-check-label" for="is_active">Активен (может входить в систему)</label>

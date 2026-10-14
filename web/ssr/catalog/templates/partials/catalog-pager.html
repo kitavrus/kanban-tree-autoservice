@@ -1,0 +1,12 @@
+{{/* pagination DS-005: пейджер SSR-списков каталога (PagerVM, internal/features/catalog/ssr_pager.go). */}}
+{{ define "catalogPager" }}{{ if .Show }}
+<nav class="d-flex flex-wrap align-items-center gap-2 mt-2" aria-label="Страницы списка" data-testid="catalog-pager">
+  <span class="text-body-secondary small" data-testid="catalog-shown">{{ if .From }}Показаны {{ .From }}–{{ .To }} из {{ .Total }}{{ else }}На этой странице ничего нет · всего {{ .Total }}{{ end }}</span>
+  <ul class="pagination pagination-sm mb-0 ms-auto">
+    <li class="page-item{{ if not .PrevURL }} disabled{{ end }}">{{ if .PrevURL }}<a class="page-link" href="{{ .PrevURL }}" rel="prev" data-testid="catalog-prev">‹ Назад</a>{{ else }}<span class="page-link" aria-disabled="true">‹ Назад</span>{{ end }}</li>
+    <li class="page-item{{ if not .NextURL }} disabled{{ end }}">{{ if .NextURL }}<a class="page-link" href="{{ .NextURL }}" rel="next" data-testid="catalog-next">Вперёд ›</a>{{ else }}<span class="page-link" aria-disabled="true">Вперёд ›</span>{{ end }}</li>
+  </ul>
+</nav>
+{{ end }}{{ end }}
+{{/* pagination DS-006: пометка усечённого lookup'а категорий (TruncVM). */}}
+{{ define "categoriesTruncated" }}{{ if .Truncated }}<div class="form-text text-warning-emphasis" data-testid="categories-truncated">показаны {{ .Shown }} из {{ .Total }}</div>{{ end }}{{ end }}

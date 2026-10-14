@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/contract_check.py --feature user-timezone --repo /Users/igorpotema/mycode/kanban-tree --go internal/features/users
+(exit 0)
+
+contract user-timezone: SKIP (нет /Users/igorpotema/mycode/kanban-tree/frontend/src/features/user-timezone — frontend ещё не создан)

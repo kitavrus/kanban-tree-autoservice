@@ -1,0 +1,3388 @@
+diff --git a/internal/features/board/card_dto.go b/internal/features/board/card_dto.go
+index 285d59d..42e560d 100644
+--- a/internal/features/board/card_dto.go
++++ b/internal/features/board/card_dto.go
+@@ -93,20 +93,25 @@ type EquipmentHistory struct {
+ 
+ // CardSubtask — услуга заказа + её товары/журнал.
+ type CardSubtask struct {
+-	ID               string               `json:"id"`
+-	ServiceID        string               `json:"service_id"`
+-	ServiceName      string               `json:"service_name"`
+-	Status           string               `json:"status"` // Enum SubtaskStatus
+-	AssigneeID       *string              `json:"assignee_id"`
+-	AssigneeName     *string              `json:"assignee_name"`
+-	AssigneeIsActive *bool                `json:"assignee_is_active"` // null без исполнителя (SD-007)
+-	DueDate          *string              `json:"due_date"`           // YYYY-MM-DD
+-	Price            *numeric.Amount      `json:"price"`              // null = «по факту»
+-	EquipmentID      *string              `json:"equipment_id"`
+-	Position         int                  `json:"position"`
+-	Total            numeric.Amount       `json:"total"` // subtask_total
+-	Products         []CardSubtaskProduct `json:"products"`
+-	Logs             []CardSubtaskLog     `json:"logs"`
++	ID               string          `json:"id"`
++	ServiceID        string          `json:"service_id"`
++	ServiceName      string          `json:"service_name"`
++	Status           string          `json:"status"` // Enum SubtaskStatus
++	AssigneeID       *string         `json:"assignee_id"`
++	AssigneeName     *string         `json:"assignee_name"`
++	AssigneeIsActive *bool           `json:"assignee_is_active"` // null без исполнителя (SD-007)
++	DueDate          *string         `json:"due_date"`           // YYYY-MM-DD
++	Price            *numeric.Amount `json:"price"`              // null = «по факту»
++	EquipmentID      *string         `json:"equipment_id"`
++	Position         int             `json:"position"`
++	Total            numeric.Amount  `json:"total"` // subtask_total
++	// Выплата исполнителю (D62–D64): флаг, дата отметки (null, пока не выплачено) и сумма
++	// выплаты — отдельная от price (null = не задана).
++	IsExecutorPaid bool                 `json:"is_executor_paid"`
++	ExecutorPaidAt *time.Time           `json:"executor_paid_at"`
++	ExecutorPayout *numeric.Amount      `json:"executor_payout"`
++	Products       []CardSubtaskProduct `json:"products"`
++	Logs           []CardSubtaskLog     `json:"logs"`
+ }
+ 
+ type CardSubtaskProduct struct {
+@@ -172,12 +177,21 @@ type SubtaskCreateRequest struct {
+ 
+ // SubtaskUpdateRequest — PUT /subtasks/:id: полная замена изменяемых полей строки (LWW);
+ // клиент шлёт всю строку.
++//
++// Выплата исполнителю (D62–D66) — НЕ часть полной замены: у этих полей есть второй
++// писатель (отчёт «Выплаты», POST /executor-payouts/mark), поэтому поле, которого нет в
++// теле, не меняется, и карточка шлёт их только когда правит именно их. IsExecutorPaid —
++// nil → флаг прежний; перевод false→true допустим только при назначенном исполнителе
++// (400 is_executor_paid: no_assignee). ExecutorPayout — нет поля → сумма прежняя, null →
++// очистить, число → установить; правится независимо от флага. Вправе и admin, и executor.
+ type SubtaskUpdateRequest struct {
+-	Status      string          `json:"status"`
+-	AssigneeID  *string         `json:"assignee_id"`
+-	DueDate     *string         `json:"due_date"`
+-	Price       *numeric.Amount `json:"price"`
+-	EquipmentID *string         `json:"equipment_id"`
++	Status         string          `json:"status"`
++	AssigneeID     *string         `json:"assignee_id"`
++	DueDate        *string         `json:"due_date"`
++	Price          *numeric.Amount `json:"price"`
++	EquipmentID    *string         `json:"equipment_id"`
++	IsExecutorPaid *bool           `json:"is_executor_paid"`
++	ExecutorPayout OptionalAmount  `json:"executor_payout"`
+ }
+ 
+ // SubtaskProductCreateRequest — WarehouseID пуст → склад по умолчанию (DS-005, D49).
+diff --git a/internal/features/board/card_repo.go b/internal/features/board/card_repo.go
+index eb592a2..c0b81cf 100644
+--- a/internal/features/board/card_repo.go
++++ b/internal/features/board/card_repo.go
+@@ -127,7 +127,8 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
+ 		SELECT s.id, s.service_id, sv.name, s.status, s.assignee_id::text, u.name, u.is_active,
+ 		       s.due_date::text, s.price::text, s.equipment_id::text, s.position,
+ 		       round(coalesce(s.price, 0) + coalesce((SELECT sum(round(sp.qty * coalesce(sp.price, 0), 2))
+-		                FROM subtask_products sp WHERE sp.subtask_id = s.id), 0), 2)::text AS subtask_total
++		                FROM subtask_products sp WHERE sp.subtask_id = s.id), 0), 2)::text AS subtask_total,
++		       s.is_executor_paid, s.executor_paid_at, s.executor_payout::text
+ 		FROM subtasks s JOIN services sv ON sv.id = s.service_id LEFT JOIN users u ON u.id = s.assignee_id
+ 		WHERE s.task_id = $1 ORDER BY s.position, s.id`, taskID)
+ 	if err != nil {
+@@ -138,13 +139,18 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
+ 	out := []CardSubtask{}
+ 	for rows.Next() {
+ 		var c CardSubtask
+-		var assigneeID, assigneeName, dueDate, equipmentID, price sql.NullString
++		var assigneeID, assigneeName, dueDate, equipmentID, price, payout sql.NullString
+ 		var assigneeActive sql.NullBool
+ 		var total string
+ 		if err := rows.Scan(&c.ID, &c.ServiceID, &c.ServiceName, &c.Status, &assigneeID, &assigneeName,
+-			&assigneeActive, &dueDate, &price, &equipmentID, &c.Position, &total); err != nil {
++			&assigneeActive, &dueDate, &price, &equipmentID, &c.Position, &total,
++			&c.IsExecutorPaid, &c.ExecutorPaidAt, &payout); err != nil {
+ 			return nil, err
+ 		}
++		if payout.Valid {
++			v := numeric.Amount(payout.String)
++			c.ExecutorPayout = &v
++		}
+ 		if assigneeID.Valid {
+ 			v := assigneeID.String
+ 			c.AssigneeID = &v
+diff --git a/internal/features/board/errors.go b/internal/features/board/errors.go
+index 2126547..5809413 100644
+--- a/internal/features/board/errors.go
++++ b/internal/features/board/errors.go
+@@ -30,6 +30,10 @@ var (
+ 	ErrSubtaskFinalColumn     = errorspkg.New("SUBTASK_FINAL_COLUMN", http.StatusConflict, "Заказ в финальной колонке: нельзя добавить услугу или вернуть её из «Выполнена»")
+ 	ErrSubtaskLogForbidden    = errorspkg.New("SUBTASK_LOG_FORBIDDEN", http.StatusForbidden, "Можно менять только свои записи")
+ 
++	// ErrSubtaskExecutorPaid — смена/снятие исполнителя у услуги с отметкой «Выплачено
++	// исполнителю» (D66): сначала снять отметку.
++	ErrSubtaskExecutorPaid = errorspkg.New("SUBTASK_EXECUTOR_PAID", http.StatusConflict, "Услуга уже выплачена исполнителю — сначала снимите отметку о выплате")
++
+ 	// Sentinel'ы склада оборудования заказа (warehouses подфаза C, DS-008, D57): неверный
+ 	// переход статуса единицы — 409.
+ 	ErrTaskEquipmentInTransit    = errorspkg.New("TASK_EQUIPMENT_IN_TRANSIT", http.StatusConflict, "Оборудование уже в пути — сначала примите его или отмените отправку")
+diff --git a/internal/features/board/executor_payouts_http_live_test.go b/internal/features/board/executor_payouts_http_live_test.go
+new file mode 100644
+index 0000000..3dc5fd2
+--- /dev/null
++++ b/internal/features/board/executor_payouts_http_live_test.go
+@@ -0,0 +1,569 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"sort"
++	"sync"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// Выплаты исполнителям в карточке заказа и на доске (executor-payouts, docs/plan.md
++// D62–D68; сценарии TS-001…TS-010 — docs/features/executor-payouts/0-setup/light-progress.md).
++// Методы OrderCardLiveSuite — общие фикстуры карточки (order_card_http_live_test.go):
++// реальный бинарь + TCP + реальный логин (§TD-8).
++
++// payoutExecutor — активный исполнитель + залогиненный браузер.
++func (s *OrderCardLiveSuite) payoutExecutor(login string) (string, *testutil.Browser) {
++	id := s.SeedUser(login, "password1", "Исполнитель "+login, "executor", true)
++	b := s.NewBrowser()
++	b.Login(login, "password1")
++	return id, b
++}
++
++// payoutSubtask — заказ в «Новые» с одной услугой (цена 1000); возвращает id заказа и услуги.
++func (s *OrderCardLiveSuite) payoutSubtask(company string) (int64, string) {
++	taskID, _ := s.newTask(s.newClient(company), s.columnID("Новые"))
++	return taskID, s.addSubtask(taskID, s.newService("1000"), "1000")
++}
++
++// setPayoutState — состояние услуги напрямую SQL (фикстуры фильтра/метки доски).
++func (s *OrderCardLiveSuite) setPayoutState(subtaskID, status string, assigneeID *string, paid bool) {
++	_, err := s.Pool.Exec(context.Background(), `
++		UPDATE subtasks SET status = $2, assignee_id = $3::uuid, is_executor_paid = $4,
++		       executor_paid_at = CASE WHEN $4 THEN now() END
++		WHERE id = $1`, subtaskID, status, assigneeID, paid)
++	s.Require().NoError(err)
++}
++
++func (s *OrderCardLiveSuite) putSubtask(b *testutil.Browser, subtaskID string, body map[string]any) (int, cardSubtaskDTO, []byte) {
++	st, m, raw := s.doCard(b, http.MethodPut, "/api/v1/subtasks/"+subtaskID, body)
++	var sub cardSubtaskDTO
++	for _, x := range m.Card.Subtasks {
++		if x.ID == subtaskID {
++			sub = x
++		}
++	}
++	return st, sub, raw
++}
++
++// payoutRow — отметка/дата/сумма услуги из БД (проверка «ничего не изменилось»).
++func (s *OrderCardLiveSuite) payoutRow(subtaskID string) (paid bool, paidAt *string, payout *string, assigneeID *string) {
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
++		SELECT is_executor_paid, executor_paid_at::text, executor_payout::text, assignee_id::text
++		FROM subtasks WHERE id = $1`, subtaskID).Scan(&paid, &paidAt, &payout, &assigneeID))
++	return
++}
++
++type payoutBoardItemDTO struct {
++	ID                 int64 `json:"id"`
++	ExecutorUnpaidDone int   `json:"executor_unpaid_done"`
++}
++
++func (s *OrderCardLiveSuite) payoutBoard(query string) map[int64]int {
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks?assignee=all&"+query, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var l struct {
++		Items []payoutBoardItemDTO `json:"items"`
++		Total int                  `json:"total"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &l), string(raw))
++	out := map[int64]int{}
++	for _, it := range l.Items {
++		out[it.ID] = it.ExecutorUnpaidDone
++	}
++	s.Len(out, l.Total, "total = числу заказов под фильтром")
++	return out
++}
++
++func payoutKeys(m map[int64]int) []int64 {
++	out := make([]int64, 0, len(m))
++	for k := range m {
++		out = append(out, k)
++	}
++	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
++	return out
++}
++
++// TS-001: admin отмечает выплату услуги с исполнителем — флаг, дата и сумма сохранены и
++// видны в карточке (GET /card — тот же снимок).
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS001_AdminMarksPaid() {
++	execID, _ := s.payoutExecutor("payout-ts001")
++	taskID, subID := s.payoutSubtask("Клиент-Выплата-TS001")
++
++	st, sub, raw := s.putSubtask(s.admin, subID, map[string]any{
++		"status": "done", "assignee_id": execID, "price": 1000,
++		"is_executor_paid": true, "executor_payout": 1500.5,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.True(sub.IsExecutorPaid)
++	s.Require().NotNil(sub.ExecutorPaidAt, "дата отметки ставится при false→true")
++	s.Require().NotNil(sub.ExecutorPayout)
++	s.Equal("1500.50", sub.ExecutorPayout.String())
++	s.Require().NotNil(sub.Price)
++	s.Equal("1000.00", sub.Price.String(), "цена для клиента — отдельное поле")
++
++	st, card, raw := s.getCard(s.admin, taskID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Require().Len(card.Subtasks, 1)
++	s.True(card.Subtasks[0].IsExecutorPaid)
++	s.Equal(*sub.ExecutorPaidAt, *card.Subtasks[0].ExecutorPaidAt)
++}
++
++// TS-002: права — executor (не admin) отмечает выплату, правит сумму и снимает отметку.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS002_ExecutorAllowed() {
++	execID, exec := s.payoutExecutor("payout-ts002")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS002")
++
++	st, sub, raw := s.putSubtask(exec, subID, map[string]any{
++		"status": "done", "assignee_id": execID, "is_executor_paid": true, "executor_payout": 300,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.True(sub.IsExecutorPaid)
++	s.Equal("300.00", sub.ExecutorPayout.String())
++
++	st, sub, raw = s.putSubtask(exec, subID, map[string]any{
++		"status": "done", "assignee_id": execID, "is_executor_paid": false, "executor_payout": 450,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.False(sub.IsExecutorPaid)
++	s.Nil(sub.ExecutorPaidAt)
++	s.Equal("450.00", sub.ExecutorPayout.String())
++}
++
++// TS-003: отметить выплату у услуги без исполнителя нельзя — 400 по полю, в БД без изменений.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS003_NoAssignee400() {
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS003")
++
++	st, _, raw := s.putSubtask(s.admin, subID, map[string]any{"status": "done", "is_executor_paid": true})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("VALIDATION", s.errOf(raw).Code)
++	s.Equal("no_assignee", s.fields(raw)["is_executor_paid"])
++
++	// исполнитель снимается тем же запросом, которым ставится отметка — тоже 400.
++	execID, _ := s.payoutExecutor("payout-ts003")
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "new", "assignee_id": execID})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "new", "assignee_id": nil, "is_executor_paid": true})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("no_assignee", s.fields(raw)["is_executor_paid"])
++
++	paid, paidAt, _, assignee := s.payoutRow(subID)
++	s.False(paid)
++	s.Nil(paidAt)
++	s.Require().NotNil(assignee, "отклонённый запрос исполнителя не снял")
++	s.Equal(execID, *assignee)
++}
++
++// TS-004: у выплаченной услуги исполнителя не сменить и не снять — 409 SUBTASK_EXECUTOR_PAID;
++// со снятием отметки (тем же запросом или заранее) — можно.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS004_ChangeAssigneeOfPaid409() {
++	execA, _ := s.payoutExecutor("payout-ts004-a")
++	execB, _ := s.payoutExecutor("payout-ts004-b")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS004")
++
++	st, _, raw := s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execA, "is_executor_paid": true})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	for name, body := range map[string]map[string]any{
++		"смена, флаг не прислан": {"status": "done", "assignee_id": execB},
++		"смена, флаг true":       {"status": "done", "assignee_id": execB, "is_executor_paid": true},
++		"снятие исполнителя":     {"status": "done", "assignee_id": nil},
++		"пустая строка":          {"status": "done", "assignee_id": ""},
++	} {
++		st, _, raw = s.putSubtask(s.admin, subID, body)
++		s.Equal(http.StatusConflict, st, "%s: %s", name, raw)
++		s.Equal("SUBTASK_EXECUTOR_PAID", s.errOf(raw).Code, name)
++	}
++	paid, _, _, assignee := s.payoutRow(subID)
++	s.True(paid, "отклонённые запросы отметку не сняли")
++	s.Equal(execA, *assignee)
++
++	// прежний исполнитель + прочие поля — правятся свободно.
++	st, sub, raw := s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execA, "price": 2000})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.True(sub.IsExecutorPaid)
++
++	// снять отметку и сменить исполнителя одним запросом — итог согласован.
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execB, "is_executor_paid": false})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.False(sub.IsExecutorPaid)
++	s.Equal(execB, *sub.AssigneeID)
++}
++
++// TS-005: executor_paid_at — ставится при false→true, не меняется при повторном true,
++// обнуляется при снятии, ставится заново при новой отметке.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS005_PaidAtLifecycle() {
++	execID, _ := s.payoutExecutor("payout-ts005")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS005")
++	body := func(paid bool) map[string]any {
++		return map[string]any{"status": "done", "assignee_id": execID, "is_executor_paid": paid}
++	}
++
++	st, sub, raw := s.putSubtask(s.admin, subID, body(true))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Require().NotNil(sub.ExecutorPaidAt)
++	first := *sub.ExecutorPaidAt
++
++	// дата сдвинута в прошлое — повторный true не должен перезаписать её текущим временем.
++	_, err := s.Pool.Exec(context.Background(), `UPDATE subtasks SET executor_paid_at = executor_paid_at - interval '2 hours' WHERE id = $1`, subID)
++	s.Require().NoError(err)
++	_, shifted, _, _ := s.payoutRow(subID)
++
++	st, sub, raw = s.putSubtask(s.admin, subID, body(true))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Require().NotNil(sub.ExecutorPaidAt)
++	s.NotEqual(first, *sub.ExecutorPaidAt)
++	_, again, _, _ := s.payoutRow(subID)
++	s.Equal(*shifted, *again, "повторная отметка дату не трогает")
++
++	st, sub, raw = s.putSubtask(s.admin, subID, body(false))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.False(sub.IsExecutorPaid)
++	s.Nil(sub.ExecutorPaidAt, "снятие отметки обнуляет дату")
++
++	st, sub, raw = s.putSubtask(s.admin, subID, body(true))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Require().NotNil(sub.ExecutorPaidAt)
++	_, fresh, _, _ := s.payoutRow(subID)
++	s.NotEqual(*shifted, *fresh, "новая отметка — новая дата")
++}
++
++// TS-006: сумма выплаты правится независимо от флага (и без исполнителя); null очищает;
++// невалидная сумма — 400, сохранённое значение не меняется.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS006_PayoutIndependentOfFlag() {
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS006")
++
++	st, sub, raw := s.putSubtask(s.admin, subID, map[string]any{"status": "new", "executor_payout": 700})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.False(sub.IsExecutorPaid)
++	s.Nil(sub.ExecutorPaidAt)
++	s.Require().NotNil(sub.ExecutorPayout)
++	s.Equal("700.00", sub.ExecutorPayout.String())
++
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "new", "executor_payout": 0})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("0.00", sub.ExecutorPayout.String(), "0 — допустимая сумма")
++
++	for name, v := range map[string]any{"отрицательная": -1, "3 знака": 1.234, "слишком большая": 10000000000} {
++		st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "new", "executor_payout": v})
++		s.Equal(http.StatusBadRequest, st, "%s: %s", name, raw)
++		s.Contains(s.fields(raw), "executor_payout", name)
++	}
++	// не число вовсе — 400 (не 500).
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "new", "executor_payout": "abc"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "new", "is_executor_paid": "yes"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++
++	_, _, payout, _ := s.payoutRow(subID)
++	s.Require().NotNil(payout)
++	s.Equal("0.00", *payout, "отклонённые запросы сумму не изменили")
++
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "new", "executor_payout": nil})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Nil(sub.ExecutorPayout, "null — сумма не задана")
++}
++
++// TS-007: PUT без is_executor_paid и executor_payout не меняет ни флаг, ни дату, ни сумму
++// (клиенты до фичи шлют строку без них; у полей есть второй писатель — отчёт, D65).
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS007_FlagOmittedKeepsValue() {
++	execID, _ := s.payoutExecutor("payout-ts007")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS007")
++
++	st, sub, raw := s.putSubtask(s.admin, subID, map[string]any{
++		"status": "in_progress", "assignee_id": execID, "is_executor_paid": true, "executor_payout": 900,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	paidAt := *sub.ExecutorPaidAt
++
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execID, "price": 1200})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.True(sub.IsExecutorPaid, "флаг сохранён")
++	s.Require().NotNil(sub.ExecutorPaidAt)
++	s.Equal(paidAt, *sub.ExecutorPaidAt, "дата отметки не тронута")
++	s.Equal("done", sub.Status)
++	s.Require().NotNil(sub.ExecutorPayout, "поле не прислано → сумма не тронута")
++	s.Equal("900.00", sub.ExecutorPayout.String())
++	s.Require().NotNil(sub.Price)
++	s.Equal("1200.00", sub.Price.String())
++}
++
++// TS-008: фильтр доски executor_paid. unpaid — есть услуга с исполнителем без выплаты;
++// paid — услуги с исполнителем есть и все выплачены; заказ без исполнителей услуг — ни там,
++// ни там. Совместим с окном per_column/column_id.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS008_BoardFilter() {
++	execID, _ := s.payoutExecutor("payout-ts008")
++	clientID := s.newClient("Клиент-Выплата-TS008")
++	col := s.columnID("Новые")
++	svc := s.newService("100")
++	mk := func() int64 { id, _ := s.newTask(clientID, col); return id }
++
++	unpaidTask := mk() // услуга с исполнителем, не выплачена
++	s.setPayoutState(s.addSubtask(unpaidTask, svc, "100"), "new", &execID, false)
++
++	paidTask := mk() // услуга с исполнителем выплачена + услуга без исполнителя
++	s.setPayoutState(s.addSubtask(paidTask, svc, "100"), "done", &execID, true)
++	s.setPayoutState(s.addSubtask(paidTask, svc, "100"), "new", nil, false)
++
++	noExecutorTask := mk() // услуга без исполнителя
++	s.addSubtask(noExecutorTask, svc, "100")
++
++	mixedTask := mk() // одна выплачена, другая нет
++	s.setPayoutState(s.addSubtask(mixedTask, svc, "100"), "done", &execID, true)
++	s.setPayoutState(s.addSubtask(mixedTask, svc, "100"), "done", &execID, false)
++
++	emptyTask := mk() // без услуг
++
++	base := "client_id=" + clientID
++	s.Equal([]int64{unpaidTask, mixedTask}, payoutKeys(s.payoutBoard(base+"&executor_paid=unpaid")))
++	s.Equal([]int64{paidTask}, payoutKeys(s.payoutBoard(base+"&executor_paid=paid")))
++	all := []int64{unpaidTask, paidTask, noExecutorTask, mixedTask, emptyTask}
++	s.Equal(all, payoutKeys(s.payoutBoard(base+"&executor_paid=all")))
++	s.Equal(all, payoutKeys(s.payoutBoard(base)), "без параметра — все")
++
++	s.Equal([]int64{unpaidTask, mixedTask},
++		payoutKeys(s.payoutBoard(base+"&executor_paid=unpaid&per_column=50&column_id="+col)), "совместим с per_column/column_id")
++	// фильтры складываются: оплата заказа и выплата исполнителю — разные оси.
++	s.Empty(s.payoutBoard(base + "&executor_paid=unpaid&paid=paid"))
++}
++
++// TS-009: невалидное значение executor_paid → 400 VALIDATION по полю.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS009_BoardFilterInvalid400() {
++	for _, v := range []string{"yes", "PAID", "1", "paid%20"} {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks?executor_paid="+v, nil)
++		s.Equal(http.StatusBadRequest, st, "%s: %s", v, raw)
++		s.Equal("VALIDATION", s.errOf(raw).Code, v)
++		s.Equal("invalid", s.fields(raw)["executor_paid"], v)
++	}
++}
++
++// TS-010: метка доски executor_unpaid_done — услуги done с исполнителем без выплаты; в
++// GET /tasks и GET /tasks/:id; после отметки выплаты — 0.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS010_BoardBadgeCount() {
++	execID, _ := s.payoutExecutor("payout-ts010")
++	clientID := s.newClient("Клиент-Выплата-TS010")
++	taskID, _ := s.newTask(clientID, s.columnID("Новые"))
++	svc := s.newService("100")
++
++	counted := s.addSubtask(taskID, svc, "100")
++	s.setPayoutState(counted, "done", &execID, false)                                 // считается
++	s.setPayoutState(s.addSubtask(taskID, svc, "100"), "done", &execID, true)         // выплачена
++	s.setPayoutState(s.addSubtask(taskID, svc, "100"), "done", nil, false)            // без исполнителя
++	s.setPayoutState(s.addSubtask(taskID, svc, "100"), "in_progress", &execID, false) // не выполнена
++	quiet, _ := s.newTask(clientID, s.columnID("Новые"))
++
++	board := s.payoutBoard("client_id=" + clientID)
++	s.Equal(1, board[taskID])
++	s.Equal(0, board[quiet], "заказ без услуг — метки нет")
++
++	one := func() payoutBoardItemDTO {
++		st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d", taskID), nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var it payoutBoardItemDTO
++		s.Require().NoError(json.Unmarshal(raw, &it), string(raw))
++		return it
++	}
++	s.Equal(1, one().ExecutorUnpaidDone, "GET /tasks/:id несёт ту же метку")
++
++	st, _, raw := s.putSubtask(s.admin, counted, map[string]any{"status": "done", "assignee_id": execID, "is_executor_paid": true})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(0, s.payoutBoard("client_id=" + clientID)[taskID])
++	s.Equal(0, one().ExecutorUnpaidDone)
++}
++
++// markPayout — массовая отметка из отчёта «Выплаты» (второй писатель флага, D70).
++func (s *OrderCardLiveSuite) markPayout(b *testutil.Browser, paid bool, subtaskIDs ...string) (int, []byte) {
++	return b.Do(http.MethodPost, "/api/v1/executor-payouts/mark", map[string]any{"subtask_ids": subtaskIDs, "is_executor_paid": paid})
++}
++
++// TS-025 (code review HIGH-1/MEDIUM-1): отметка поставлена из отчёта, затем «устаревшая»
++// карточка правит другое поле — PUT без is_executor_paid/executor_payout не трогает флаг,
++// дату и сумму. Зеркально: отметка снята из отчёта — PUT её не возвращает.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS025_StaleCardKeepsMarkFromReport() {
++	execID, _ := s.payoutExecutor("payout-ts025")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS025")
++	st, _, raw := s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execID, "executor_payout": 640})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	// отчёт: отметили выплату.
++	st, raw = s.markPayout(s.admin, true, subID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	_, markedAt, _, _ := s.payoutRow(subID)
++	s.Require().NotNil(markedAt)
++
++	// карточка (открыта до отметки): срок, цена, статус — тело без полей выплаты.
++	st, sub, raw := s.putSubtask(s.admin, subID, map[string]any{
++		"status": "in_progress", "assignee_id": execID, "due_date": "2030-01-15", "price": 2500,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("in_progress", sub.Status)
++	s.Equal("2500.00", sub.Price.String())
++	s.True(sub.IsExecutorPaid, "отметка из отчёта цела")
++	s.Require().NotNil(sub.ExecutorPayout)
++	s.Equal("640.00", sub.ExecutorPayout.String(), "сумма цела")
++	paid, paidAt, payout, _ := s.payoutRow(subID)
++	s.True(paid)
++	s.Equal(*markedAt, *paidAt, "дата отметки не изменилась")
++	s.Equal("640.00", *payout)
++
++	// отчёт: сняли отметку — устаревшая карточка её не возвращает.
++	st, raw = s.markPayout(s.admin, false, subID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execID, "price": 2500})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.False(sub.IsExecutorPaid, "снятая отметка не вернулась")
++	s.Nil(sub.ExecutorPaidAt)
++	s.Equal("640.00", sub.ExecutorPayout.String())
++
++	// сумма: явный null очищает, число ставит — флаг при этом не трогается.
++	st, raw = s.markPayout(s.admin, true, subID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execID, "executor_payout": nil})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Nil(sub.ExecutorPayout, "явный null — очистить")
++	s.True(sub.IsExecutorPaid)
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execID, "executor_payout": 15})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("15.00", sub.ExecutorPayout.String())
++	s.True(sub.IsExecutorPaid)
++}
++
++// TS-026 (code review MEDIUM-3): конкуренция двух писателей одной услуги — POST /mark и
++// PUT /subtasks/:id другого поля идут параллельно. Без deadlock/500; при любом порядке
++// отметка из mark цела, правка PUT применена.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS026_ConcurrentMarkAndPut() {
++	execID, exec := s.payoutExecutor("payout-ts026")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS026")
++	st, _, raw := s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execID, "executor_payout": 77})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	const iterations = 25
++	for i := 1; i <= iterations; i++ {
++		target := i%2 == 1 // чередуем отметку и снятие
++		price := 1000 + i
++		var markSt, putSt int
++		var markRaw, putRaw []byte
++		var wg sync.WaitGroup
++		wg.Add(2)
++		go func() {
++			defer wg.Done()
++			markSt, markRaw = s.markPayout(exec, target, subID)
++		}()
++		go func() {
++			defer wg.Done()
++			putSt, putRaw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID,
++				map[string]any{"status": "done", "assignee_id": execID, "price": price})
++		}()
++		wg.Wait()
++		s.Require().Equal(http.StatusOK, markSt, "итерация %d mark: %s", i, markRaw)
++		s.Require().Equal(http.StatusOK, putSt, "итерация %d put: %s", i, putRaw)
++
++		paid, paidAt, payout, assignee := s.payoutRow(subID)
++		s.Require().Equal(target, paid, "итерация %d: отметка из mark цела", i)
++		s.Require().Equal(target, paidAt != nil, "итерация %d: дата согласована с флагом", i)
++		s.Require().Equal("77.00", *payout, "итерация %d: сумма цела", i)
++		s.Require().Equal(execID, *assignee)
++		var gotPrice string
++		s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT price::text FROM subtasks WHERE id = $1`, subID).Scan(&gotPrice))
++		s.Require().Equal(fmt.Sprintf("%d.00", price), gotPrice, "итерация %d: правка PUT применена", i)
++	}
++}
++
++// TS-027 (code review MEDIUM-3): mark ставит отметку ↔ PUT снимает исполнителя. Исход
++// зависит от порядка, но всегда согласован: либо PUT первым (mark → 400 no_assignee),
++// либо mark первым (PUT → 409 SUBTASK_EXECUTOR_PAID); 500 и «выплачено без исполнителя»
++// не бывает.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS027_ConcurrentMarkAndUnassign() {
++	execID, _ := s.payoutExecutor("payout-ts027")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS027")
++
++	const iterations = 20
++	for i := 1; i <= iterations; i++ {
++		s.setPayoutState(subID, "done", &execID, false)
++		var markSt, putSt int
++		var markRaw, putRaw []byte
++		var wg sync.WaitGroup
++		wg.Add(2)
++		go func() {
++			defer wg.Done()
++			markSt, markRaw = s.markPayout(s.admin, true, subID)
++		}()
++		go func() {
++			defer wg.Done()
++			putSt, putRaw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{"status": "done", "assignee_id": nil})
++		}()
++		wg.Wait()
++
++		paid, _, _, assignee := s.payoutRow(subID)
++		switch {
++		case markSt == http.StatusOK: // mark первым — снять исполнителя уже нельзя
++			s.Require().Equal(http.StatusConflict, putSt, "итерация %d put: %s", i, putRaw)
++			s.Require().Equal("SUBTASK_EXECUTOR_PAID", s.errOf(putRaw).Code)
++			s.Require().True(paid)
++			s.Require().NotNil(assignee)
++		case putSt == http.StatusOK: // PUT первым — отметить без исполнителя нельзя
++			s.Require().Equal(http.StatusBadRequest, markSt, "итерация %d mark: %s", i, markRaw)
++			s.Require().Equal("no_assignee", s.fields(markRaw)["subtask_ids[0]"])
++			s.Require().False(paid)
++			s.Require().Nil(assignee)
++		default:
++			s.Require().Failf("оба запроса отклонены", "итерация %d: mark %d %s; put %d %s", i, markSt, markRaw, putSt, putRaw)
++		}
++	}
++}
++
++// TS-028 (code review MEDIUM-4): выплаченная услуга осталась без исполнителя (сотрудника
++// удалили — assignee_id ON DELETE SET NULL). Она правится без 400, ей можно назначить
++// исполнителя; после назначения снова действует 409 на смену.
++func (s *OrderCardLiveSuite) TestExecutorPayouts_TS028_OrphanPaidSubtaskEditable() {
++	execA, _ := s.payoutExecutor("payout-ts028-a")
++	execB, _ := s.payoutExecutor("payout-ts028-b")
++	_, subID := s.payoutSubtask("Клиент-Выплата-TS028")
++	_, err := s.Pool.Exec(context.Background(), `
++		UPDATE subtasks SET status = 'done', assignee_id = NULL, is_executor_paid = true,
++		       executor_paid_at = now() - interval '1 day', executor_payout = 320
++		WHERE id = $1`, subID)
++	s.Require().NoError(err)
++	_, orphanAt, _, _ := s.payoutRow(subID)
++
++	// правка другого поля, флаг не прислан — 200, выплата не тронута.
++	st, sub, raw := s.putSubtask(s.admin, subID, map[string]any{"status": "done", "price": 1800})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.True(sub.IsExecutorPaid)
++	s.Equal("1800.00", sub.Price.String())
++	s.Equal("320.00", sub.ExecutorPayout.String())
++	// тот же флаг true явно (не переход false→true) — тоже 200.
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "is_executor_paid": true})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	_, at, _, _ := s.payoutRow(subID)
++	s.Equal(*orphanAt, *at, "дата отметки не изменилась")
++
++	// назначить исполнителя «осиротевшей» выплаченной услуге можно (NULL → uuid).
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execA})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.True(sub.IsExecutorPaid)
++	s.Equal(execA, *sub.AssigneeID)
++
++	// теперь исполнитель есть — смена/снятие при остающейся отметке снова 409.
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": execB})
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("SUBTASK_EXECUTOR_PAID", s.errOf(raw).Code)
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "assignee_id": nil})
++	s.Equal(http.StatusConflict, st, string(raw))
++
++	// снятие отметки у услуги без исполнителя и повторная отметка без исполнителя → 400.
++	_, err = s.Pool.Exec(context.Background(), `UPDATE subtasks SET assignee_id = NULL WHERE id = $1`, subID)
++	s.Require().NoError(err)
++	st, sub, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "is_executor_paid": false})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.False(sub.IsExecutorPaid)
++	st, _, raw = s.putSubtask(s.admin, subID, map[string]any{"status": "done", "is_executor_paid": true})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("no_assignee", s.fields(raw)["is_executor_paid"])
++}
+diff --git a/internal/features/board/executor_payouts_test.go b/internal/features/board/executor_payouts_test.go
+new file mode 100644
+index 0000000..a4ce95d
+--- /dev/null
++++ b/internal/features/board/executor_payouts_test.go
+@@ -0,0 +1,117 @@
++package board
++
++import (
++	"encoding/json"
++	"errors"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/numeric"
++)
++
++// Юнит-тесты выплат исполнителям (executor-payouts, TS-020): формат executor_payout в
++// PUT /subtasks/:id и разбор query executor_paid списка заказов.
++
++func subtaskFieldMap(in SubtaskUpdateRequest) map[string]string {
++	got := map[string]string{}
++	for _, f := range in.normalize().validate() {
++		got[f.Name] = f.Message
++	}
++	return got
++}
++
++func amountPtr(v string) *numeric.Amount {
++	a := numeric.Amount(v)
++	return &a
++}
++
++// TS-020/TS-006: executor_payout — NUMERIC(12,2) ≥ 0; nil (нет поля/null) валиден.
++func TestTS020_SubtaskUpdateRequestValidate_ExecutorPayout(t *testing.T) {
++	paid := true
++	ok := []SubtaskUpdateRequest{
++		{Status: SubtaskStatusDone},
++		{Status: SubtaskStatusDone, ExecutorPayout: OptionalAmount{Set: true, Value: amountPtr("0")}},
++		{Status: SubtaskStatusDone, ExecutorPayout: OptionalAmount{Set: true, Value: amountPtr("1500.50")}, IsExecutorPaid: &paid},
++		{Status: SubtaskStatusDone, ExecutorPayout: OptionalAmount{Set: true, Value: amountPtr("9999999999.99")}},
++	}
++	for _, in := range ok {
++		assert.NotContains(t, subtaskFieldMap(in), "executor_payout", "payout=%v", in.ExecutorPayout.Value)
++	}
++
++	bad := map[string]string{
++		"1.234":       numeric.MsgTooPrecise,
++		"10000000000": numeric.MsgTooLarge,
++		"abc":         numeric.MsgInvalidFormat,
++		"1e3":         numeric.MsgInvalidFormat,
++	}
++	for raw, want := range bad {
++		got := subtaskFieldMap(SubtaskUpdateRequest{Status: SubtaskStatusDone, ExecutorPayout: OptionalAmount{Set: true, Value: amountPtr(raw)}})
++		assert.Equal(t, want, got["executor_payout"], "payout=%q", raw)
++	}
++	// отрицательная сумма — ошибка поля (точный код — pkg/numeric).
++	neg := subtaskFieldMap(SubtaskUpdateRequest{Status: SubtaskStatusDone, ExecutorPayout: OptionalAmount{Set: true, Value: amountPtr("-1")}})
++	assert.NotEmpty(t, neg["executor_payout"])
++}
++
++// TS-020/TS-008: executor_paid — all (и отсутствие параметра) → без фильтра; paid/unpaid.
++func TestTS020_ParseTaskFilter_ExecutorPaid(t *testing.T) {
++	for raw, want := range map[string]string{
++		"":                     "",
++		"executor_paid=all":    "",
++		"executor_paid=paid":   PaidFilterPaid,
++		"executor_paid=unpaid": PaidFilterUnpaid,
++	} {
++		f, err := parseFilter(t, raw, admin)
++		require.NoError(t, err, raw)
++		assert.Equal(t, want, f.ExecutorPaid, raw)
++	}
++}
++
++// TS-020/TS-009: мусорное значение executor_paid → VALIDATION по полю executor_paid.
++func TestTS020_ParseTaskFilter_ExecutorPaidInvalid(t *testing.T) {
++	for _, raw := range []string{"executor_paid=yes", "executor_paid=PAID", "executor_paid=1", "executor_paid=%00"} {
++		_, err := parseFilter(t, raw, admin)
++		var ae *errorspkg.AppError
++		require.True(t, errors.As(err, &ae), raw)
++		require.Len(t, ae.Fields, 1, raw)
++		assert.Equal(t, "executor_paid", ae.Fields[0].Name)
++		assert.Equal(t, msgInvalid, ae.Fields[0].Message)
++	}
++}
++
++// TS-020: независимость от фильтра оплаты заказа — оба параметра разбираются раздельно.
++func TestTS020_ParseTaskFilter_ExecutorPaidIndependentOfPaid(t *testing.T) {
++	f, err := parseFilter(t, "paid=paid&executor_paid=unpaid", admin)
++	require.NoError(t, err)
++	require.NotNil(t, f.Paid)
++	assert.True(t, *f.Paid)
++	assert.Equal(t, PaidFilterUnpaid, f.ExecutorPaid)
++}
++
++// TS-020/TS-025: executor_payout различает «поля нет» / null / число (D65).
++func TestTS020_SubtaskUpdateRequest_ExecutorPayoutPresence(t *testing.T) {
++	var absent SubtaskUpdateRequest
++	require.NoError(t, json.Unmarshal([]byte(`{"status":"done"}`), &absent))
++	assert.False(t, absent.ExecutorPayout.Set, "поля нет — сумму не менять")
++	assert.Nil(t, absent.ExecutorPayout.Value)
++	assert.Nil(t, absent.IsExecutorPaid)
++
++	var null SubtaskUpdateRequest
++	require.NoError(t, json.Unmarshal([]byte(`{"status":"done","executor_payout":null}`), &null))
++	assert.True(t, null.ExecutorPayout.Set, "явный null — очистить")
++	assert.Nil(t, null.ExecutorPayout.Value)
++
++	var set SubtaskUpdateRequest
++	require.NoError(t, json.Unmarshal([]byte(`{"status":"done","executor_payout":1500.50}`), &set))
++	assert.True(t, set.ExecutorPayout.Set)
++	require.NotNil(t, set.ExecutorPayout.Value)
++	assert.Equal(t, "1500.50", set.ExecutorPayout.Value.String())
++
++	// не число — ошибка разбора тела (хендлер отвечает 400 BAD_REQUEST).
++	var bad SubtaskUpdateRequest
++	assert.Error(t, json.Unmarshal([]byte(`{"status":"done","executor_payout":"abc"}`), &bad))
++	assert.Error(t, json.Unmarshal([]byte(`{"status":"done","executor_payout":{}}`), &bad))
++}
+diff --git a/internal/features/board/optional_amount.go b/internal/features/board/optional_amount.go
+new file mode 100644
+index 0000000..668b20c
+--- /dev/null
++++ b/internal/features/board/optional_amount.go
+@@ -0,0 +1,31 @@
++package board
++
++import (
++	"bytes"
++	"encoding/json"
++
++	"github.com/kitavrus/kanban-tree/pkg/numeric"
++)
++
++// OptionalAmount — денежное поле запроса с тремя состояниями (D65): поля в теле нет
++// (Set=false — значение не менять), явный null (Set=true, Value=nil — очистить), число
++// (Set=true, Value — установить). Обычный *numeric.Amount «нет поля» и null не различает.
++// encoding/json вызывает UnmarshalJSON только для присутствующего поля, в т.ч. для null.
++type OptionalAmount struct {
++	Set   bool
++	Value *numeric.Amount
++}
++
++func (o *OptionalAmount) UnmarshalJSON(b []byte) error {
++	o.Set = true
++	o.Value = nil
++	if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
++		return nil
++	}
++	var a numeric.Amount
++	if err := json.Unmarshal(b, &a); err != nil {
++		return err
++	}
++	o.Value = &a
++	return nil
++}
+diff --git a/internal/features/board/order_card_http_live_test.go b/internal/features/board/order_card_http_live_test.go
+index a92c298..cf111f3 100644
+--- a/internal/features/board/order_card_http_live_test.go
++++ b/internal/features/board/order_card_http_live_test.go
+@@ -107,20 +107,24 @@ type cardSubtaskLogDTO struct {
+ }
+ 
+ type cardSubtaskDTO struct {
+-	ID               string                  `json:"id"`
+-	ServiceID        string                  `json:"service_id"`
+-	ServiceName      string                  `json:"service_name"`
+-	Status           string                  `json:"status"`
+-	AssigneeID       *string                 `json:"assignee_id"`
+-	AssigneeName     *string                 `json:"assignee_name"`
+-	AssigneeIsActive *bool                   `json:"assignee_is_active"`
+-	DueDate          *string                 `json:"due_date"`
+-	Price            *json.Number            `json:"price"`
+-	EquipmentID      *string                 `json:"equipment_id"`
+-	Position         int                     `json:"position"`
+-	Total            json.Number             `json:"total"`
+-	Products         []cardSubtaskProductDTO `json:"products"`
+-	Logs             []cardSubtaskLogDTO     `json:"logs"`
++	ID               string       `json:"id"`
++	ServiceID        string       `json:"service_id"`
++	ServiceName      string       `json:"service_name"`
++	Status           string       `json:"status"`
++	AssigneeID       *string      `json:"assignee_id"`
++	AssigneeName     *string      `json:"assignee_name"`
++	AssigneeIsActive *bool        `json:"assignee_is_active"`
++	DueDate          *string      `json:"due_date"`
++	Price            *json.Number `json:"price"`
++	EquipmentID      *string      `json:"equipment_id"`
++	Position         int          `json:"position"`
++	Total            json.Number  `json:"total"`
++	// executor-payouts (D62–D65): выплата исполнителю.
++	IsExecutorPaid bool                    `json:"is_executor_paid"`
++	ExecutorPaidAt *string                 `json:"executor_paid_at"`
++	ExecutorPayout *json.Number            `json:"executor_payout"`
++	Products       []cardSubtaskProductDTO `json:"products"`
++	Logs           []cardSubtaskLogDTO     `json:"logs"`
+ }
+ 
+ type cardStockDTO struct {
+diff --git a/internal/features/board/subtasks_repo.go b/internal/features/board/subtasks_repo.go
+index efeae74..53f6ccc 100644
+--- a/internal/features/board/subtasks_repo.go
++++ b/internal/features/board/subtasks_repo.go
+@@ -19,6 +19,8 @@ type SubtaskState struct {
+ 	ID         string
+ 	Status     string
+ 	AssigneeID *string
++	// IsExecutorPaid — текущая отметка выплаты исполнителю (D66: защита смены исполнителя).
++	IsExecutorPaid bool
+ }
+ 
+ // TaskIDOf — design-sql.md §Subtask Parent Query (первый запрос): владелец-заказ услуги.
+@@ -36,8 +38,8 @@ func (r *SubtaskRepo) TaskIDOf(ctx context.Context, tx pgx.Tx, id string) (int64
+ // (Lock Order). 0 строк (удалена/перенесена параллельно) → errNotFound.
+ func (r *SubtaskRepo) Lock(ctx context.Context, tx pgx.Tx, id string, taskID int64) (*SubtaskState, error) {
+ 	var st SubtaskState
+-	err := tx.QueryRow(ctx, `SELECT id, status, assignee_id::text FROM subtasks WHERE id = $1 AND task_id = $2 FOR UPDATE`,
+-		id, taskID).Scan(&st.ID, &st.Status, &st.AssigneeID)
++	err := tx.QueryRow(ctx, `SELECT id, status, assignee_id::text, is_executor_paid FROM subtasks WHERE id = $1 AND task_id = $2 FOR UPDATE`,
++		id, taskID).Scan(&st.ID, &st.Status, &st.AssigneeID, &st.IsExecutorPaid)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errNotFound
+ 	}
+@@ -89,15 +91,27 @@ type subtaskUpdateRow struct {
+ 	DueDate     *string
+ 	Price       *string
+ 	EquipmentID *string
++	// IsExecutorPaid — итоговое значение флага (сервис подставляет текущее, если клиент
++	// поле не прислал). SetExecutorPayout=false — сумму не трогать (поля в запросе нет);
++	// true — записать ExecutorPayout (nil → NULL).
++	IsExecutorPaid    bool
++	SetExecutorPayout bool
++	ExecutorPayout    *string
+ }
+ 
+ // Update — design-sql.md §Update Subtask Query. 0 строк (удалена параллельно) →
+-// errNotFound.
++// errNotFound. executor_paid_at — как tasks.paid_at: now() при переходе false→true,
++// NULL при снятии, иначе не трогается (D63).
+ func (r *SubtaskRepo) Update(ctx context.Context, tx pgx.Tx, id string, in subtaskUpdateRow) error {
+ 	tag, err := tx.Exec(ctx, `
+ 		UPDATE subtasks SET status = $2, assignee_id = $3::uuid, due_date = $4::date,
+-		       price = $5::numeric, equipment_id = $6::uuid, updated_at = now()
+-		WHERE id = $1`, id, in.Status, in.AssigneeID, in.DueDate, in.Price, in.EquipmentID)
++		       price = $5::numeric, equipment_id = $6::uuid,
++		       executor_paid_at = CASE WHEN $7 AND NOT is_executor_paid THEN now() WHEN NOT $7 THEN NULL ELSE executor_paid_at END,
++		       is_executor_paid = $7,
++		       executor_payout = CASE WHEN $9::boolean THEN $8::numeric ELSE executor_payout END,
++		       updated_at = now()
++		WHERE id = $1`, id, in.Status, in.AssigneeID, in.DueDate, in.Price, in.EquipmentID,
++		in.IsExecutorPaid, in.ExecutorPayout, in.SetExecutorPayout)
+ 	if err != nil {
+ 		return err
+ 	}
+diff --git a/internal/features/board/subtasks_service.go b/internal/features/board/subtasks_service.go
+index 8cc351e..dbcc5f2 100644
+--- a/internal/features/board/subtasks_service.go
++++ b/internal/features/board/subtasks_service.go
+@@ -140,6 +140,23 @@ func (s *CardService) UpdateSubtask(ctx context.Context, a Actor, subtaskID stri
+ 			}
+ 		}
+ 
++		// Выплата исполнителю (D65/D66): поле не прислано → флаг прежний. Правила — по
++		// ПЕРЕХОДУ, а не по итоговому состоянию: 409 — у выплаченной услуги СУЩЕСТВУЮЩЕГО
++		// исполнителя меняют на другого или снимают, а отметка остаётся; 400 — запрос
++		// переводит флаг false→true без исполнителя. Выплаченная услуга, оставшаяся без
++		// исполнителя (сотрудника удалили, ON DELETE SET NULL), правится свободно, и ей
++		// можно назначить исполнителя.
++		executorPaid := cur.IsExecutorPaid
++		if in.IsExecutorPaid != nil {
++			executorPaid = *in.IsExecutorPaid
++		}
++		if cur.IsExecutorPaid && executorPaid && cur.AssigneeID != nil && !samePtr(cur.AssigneeID, assigneeID) {
++			return ErrSubtaskExecutorPaid
++		}
++		if !cur.IsExecutorPaid && executorPaid && assigneeID == nil {
++			return errorspkg.Validation(errorspkg.Field{Name: "is_executor_paid", Message: msgNoAssignee})
++		}
++
+ 		equipmentID := nilIfEmpty(in.EquipmentID)
+ 		if equipmentID != nil {
+ 			attached, err := s.equipment.Attached(spanCtx, tx, tid, *equipmentID)
+@@ -151,15 +168,20 @@ func (s *CardService) UpdateSubtask(ctx context.Context, a Actor, subtaskID stri
+ 			}
+ 		}
+ 
+-		var priceStr *string
++		var priceStr, payoutStr *string
+ 		if in.Price != nil {
+ 			v := in.Price.String()
+ 			priceStr = &v
+ 		}
++		if in.ExecutorPayout.Value != nil {
++			v := in.ExecutorPayout.Value.String()
++			payoutStr = &v
++		}
+ 
+ 		if err := s.subtasks.Update(spanCtx, tx, subtaskID, subtaskUpdateRow{
+ 			Status: in.Status, AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
+ 			Price: priceStr, EquipmentID: equipmentID,
++			IsExecutorPaid: executorPaid, SetExecutorPayout: in.ExecutorPayout.Set, ExecutorPayout: payoutStr,
+ 		}); err != nil {
+ 			if errors.Is(err, errNotFound) {
+ 				return ErrSubtaskNotFound
+diff --git a/internal/features/board/subtasks_validate.go b/internal/features/board/subtasks_validate.go
+index 937f550..1c00cc1 100644
+--- a/internal/features/board/subtasks_validate.go
++++ b/internal/features/board/subtasks_validate.go
+@@ -16,6 +16,8 @@ const (
+ 	msgArchived    = "archived"
+ 	msgNotInOrder  = "not_in_order"
+ 	msgNotPositive = "not_positive"
++	// msgNoAssignee — is_executor_paid=true у услуги без исполнителя (D65).
++	msgNoAssignee = "no_assignee"
+ )
+ 
+ // priceScale/qtyScale — NUMERIC(12,2)/(12,3): subtasks.price, subtask_products.price
+@@ -96,6 +98,13 @@ func (in SubtaskUpdateRequest) validate() []errorspkg.Field {
+ 	if in.EquipmentID != nil && *in.EquipmentID != "" && uuid.Validate(*in.EquipmentID) != nil {
+ 		add("equipment_id", msgInvalid)
+ 	}
++
++	// executor_payout — NUMERIC(12,2) ≥ 0, как price (D63).
++	if in.ExecutorPayout.Value != nil {
++		if code := in.ExecutorPayout.Value.Validate(priceScale, false); code != "" {
++			add("executor_payout", code)
++		}
++	}
+ 	return f
+ }
+ 
+diff --git a/internal/features/board/tasks_dto.go b/internal/features/board/tasks_dto.go
+index 0566783..bf71790 100644
+--- a/internal/features/board/tasks_dto.go
++++ b/internal/features/board/tasks_dto.go
+@@ -37,6 +37,10 @@ type TaskCard struct {
+ 	// HasInTransit — у заказа есть оборудование в пути (DS-009, бейдж «в пути» на доске).
+ 	// Вычисляется в GET /tasks и GET /tasks/:id (Get), а значит и в mutation-ответах.
+ 	HasInTransit bool `json:"has_in_transit"`
++	// ExecutorUnpaidDone — число услуг заказа со статусом done и назначенным исполнителем,
++	// за которые исполнителю ещё не выплачено (D68, метка на карточке доски; 0 — метки нет).
++	// Вычисляется в GET /tasks и GET /tasks/:id.
++	ExecutorUnpaidDone int `json:"executor_unpaid_done"`
+ }
+ 
+ // TaskLastLog — последняя запись журнала работ ЛЮБОЙ услуги заказа (карточка доски, AC-012).
+diff --git a/internal/features/board/tasks_filter.go b/internal/features/board/tasks_filter.go
+index 7e49576..1f3c077 100644
+--- a/internal/features/board/tasks_filter.go
++++ b/internal/features/board/tasks_filter.go
+@@ -41,6 +41,10 @@ type TaskFilter struct {
+ 	// WarehouseID — фильтр «Склад» (DS-009, D59): заказы, у которых хоть одно оборудование
+ 	// на складе X (at_warehouse) или едет на склад X (in_transit с назначением X).
+ 	WarehouseID *string
++	// ExecutorPaid — фильтр «Выплата исполнителю» (D67): "" — все; "unpaid" — у заказа есть
++	// услуга с исполнителем без отметки выплаты; "paid" — услуги с исполнителем есть и все
++	// они выплачены. Заказ без услуг с исполнителем не попадает ни в paid, ни в unpaid.
++	ExecutorPaid string
+ 	// ColumnID — фильтр по колонке (pagination DS-002, догрузка «Показать ещё» DS-001).
+ 	ColumnID *string
+ 	// PerColumn — окно «не более N первых (t.position, t.id) карточек на колонку»
+@@ -105,6 +109,15 @@ func ParseTaskFilter(c fiber.Ctx, a Actor) (TaskFilter, error) {
+ 		add("paid")
+ 	}
+ 
++	switch p := c.Query("executor_paid", PaidFilterAll); p {
++	case PaidFilterAll:
++		f.ExecutorPaid = ""
++	case PaidFilterPaid, PaidFilterUnpaid:
++		f.ExecutorPaid = p
++	default:
++		add("executor_paid")
++	}
++
+ 	assignee := strings.TrimSpace(c.Query("assignee"))
+ 	switch {
+ 	case assignee == "":
+diff --git a/internal/features/board/tasks_repo.go b/internal/features/board/tasks_repo.go
+index edb7edc..c6473ae 100644
+--- a/internal/features/board/tasks_repo.go
++++ b/internal/features/board/tasks_repo.go
+@@ -42,8 +42,16 @@ type Task struct {
+ 	LastLog         *TaskLastLog
+ 	// HasInTransit — оборудование заказа в пути (DS-009); заполняет только Get.
+ 	HasInTransit bool
++	// ExecutorUnpaidDone — выполненные услуги с исполнителем без выплаты (D68); только Get.
++	ExecutorUnpaidDone int
+ }
+ 
++// executorUnpaidDoneSQL — D68: скаляр-фрагмент метки доски, коррелирован с t.id (алиас es —
++// во избежание конфликта с внешними алиасами Get/List).
++const executorUnpaidDoneSQL = `
++	(SELECT count(*) FROM subtasks es WHERE es.task_id = t.id AND es.status = 'done'
++	        AND es.assignee_id IS NOT NULL AND NOT es.is_executor_paid)`
++
+ // columnFlags — колонка под FOR SHARE (design-sql.md §Lock Target Column Query).
+ type columnFlags struct {
+ 	ID            string
+@@ -268,7 +276,8 @@ func (r *TaskRepo) Get(ctx context.Context, id int64) (*Task, error) {
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done' AND s.due_date < current_date),
+ 		       t.description_html, `+totalAmountSelectSQL+`,
+ 		       ll.text, ll.cut, ll.author_name, ll.created_at,
+-		       EXISTS (SELECT 1 FROM task_equipment te WHERE te.task_id = t.id AND te.status = 'in_transit')
++		       EXISTS (SELECT 1 FROM task_equipment te WHERE te.task_id = t.id AND te.status = 'in_transit'),
++		       `+executorUnpaidDoneSQL+`
+ 		FROM tasks t
+ 		JOIN clients cl ON cl.id = t.client_id
+ 		LEFT JOIN users u ON u.id = t.assignee_id
+@@ -277,7 +286,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64) (*Task, error) {
+ 		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.ClientName, &t.Title, &t.AssigneeID, &t.AssigneeName,
+ 			&t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
+ 			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount,
+-			&llText, &llCut, &llAuthor, &llCreatedAt, &t.HasInTransit)
++			&llText, &llCut, &llAuthor, &llCreatedAt, &t.HasInTransit, &t.ExecutorUnpaidDone)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errNotFound
+ 	}
+@@ -331,6 +340,13 @@ WITH base AS (
+     AND ($13::uuid IS NULL OR EXISTS (SELECT 1 FROM task_equipment te WHERE te.task_id = t.id
+            AND ((te.status = 'at_warehouse' AND te.warehouse_id = $13)
+              OR (te.status = 'in_transit' AND te.transit_to_warehouse_id = $13))))
++    AND ($14::text IS NULL
++         OR ($14 = 'unpaid' AND EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
++                AND s.assignee_id IS NOT NULL AND NOT s.is_executor_paid))
++         OR ($14 = 'paid' AND EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
++                AND s.assignee_id IS NOT NULL)
++             AND NOT EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id
++                AND s.assignee_id IS NOT NULL AND NOT s.is_executor_paid)))
+ ), page AS (
+   SELECT b.id, b.column_total, b.total
+   FROM base b
+@@ -349,7 +365,8 @@ SELECT t.id, t.column_id, t.client_id, cl.company_name, t.title, t.assignee_id,
+        ` + totalAmountSelectSQL + ` AS total_amount,
+        ll.text, ll.cut, ll.author_name, ll.created_at,
+        p.column_total, p.total,
+-       EXISTS (SELECT 1 FROM task_equipment te WHERE te.task_id = t.id AND te.status = 'in_transit') AS has_in_transit
++       EXISTS (SELECT 1 FROM task_equipment te WHERE te.task_id = t.id AND te.status = 'in_transit') AS has_in_transit,
++       ` + executorUnpaidDoneSQL + ` AS executor_unpaid_done
+ FROM page p
+ JOIN tasks t    ON t.id = p.id
+ JOIN columns c  ON c.id = t.column_id
+@@ -362,17 +379,20 @@ ORDER BY c.position, c.id, t.position, t.id`
+ // модель/SN оборудования заказа (plan.md §Доска, §Оборудование клиента). Q-3 передаётся вызывающей стороной уже
+ // экранированным (pkg/sqlutil.EscapeLike, tasks_filter.go).
+ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, error) {
+-	var q, qDesc, due any
++	var q, qDesc, due, executorPaid any
+ 	if f.Q != "" {
+ 		q, qDesc = f.Q, f.QDesc
+ 	}
+ 	if f.Due != "" {
+ 		due = f.Due
+ 	}
++	if f.ExecutorPaid != "" {
++		executorPaid = f.ExecutorPaid
++	}
+ 
+ 	rows, err := r.pool.Query(ctx, boardListSQL,
+ 		f.ClientID, q, f.TaskNo, f.CategoryID, f.Paid, f.AssigneeID, due, f.Limit, f.Offset,
+-		f.ColumnID, f.PerColumn, qDesc, f.WarehouseID)
++		f.ColumnID, f.PerColumn, qDesc, f.WarehouseID, executorPaid)
+ 	if err != nil {
+ 		return nil, 0, err
+ 	}
+@@ -388,7 +408,7 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
+ 		var llCreatedAt sql.NullTime
+ 		if err := rows.Scan(&c.ID, &c.ColumnID, &c.ClientID, &c.ClientName, &c.Title, &c.AssigneeID, &c.AssigneeName,
+ 			&c.DueDate, &c.IsPaid, &c.Position, &c.Version, &c.SubtasksTotal, &c.SubtasksDone, &c.SubtasksLate,
+-			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &c.ColumnTotal, &total, &c.HasInTransit); err != nil {
++			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &c.ColumnTotal, &total, &c.HasInTransit, &c.ExecutorUnpaidDone); err != nil {
+ 			return nil, 0, err
+ 		}
+ 		c.TotalAmount = numeric.Amount(totalAmount)
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index 8b60aec..2456975 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -393,6 +393,7 @@ func toTaskResponse(t Task) TaskResponse {
+ 			DueDate: t.DueDate, IsPaid: t.IsPaid, Position: t.Position, Version: t.Version,
+ 			SubtasksTotal: t.SubtasksTotal, SubtasksDone: t.SubtasksDone, SubtasksLate: t.SubtasksLate,
+ 			TotalAmount: t.TotalAmount, LastLog: t.LastLog, HasInTransit: t.HasInTransit,
++			ExecutorUnpaidDone: t.ExecutorUnpaidDone,
+ 		},
+ 		PaidAt: t.PaidAt, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, DescriptionHTML: t.DescriptionHTML,
+ 	}
+diff --git a/internal/features/executorpayouts/dto.go b/internal/features/executorpayouts/dto.go
+new file mode 100644
+index 0000000..b8ede83
+--- /dev/null
++++ b/internal/features/executorpayouts/dto.go
+@@ -0,0 +1,104 @@
++// Package executorpayouts — отчёт «Выплаты исполнителям» (D62–D70): список услуг заказов с
++// назначенным исполнителем, итоги «к выплате / выплачено» по исполнителям и массовая
++// отметка выплаты. Отдельный пакет, не board (как stocktransfers, D50): отчёт — свой экран
++// и свой ресурс API; правка одной услуги из карточки заказа остаётся в board
++// (PUT /api/v1/subtasks/:id).
++package executorpayouts
++
++import (
++	"bytes"
++	"encoding/json"
++	"time"
++
++	"github.com/kitavrus/kanban-tree/pkg/numeric"
++)
++
++// Wire-типы — JSON только snake_case (§API-1), списки — {items,total,limit,offset}.
++
++// PayoutItem — услуга заказа с исполнителем. Price — цена для клиента (null = «по факту»);
++// ExecutorPayout — сумма выплаты исполнителю (null = не задана, в итогах считается как 0).
++type PayoutItem struct {
++	SubtaskID      string          `json:"subtask_id"`
++	TaskID         int64           `json:"task_id"`
++	TaskTitle      string          `json:"task_title"`
++	ClientName     string          `json:"client_name"`
++	ServiceName    string          `json:"service_name"`
++	Status         string          `json:"status"` // new | in_progress | done
++	AssigneeID     string          `json:"assignee_id"`
++	AssigneeName   string          `json:"assignee_name"`
++	Price          *numeric.Amount `json:"price"`
++	ExecutorPayout *numeric.Amount `json:"executor_payout"`
++	IsExecutorPaid bool            `json:"is_executor_paid"`
++	ExecutorPaidAt *time.Time      `json:"executor_paid_at"`
++}
++
++// PayoutListResponse — GET /api/v1/executor-payouts. Порядок items: исполнитель (имя, id),
++// заказ (id), позиция услуги в заказе, id услуги — услуги одного исполнителя идут подряд.
++type PayoutListResponse struct {
++	Items  []PayoutItem `json:"items"`
++	Total  int          `json:"total"`
++	Limit  int          `json:"limit"`
++	Offset int          `json:"offset"`
++}
++
++// PayoutSummaryItem — итоги одного исполнителя по тем же фильтрам, что и список (без учёта
++// limit/offset списка). ToPay/Paid — суммы COALESCE(executor_payout, 0) невыплаченных/
++// выплаченных услуг; счётчики — число таких услуг.
++type PayoutSummaryItem struct {
++	AssigneeID   string         `json:"assignee_id"`
++	AssigneeName string         `json:"assignee_name"`
++	UnpaidCount  int            `json:"unpaid_count"`
++	PaidCount    int            `json:"paid_count"`
++	ToPay        numeric.Amount `json:"to_pay"`
++	Paid         numeric.Amount `json:"paid"`
++}
++
++// PayoutSummaryResponse — GET /api/v1/executor-payouts/summary. Порядок: имя, id.
++type PayoutSummaryResponse struct {
++	Items  []PayoutSummaryItem `json:"items"`
++	Total  int                 `json:"total"`
++	Limit  int                 `json:"limit"`
++	Offset int                 `json:"offset"`
++}
++
++// MarkRequest — POST /api/v1/executor-payouts/mark: массовая отметка/снятие выплаты.
++// IsExecutorPaid обязателен (указатель — отличить «нет поля» от false).
++type MarkRequest struct {
++	SubtaskIDs     []string `json:"subtask_ids"`
++	IsExecutorPaid *bool    `json:"is_executor_paid"`
++}
++
++// MarkResponse — Updated: сколько услуг реально сменило отметку (уже стоявшие в нужном
++// состоянии не считаются — повтор запроса идемпотентен и даёт 0).
++type MarkResponse struct {
++	Updated int `json:"updated"`
++}
++
++// optionalAmount — денежное поле запроса с признаком присутствия: поля нет (Set=false),
++// явный null (Set=true, Value=nil) или число. Своя декларация, не импорт из board (фичи
++// друг от друга не зависят). encoding/json зовёт UnmarshalJSON только для присутствующего
++// поля, в т.ч. для null.
++type optionalAmount struct {
++	Set   bool
++	Value *numeric.Amount
++}
++
++func (o *optionalAmount) UnmarshalJSON(b []byte) error {
++	o.Set = true
++	o.Value = nil
++	if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
++		return nil
++	}
++	var a numeric.Amount
++	if err := json.Unmarshal(b, &a); err != nil {
++		return err
++	}
++	o.Value = &a
++	return nil
++}
++
++// PayoutUpdateRequest — PUT /api/v1/executor-payouts/:id (D72): правка ТОЛЬКО суммы выплаты
++// услуги из отчёта. Поле обязательно: null — очистить сумму, число ≥ 0 — установить.
++type PayoutUpdateRequest struct {
++	ExecutorPayout optionalAmount `json:"executor_payout"`
++}
+diff --git a/internal/features/executorpayouts/executorpayouts_http_live_test.go b/internal/features/executorpayouts/executorpayouts_http_live_test.go
+new file mode 100644
+index 0000000..b0d24db
+--- /dev/null
++++ b/internal/features/executorpayouts/executorpayouts_http_live_test.go
+@@ -0,0 +1,830 @@
++//go:build integration
++
++package executorpayouts_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// ExecutorPayoutsLiveSuite (§TD-8): отчёт «Выплаты» и массовая отметка (docs/plan.md
++// D69/D70; сценарии TS-011…TS-017, TS-024 —
++// docs/features/executor-payouts/0-setup/light-progress.md). Реальный бинарь + TCP +
++// реальный логин; фикстуры — напрямую SQL. Тесты делят одну БД, поэтому каждый заводит
++// своих исполнителей и фильтрует по ним.
++type ExecutorPayoutsLiveSuite struct {
++	testutil.LiveSuite
++	admin    *testutil.Browser
++	adminID  string
++	clientID string
++	columnID string
++	svcID    string
++	seq      int
++}
++
++func TestExecutorPayoutsLiveSuite(t *testing.T) {
++	suite.Run(t, &ExecutorPayoutsLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *ExecutorPayoutsLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.adminID = s.SeedUser("ep-admin", "password1", "Выплаты Админ", "admin", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("ep-admin", "password1")
++	ctx := context.Background()
++	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO clients (company_name) VALUES ('EP Клиент') RETURNING id::text`).Scan(&s.clientID))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id::text FROM columns ORDER BY position, id LIMIT 1`).Scan(&s.columnID))
++	var catID string
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO catalog_categories (kind, name) VALUES ('service', 'EP услуги') RETURNING id::text`).Scan(&catID))
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO services (category_id, name, price) VALUES ($1, 'EP диагностика', 1000) RETURNING id::text`, catID).Scan(&s.svcID))
++}
++
++// ---- wire-типы (1:1 с internal/features/executorpayouts/dto.go, §TD-6.2) ----
++
++type payoutItemDTO struct {
++	SubtaskID      string       `json:"subtask_id"`
++	TaskID         int64        `json:"task_id"`
++	TaskTitle      string       `json:"task_title"`
++	ClientName     string       `json:"client_name"`
++	ServiceName    string       `json:"service_name"`
++	Status         string       `json:"status"`
++	AssigneeID     string       `json:"assignee_id"`
++	AssigneeName   string       `json:"assignee_name"`
++	Price          *json.Number `json:"price"`
++	ExecutorPayout *json.Number `json:"executor_payout"`
++	IsExecutorPaid bool         `json:"is_executor_paid"`
++	ExecutorPaidAt *string      `json:"executor_paid_at"`
++}
++
++type payoutListDTO struct {
++	Items  []payoutItemDTO `json:"items"`
++	Total  int             `json:"total"`
++	Limit  int             `json:"limit"`
++	Offset int             `json:"offset"`
++}
++
++type summaryItemDTO struct {
++	AssigneeID   string      `json:"assignee_id"`
++	AssigneeName string      `json:"assignee_name"`
++	UnpaidCount  int         `json:"unpaid_count"`
++	PaidCount    int         `json:"paid_count"`
++	ToPay        json.Number `json:"to_pay"`
++	Paid         json.Number `json:"paid"`
++}
++
++type summaryDTO struct {
++	Items  []summaryItemDTO `json:"items"`
++	Total  int              `json:"total"`
++	Limit  int              `json:"limit"`
++	Offset int              `json:"offset"`
++}
++
++type markDTO struct {
++	Updated int `json:"updated"`
++}
++
++type apiErrDTO struct {
++	Code    string `json:"code"`
++	Details *struct {
++		Fields []struct{ Name, Message string } `json:"fields"`
++	} `json:"details"`
++}
++
++// ---- помощники ----
++
++func (s *ExecutorPayoutsLiveSuite) errOf(body []byte) apiErrDTO {
++	var e apiErrDTO
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	return e
++}
++
++func (s *ExecutorPayoutsLiveSuite) fields(body []byte) map[string]string {
++	e := s.errOf(body)
++	s.Require().NotNil(e.Details, string(body))
++	m := map[string]string{}
++	for _, f := range e.Details.Fields {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++// newExecutor — активный исполнитель; имя задаёт порядок групп отчёта.
++func (s *ExecutorPayoutsLiveSuite) newExecutor(name string) (string, string) {
++	s.seq++
++	login := fmt.Sprintf("ep-exec-%d", s.seq)
++	return s.SeedUser(login, "password1", name, "executor", true), login
++}
++
++func (s *ExecutorPayoutsLiveSuite) newTask(title string) int64 {
++	s.seq++
++	var id int64
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
++		s.columnID, s.clientID, title, s.seq*1024, s.adminID).Scan(&id))
++	return id
++}
++
++type subtaskFx struct {
++	status   string
++	assignee string // "" — без исполнителя
++	price    string // "" — по факту
++	payout   string // "" — не задана
++	paid     bool
++	position int
++}
++
++func nullable(v string) *string {
++	if v == "" {
++		return nil
++	}
++	return &v
++}
++
++func (s *ExecutorPayoutsLiveSuite) newSubtask(taskID int64, fx subtaskFx) string {
++	if fx.status == "" {
++		fx.status = "new"
++	}
++	var id string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
++		INSERT INTO subtasks (task_id, service_id, status, assignee_id, price, position,
++		                      executor_payout, is_executor_paid, executor_paid_at)
++		VALUES ($1, $2, $3, $4::uuid, $5::numeric, $6, $7::numeric, $8, CASE WHEN $8 THEN now() END)
++		RETURNING id::text`,
++		taskID, s.svcID, fx.status, nullable(fx.assignee), nullable(fx.price), fx.position, nullable(fx.payout), fx.paid).Scan(&id))
++	return id
++}
++
++func (s *ExecutorPayoutsLiveSuite) list(b *testutil.Browser, query string) payoutListDTO {
++	st, raw := b.Do(http.MethodGet, "/api/v1/executor-payouts?"+query, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var l payoutListDTO
++	s.Require().NoError(json.Unmarshal(raw, &l), string(raw))
++	s.Require().NotNil(l.Items, "items — всегда массив: %s", raw)
++	return l
++}
++
++func (s *ExecutorPayoutsLiveSuite) summary(b *testutil.Browser, query string) summaryDTO {
++	st, raw := b.Do(http.MethodGet, "/api/v1/executor-payouts/summary?"+query, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var l summaryDTO
++	s.Require().NoError(json.Unmarshal(raw, &l), string(raw))
++	s.Require().NotNil(l.Items, "items — всегда массив: %s", raw)
++	return l
++}
++
++func (s *ExecutorPayoutsLiveSuite) summaryOf(l summaryDTO, assigneeID string) *summaryItemDTO {
++	for i := range l.Items {
++		if l.Items[i].AssigneeID == assigneeID {
++			return &l.Items[i]
++		}
++	}
++	return nil
++}
++
++func (s *ExecutorPayoutsLiveSuite) mark(b *testutil.Browser, ids []string, paid bool) (int, markDTO, []byte) {
++	st, raw := b.Do(http.MethodPost, "/api/v1/executor-payouts/mark", map[string]any{"subtask_ids": ids, "is_executor_paid": paid})
++	var m markDTO
++	if st == http.StatusOK {
++		s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
++	}
++	return st, m, raw
++}
++
++// state — отметка и дата услуги из БД.
++func (s *ExecutorPayoutsLiveSuite) state(subtaskID string) (bool, *string) {
++	var paid bool
++	var paidAt *string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT is_executor_paid, executor_paid_at::text FROM subtasks WHERE id = $1`, subtaskID).Scan(&paid, &paidAt))
++	return paid, paidAt
++}
++
++func ids(items []payoutItemDTO) []string {
++	out := make([]string, len(items))
++	for i, it := range items {
++		out[i] = it.SubtaskID
++	}
++	return out
++}
++
++// ---- список ----
++
++// TS-011: список — только услуги с исполнителем; конверт {items,total,limit,offset}; поля
++// строки; порядок — заказ, позиция услуги; limit/offset; total не зависит от страницы.
++func (s *ExecutorPayoutsLiveSuite) TestTS011_List_EnvelopeFieldsOrder() {
++	execID, _ := s.newExecutor("TS011 Исполнитель")
++	t1 := s.newTask("TS011 первый заказ")
++	t2 := s.newTask("TS011 второй заказ")
++	second := s.newSubtask(t1, subtaskFx{status: "done", assignee: execID, price: "1000", payout: "500.5", paid: true, position: 2})
++	first := s.newSubtask(t1, subtaskFx{status: "in_progress", assignee: execID, position: 1})
++	third := s.newSubtask(t2, subtaskFx{assignee: execID, price: "250", position: 1})
++	s.newSubtask(t1, subtaskFx{status: "done", price: "777", position: 3}) // без исполнителя — не в отчёте
++
++	l := s.list(s.admin, "assignee="+execID)
++	s.Equal(3, l.Total)
++	s.Equal(200, l.Limit, "limit по умолчанию")
++	s.Equal(0, l.Offset)
++	s.Equal([]string{first, second, third}, ids(l.Items), "порядок: заказ, позиция услуги")
++
++	paid := l.Items[1]
++	s.Equal(t1, paid.TaskID)
++	s.Equal("TS011 первый заказ", paid.TaskTitle)
++	s.Equal("EP Клиент", paid.ClientName)
++	s.Equal("EP диагностика", paid.ServiceName)
++	s.Equal("done", paid.Status)
++	s.Equal(execID, paid.AssigneeID)
++	s.Equal("TS011 Исполнитель", paid.AssigneeName)
++	s.Require().NotNil(paid.Price)
++	s.Equal("1000.00", paid.Price.String())
++	s.Require().NotNil(paid.ExecutorPayout)
++	s.Equal("500.50", paid.ExecutorPayout.String())
++	s.True(paid.IsExecutorPaid)
++	s.NotNil(paid.ExecutorPaidAt)
++
++	unpaid := l.Items[0]
++	s.Nil(unpaid.Price, "цена «по факту» — null")
++	s.Nil(unpaid.ExecutorPayout, "сумма не задана — null")
++	s.False(unpaid.IsExecutorPaid)
++	s.Nil(unpaid.ExecutorPaidAt)
++
++	page := s.list(s.admin, "assignee="+execID+"&limit=1&offset=1")
++	s.Equal([]string{second}, ids(page.Items))
++	s.Equal(3, page.Total)
++	s.Equal(1, page.Limit)
++	s.Equal(1, page.Offset)
++
++	beyond := s.list(s.admin, "assignee="+execID+"&offset=50")
++	s.Empty(beyond.Items)
++	s.Equal(3, beyond.Total, "total не зависит от страницы")
++}
++
++// TS-012: фильтры status / only_done / assignee (uuid|me|all) и дефолт assignee по роли:
++// executor — «мои», admin — все.
++func (s *ExecutorPayoutsLiveSuite) TestTS012_List_FiltersAndRoleDefault() {
++	execID, login := s.newExecutor("TS012 Свой")
++	otherID, _ := s.newExecutor("TS012 Чужой")
++	task := s.newTask("TS012 заказ")
++	doneUnpaid := s.newSubtask(task, subtaskFx{status: "done", assignee: execID, position: 1})
++	donePaid := s.newSubtask(task, subtaskFx{status: "done", assignee: execID, paid: true, position: 2})
++	newUnpaid := s.newSubtask(task, subtaskFx{status: "new", assignee: execID, position: 3})
++	foreign := s.newSubtask(task, subtaskFx{status: "done", assignee: otherID, position: 4})
++
++	base := "assignee=" + execID
++	s.Equal([]string{doneUnpaid, donePaid, newUnpaid}, ids(s.list(s.admin, base).Items))
++	s.Equal([]string{doneUnpaid, donePaid, newUnpaid}, ids(s.list(s.admin, base+"&status=all&only_done=false").Items))
++	s.Equal([]string{doneUnpaid, newUnpaid}, ids(s.list(s.admin, base+"&status=unpaid").Items))
++	s.Equal([]string{donePaid}, ids(s.list(s.admin, base+"&status=paid").Items))
++	s.Equal([]string{doneUnpaid, donePaid}, ids(s.list(s.admin, base+"&only_done=true").Items))
++	s.Equal([]string{doneUnpaid}, ids(s.list(s.admin, base+"&only_done=true&status=unpaid").Items))
++
++	exec := s.NewBrowser()
++	exec.Login(login, "password1")
++	// executor без параметра — только свои услуги.
++	s.Equal([]string{doneUnpaid, donePaid, newUnpaid}, ids(s.list(exec, "").Items))
++	s.Equal([]string{doneUnpaid, donePaid, newUnpaid}, ids(s.list(exec, "assignee=me").Items))
++	// executor может переключиться на всех и на другого исполнителя.
++	s.Contains(ids(s.list(exec, "assignee=all&limit=1000").Items), foreign)
++	s.Equal([]string{foreign}, ids(s.list(exec, "assignee="+otherID).Items))
++
++	// admin без параметра — все; «мои» у админа без услуг — пусто.
++	all := ids(s.list(s.admin, "limit=1000").Items)
++	s.Contains(all, doneUnpaid)
++	s.Contains(all, foreign)
++	mine := s.list(s.admin, "assignee=me")
++	s.Empty(mine.Items)
++	s.Equal(0, mine.Total)
++}
++
++// TS-012: невалидные параметры — 400 VALIDATION по полю (список и итоги).
++func (s *ExecutorPayoutsLiveSuite) TestTS012_List_InvalidParams400() {
++	for _, path := range []string{"/api/v1/executor-payouts", "/api/v1/executor-payouts/summary"} {
++		for field, query := range map[string]string{
++			"assignee":  "assignee=nobody",
++			"status":    "status=done",
++			"only_done": "only_done=1",
++			"limit":     "limit=0",
++			"offset":    "offset=-1",
++		} {
++			st, raw := s.admin.Do(http.MethodGet, path+"?"+query, nil)
++			s.Equal(http.StatusBadRequest, st, "%s?%s: %s", path, query, raw)
++			s.Equal("VALIDATION", s.errOf(raw).Code, query)
++			s.Equal("invalid", s.fields(raw)[field], query)
++		}
++		for _, query := range []string{"limit=1001", "limit=abc", "offset=x", "assignee=%00"} {
++			st, raw := s.admin.Do(http.MethodGet, path+"?"+query, nil)
++			s.Equal(http.StatusBadRequest, st, "%s?%s: %s", path, query, raw)
++		}
++	}
++}
++
++// ---- итоги ----
++
++// TS-013: итоги по исполнителям — to_pay/paid = Σ COALESCE(executor_payout, 0) невыплаченных/
++// выплаченных, счётчики; те же фильтры; не зависят от limit/offset списка.
++func (s *ExecutorPayoutsLiveSuite) TestTS013_Summary_TotalsByExecutor() {
++	aID, _ := s.newExecutor("AAA TS013 Payout")
++	bID, _ := s.newExecutor("BBB TS013 Payout")
++	task := s.newTask("TS013 заказ")
++	s.newSubtask(task, subtaskFx{status: "done", assignee: aID, payout: "100.50", position: 1})
++	s.newSubtask(task, subtaskFx{status: "new", assignee: aID, position: 2}) // сумма не задана → 0
++	s.newSubtask(task, subtaskFx{status: "done", assignee: aID, payout: "200", paid: true, position: 3})
++	s.newSubtask(task, subtaskFx{status: "done", assignee: bID, payout: "50", paid: true, position: 4})
++	s.newSubtask(task, subtaskFx{status: "done", payout: "999", position: 5}) // без исполнителя — вне итогов
++
++	all := s.summary(s.admin, "assignee=all&limit=1000")
++	s.Equal(len(all.Items), all.Total)
++	a, b := s.summaryOf(all, aID), s.summaryOf(all, bID)
++	s.Require().NotNil(a)
++	s.Require().NotNil(b)
++	s.Equal("AAA TS013 Payout", a.AssigneeName)
++	s.Equal(2, a.UnpaidCount)
++	s.Equal(1, a.PaidCount)
++	s.Equal("100.50", a.ToPay.String())
++	s.Equal("200.00", a.Paid.String())
++	s.Equal(0, b.UnpaidCount)
++	s.Equal(1, b.PaidCount)
++	s.Equal("0.00", b.ToPay.String())
++	s.Equal("50.00", b.Paid.String())
++	// порядок — по имени исполнителя.
++	var ai, bi int
++	for i, it := range all.Items {
++		switch it.AssigneeID {
++		case aID:
++			ai = i
++		case bID:
++			bi = i
++		}
++	}
++	s.Less(ai, bi)
++
++	// status=unpaid: выплаченные услуги не входят — у «A» paid = 0, «B» в итогах нет.
++	unpaid := s.summary(s.admin, "assignee=all&status=unpaid&limit=1000")
++	a = s.summaryOf(unpaid, aID)
++	s.Require().NotNil(a)
++	s.Equal(0, a.PaidCount)
++	s.Equal("0.00", a.Paid.String())
++	s.Equal("100.50", a.ToPay.String())
++	s.Nil(s.summaryOf(unpaid, bID))
++
++	// only_done: невыполненная услуга «A» без суммы выпадает из счётчика.
++	done := s.summary(s.admin, "assignee="+aID+"&only_done=true")
++	s.Require().Len(done.Items, 1)
++	s.Equal(1, done.Total)
++	s.Equal(1, done.Items[0].UnpaidCount)
++	s.Equal("100.50", done.Items[0].ToPay.String())
++
++	// постраничность списка на итоги не влияет: список limit=1, итоги — по всем услугам.
++	page := s.list(s.admin, "assignee="+aID+"&limit=1")
++	s.Len(page.Items, 1)
++	s.Equal(3, page.Total)
++	one := s.summary(s.admin, "assignee="+aID)
++	s.Require().Len(one.Items, 1)
++	s.Equal(2, one.Items[0].UnpaidCount)
++	s.Equal(1, one.Items[0].PaidCount)
++
++	// исполнитель без услуг под фильтром — пустые итоги.
++	nobody, _ := s.newExecutor("TS013 Без услуг")
++	empty := s.summary(s.admin, "assignee="+nobody)
++	s.Empty(empty.Items)
++	s.Equal(0, empty.Total)
++}
++
++// ---- массовая отметка ----
++
++// TS-014: массовая отметка и снятие; executor_paid_at ставится/обнуляется; повтор
++// идемпотентен (updated=0, дата прежней отметки не меняется); uuid в верхнем регистре.
++func (s *ExecutorPayoutsLiveSuite) TestTS014_Mark_SetUnsetIdempotent() {
++	execID, _ := s.newExecutor("TS014 Исполнитель")
++	task := s.newTask("TS014 заказ")
++	s1 := s.newSubtask(task, subtaskFx{status: "done", assignee: execID, payout: "100", position: 1})
++	s2 := s.newSubtask(task, subtaskFx{status: "done", assignee: execID, position: 2})
++	s3 := s.newSubtask(task, subtaskFx{status: "new", assignee: execID, position: 3})
++
++	st, m, raw := s.mark(s.admin, []string{s1, strings.ToUpper(s2)}, true)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(2, m.Updated)
++	for _, id := range []string{s1, s2} {
++		paid, at := s.state(id)
++		s.True(paid)
++		s.NotNil(at)
++	}
++	paid, at := s.state(s3)
++	s.False(paid, "не выбранная услуга не тронута")
++	s.Nil(at)
++
++	// дата сдвинута в прошлое — повтор не должен её перезаписать.
++	_, err := s.Pool.Exec(context.Background(), `UPDATE subtasks SET executor_paid_at = executor_paid_at - interval '3 hours' WHERE id = $1`, s1)
++	s.Require().NoError(err)
++	_, before := s.state(s1)
++	st, m, raw = s.mark(s.admin, []string{s1, s2}, true)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(0, m.Updated, "повтор идемпотентен")
++	_, after := s.state(s1)
++	s.Equal(*before, *after, "дата прежней отметки сохранена")
++
++	st, m, raw = s.mark(s.admin, []string{s1, s3}, true)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(1, m.Updated, "меняется только ещё не отмеченная")
++	_, after = s.state(s1)
++	s.Equal(*before, *after)
++
++	// отчёт видит отметки.
++	s.Len(s.list(s.admin, "assignee="+execID+"&status=paid").Items, 3)
++
++	st, m, raw = s.mark(s.admin, []string{s1, s2, s3}, false)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(3, m.Updated)
++	for _, id := range []string{s1, s2, s3} {
++		paid, at := s.state(id)
++		s.False(paid)
++		s.Nil(at, "снятие отметки обнуляет дату")
++	}
++	var payout string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT executor_payout::text FROM subtasks WHERE id = $1`, s1).Scan(&payout))
++	s.Equal("100.00", payout, "сумма выплаты отметкой не меняется")
++}
++
++// TS-015: атомарность — услуга без исполнителя или несуществующая в списке → 400 по
++// индексу, остальные услуги запроса НЕ отмечены. Снять отметку без исполнителя можно.
++func (s *ExecutorPayoutsLiveSuite) TestTS015_Mark_AtomicOnInvalidItem() {
++	execID, _ := s.newExecutor("TS015 Исполнитель")
++	task := s.newTask("TS015 заказ")
++	ok1 := s.newSubtask(task, subtaskFx{status: "done", assignee: execID, position: 1})
++	ok2 := s.newSubtask(task, subtaskFx{status: "done", assignee: execID, position: 2})
++	orphan := s.newSubtask(task, subtaskFx{status: "done", position: 3})
++	const ghost = "99999999-9999-4999-8999-999999999999"
++
++	st, _, raw := s.mark(s.admin, []string{ok1, orphan, ok2}, true)
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("VALIDATION", s.errOf(raw).Code)
++	s.Equal(map[string]string{"subtask_ids[1]": "no_assignee"}, s.fields(raw))
++
++	st, _, raw = s.mark(s.admin, []string{ok1, ok2, ghost}, true)
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"subtask_ids[2]": "not_found"}, s.fields(raw))
++
++	st, _, raw = s.mark(s.admin, []string{ghost, orphan}, true)
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"subtask_ids[0]": "not_found", "subtask_ids[1]": "no_assignee"}, s.fields(raw))
++
++	for _, id := range []string{ok1, ok2, orphan} {
++		paid, at := s.state(id)
++		s.False(paid, "отклонённый запрос ничего не отметил")
++		s.Nil(at)
++	}
++
++	// снятие: несуществующая услуга тоже 400 и тоже без частичного эффекта.
++	st, m, raw := s.mark(s.admin, []string{ok1, ok2}, true)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(2, m.Updated)
++	st, _, raw = s.mark(s.admin, []string{ok1, ghost}, false)
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	paid, _ := s.state(ok1)
++	s.True(paid, "отклонённое снятие отметку не сняло")
++
++	// услуга осталась выплаченной без исполнителя (сотрудника удалили) — снять можно.
++	_, err := s.Pool.Exec(context.Background(), `UPDATE subtasks SET is_executor_paid = true, executor_paid_at = now() WHERE id = $1`, orphan)
++	s.Require().NoError(err)
++	st, m, raw = s.mark(s.admin, []string{orphan}, false)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(1, m.Updated)
++}
++
++// TS-016: валидация тела массовой отметки — 400, не 500.
++func (s *ExecutorPayoutsLiveSuite) TestTS016_Mark_InvalidBody400() {
++	execID, _ := s.newExecutor("TS016 Исполнитель")
++	sub := s.newSubtask(s.newTask("TS016 заказ"), subtaskFx{status: "done", assignee: execID, position: 1})
++	post := func(body any) (int, []byte) {
++		return s.admin.Do(http.MethodPost, "/api/v1/executor-payouts/mark", body)
++	}
++
++	st, raw := post(map[string]any{})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"subtask_ids": "required", "is_executor_paid": "required"}, s.fields(raw))
++
++	st, raw = post(map[string]any{"subtask_ids": []string{}, "is_executor_paid": true})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["subtask_ids"])
++
++	st, raw = post(map[string]any{"subtask_ids": []string{sub}})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["is_executor_paid"])
++
++	st, raw = post(map[string]any{"subtask_ids": []string{sub, "not-a-uuid", "", strings.ToUpper(sub)}, "is_executor_paid": true})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"subtask_ids[1]": "invalid", "subtask_ids[2]": "required", "subtask_ids[3]": "duplicate"}, s.fields(raw))
++
++	many := make([]string, 501)
++	for i := range many {
++		many[i] = fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
++	}
++	st, raw = post(map[string]any{"subtask_ids": many, "is_executor_paid": true})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("too_many", s.fields(raw)["subtask_ids"])
++
++	// мусор / неверные типы / лишнее поле (strictJSON) — 400 BAD_REQUEST.
++	for name, body := range map[string]any{
++		"битый JSON":        `{"subtask_ids": [`,
++		"не объект":         `[1, 2]`,
++		"пустое тело":       ``,
++		"флаг строкой":      map[string]any{"subtask_ids": []string{sub}, "is_executor_paid": "yes"},
++		"ids строкой":       map[string]any{"subtask_ids": sub, "is_executor_paid": true},
++		"ids числами":       map[string]any{"subtask_ids": []int{1}, "is_executor_paid": true},
++		"неизвестное поле":  map[string]any{"subtask_ids": []string{sub}, "is_executor_paid": true, "executor_payout": 5},
++		"null вместо флага": `{"subtask_ids": ["` + sub + `"], "is_executor_paid": null}`,
++	} {
++		st, raw = post(body)
++		s.Equal(http.StatusBadRequest, st, "%s: %s", name, raw)
++	}
++
++	paid, _ := s.state(sub)
++	s.False(paid, "ни один невалидный запрос услугу не отметил")
++}
++
++// ---- доступ ----
++
++// TS-017: без сессии — 401 на всех эндпоинтах; executor имеет доступ к отчёту и отметке
++// (в т.ч. чужой услуги — права как у admin, D62).
++func (s *ExecutorPayoutsLiveSuite) TestTS017_Access_NoSession401_ExecutorAllowed() {
++	ownerID, _ := s.newExecutor("TS017 Владелец услуги")
++	_, login := s.newExecutor("TS017 Другой исполнитель")
++	sub := s.newSubtask(s.newTask("TS017 заказ"), subtaskFx{status: "done", assignee: ownerID, position: 1})
++
++	anon := s.NewBrowser()
++	for _, req := range []struct {
++		method, path string
++		body         any
++	}{
++		{http.MethodGet, "/api/v1/executor-payouts", nil},
++		{http.MethodGet, "/api/v1/executor-payouts/summary", nil},
++		{http.MethodPost, "/api/v1/executor-payouts/mark", map[string]any{"subtask_ids": []string{sub}, "is_executor_paid": true}},
++	} {
++		st, raw := anon.Do(req.method, req.path, req.body)
++		s.Equal(http.StatusUnauthorized, st, "%s %s: %s", req.method, req.path, raw)
++	}
++	paid, _ := s.state(sub)
++	s.False(paid, "аноним ничего не отметил")
++
++	exec := s.NewBrowser()
++	exec.Login(login, "password1")
++	s.Equal([]string{sub}, ids(s.list(exec, "assignee="+ownerID).Items))
++	s.Require().Len(s.summary(exec, "assignee="+ownerID).Items, 1)
++	st, m, raw := s.mark(exec, []string{sub}, true)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(1, m.Updated)
++	paid, _ = s.state(sub)
++	s.True(paid)
++}
++
++// TS-024: SSR-страница «Выплаты» — admin и executor (200, оболочка, пункт сайдбара,
++// скрипт); без сессии — редирект на вход.
++func (s *ExecutorPayoutsLiveSuite) TestTS024_SSR_Page() {
++	page := func(b *testutil.Browser) (int, string) {
++		resp := b.Request(http.MethodGet, "/executor-payouts", nil, nil)
++		body, err := io.ReadAll(resp.Body)
++		resp.Body.Close()
++		s.Require().NoError(err)
++		return resp.StatusCode, string(body)
++	}
++
++	st, body := page(s.admin)
++	s.Equal(http.StatusOK, st)
++	s.Contains(body, `data-testid="ep-root"`)
++	s.Contains(body, `data-is-admin="true"`)
++	s.Contains(body, `href="/executor-payouts"`, "пункт «Выплаты» в сайдбаре")
++	s.Contains(body, `/assets/ssr-shared/js/executor-payouts.js`)
++
++	_, login := s.newExecutor("TS024 Исполнитель")
++	exec := s.NewBrowser()
++	exec.Login(login, "password1")
++	st, body = page(exec)
++	s.Equal(http.StatusOK, st)
++	s.Contains(body, `data-is-admin="false"`)
++	s.Contains(body, `href="/executor-payouts"`, "пункт «Выплаты» виден и исполнителю")
++
++	// доска несёт фильтр «Выплата исполнителю».
++	resp := s.admin.Request(http.MethodGet, "/", nil, nil)
++	raw, err := io.ReadAll(resp.Body)
++	resp.Body.Close()
++	s.Require().NoError(err)
++	s.Contains(string(raw), `id="filter-executor-paid"`)
++
++	resp = s.NewBrowser().Request(http.MethodGet, "/executor-payouts", nil, nil)
++	resp.Body.Close()
++	s.Contains([]int{http.StatusFound, http.StatusSeeOther}, resp.StatusCode, "без сессии — редирект на вход")
++	s.Contains(resp.Header.Get("Location"), "/login")
++}
++
++// ---- правка суммы выплаты из отчёта (D72) ----
++
++func (s *ExecutorPayoutsLiveSuite) putPayout(b *testutil.Browser, subtaskID string, body any) (int, payoutItemDTO, []byte) {
++	st, raw := b.Do(http.MethodPut, "/api/v1/executor-payouts/"+subtaskID, body)
++	var it payoutItemDTO
++	if st == http.StatusOK {
++		s.Require().NoError(json.Unmarshal(raw, &it), string(raw))
++	}
++	return st, it, raw
++}
++
++// row — поля услуги из БД, которые правка суммы трогать не должна, + сама сумма.
++func (s *ExecutorPayoutsLiveSuite) row(subtaskID string) (payout *string, paid bool, paidAt *string, price *string, status string, assignee *string) {
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
++		SELECT executor_payout::text, is_executor_paid, executor_paid_at::text, price::text, status, assignee_id::text
++		FROM subtasks WHERE id = $1`, subtaskID).Scan(&payout, &paid, &paidAt, &price, &status, &assignee))
++	return
++}
++
++// TS-029: PUT /executor-payouts/:id меняет ТОЛЬКО сумму (admin и executor): ответ — строка
++// отчёта; флаг, дата отметки, цена, статус и исполнитель целы; null очищает; итоги summary
++// отражают новую сумму.
++func (s *ExecutorPayoutsLiveSuite) TestTS029_UpdatePayout_OnlySumChanges() {
++	ownerID, _ := s.newExecutor("TS029 Исполнитель")
++	_, otherLogin := s.newExecutor("TS029 Другой")
++	task := s.newTask("TS029 заказ")
++	paidSub := s.newSubtask(task, subtaskFx{status: "done", assignee: ownerID, price: "1000", payout: "100", paid: true, position: 1})
++	unpaidSub := s.newSubtask(task, subtaskFx{status: "in_progress", assignee: ownerID, position: 2})
++	_, _, paidAtBefore, _, _, _ := s.row(paidSub)
++	s.Require().NotNil(paidAtBefore)
++
++	// admin: выплаченная услуга — сумма меняется, отметка и дата остаются.
++	st, it, raw := s.putPayout(s.admin, paidSub, map[string]any{"executor_payout": 250.5})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(paidSub, it.SubtaskID)
++	s.Equal(task, it.TaskID)
++	s.Equal("TS029 заказ", it.TaskTitle)
++	s.Equal("EP Клиент", it.ClientName)
++	s.Equal("EP диагностика", it.ServiceName)
++	s.Equal("done", it.Status)
++	s.Equal(ownerID, it.AssigneeID)
++	s.Equal("TS029 Исполнитель", it.AssigneeName)
++	s.Require().NotNil(it.ExecutorPayout)
++	s.Equal("250.50", it.ExecutorPayout.String())
++	s.Require().NotNil(it.Price)
++	s.Equal("1000.00", it.Price.String())
++	s.True(it.IsExecutorPaid)
++	s.NotNil(it.ExecutorPaidAt)
++
++	payout, paid, paidAt, price, status, assignee := s.row(paidSub)
++	s.Equal("250.50", *payout)
++	s.True(paid, "флаг не тронут")
++	s.Equal(*paidAtBefore, *paidAt, "дата отметки не тронута")
++	s.Equal("1000.00", *price, "цена для клиента не тронута")
++	s.Equal("done", status)
++	s.Equal(ownerID, *assignee)
++
++	// строка списка и итоги отражают новую сумму.
++	l := s.list(s.admin, "assignee="+ownerID)
++	s.Require().Len(l.Items, 2)
++	s.Equal("250.50", l.Items[0].ExecutorPayout.String())
++	sum := s.summary(s.admin, "assignee="+ownerID)
++	s.Require().Len(sum.Items, 1)
++	s.Equal("250.50", sum.Items[0].Paid.String())
++	s.Equal("0.00", sum.Items[0].ToPay.String())
++
++	// executor (не владелец услуги): невыплаченная услуга без суммы — задать, поправить, 0.
++	exec := s.NewBrowser()
++	exec.Login(otherLogin, "password1")
++	st, it, raw = s.putPayout(exec, strings.ToUpper(unpaidSub), map[string]any{"executor_payout": 75})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(unpaidSub, it.SubtaskID, "uuid в пути — в любом регистре")
++	s.Equal("75.00", it.ExecutorPayout.String())
++	s.False(it.IsExecutorPaid, "сумма не ставит отметку")
++	s.Nil(it.ExecutorPaidAt)
++	s.Nil(it.Price, "цена «по факту» осталась null")
++	s.Equal("75.00", s.summary(s.admin, "assignee="+ownerID).Items[0].ToPay.String())
++
++	st, it, raw = s.putPayout(exec, unpaidSub, map[string]any{"executor_payout": 0})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("0.00", it.ExecutorPayout.String(), "0 — допустимая сумма")
++
++	// null очищает сумму; отметка выплаченной услуги при этом остаётся.
++	st, it, raw = s.putPayout(s.admin, paidSub, map[string]any{"executor_payout": nil})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Nil(it.ExecutorPayout)
++	s.True(it.IsExecutorPaid)
++	payout, paid, paidAt, _, _, _ = s.row(paidSub)
++	s.Nil(payout)
++	s.True(paid)
++	s.Equal(*paidAtBefore, *paidAt)
++	s.Equal("0.00", s.summary(s.admin, "assignee="+ownerID).Items[0].Paid.String(), "без суммы — 0 в итогах")
++
++	// повтор того же значения — идемпотентно.
++	st, it, raw = s.putPayout(s.admin, paidSub, map[string]any{"executor_payout": nil})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Nil(it.ExecutorPayout)
++}
++
++// TS-030: PUT /executor-payouts/:id — отказы: нет поля/невалидная сумма/мусор/лишнее поле →
++// 400; битый uuid в пути → 400 по полю id; нет услуги или услуга без исполнителя → 404; без
++// сессии → 401. Ни один отказ сумму не меняет.
++func (s *ExecutorPayoutsLiveSuite) TestTS030_UpdatePayout_Rejections() {
++	execID, _ := s.newExecutor("TS030 Исполнитель")
++	task := s.newTask("TS030 заказ")
++	sub := s.newSubtask(task, subtaskFx{status: "done", assignee: execID, payout: "40", position: 1})
++	orphan := s.newSubtask(task, subtaskFx{status: "done", payout: "55", position: 2})
++	const ghost = "99999999-9999-4999-8999-999999999998"
++
++	st, _, raw := s.putPayout(s.admin, sub, map[string]any{})
++	s.Require().Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("VALIDATION", s.errOf(raw).Code)
++	s.Equal(map[string]string{"executor_payout": "required"}, s.fields(raw))
++
++	for name, v := range map[string]any{"отрицательная": -1, "3 знака": 1.234, "слишком большая": 10000000000} {
++		st, _, raw = s.putPayout(s.admin, sub, map[string]any{"executor_payout": v})
++		s.Equal(http.StatusBadRequest, st, "%s: %s", name, raw)
++		s.Contains(s.fields(raw), "executor_payout", name)
++	}
++
++	// мусор / неверные типы / лишнее поле (strictJSON) — 400, не 500.
++	for name, body := range map[string]any{
++		"строка":            map[string]any{"executor_payout": "abc"},
++		"объект":            map[string]any{"executor_payout": map[string]any{}},
++		"битый JSON":        `{"executor_payout": `,
++		"пустое тело":       ``,
++		"не объект":         `[1]`,
++		"лишнее поле флага": map[string]any{"executor_payout": 5, "is_executor_paid": true},
++		"лишнее поле цены":  map[string]any{"executor_payout": 5, "price": 1},
++	} {
++		st, _, raw = s.putPayout(s.admin, sub, body)
++		s.Equal(http.StatusBadRequest, st, "%s: %s", name, raw)
++	}
++
++	// битый uuid в пути.
++	for _, id := range []string{"not-a-uuid", "123"} {
++		st, _, raw = s.putPayout(s.admin, id, map[string]any{"executor_payout": 5})
++		s.Equal(http.StatusBadRequest, st, "%s: %s", id, raw)
++		s.Equal("invalid", s.fields(raw)["id"], id)
++	}
++
++	// услуги нет / услуга без исполнителя (не строка отчёта) → 404.
++	st, _, raw = s.putPayout(s.admin, ghost, map[string]any{"executor_payout": 5})
++	s.Require().Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("EXECUTOR_PAYOUT_NOT_FOUND", s.errOf(raw).Code)
++	st, _, raw = s.putPayout(s.admin, orphan, map[string]any{"executor_payout": 5})
++	s.Require().Equal(http.StatusNotFound, st, string(raw))
++	s.Equal("EXECUTOR_PAYOUT_NOT_FOUND", s.errOf(raw).Code)
++
++	// без сессии.
++	st, _, raw = s.putPayout(s.NewBrowser(), sub, map[string]any{"executor_payout": 5})
++	s.Equal(http.StatusUnauthorized, st, string(raw))
++
++	payout, _, _, _, _, _ := s.row(sub)
++	s.Equal("40.00", *payout, "отказы сумму не изменили")
++	payout, _, _, _, _, _ = s.row(orphan)
++	s.Equal("55.00", *payout, "сумма услуги без исполнителя не тронута")
++}
++
++// TS-032: конкуренция правки суммы из отчёта с отметкой (POST /mark) и с правкой карточки
++// (PUT /subtasks/:id без полей выплаты) — без deadlock/500, каждое изменение на месте.
++func (s *ExecutorPayoutsLiveSuite) TestTS032_UpdatePayout_ConcurrentWithMarkAndCardPut() {
++	execID, _ := s.newExecutor("TS032 Исполнитель")
++	sub := s.newSubtask(s.newTask("TS032 заказ"), subtaskFx{status: "done", assignee: execID, price: "10", position: 1})
++	second := s.NewBrowser()
++	second.Login("ep-admin", "password1")
++
++	const iterations = 20
++	for i := 1; i <= iterations; i++ {
++		target := i%2 == 1
++		var sumSt, markSt, cardSt int
++		var sumRaw, markRaw, cardRaw []byte
++		var wg sync.WaitGroup
++		wg.Add(3)
++		go func() {
++			defer wg.Done()
++			sumSt, sumRaw = s.admin.Do(http.MethodPut, "/api/v1/executor-payouts/"+sub, map[string]any{"executor_payout": 100 + i})
++		}()
++		go func() {
++			defer wg.Done()
++			markSt, markRaw = second.Do(http.MethodPost, "/api/v1/executor-payouts/mark",
++				map[string]any{"subtask_ids": []string{sub}, "is_executor_paid": target})
++		}()
++		go func() {
++			defer wg.Done()
++			cardSt, cardRaw = second.Do(http.MethodPut, "/api/v1/subtasks/"+sub,
++				map[string]any{"status": "done", "assignee_id": execID, "price": 500 + i})
++		}()
++		wg.Wait()
++		s.Require().Equal(http.StatusOK, sumSt, "итерация %d сумма: %s", i, sumRaw)
++		s.Require().Equal(http.StatusOK, markSt, "итерация %d mark: %s", i, markRaw)
++		s.Require().Equal(http.StatusOK, cardSt, "итерация %d карточка: %s", i, cardRaw)
++
++		payout, paid, paidAt, price, _, assignee := s.row(sub)
++		s.Require().Equal(fmt.Sprintf("%d.00", 100+i), *payout, "итерация %d: сумма из отчёта", i)
++		s.Require().Equal(target, paid, "итерация %d: отметка из mark", i)
++		s.Require().Equal(target, paidAt != nil, "итерация %d: дата согласована с флагом", i)
++		s.Require().Equal(fmt.Sprintf("%d.00", 500+i), *price, "итерация %d: цена из карточки", i)
++		s.Require().Equal(execID, *assignee)
++	}
++}
+diff --git a/internal/features/executorpayouts/handler.go b/internal/features/executorpayouts/handler.go
+new file mode 100644
+index 0000000..3d0978e
+--- /dev/null
++++ b/internal/features/executorpayouts/handler.go
+@@ -0,0 +1,71 @@
++package executorpayouts
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Handler — JSON API /api/v1/executor-payouts: доступно и admin, и executor (D62).
++type Handler struct {
++	svc *Service
++}
++
++func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
++
++func actorOf(c fiber.Ctx) Actor {
++	p := middleware.CurrentPrincipal(c)
++	return Actor{ID: p.ID, IsAdmin: p.IsAdmin()}
++}
++
++func listQuery(c fiber.Ctx) ListQuery {
++	return ListQuery{
++		Assignee: c.Query("assignee"), Status: c.Query("status"), OnlyDone: c.Query("only_done"),
++		Limit: c.Query("limit"), Offset: c.Query("offset"),
++	}
++}
++
++// List — GET /api/v1/executor-payouts?assignee=&status=&only_done=&limit=&offset=.
++func (h *Handler) List(c fiber.Ctx) error {
++	resp, err := h.svc.List(c.Context(), actorOf(c), listQuery(c))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Summary — GET /api/v1/executor-payouts/summary (те же фильтры).
++func (h *Handler) Summary(c fiber.Ctx) error {
++	resp, err := h.svc.Summary(c.Context(), actorOf(c), listQuery(c))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Mark — POST /api/v1/executor-payouts/mark.
++func (h *Handler) Mark(c fiber.Ctx) error {
++	var req MarkRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Mark(c.Context(), req)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// UpdatePayout — PUT /api/v1/executor-payouts/:id (id — uuid услуги).
++func (h *Handler) UpdatePayout(c fiber.Ctx) error {
++	var req PayoutUpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.UpdatePayout(c.Context(), c.Params("id"), req)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
+diff --git a/internal/features/executorpayouts/migration_integration_test.go b/internal/features/executorpayouts/migration_integration_test.go
+new file mode 100644
+index 0000000..58f6685
+--- /dev/null
++++ b/internal/features/executorpayouts/migration_integration_test.go
+@@ -0,0 +1,153 @@
++//go:build integration
++
++package executorpayouts_test
++
++import (
++	"context"
++	"errors"
++	"path/filepath"
++	"runtime"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	_ "github.com/golang-migrate/migrate/v4/database/postgres"
++	_ "github.com/golang-migrate/migrate/v4/source/file"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// ExecutorPayoutsMigrationSuite — TS-018: миграция 0011 (docs/plan.md D63). На 0010
++// заводится услуга заказа; up → у неё is_executor_paid=false, дата и сумма NULL, CHECK
++// суммы ≥ 0 и частичный индекс на месте; down → колонки и индекс сняты, услуга цела.
++type ExecutorPayoutsMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestExecutorPayoutsMigrationSuite(t *testing.T) {
++	suite.Run(t, new(ExecutorPayoutsMigrationSuite))
++}
++
++const (
++	epmAdminID  = "aaaaaaaa-0011-4011-8011-000000000001"
++	epmClientID = "bbbbbbbb-0011-4011-8011-000000000001"
++)
++
++var epmColumns = []string{"is_executor_paid", "executor_paid_at", "executor_payout"}
++
++func migrationsURL() string {
++	_, f, _, _ := runtime.Caller(0)
++	return "file://" + filepath.Join(filepath.Dir(f), "..", "..", "..", "migrations")
++}
++
++func (s *ExecutorPayoutsMigrationSuite) columnExists(column string) bool {
++	var ok bool
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
++		SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'subtasks' AND column_name = $1)`,
++		column).Scan(&ok))
++	return ok
++}
++
++func (s *ExecutorPayoutsMigrationSuite) indexExists(name string) bool {
++	var ok bool
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename = 'subtasks' AND indexname = $1)`, name).Scan(&ok))
++	return ok
++}
++
++func (s *ExecutorPayoutsMigrationSuite) TestTS018_UpAddsPayoutColumns_DownDropsThem() {
++	ctx := context.Background()
++	mig, err := migrate.New(migrationsURL(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(10))
++	defer func() {
++		// вернуть схему на последнюю версию при любом исходе (на ней уже — ErrNoChange).
++		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	for _, c := range epmColumns {
++		s.False(s.columnExists(c), "на 0010 колонки subtasks.%s ещё нет", c)
++	}
++
++	// --- данные «до выплат» (схема 0010) ---
++	_, err = s.Pool.Exec(ctx, `INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'epm-admin', 'x', 'Admin', 'admin')`, epmAdminID)
++	s.Require().NoError(err)
++	_, err = s.Pool.Exec(ctx, `INSERT INTO clients (id, company_name) VALUES ($1, 'EPM Co')`, epmClientID)
++	s.Require().NoError(err)
++	var columnID, svcCat, serviceID, subtaskID string
++	var taskID int64
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id::text FROM columns ORDER BY position, id LIMIT 1`).Scan(&columnID))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO catalog_categories (kind, name) VALUES ('service', 'EPM S') RETURNING id`).Scan(&svcCat))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO services (category_id, name) VALUES ($1, 'EPM услуга') RETURNING id`, svcCat).Scan(&serviceID))
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, 'EPM', 1024, $3) RETURNING id`,
++		columnID, epmClientID, epmAdminID).Scan(&taskID))
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO subtasks (task_id, service_id, status, assignee_id, price) VALUES ($1, $2, 'done', $3, 1500) RETURNING id`,
++		taskID, serviceID, epmAdminID).Scan(&subtaskID))
++
++	// --- up 0011 ---
++	s.Require().NoError(mig.Migrate(11))
++	for _, c := range epmColumns {
++		s.True(s.columnExists(c), "subtasks.%s добавлена", c)
++	}
++	s.True(s.indexExists("subtasks_executor_unpaid_idx"))
++
++	var paid bool
++	var paidAt, payout *string
++	var price string
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`SELECT is_executor_paid, executor_paid_at::text, executor_payout::text, price::text FROM subtasks WHERE id = $1`, subtaskID).
++		Scan(&paid, &paidAt, &payout, &price))
++	s.False(paid, "существующая услуга — не выплачена (DEFAULT false)")
++	s.Nil(paidAt)
++	s.Nil(payout)
++	s.Equal("1500.00", price, "цена для клиента не тронута")
++
++	// NOT NULL флага; сумма — NUMERIC(12,2) ≥ 0, NULL допустим.
++	_, err = s.Pool.Exec(ctx, `UPDATE subtasks SET is_executor_paid = NULL WHERE id = $1`, subtaskID)
++	s.Error(err, "is_executor_paid NOT NULL")
++	_, err = s.Pool.Exec(ctx, `UPDATE subtasks SET executor_payout = -0.01 WHERE id = $1`, subtaskID)
++	s.Error(err, "CHECK executor_payout >= 0")
++	_, err = s.Pool.Exec(ctx, `UPDATE subtasks SET executor_payout = 10000000000 WHERE id = $1`, subtaskID)
++	s.Error(err, "NUMERIC(12,2): 10 цифр целой части")
++	_, err = s.Pool.Exec(ctx,
++		`UPDATE subtasks SET is_executor_paid = true, executor_paid_at = now(), executor_payout = 1234.567 WHERE id = $1`, subtaskID)
++	s.Require().NoError(err)
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT executor_payout::text FROM subtasks WHERE id = $1`, subtaskID).Scan(&payout))
++	s.Equal("1234.57", *payout, "масштаб 2 знака")
++	_, err = s.Pool.Exec(ctx, `UPDATE subtasks SET executor_payout = 0 WHERE id = $1`, subtaskID)
++	s.Require().NoError(err, "0 — допустимая сумма")
++
++	// удаление сотрудника не упирается в выплаченную услугу (assignee_id ON DELETE SET NULL, D63).
++	var tmpUser string
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO users (login, password_hash, name, role) VALUES ('epm-exec', 'x', 'Exec', 'executor') RETURNING id`).Scan(&tmpUser))
++	_, err = s.Pool.Exec(ctx, `UPDATE subtasks SET assignee_id = $2 WHERE id = $1`, subtaskID, tmpUser)
++	s.Require().NoError(err)
++	_, err = s.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, tmpUser)
++	s.Require().NoError(err)
++	var assignee *string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT assignee_id::text, is_executor_paid FROM subtasks WHERE id = $1`, subtaskID).Scan(&assignee, &paid))
++	s.Nil(assignee)
++	s.True(paid)
++
++	// --- down → 0010 ---
++	s.Require().NoError(mig.Migrate(10))
++	for _, c := range epmColumns {
++		s.False(s.columnExists(c), "subtasks.%s снята", c)
++	}
++	s.False(s.indexExists("subtasks_executor_unpaid_idx"))
++	var status string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT status, price::text FROM subtasks WHERE id = $1`, subtaskID).Scan(&status, &price))
++	s.Equal("done", status, "услуга пережила откат")
++	s.Equal("1500.00", price)
++
++	// --- повторный up: миграция накатывается заново поверх данных ---
++	s.Require().NoError(mig.Migrate(11))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT is_executor_paid FROM subtasks WHERE id = $1`, subtaskID).Scan(&paid))
++	s.False(paid, "после down/up отметки сброшены")
++}
+diff --git a/internal/features/executorpayouts/repo.go b/internal/features/executorpayouts/repo.go
+new file mode 100644
+index 0000000..12acc88
+--- /dev/null
++++ b/internal/features/executorpayouts/repo.go
+@@ -0,0 +1,244 @@
++package executorpayouts
++
++import (
++	"context"
++	"database/sql"
++	"errors"
++	"fmt"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/numeric"
++)
++
++// fieldsError — ошибки полей, найденные под транзакцией (услуга не найдена / без
++// исполнителя); сервис превращает их в 400 VALIDATION.
++type fieldsError struct{ Fields []errorspkg.Field }
++
++func (e *fieldsError) Error() string { return "executorpayouts: invalid fields" }
++
++// errNotFound — услуги нет либо она без исполнителя (не элемент отчёта).
++var errNotFound = errors.New("executorpayouts: not found")
++
++type Repo struct {
++	pool *pgxpool.Pool
++}
++
++func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
++
++// payoutWhereSQL — общий фильтр списка и итогов: только услуги с исполнителем (JOIN users),
++// $1 — исполнитель, $2 — статус выплаты, $3 — только выполненные.
++const payoutWhereSQL = `
++WHERE ($1::uuid IS NULL OR s.assignee_id = $1)
++  AND ($2::boolean IS NULL OR s.is_executor_paid = $2)
++  AND (NOT $3::boolean OR s.status = 'done')`
++
++// List — услуги с исполнителем под фильтром; total — отдельным count (не зависит от
++// limit/offset, в т.ч. на странице за пределами выдачи).
++func (r *Repo) List(ctx context.Context, f Filter) ([]PayoutItem, int, error) {
++	var total int
++	if err := r.pool.QueryRow(ctx, `
++SELECT count(*) FROM subtasks s JOIN users u ON u.id = s.assignee_id`+payoutWhereSQL,
++		f.AssigneeID, f.Paid, f.OnlyDone).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++
++	rows, err := r.pool.Query(ctx, payoutItemSelectSQL+payoutWhereSQL+`
++ORDER BY u.name, u.id, s.task_id, s.position, s.id
++LIMIT $4 OFFSET $5`, f.AssigneeID, f.Paid, f.OnlyDone, f.Limit, f.Offset)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++
++	out := []PayoutItem{}
++	for rows.Next() {
++		it, err := scanPayoutItem(rows)
++		if err != nil {
++			return nil, 0, err
++		}
++		out = append(out, it)
++	}
++	return out, total, rows.Err()
++}
++
++// payoutItemSelectSQL — строка отчёта: услуга с исполнителем (JOIN users отсекает услуги
++// без исполнителя) + заказ/клиент/услуга каталога.
++const payoutItemSelectSQL = `
++SELECT s.id::text, s.task_id, t.title, cl.company_name, sv.name, s.status, u.id::text, u.name,
++       s.price::text, s.executor_payout::text, s.is_executor_paid, s.executor_paid_at
++FROM subtasks s
++JOIN users u     ON u.id = s.assignee_id
++JOIN tasks t     ON t.id = s.task_id
++JOIN clients cl  ON cl.id = t.client_id
++JOIN services sv ON sv.id = s.service_id`
++
++func scanPayoutItem(row pgx.Row) (PayoutItem, error) {
++	var it PayoutItem
++	var price, payout sql.NullString
++	if err := row.Scan(&it.SubtaskID, &it.TaskID, &it.TaskTitle, &it.ClientName, &it.ServiceName, &it.Status,
++		&it.AssigneeID, &it.AssigneeName, &price, &payout, &it.IsExecutorPaid, &it.ExecutorPaidAt); err != nil {
++		return it, err
++	}
++	if price.Valid {
++		v := numeric.Amount(price.String)
++		it.Price = &v
++	}
++	if payout.Valid {
++		v := numeric.Amount(payout.String)
++		it.ExecutorPayout = &v
++	}
++	return it, nil
++}
++
++// UpdatePayout — правка ТОЛЬКО суммы выплаты услуги (D72); payout nil → NULL. Lock Order
++// как у Mark и board (tasks → subtasks): заказ услуги FOR UPDATE, затем сама услуга. Услуги
++// нет или она без исполнителя (не элемент отчёта) → errNotFound, ничего не меняется.
++// Возвращает строку отчёта, прочитанную в той же транзакции после записи.
++func (r *Repo) UpdatePayout(ctx context.Context, id string, payout *string) (*PayoutItem, error) {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++
++	if _, err := tx.Exec(ctx, `
++SELECT t.id FROM tasks t
++WHERE t.id = (SELECT s.task_id FROM subtasks s WHERE s.id = $1::uuid) FOR UPDATE`, id); err != nil {
++		return nil, err
++	}
++	var hasAssignee bool
++	err = tx.QueryRow(ctx, `SELECT s.assignee_id IS NOT NULL FROM subtasks s WHERE s.id = $1::uuid FOR UPDATE`, id).Scan(&hasAssignee)
++	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !hasAssignee) {
++		return nil, errNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++
++	if _, err := tx.Exec(ctx, `
++UPDATE subtasks SET executor_payout = $2::numeric, updated_at = now() WHERE id = $1::uuid`, id, payout); err != nil {
++		return nil, err
++	}
++	it, err := scanPayoutItem(tx.QueryRow(ctx, payoutItemSelectSQL+` WHERE s.id = $1::uuid`, id))
++	if errors.Is(err, pgx.ErrNoRows) {
++		return nil, errNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return nil, err
++	}
++	return &it, nil
++}
++
++// Summary — итоги по исполнителям под тем же фильтром. Сумма без заданной выплаты — 0
++// (COALESCE, D64); Go десятичной арифметики не делает — считает SQL.
++func (r *Repo) Summary(ctx context.Context, f Filter) ([]PayoutSummaryItem, int, error) {
++	var total int
++	if err := r.pool.QueryRow(ctx, `
++SELECT count(DISTINCT s.assignee_id) FROM subtasks s JOIN users u ON u.id = s.assignee_id`+payoutWhereSQL,
++		f.AssigneeID, f.Paid, f.OnlyDone).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++
++	rows, err := r.pool.Query(ctx, `
++SELECT u.id::text, u.name,
++       (count(*) FILTER (WHERE NOT s.is_executor_paid))::int,
++       (count(*) FILTER (WHERE s.is_executor_paid))::int,
++       round(coalesce(sum(coalesce(s.executor_payout, 0)) FILTER (WHERE NOT s.is_executor_paid), 0), 2)::text,
++       round(coalesce(sum(coalesce(s.executor_payout, 0)) FILTER (WHERE s.is_executor_paid), 0), 2)::text
++FROM subtasks s
++JOIN users u ON u.id = s.assignee_id`+payoutWhereSQL+`
++GROUP BY u.id, u.name
++ORDER BY u.name, u.id
++LIMIT $4 OFFSET $5`, f.AssigneeID, f.Paid, f.OnlyDone, f.Limit, f.Offset)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++
++	out := []PayoutSummaryItem{}
++	for rows.Next() {
++		var it PayoutSummaryItem
++		var toPay, paid string
++		if err := rows.Scan(&it.AssigneeID, &it.AssigneeName, &it.UnpaidCount, &it.PaidCount, &toPay, &paid); err != nil {
++			return nil, 0, err
++		}
++		it.ToPay, it.Paid = numeric.Amount(toPay), numeric.Amount(paid)
++		out = append(out, it)
++	}
++	return out, total, rows.Err()
++}
++
++// Mark — массовая отметка/снятие выплаты, атомарно (D70): одна транзакция, любая ошибка
++// по любой услуге откатывает всё. Lock Order согласован с board (tasks → subtasks):
++// сначала заказы затронутых услуг по возрастанию id, затем сами услуги по id.
++// Найденные под блокировкой проблемы — *fieldsError по индексам ids: услуги нет →
++// not_found; отметка true у услуги без исполнителя → no_assignee (снять отметку можно и без
++// исполнителя). executor_paid_at — now() при переходе false→true, NULL при снятии; услуги,
++// уже стоящие в нужном состоянии, не трогаются (дата прежней отметки сохраняется).
++func (r *Repo) Mark(ctx context.Context, ids []string, paid bool) (int, error) {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
++	if err != nil {
++		return 0, err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++
++	if _, err := tx.Exec(ctx, `
++SELECT t.id FROM tasks t
++WHERE t.id IN (SELECT s.task_id FROM subtasks s WHERE s.id = ANY($1::text[]::uuid[]))
++ORDER BY t.id FOR UPDATE`, ids); err != nil {
++		return 0, err
++	}
++
++	rows, err := tx.Query(ctx, `
++SELECT s.id::text, s.assignee_id IS NOT NULL FROM subtasks s
++WHERE s.id = ANY($1::text[]::uuid[]) ORDER BY s.id FOR UPDATE`, ids)
++	if err != nil {
++		return 0, err
++	}
++	hasAssignee := make(map[string]bool, len(ids))
++	for rows.Next() {
++		var id string
++		var ok bool
++		if err := rows.Scan(&id, &ok); err != nil {
++			rows.Close()
++			return 0, err
++		}
++		hasAssignee[id] = ok
++	}
++	rows.Close()
++	if err := rows.Err(); err != nil {
++		return 0, err
++	}
++
++	var fields []errorspkg.Field
++	for i, id := range ids {
++		assigned, found := hasAssignee[id]
++		switch {
++		case !found:
++			fields = append(fields, errorspkg.Field{Name: fmt.Sprintf("subtask_ids[%d]", i), Message: msgNotFound})
++		case paid && !assigned:
++			fields = append(fields, errorspkg.Field{Name: fmt.Sprintf("subtask_ids[%d]", i), Message: msgNoAssignee})
++		}
++	}
++	if len(fields) > 0 {
++		return 0, &fieldsError{Fields: fields}
++	}
++
++	tag, err := tx.Exec(ctx, `
++UPDATE subtasks SET is_executor_paid = $2,
++       executor_paid_at = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now()
++WHERE id = ANY($1::text[]::uuid[]) AND is_executor_paid <> $2`, ids, paid)
++	if err != nil {
++		return 0, err
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return 0, err
++	}
++	return int(tag.RowsAffected()), nil
++}
+diff --git a/internal/features/executorpayouts/routes.go b/internal/features/executorpayouts/routes.go
+new file mode 100644
+index 0000000..77aa130
+--- /dev/null
++++ b/internal/features/executorpayouts/routes.go
+@@ -0,0 +1,23 @@
++package executorpayouts
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++)
++
++// Register — JSON API /api/v1/executor-payouts + SSR-экран /executor-payouts. Доступно
++// всем авторизованным: выплаты отмечают и admin, и executor (D62). s == nil — SSR не
++// регистрируется.
++func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
++	g := api.Group("/executor-payouts", a.RequireAPI())
++	g.Get("", h.List)
++	g.Get("/summary", h.Summary)
++	g.Post("/mark", h.Mark)
++	g.Put("/:id", h.UpdatePayout)
++
++	if s == nil {
++		return
++	}
++	app.Get("/executor-payouts", a.RequireSSR(), s.page)
++}
+diff --git a/internal/features/executorpayouts/service.go b/internal/features/executorpayouts/service.go
+new file mode 100644
+index 0000000..3a3ed56
+--- /dev/null
++++ b/internal/features/executorpayouts/service.go
+@@ -0,0 +1,95 @@
++package executorpayouts
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// ErrPayoutNotFound — услуги нет либо у неё нет исполнителя: в отчёте «Выплаты» такой
++// строки нет (сумму услуги без исполнителя правят в карточке заказа, D72).
++var ErrPayoutNotFound = errorspkg.New("EXECUTOR_PAYOUT_NOT_FOUND", http.StatusNotFound,
++	"Услуга не найдена среди выплат: она удалена или у неё снят исполнитель")
++
++type Service struct {
++	repo *Repo
++}
++
++func NewService(pool *pgxpool.Pool) *Service { return &Service{repo: NewRepo(pool)} }
++
++// List — GET /api/v1/executor-payouts: услуги с исполнителем под фильтрами.
++func (s *Service) List(ctx context.Context, a Actor, q ListQuery) (*PayoutListResponse, error) {
++	f, err := parseFilter(q, a)
++	if err != nil {
++		return nil, err
++	}
++	items, total, err := s.repo.List(ctx, f)
++	if err != nil {
++		return nil, err
++	}
++	return &PayoutListResponse{Items: items, Total: total, Limit: f.Limit, Offset: f.Offset}, nil
++}
++
++// Summary — GET /api/v1/executor-payouts/summary: итоги по исполнителям, те же фильтры.
++func (s *Service) Summary(ctx context.Context, a Actor, q ListQuery) (*PayoutSummaryResponse, error) {
++	f, err := parseFilter(q, a)
++	if err != nil {
++		return nil, err
++	}
++	items, total, err := s.repo.Summary(ctx, f)
++	if err != nil {
++		return nil, err
++	}
++	return &PayoutSummaryResponse{Items: items, Total: total, Limit: f.Limit, Offset: f.Offset}, nil
++}
++
++// Mark — POST /api/v1/executor-payouts/mark: вправе и admin, и executor (D62) — гардов по
++// роли нет. Ссылки из тела (несуществующая услуга, услуга без исполнителя) — 400 VALIDATION
++// по индексу subtask_ids («404 — только id в пути»); вся отметка атомарна.
++func (s *Service) Mark(ctx context.Context, in MarkRequest) (*MarkResponse, error) {
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	updated, err := s.repo.Mark(ctx, in.SubtaskIDs, *in.IsExecutorPaid)
++	if err != nil {
++		var fe *fieldsError
++		if errors.As(err, &fe) {
++			return nil, errorspkg.Validation(fe.Fields...)
++		}
++		return nil, err
++	}
++	return &MarkResponse{Updated: updated}, nil
++}
++
++// UpdatePayout — PUT /api/v1/executor-payouts/:id (D72): правка только суммы выплаты; вправе
++// и admin, и executor (D62). Битый uuid в пути → 400 по полю id; услуги нет/без исполнителя →
++// 404 EXECUTOR_PAYOUT_NOT_FOUND. Флаг, дата отметки, цена, статус и исполнитель не меняются.
++func (s *Service) UpdatePayout(ctx context.Context, rawID string, in PayoutUpdateRequest) (*PayoutItem, error) {
++	u, err := uuid.Parse(strings.TrimSpace(rawID))
++	if err != nil {
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "id", Message: msgInvalid})
++	}
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	var payout *string
++	if in.ExecutorPayout.Value != nil {
++		v := in.ExecutorPayout.Value.String()
++		payout = &v
++	}
++	item, err := s.repo.UpdatePayout(ctx, u.String(), payout)
++	if errors.Is(err, errNotFound) {
++		return nil, ErrPayoutNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	return item, nil
++}
+diff --git a/internal/features/executorpayouts/ssr.go b/internal/features/executorpayouts/ssr.go
+new file mode 100644
+index 0000000..b4396aa
+--- /dev/null
++++ b/internal/features/executorpayouts/ssr.go
+@@ -0,0 +1,33 @@
++package executorpayouts
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++)
++
++// Root — шаблоны экрана «Выплаты» относительно корня модуля.
++const Root = "web/ssr/executorpayouts/templates"
++
++// SSR — экран-отчёт «Выплаты» (D69): группы «исполнитель → его услуги», итоги и массовую
++// отметку рисует js/executor-payouts.js поверх JSON API (как «Остатки»/«Перемещения»).
++type SSR struct {
++	r     *ssr.Renderer
++	shell ssr.ShellBuilder
++}
++
++func NewSSR(r *ssr.Renderer, shell ssr.ShellBuilder) *SSR {
++	return &SSR{r: r, shell: shell}
++}
++
++// PageVM — оболочка + роль: executor по умолчанию видит «мои» услуги, admin — все.
++type PageVM struct {
++	Shell   ssr.Shell
++	IsAdmin bool
++}
++
++// page — GET /executor-payouts.
++func (h *SSR) page(c fiber.Ctx) error {
++	sh := h.shell.Build(c, "Выплаты")
++	return h.r.Page(c, "list", PageVM{Shell: sh, IsAdmin: sh.IsAdmin})
++}
+diff --git a/internal/features/executorpayouts/validate.go b/internal/features/executorpayouts/validate.go
+new file mode 100644
+index 0000000..4956816
+--- /dev/null
++++ b/internal/features/executorpayouts/validate.go
+@@ -0,0 +1,201 @@
++package executorpayouts
++
++import (
++	"fmt"
++	"strconv"
++	"strings"
++
++	"github.com/google/uuid"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/numeric"
++)
++
++// payoutScale — NUMERIC(12,2) колонки subtasks.executor_payout: те же границы, что у
++// executor_payout в PUT /subtasks/:id (board).
++var payoutScale = numeric.Scale{IntDigits: 10, FracDigits: 2}
++
++// Коды ошибок полей (details.fields[].message) — клиент переводит их в текст.
++const (
++	msgRequired  = "required"
++	msgInvalid   = "invalid"
++	msgTooMany   = "too_many"
++	msgDuplicate = "duplicate"
++	msgNotFound  = "not_found"
++	// msgNoAssignee — отметить выплату можно только у услуги с исполнителем (D65).
++	msgNoAssignee = "no_assignee"
++)
++
++// Значения query-фильтров (те же слова, что у фильтров доски: paid=all|paid|unpaid,
++// assignee=me|all|<uuid>).
++const (
++	StatusAll    = "all"
++	StatusPaid   = "paid"
++	StatusUnpaid = "unpaid"
++
++	AssigneeMe  = "me"
++	AssigneeAll = "all"
++)
++
++var Statuses = []string{StatusAll, StatusPaid, StatusUnpaid}
++
++const (
++	defaultLimit = 200
++	maxLimit     = 1000
++	// markMax — верхняя граница subtask_ids одного запроса массовой отметки.
++	markMax = 500
++)
++
++// Actor — вызывающий пользователь: нужен для дефолта фильтра assignee по роли (D69).
++type Actor struct {
++	ID      string
++	IsAdmin bool
++}
++
++// ListQuery — сырые query-параметры GET /executor-payouts и /executor-payouts/summary.
++type ListQuery struct {
++	Assignee, Status, OnlyDone, Limit, Offset string
++}
++
++// Filter — разобранные фильтры. AssigneeID nil — все исполнители; Paid nil — любой статус
++// выплаты.
++type Filter struct {
++	AssigneeID *string
++	Paid       *bool
++	OnlyDone   bool
++	Limit      int
++	Offset     int
++}
++
++// parseFilter — разбор и валидация query (мусор → 400 по полю, не тихий clamp). assignee
++// отсутствует → executor видит «мои», admin — все (D69, аналог D19 доски).
++func parseFilter(q ListQuery, a Actor) (Filter, error) {
++	var f Filter
++	var fields []errorspkg.Field
++	add := func(name string) { fields = append(fields, errorspkg.Field{Name: name, Message: msgInvalid}) }
++
++	assignee := strings.TrimSpace(q.Assignee)
++	switch {
++	case assignee == "":
++		if !a.IsAdmin {
++			id := a.ID
++			f.AssigneeID = &id
++		}
++	case assignee == AssigneeMe:
++		id := a.ID
++		f.AssigneeID = &id
++	case assignee == AssigneeAll:
++		f.AssigneeID = nil
++	case uuid.Validate(assignee) == nil:
++		f.AssigneeID = &assignee
++	default:
++		add("assignee")
++	}
++
++	switch q.Status {
++	case "", StatusAll:
++		f.Paid = nil
++	case StatusPaid:
++		v := true
++		f.Paid = &v
++	case StatusUnpaid:
++		v := false
++		f.Paid = &v
++	default:
++		add("status")
++	}
++
++	switch q.OnlyDone {
++	case "", "false":
++		f.OnlyDone = false
++	case "true":
++		f.OnlyDone = true
++	default:
++		add("only_done")
++	}
++
++	f.Limit = defaultLimit
++	if q.Limit != "" {
++		n, err := strconv.Atoi(q.Limit)
++		if err != nil || n < 1 || n > maxLimit {
++			add("limit")
++		} else {
++			f.Limit = n
++		}
++	}
++	if q.Offset != "" {
++		n, err := strconv.Atoi(q.Offset)
++		if err != nil || n < 0 {
++			add("offset")
++		} else {
++			f.Offset = n
++		}
++	}
++
++	if len(fields) > 0 {
++		return Filter{}, errorspkg.Validation(fields...)
++	}
++	return f, nil
++}
++
++// normalize — trim + канонический вид uuid (нижний регистр, с дефисами): Postgres отдаёт
++// uuid именно так, а сверка найденных строк с запрошенными и поиск дублей идут по строке.
++// Не-uuid остаётся как есть — его отсеет validate().
++func (in MarkRequest) normalize() MarkRequest {
++	ids := make([]string, len(in.SubtaskIDs))
++	for i, id := range in.SubtaskIDs {
++		id = strings.TrimSpace(id)
++		if u, err := uuid.Parse(id); err == nil {
++			id = u.String()
++		}
++		ids[i] = id
++	}
++	in.SubtaskIDs = ids
++	return in
++}
++
++// validate — формат тела после normalize(); существование услуг и наличие исполнителя —
++// под транзакцией (repo.Mark).
++func (in MarkRequest) validate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	switch {
++	case len(in.SubtaskIDs) == 0:
++		add("subtask_ids", msgRequired)
++	case len(in.SubtaskIDs) > markMax:
++		add("subtask_ids", msgTooMany)
++	default:
++		seen := make(map[string]bool, len(in.SubtaskIDs))
++		for i, id := range in.SubtaskIDs {
++			name := fmt.Sprintf("subtask_ids[%d]", i)
++			switch {
++			case id == "":
++				add(name, msgRequired)
++			case uuid.Validate(id) != nil:
++				add(name, msgInvalid)
++			case seen[id]:
++				add(name, msgDuplicate)
++			}
++			seen[id] = true
++		}
++	}
++	if in.IsExecutorPaid == nil {
++		add("is_executor_paid", msgRequired)
++	}
++	return f
++}
++
++// validate — executor_payout обязателен (поля нет → required); null допустим (очистить);
++// число — NUMERIC(12,2) ≥ 0 (коды pkg/numeric: invalid_format / too_precise / too_large / …).
++func (in PayoutUpdateRequest) validate() []errorspkg.Field {
++	if !in.ExecutorPayout.Set {
++		return []errorspkg.Field{{Name: "executor_payout", Message: msgRequired}}
++	}
++	if in.ExecutorPayout.Value != nil {
++		if code := in.ExecutorPayout.Value.Validate(payoutScale, false); code != "" {
++			return []errorspkg.Field{{Name: "executor_payout", Message: code}}
++		}
++	}
++	return nil
++}
+diff --git a/internal/features/executorpayouts/validate_test.go b/internal/features/executorpayouts/validate_test.go
+new file mode 100644
+index 0000000..053461e
+--- /dev/null
++++ b/internal/features/executorpayouts/validate_test.go
+@@ -0,0 +1,210 @@
++package executorpayouts
++
++import (
++	"encoding/json"
++	"errors"
++	"fmt"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/numeric"
++)
++
++// Юнит-тесты отчёта «Выплаты» (TS-020): разбор фильтров и валидация тела массовой отметки.
++
++const (
++	idA = "11111111-1111-1111-1111-111111111111"
++	idB = "22222222-2222-2222-2222-222222222222"
++)
++
++var (
++	adminActor    = Actor{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", IsAdmin: true}
++	executorActor = Actor{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", IsAdmin: false}
++)
++
++func fieldMap(f []errorspkg.Field) map[string]string {
++	m := map[string]string{}
++	for _, x := range f {
++		if _, ok := m[x.Name]; !ok {
++			m[x.Name] = x.Message
++		}
++	}
++	return m
++}
++
++func validationFields(t *testing.T, err error) map[string]string {
++	t.Helper()
++	var ae *errorspkg.AppError
++	require.True(t, errors.As(err, &ae), "ожидалась *errorspkg.AppError, получено %v", err)
++	assert.Equal(t, "VALIDATION", ae.Code)
++	return fieldMap(ae.Fields)
++}
++
++func boolPtr(v bool) *bool { return &v }
++
++// TS-020/TS-012: без assignee — executor видит «мои», admin — все (D69).
++func TestTS020_ParseFilter_DefaultsByRole(t *testing.T) {
++	f, err := parseFilter(ListQuery{}, executorActor)
++	require.NoError(t, err)
++	require.NotNil(t, f.AssigneeID)
++	assert.Equal(t, executorActor.ID, *f.AssigneeID)
++	assert.Nil(t, f.Paid)
++	assert.False(t, f.OnlyDone)
++	assert.Equal(t, defaultLimit, f.Limit)
++	assert.Equal(t, 0, f.Offset)
++
++	f, err = parseFilter(ListQuery{}, adminActor)
++	require.NoError(t, err)
++	assert.Nil(t, f.AssigneeID)
++}
++
++// TS-020/TS-012: assignee=me|all|<uuid> — явное значение сильнее роли.
++func TestTS020_ParseFilter_Assignee(t *testing.T) {
++	f, err := parseFilter(ListQuery{Assignee: AssigneeAll}, executorActor)
++	require.NoError(t, err)
++	assert.Nil(t, f.AssigneeID, "executor может смотреть всех")
++
++	f, err = parseFilter(ListQuery{Assignee: AssigneeMe}, adminActor)
++	require.NoError(t, err)
++	require.NotNil(t, f.AssigneeID)
++	assert.Equal(t, adminActor.ID, *f.AssigneeID)
++
++	f, err = parseFilter(ListQuery{Assignee: " " + idA + " "}, adminActor)
++	require.NoError(t, err)
++	require.NotNil(t, f.AssigneeID)
++	assert.Equal(t, idA, *f.AssigneeID)
++}
++
++// TS-020/TS-012: status и only_done.
++func TestTS020_ParseFilter_StatusAndOnlyDone(t *testing.T) {
++	f, err := parseFilter(ListQuery{Status: StatusPaid, OnlyDone: "true"}, adminActor)
++	require.NoError(t, err)
++	require.NotNil(t, f.Paid)
++	assert.True(t, *f.Paid)
++	assert.True(t, f.OnlyDone)
++
++	f, err = parseFilter(ListQuery{Status: StatusUnpaid, OnlyDone: "false"}, adminActor)
++	require.NoError(t, err)
++	require.NotNil(t, f.Paid)
++	assert.False(t, *f.Paid)
++	assert.False(t, f.OnlyDone)
++
++	f, err = parseFilter(ListQuery{Status: StatusAll}, adminActor)
++	require.NoError(t, err)
++	assert.Nil(t, f.Paid)
++}
++
++// TS-020/TS-012: мусор в любом параметре → VALIDATION по полю (все поля разом).
++func TestTS020_ParseFilter_Invalid(t *testing.T) {
++	_, err := parseFilter(ListQuery{Assignee: "nobody", Status: "done", OnlyDone: "1", Limit: "0", Offset: "-1"}, adminActor)
++	got := validationFields(t, err)
++	for _, name := range []string{"assignee", "status", "only_done", "limit", "offset"} {
++		assert.Equal(t, msgInvalid, got[name], name)
++	}
++
++	_, err = parseFilter(ListQuery{Limit: fmt.Sprint(maxLimit + 1)}, adminActor)
++	assert.Equal(t, msgInvalid, validationFields(t, err)["limit"])
++	_, err = parseFilter(ListQuery{Limit: "abc"}, adminActor)
++	assert.Equal(t, msgInvalid, validationFields(t, err)["limit"])
++
++	f, err := parseFilter(ListQuery{Limit: fmt.Sprint(maxLimit), Offset: "7"}, adminActor)
++	require.NoError(t, err)
++	assert.Equal(t, maxLimit, f.Limit)
++	assert.Equal(t, 7, f.Offset)
++}
++
++// TS-020/TS-016: валидное тело; uuid приводится к каноническому виду (trim + lower).
++func TestTS020_MarkRequestValidate_OK(t *testing.T) {
++	in := MarkRequest{SubtaskIDs: []string{" " + strings.ToUpper(idA) + " ", idB}, IsExecutorPaid: boolPtr(false)}.normalize()
++	assert.Empty(t, in.validate())
++	assert.Equal(t, []string{idA, idB}, in.SubtaskIDs)
++}
++
++// TS-020/TS-016: пустой список / нет флага.
++func TestTS020_MarkRequestValidate_Required(t *testing.T) {
++	got := fieldMap(MarkRequest{}.normalize().validate())
++	assert.Equal(t, msgRequired, got["subtask_ids"])
++	assert.Equal(t, msgRequired, got["is_executor_paid"])
++
++	got = fieldMap(MarkRequest{SubtaskIDs: []string{}, IsExecutorPaid: boolPtr(true)}.normalize().validate())
++	assert.Equal(t, msgRequired, got["subtask_ids"])
++	assert.NotContains(t, got, "is_executor_paid")
++}
++
++// TS-020/TS-016: битый uuid, пустая строка, дубль (в т.ч. в другом регистре) — по индексу.
++func TestTS020_MarkRequestValidate_InvalidItems(t *testing.T) {
++	in := MarkRequest{
++		SubtaskIDs:     []string{idA, "not-a-uuid", "  ", strings.ToUpper(idA), idB},
++		IsExecutorPaid: boolPtr(true),
++	}.normalize()
++	got := fieldMap(in.validate())
++	assert.Equal(t, map[string]string{
++		"subtask_ids[1]": msgInvalid,
++		"subtask_ids[2]": msgRequired,
++		"subtask_ids[3]": msgDuplicate,
++	}, got)
++}
++
++// TS-020/TS-016: граница размера списка — markMax допустим, markMax+1 → too_many.
++func TestTS020_MarkRequestValidate_TooMany(t *testing.T) {
++	ids := make([]string, markMax+1)
++	for i := range ids {
++		ids[i] = fmt.Sprintf("00000000-0000-0000-0000-%012d", i)
++	}
++	got := fieldMap(MarkRequest{SubtaskIDs: ids, IsExecutorPaid: boolPtr(true)}.normalize().validate())
++	assert.Equal(t, map[string]string{"subtask_ids": msgTooMany}, got)
++
++	assert.Empty(t, MarkRequest{SubtaskIDs: ids[:markMax], IsExecutorPaid: boolPtr(true)}.normalize().validate())
++}
++
++func decodePayout(t *testing.T, body string) (PayoutUpdateRequest, error) {
++	t.Helper()
++	var in PayoutUpdateRequest
++	err := json.Unmarshal([]byte(body), &in)
++	return in, err
++}
++
++// TS-031: тело PUT /executor-payouts/:id — поле обязательно; null и число ≥ 0 валидны.
++func TestTS031_PayoutUpdateRequestValidate(t *testing.T) {
++	in, err := decodePayout(t, `{}`)
++	require.NoError(t, err)
++	assert.Equal(t, map[string]string{"executor_payout": msgRequired}, fieldMap(in.validate()))
++
++	in, err = decodePayout(t, `{"executor_payout": null}`)
++	require.NoError(t, err)
++	assert.True(t, in.ExecutorPayout.Set)
++	assert.Nil(t, in.ExecutorPayout.Value)
++	assert.Empty(t, in.validate(), "null — очистить сумму")
++
++	for _, ok := range []string{"0", "0.01", "1500.50", "9999999999.99"} {
++		in, err = decodePayout(t, `{"executor_payout": `+ok+`}`)
++		require.NoError(t, err, ok)
++		assert.Empty(t, in.validate(), ok)
++		require.NotNil(t, in.ExecutorPayout.Value)
++		assert.Equal(t, ok, in.ExecutorPayout.Value.String())
++	}
++
++	for raw, want := range map[string]string{
++		"1.234":       numeric.MsgTooPrecise,
++		"10000000000": numeric.MsgTooLarge,
++		"1e3":         numeric.MsgInvalidFormat,
++		"true":        numeric.MsgInvalidFormat, // литерал проходит разбор тела, отсекается форматом
++	} {
++		in, err = decodePayout(t, `{"executor_payout": `+raw+`}`)
++		require.NoError(t, err, raw)
++		assert.Equal(t, want, fieldMap(in.validate())["executor_payout"], raw)
++	}
++	in, err = decodePayout(t, `{"executor_payout": -1}`)
++	require.NoError(t, err)
++	assert.NotEmpty(t, fieldMap(in.validate())["executor_payout"], "отрицательная сумма")
++
++	// не число — ошибка разбора тела (хендлер отвечает 400 BAD_REQUEST).
++	for _, bad := range []string{`"abc"`, `{}`, `[1]`} {
++		_, err = decodePayout(t, `{"executor_payout": `+bad+`}`)
++		assert.Error(t, err, bad)
++	}
++}
+diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
+index 5d0b336..f89ac15 100644
+--- a/internal/seeddemo/seeddemo.go
++++ b/internal/seeddemo/seeddemo.go
+@@ -19,6 +19,9 @@
+ // Склады (warehouses DS-012, D60): остатки товаров с остатком ≥20 раскиданы по «Алматы» и
+ // «Москве» (¼ — в Москве); два перемещения товаров Алматы → Москва (одно получено, одно в
+ // пути); оборудование трёх заказов — в Москве, одна единица — в пути Алматы → Москва.
++//
++// Выплаты исполнителям (executor-payouts, D71): часть выполненных услуг отмечена
++// выплаченной с суммой выплаты, часть — с суммой, но без отметки, часть — без суммы.
+ package seeddemo
+ 
+ import (
+@@ -764,6 +767,11 @@ type demoSubtaskItem struct {
+ 	priceOverride string // "" — из услуги
+ 	goodsOverride []protoGood
+ 	logs          []demoLog
++	// Выплата исполнителю (executor-payouts, D71): payout — сумма выплаты ("" — не задана);
++	// payoutPaid — отметка «Выплачено исполнителю» (executor_paid_at — сутки назад). Только
++	// для услуг с исполнителем.
++	payout     string
++	payoutPaid bool
+ }
+ 
+ // demoLog — запись журнала работ услуги (subtask_logs). userIdx — индекс demoExecutors,
+@@ -876,7 +884,7 @@ var demoTasks = []demoTaskItem{
+ 		column: "В работе", clientIdx: 2, title: "Han's 6 кВт: сбой датчика высоты, удары головки о лист", assigneeIdx: 0, dueOffset: offset(2),
+ 		equipment: []demoTaskEquipment{{equipmentIdx: 8}},
+ 		subtasks: []demoSubtaskItem{
+-			{serviceIdx: 1, status: board.SubtaskStatusDone, assigneeIdx: 0, logs: []demoLog{
++			{serviceIdx: 1, status: board.SubtaskStatusDone, assigneeIdx: 0, payout: "10000", logs: []demoLog{
+ 				{userIdx: 0, hoursAgo: 40, text: "Кабель датчика перетёрт у головки — заменили. Ошибки BCS100 ушли не полностью."},
+ 			}},
+ 			{serviceIdx: 5, status: board.SubtaskStatusDone, assigneeIdx: 2, logs: []demoLog{
+@@ -914,11 +922,11 @@ var demoTasks = []demoTaskItem{
+ 		column: "Готово", clientIdx: 6, title: "Golden Laser 2 кВт: ТО чиллера и чистка оптики Precitec", assigneeIdx: 1, dueOffset: offset(-5), paid: true,
+ 		equipment: []demoTaskEquipment{{equipmentIdx: 19}},
+ 		subtasks: []demoSubtaskItem{
+-			{serviceIdx: 8, status: board.SubtaskStatusDone, assigneeIdx: 1, logs: []demoLog{
++			{serviceIdx: 8, status: board.SubtaskStatusDone, assigneeIdx: 1, payout: "12000", payoutPaid: true, logs: []demoLog{
+ 				{userIdx: 1, hoursAgo: 150, text: "Заменили PP и DI фильтры, залили 20 л дистиллята. Проводимость в норме."},
+ 			}},
+ 			// головка Precitec — стекло 30×1,5 вместо Raytools из комплекта услуги
+-			{serviceIdx: 2, status: board.SubtaskStatusDone, assigneeIdx: 2, goodsOverride: []protoGood{{1, "1", ""}}, logs: []demoLog{
++			{serviceIdx: 2, status: board.SubtaskStatusDone, assigneeIdx: 2, payout: "8000", payoutPaid: true, goodsOverride: []protoGood{{1, "1", ""}}, logs: []demoLog{
+ 				{userIdx: 2, hoursAgo: 146, text: "Защитное стекло Precitec заменено, коллиматор чистый."},
+ 			}},
+ 		},
+@@ -927,17 +935,17 @@ var demoTasks = []demoTaskItem{
+ 		column: "Готово", clientIdx: 8, title: "Senfeng 3 кВт: подбор режимов резки нержавейки 4 мм (азот)", assigneeIdx: 3, dueOffset: offset(-2), paid: true,
+ 		equipment: []demoTaskEquipment{{equipmentIdx: 24}, {equipmentIdx: 25}},
+ 		subtasks: []demoSubtaskItem{
+-			{serviceIdx: 10, status: board.SubtaskStatusDone, assigneeIdx: 3, logs: []demoLog{
++			{serviceIdx: 10, status: board.SubtaskStatusDone, assigneeIdx: 3, payout: "15000", payoutPaid: true, logs: []demoLog{
+ 				{userIdx: 3, hoursAgo: 60, text: "Нерж. 4 мм, азот 16 бар: 2,2 кВт, 3,2 м/мин, фокус −2 мм. Рез без окалины, таблица режимов передана клиенту."},
+ 			}},
+-			{serviceIdx: 3, status: board.SubtaskStatusDone, assigneeIdx: 3},
++			{serviceIdx: 3, status: board.SubtaskStatusDone, assigneeIdx: 3, payout: "6000"},
+ 		},
+ 	},
+ 	{
+ 		column: "Готово", clientIdx: 0, title: "Выезд: замена защитного стекла Raytools BM111", assigneeIdx: 0, dueOffset: offset(-10),
+ 		equipment: []demoTaskEquipment{{equipmentIdx: 2}},
+ 		subtasks: []demoSubtaskItem{
+-			{serviceIdx: 15, status: board.SubtaskStatusDone, assigneeIdx: 0},
++			{serviceIdx: 15, status: board.SubtaskStatusDone, assigneeIdx: 0, payout: "5000"},
+ 			{serviceIdx: 2, status: board.SubtaskStatusDone, assigneeIdx: 0, goodsOverride: []protoGood{{0, "2", ""}}, logs: []demoLog{
+ 				{userIdx: 0, hoursAgo: 245, text: "Заменено защитное стекло, второе оставили клиенту в резерв."},
+ 			}},
+@@ -1008,10 +1016,18 @@ func (s *seeder) seedTasks(columns map[string]columnRow, clients []clientRow, ex
+ 			price := services[st.serviceIdx].defaultPrice(st.priceOverride)
+ 
+ 			var subtaskID string
++			var payout *string
++			if st.payout != "" {
++				payout = &st.payout
++			}
++			payoutPaid := st.payoutPaid && stAssigneeID != nil
+ 			if err := s.tx.QueryRow(s.ctx,
+-				`INSERT INTO subtasks (task_id, service_id, status, assignee_id, due_date, price, equipment_id, position)
+-				 VALUES ($1, $2, $3, $4, $5::date, $6::numeric, $7, $8) RETURNING id`,
+-				taskID, services[st.serviceIdx].ID, st.status, stAssigneeID, dueDate(st.dueOffset), price, mainEquipID, pos).Scan(&subtaskID); err != nil {
++				`INSERT INTO subtasks (task_id, service_id, status, assignee_id, due_date, price, equipment_id, position,
++				                       executor_payout, is_executor_paid, executor_paid_at)
++				 VALUES ($1, $2, $3, $4, $5::date, $6::numeric, $7, $8,
++				         $9::numeric, $10, CASE WHEN $10 THEN now() - interval '1 day' END) RETURNING id`,
++				taskID, services[st.serviceIdx].ID, st.status, stAssigneeID, dueDate(st.dueOffset), price, mainEquipID, pos,
++				payout, payoutPaid).Scan(&subtaskID); err != nil {
+ 				return created, err
+ 			}
+ 
+diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
+index a75e648..c1330ad 100644
+--- a/internal/seeddemo/seeddemo_integration_test.go
++++ b/internal/seeddemo/seeddemo_integration_test.go
+@@ -105,6 +105,28 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
+ 
+ 	assertStockInvariant(s.T(), s.Pool)
+ 	s.assertWarehouses()
++	s.assertExecutorPayouts()
++}
++
++// assertExecutorPayouts — TS-019 (executor-payouts, D71): часть выполненных услуг выплачена
++// с суммой и датой, часть — нет; отметка стоит только у услуг с исполнителем, дата — ровно
++// у отмеченных.
++func (s *SeedDemoSuite) assertExecutorPayouts() {
++	ctx := context.Background()
++	var paidDone, unpaidDone, unpaidWithPayout, paidWithoutPayout, inconsistent int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT count(*) FILTER (WHERE status = 'done' AND is_executor_paid),
++		       count(*) FILTER (WHERE status = 'done' AND assignee_id IS NOT NULL AND NOT is_executor_paid),
++		       count(*) FILTER (WHERE NOT is_executor_paid AND executor_payout IS NOT NULL),
++		       count(*) FILTER (WHERE is_executor_paid AND (executor_payout IS NULL OR executor_payout <= 0)),
++		       count(*) FILTER (WHERE (is_executor_paid AND (assignee_id IS NULL OR executor_paid_at IS NULL))
++		                           OR (NOT is_executor_paid AND executor_paid_at IS NOT NULL))
++		FROM subtasks`).Scan(&paidDone, &unpaidDone, &unpaidWithPayout, &paidWithoutPayout, &inconsistent))
++	s.Positive(paidDone, "часть выполненных услуг выплачена")
++	s.Positive(unpaidDone, "часть выполненных услуг с исполнителем не выплачена")
++	s.Positive(unpaidWithPayout, "есть невыплаченные услуги с заданной суммой выплаты")
++	s.Zero(paidWithoutPayout, "выплаченные услуги — с суммой")
++	s.Zero(inconsistent, "отметка только при исполнителе, дата — ровно у отмеченных")
+ }
+ 
+ // assertWarehouses — DS-012 (D60): остатки на обоих складах, перемещения received +
+diff --git a/internal/server/router.go b/internal/server/router.go
+index fd1928e..7f691b2 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/kitavrus/kanban-tree/internal/features/catalog"
+ 	"github.com/kitavrus/kanban-tree/internal/features/clients"
+ 	"github.com/kitavrus/kanban-tree/internal/features/equipmenttypes"
++	"github.com/kitavrus/kanban-tree/internal/features/executorpayouts"
+ 	"github.com/kitavrus/kanban-tree/internal/features/stocktransfers"
+ 	"github.com/kitavrus/kanban-tree/internal/features/users"
+ 	"github.com/kitavrus/kanban-tree/internal/features/warehouses"
+@@ -122,7 +123,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	boardSubtaskLogRepo := board.NewSubtaskLogRepo(pool)
+ 
+ 	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
+-	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/warehouses", "/stock-transfers").WithBadges(boardStockSvc)
++	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/warehouses", "/stock-transfers", "/executor-payouts").WithBadges(boardStockSvc)
+ 
+ 	sharedR, err := ssr.NewRenderer(ssr.SharedRoot)
+ 	if err != nil {
+@@ -161,6 +162,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	payoutsR, err := ssr.NewRenderer(executorpayouts.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	api := app.Group("/api/v1")
+ 	auth.Register(app, api, auth.NewHandler(authSvc, guard, authR, shell), guard)
+@@ -179,6 +184,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	warehouses.Register(app, api, guard, warehouses.NewHandler(whSvc), warehouses.NewSSR(whSvc, warehousesR, shell, status))
+ 	stocktransfers.Register(app, api, guard, stocktransfers.NewHandler(stocktransfers.NewService(pool)),
+ 		stocktransfers.NewSSR(transfersR, shell, status))
++	// Выплаты исполнителям (D62–D70): отчёт и массовая отметка — и admin, и executor.
++	executorpayouts.Register(app, api, guard, executorpayouts.NewHandler(executorpayouts.NewService(pool)),
++		executorpayouts.NewSSR(payoutsR, shell))
+ 
+ 	// board — доска заказов занимает корень «/» (ADR-100, снимает home) + «/stock» +
+ 	// печать актов (фаза 04) — один CardService на JSON API и SSR-печать (Re-fetch-after-write
+diff --git a/internal/ssr/menu.go b/internal/ssr/menu.go
+index 3b3414a..576ee8f 100644
+--- a/internal/ssr/menu.go
++++ b/internal/ssr/menu.go
+@@ -23,6 +23,7 @@ var menu = []NavGroup{
+ 		{Title: "Доска", Icon: "▦", URL: "/"},
+ 		{Title: "Остатки", Icon: "📊", URL: "/stock"},
+ 		{Title: "Перемещения", Icon: "🚚", URL: "/stock-transfers", AdminOnly: true},
++		{Title: "Выплаты", Icon: "💸", URL: "/executor-payouts"},
+ 	}},
+ 	{Label: "Справочники", Items: []NavItem{
+ 		{Title: "Клиенты", Icon: "🏢", URL: "/clients", AdminOnly: true},

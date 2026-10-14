@@ -1,0 +1,2190 @@
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 95ac2e6..b57e36b 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -14,6 +14,7 @@ type Config struct {
+ 	Port         string
+ 	LogLevel     string
+ 	OTLPEndpoint string // пусто → трейсинг no-op
++	UploadsDir   string // каталог LocalFileStore вложений заказов (фаза 7), дефолт ./uploads
+ 	Auth         AuthConfig
+ 	Firm         FirmInfo
+ }
+@@ -42,6 +43,7 @@ func Load() (*Config, error) {
+ 		Port:         getenv("PORT", "8080"),
+ 		LogLevel:     getenv("LOG_LEVEL", "info"),
+ 		OTLPEndpoint: os.Getenv("OTLP_ENDPOINT"),
++		UploadsDir:   getenv("UPLOADS_DIR", "./uploads"),
+ 	}
+ 	if cfg.DatabaseURL == "" {
+ 		return nil, fmt.Errorf("DATABASE_URL обязателен")
+diff --git a/internal/features/board/attachments_handler.go b/internal/features/board/attachments_handler.go
+new file mode 100644
+index 0000000..e48186d
+--- /dev/null
++++ b/internal/features/board/attachments_handler.go
+@@ -0,0 +1,201 @@
++package board
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"mime"
++	"mime/multipart"
++	"net/http"
++	"strings"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// attachmentService — узкий интерфейс AttachmentsHandler (эталон cardService).
++type attachmentService interface {
++	UploadAttachment(ctx context.Context, a Actor, taskID, name string, body io.Reader) (*OrderCardMutationResponse, error)
++	DeleteAttachment(ctx context.Context, a Actor, id string) (*OrderCardMutationResponse, error)
++	OpenAttachment(ctx context.Context, a Actor, id string) (*AttachmentFile, error)
++}
++
++// AttachmentsHandler — вложения заказа (фаза 7, D21). D19 — доступно и executor.
++type AttachmentsHandler struct {
++	svc attachmentService
++}
++
++func NewAttachmentsHandler(svc attachmentService) *AttachmentsHandler {
++	return &AttachmentsHandler{svc: svc}
++}
++
++// IsAttachmentUpload — предикат роута загрузки для middleware.BodyLimit (лимит тела
++// AttachmentUploadMaxBody вместо общего 4 МБ, тело читается хендлером потоком). Сверка
++// без регистра и с хвостовым «/» — как роутер Fiber по умолчанию (CaseSensitive/
++// StrictRouting = false). Промах предиката безопасен: запрос получит общий лимит.
++func IsAttachmentUpload(c fiber.Ctx) bool {
++	if c.Method() != fiber.MethodPost {
++		return false
++	}
++	p := strings.TrimSuffix(strings.ToLower(c.Path()), "/")
++	rest, ok := strings.CutPrefix(p, "/api/v1/tasks/")
++	if !ok {
++		return false
++	}
++	id, tail, ok := strings.Cut(rest, "/")
++	return ok && id != "" && tail == "attachments"
++}
++
++// Upload — POST /api/v1/tasks/:id/attachments, multipart/form-data, поле `file`. Тело
++// читается потоком (fiber StreamRequestBody): файл пишется в FileStore, в память целиком
++// не попадает. Остаток тела после ответа дочитывается (в пределах лимита роута), чтобы
++// браузер получил ответ (413/400), а не обрыв соединения посреди отправки.
++//
++// Лимит роута — инвариант и для chunked-тела (Content-Length неизвестен, middleware его не
++// видит): поток читается через capReader, сверх AttachmentUploadMaxBody → 413
++// REQUEST_TOO_LARGE. Соединение этого роута всегда закрывается после ответа
++// (middleware.BodyLimit) — недочитанный хвост не станет следующим запросом.
++func (h *AttachmentsHandler) Upload(c fiber.Ctx) (err error) {
++	raw := requestBodyReader(c)
++	body := &capReader{r: raw, left: AttachmentUploadMaxBody}
++	defer func() {
++		if body.exceeded {
++			err = middleware.ErrRequestTooLarge
++			_, _ = io.Copy(io.Discard, io.LimitReader(raw, uploadOverflowDrain))
++			return
++		}
++		drainBody(body)
++	}()
++
++	mt, params, err := mime.ParseMediaType(c.Get(fiber.HeaderContentType))
++	if err != nil || mt != fiber.MIMEMultipartForm || params["boundary"] == "" {
++		return errorspkg.BadRequest("Ожидается multipart/form-data с файлом в поле file")
++	}
++	mr := multipart.NewReader(body, params["boundary"])
++	for {
++		part, err := mr.NextPart()
++		if errors.Is(err, io.EOF) {
++			return errorspkg.Validation(errorspkg.Field{Name: "file", Message: "Выберите файл"})
++		}
++		if err != nil {
++			return errorspkg.BadRequest("Некорректное тело запроса")
++		}
++		if part.FormName() != "file" || part.FileName() == "" {
++			_ = part.Close()
++			continue
++		}
++		resp, err := h.svc.UploadAttachment(c.Context(), currentActor(c), c.Params("id"), part.FileName(), part)
++		_ = part.Close()
++		if err != nil {
++			return err
++		}
++		return c.Status(fiber.StatusCreated).JSON(resp)
++	}
++}
++
++// Delete — DELETE /api/v1/attachments/:id.
++func (h *AttachmentsHandler) Delete(c fiber.Ctx) error {
++	resp, err := h.svc.DeleteAttachment(c.Context(), currentActor(c), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// File — GET /api/v1/attachments/:id/file: Content-Type из БД (не из расширения),
++// inline + безопасный filename*, nosniff, приватный кэш; Range (один диапазон) — для
++// перемотки видео, семантика http.ServeContent (206/416/Accept-Ranges). Тело отдаётся
++// потоком из FileStore (SetBodyStream), без буферизации в памяти.
++func (h *AttachmentsHandler) File(c fiber.Ctx) error {
++	af, err := h.svc.OpenAttachment(c.Context(), currentActor(c), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	size := af.Info.Size
++
++	c.Set(fiber.HeaderContentType, af.ContentType)
++	c.Set(fiber.HeaderContentDisposition, contentDisposition(af.OriginalName))
++	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
++	c.Set(fiber.HeaderCacheControl, "private, max-age=3600")
++	c.Set(fiber.HeaderAcceptRanges, "bytes")
++	c.Set(fiber.HeaderLastModified, af.Info.ModTime.UTC().Format(http.TimeFormat))
++
++	rng, partial, err := parseRange(c.Get(fiber.HeaderRange), size)
++	if err != nil {
++		_ = af.File.Close()
++		c.Set(fiber.HeaderContentRange, fmt.Sprintf("bytes */%d", size))
++		return c.Status(fiber.StatusRequestedRangeNotSatisfiable).Send(nil)
++	}
++	start, length := int64(0), size
++	if partial {
++		if _, err := af.File.Seek(rng.Start, io.SeekStart); err != nil {
++			_ = af.File.Close()
++			return err
++		}
++		start, length = rng.Start, rng.Length
++		c.Status(fiber.StatusPartialContent)
++		c.Set(fiber.HeaderContentRange, fmt.Sprintf("bytes %d-%d/%d", start, start+length-1, size))
++	}
++	c.RequestCtx().SetBodyStream(readCloser{Reader: io.LimitReader(af.File, length), Closer: af.File}, int(length))
++	return nil
++}
++
++// readCloser — fasthttp закрывает поток тела ответа (io.Closer) после отправки.
++type readCloser struct {
++	io.Reader
++	io.Closer
++}
++
++// capReader — не более left байт; попытка прочитать больше → errBodyCapExceeded и
++// exceeded=true (Upload отвечает 413 независимо от того, на каком шаге разбора это
++// всплыло — NextPart, Close части или запись файла).
++type capReader struct {
++	r        io.Reader
++	left     int64
++	exceeded bool
++}
++
++var errBodyCapExceeded = errors.New("board: upload body exceeds route limit")
++
++func (c *capReader) Read(p []byte) (int, error) {
++	if c.left <= 0 {
++		// проверка «есть ли ещё байт»: ровно лимит — допустимо
++		var one [1]byte
++		n, err := c.r.Read(one[:])
++		if n > 0 {
++			c.exceeded = true
++			return 0, errBodyCapExceeded
++		}
++		return 0, err
++	}
++	if int64(len(p)) > c.left {
++		p = p[:c.left]
++	}
++	n, err := c.r.Read(p)
++	c.left -= int64(n)
++	return n, err
++}
++
++// uploadOverflowDrain — после превышения лимита дочитываем небольшой хвост, чтобы
++// клиент, дописывающий тело, получил 413, а не обрыв (соединение всё равно закрывается).
++const uploadOverflowDrain = 1 << 20
++
++// requestBodyReader — поток тела (StreamRequestBody) либо уже прочитанное тело.
++func requestBodyReader(c fiber.Ctx) io.Reader {
++	if req := c.Request(); req.IsBodyStream() {
++		if r := req.BodyStream(); r != nil {
++			return r
++		}
++	}
++	return bytes.NewReader(c.Body())
++}
++
++// drainBody — дочитать остаток тела (не больше лимита роута; больше — отрезает
++// middleware.BodyLimit по Content-Length ещё до хендлера).
++func drainBody(r io.Reader) {
++	_, _ = io.Copy(io.Discard, io.LimitReader(r, AttachmentUploadMaxBody))
++}
+diff --git a/internal/features/board/attachments_http_live_test.go b/internal/features/board/attachments_http_live_test.go
+new file mode 100644
+index 0000000..6b311f2
+--- /dev/null
++++ b/internal/features/board/attachments_http_live_test.go
+@@ -0,0 +1,604 @@
++//go:build integration
++
++package board_test
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"mime/multipart"
++	"net"
++	"net/http"
++	"net/url"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/internal/features/board"
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// AttachmentsLiveSuite (§TD-8): вложения заказа (фаза 7, D21) — реальный бинарь + TCP +
++// реальный логин; файлы пишутся в UPLOADS_DIR временного каталога сьюты (проверки диска).
++type AttachmentsLiveSuite struct {
++	testutil.LiveSuite
++	uploads string
++	admin   *testutil.Browser
++	execA   *testutil.Browser
++	execB   *testutil.Browser
++	execAID string
++}
++
++func TestAttachmentsLiveSuite(t *testing.T) {
++	dir := t.TempDir()
++	suite.Run(t, &AttachmentsLiveSuite{
++		uploads:   dir,
++		LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server", ExtraEnv: []string{"UPLOADS_DIR=" + dir}},
++	})
++}
++
++func (s *AttachmentsLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("att-admin", "password1", "Вложения Админ", "admin", true)
++	s.execAID = s.SeedUser("att-exec-a", "password1", "Исполнитель А", "executor", true)
++	s.SeedUser("att-exec-b", "password1", "Исполнитель Б", "executor", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("att-admin", "password1")
++	s.execA = s.NewBrowser()
++	s.execA.Login("att-exec-a", "password1")
++	s.execB = s.NewBrowser()
++	s.execB.Login("att-exec-b", "password1")
++}
++
++// ---- wire-типы (1:1 с card_dto.go CardAttachment, §TD-6.2; карточка — частично) ----
++
++type attachmentDTO struct {
++	ID           string `json:"id"`
++	Kind         string `json:"kind"`
++	OriginalName string `json:"original_name"`
++	ContentType  string `json:"content_type"`
++	Size         int64  `json:"size"`
++	UserID       string `json:"user_id"`
++	AuthorName   string `json:"author_name"`
++	CreatedAt    string `json:"created_at"`
++	URL          string `json:"url"`
++	CanDelete    bool   `json:"can_delete"`
++}
++
++type attCardDTO struct {
++	Task struct {
++		ID      int64 `json:"id"`
++		Version int64 `json:"version"`
++	} `json:"task"`
++	Attachments []attachmentDTO `json:"attachments"`
++}
++
++type attMutationDTO struct {
++	Card     attCardDTO        `json:"card"`
++	Warnings []json.RawMessage `json:"warnings"`
++}
++
++// ---- контент файлов: валидные сигнатуры + добивка до нужного размера ----
++
++func fileOf(sig []byte, size int) []byte {
++	b := make([]byte, size)
++	copy(b, sig)
++	for i := len(sig); i < size; i++ {
++		b[i] = byte(i % 251)
++	}
++	return b
++}
++
++var (
++	pngSig = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
++	mp4Sig = []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
++	pdfSig = []byte("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
++)
++
++// ---- фикстуры/хелперы ----
++
++func (s *AttachmentsLiveSuite) newTask() int64 {
++	var clientID, colID string
++	ctx := context.Background()
++	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO clients (company_name) VALUES ('Вложения ' || gen_random_uuid()) RETURNING id`).Scan(&clientID))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id FROM columns WHERE name = 'Новые'`).Scan(&colID))
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": "Заказ с вложениями", "client_id": clientID, "column_id": colID})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var m struct {
++		Task struct {
++			ID int64 `json:"id"`
++		} `json:"task"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &m))
++	return m.Task.ID
++}
++
++func multipartBody(field, filename string, content []byte) ([]byte, string) {
++	var buf bytes.Buffer
++	w := multipart.NewWriter(&buf)
++	if field != "" {
++		fw, _ := w.CreateFormFile(field, filename)
++		_, _ = fw.Write(content)
++	} else {
++		_ = w.WriteField("note", "без файла")
++	}
++	_ = w.Close()
++	return buf.Bytes(), w.FormDataContentType()
++}
++
++func (s *AttachmentsLiveSuite) uploadTo(b *testutil.Browser, path, filename string, content []byte) (int, attMutationDTO, []byte) {
++	body, ct := multipartBody("file", filename, content)
++	resp := b.Request(http.MethodPost, path, body, map[string]string{"Content-Type": ct})
++	defer resp.Body.Close()
++	raw, err := io.ReadAll(resp.Body)
++	s.Require().NoError(err)
++	var m attMutationDTO
++	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
++		s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
++	}
++	return resp.StatusCode, m, raw
++}
++
++func (s *AttachmentsLiveSuite) upload(b *testutil.Browser, taskID int64, filename string, content []byte) (int, attMutationDTO, []byte) {
++	return s.uploadTo(b, fmt.Sprintf("/api/v1/tasks/%d/attachments", taskID), filename, content)
++}
++
++func (s *AttachmentsLiveSuite) mustUpload(b *testutil.Browser, taskID int64, filename string, content []byte) attachmentDTO {
++	st, m, raw := s.upload(b, taskID, filename, content)
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Require().NotEmpty(m.Card.Attachments)
++	return m.Card.Attachments[len(m.Card.Attachments)-1]
++}
++
++func (s *AttachmentsLiveSuite) errCode(raw []byte) string {
++	var e apiErrDTO
++	s.Require().NoError(json.Unmarshal(raw, &e), string(raw))
++	return e.Code
++}
++
++func (s *AttachmentsLiveSuite) storageKey(id string) string {
++	var key string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT storage_key FROM task_attachments WHERE id = $1`, id).Scan(&key))
++	return key
++}
++
++func (s *AttachmentsLiveSuite) countRows(taskID int64) int {
++	var n int
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT count(*) FROM task_attachments WHERE task_id = $1`, taskID).Scan(&n))
++	return n
++}
++
++// diskFiles — все файлы каталога UPLOADS_DIR (включая временные .upload-*).
++func (s *AttachmentsLiveSuite) diskFiles() map[string]bool {
++	es, err := os.ReadDir(s.uploads)
++	s.Require().NoError(err)
++	out := map[string]bool{}
++	for _, e := range es {
++		out[e.Name()] = true
++	}
++	return out
++}
++
++func (s *AttachmentsLiveSuite) get(b *testutil.Browser, path string, headers map[string]string) (*http.Response, []byte) {
++	resp := b.Request(http.MethodGet, path, nil, headers)
++	defer resp.Body.Close()
++	raw, err := io.ReadAll(resp.Body)
++	s.Require().NoError(err)
++	return resp, raw
++}
++
++// rawRequest — запрос «руками» по TCP: заголовки с заявленным Content-Length без отправки
++// всего тела (проверка раннего 413 без чтения тела). fasthttp в режиме StreamRequestBody
++// ждёт первые 8 КБ тела (prefetch) до вызова хендлеров — префикс ровно 8 КБ (непрочитанного
++// сервером остатка в сокете нет — закрытие соединения без RST).
++func (s *AttachmentsLiveSuite) rawRequest(method, path string, contentLength int64, bodyPrefix []byte) (int, string) {
++	u, err := url.Parse(s.BaseURL)
++	s.Require().NoError(err)
++	conn, err := net.Dial("tcp", u.Host)
++	s.Require().NoError(err)
++	defer conn.Close()
++	_, err = fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", method, path, u.Host, contentLength)
++	s.Require().NoError(err)
++	prefix := make([]byte, 8<<10)
++	copy(prefix, bodyPrefix)
++	_, _ = conn.Write(prefix)
++	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
++	s.Require().NoError(err)
++	defer resp.Body.Close()
++	raw, _ := io.ReadAll(resp.Body)
++	return resp.StatusCode, string(raw)
++}
++
++// ---- Happy Path ----
++
++// LV-201: загрузка фото/видео/PDF → 201 {card, warnings}; card.attachments с видом/типом/
++// размером/автором/url; файл на диске под uuid-ключом, не под именем пользователя.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_Upload_AllKinds() {
++	taskID := s.newTask()
++
++	st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", taskID), nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(raw), `"attachments":[]`, "пустой заказ — массив, не null")
++
++	photo := fileOf(pngSig, 3000)
++	st, m, raw := s.upload(s.admin, taskID, "фото 1.png", photo)
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.NotNil(m.Warnings)
++	s.Require().Len(m.Card.Attachments, 1)
++	a := m.Card.Attachments[0]
++	s.Equal("photo", a.Kind)
++	s.Equal("image/png", a.ContentType)
++	s.Equal("фото 1.png", a.OriginalName)
++	s.EqualValues(3000, a.Size)
++	s.Equal("Вложения Админ", a.AuthorName)
++	s.True(a.CanDelete)
++	s.Equal("/api/v1/attachments/"+a.ID+"/file", a.URL)
++
++	key := s.storageKey(a.ID)
++	s.NoError(uuid.Validate(key), "ключ хранения — uuid")
++	onDisk, err := os.ReadFile(filepath.Join(s.uploads, key))
++	s.Require().NoError(err)
++	s.Equal(photo, onDisk)
++	s.False(s.diskFiles()["фото 1.png"])
++
++	v := s.mustUpload(s.admin, taskID, "звук.mp4", fileOf(mp4Sig, 2048))
++	s.Equal("video", v.Kind)
++	s.Equal("video/mp4", v.ContentType)
++	p := s.mustUpload(s.admin, taskID, "акт.pdf", fileOf(pdfSig, 1024))
++	s.Equal("pdf", p.Kind)
++	s.Equal("application/pdf", p.ContentType)
++
++	// Путь в имени — только базовое имя; расширение не влияет на тип.
++	odd := s.mustUpload(s.admin, taskID, "../../etc/passwd.txt", fileOf(pngSig, 100))
++	s.Equal("passwd.txt", odd.OriginalName)
++	s.Equal("image/png", odd.ContentType)
++
++	st, raw = s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", taskID), nil)
++	s.Require().Equal(http.StatusOK, st)
++	var card attCardDTO
++	s.Require().NoError(json.Unmarshal(raw, &card))
++	s.Require().Len(card.Attachments, 4)
++	s.Equal([]string{"photo", "video", "pdf", "photo"}, []string{card.Attachments[0].Kind, card.Attachments[1].Kind, card.Attachments[2].Kind, card.Attachments[3].Kind})
++}
++
++// LV-202: отдача — Content-Type из БД, inline + filename*, nosniff, Cache-Control private.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_File_Headers() {
++	taskID := s.newTask()
++	content := fileOf(pdfSig, 5000)
++	a := s.mustUpload(s.admin, taskID, `отчёт "итог".pdf`, content)
++
++	resp, body := s.get(s.execB, a.URL, nil) // исполнитель видит вложения заказа (D19)
++	s.Require().Equal(http.StatusOK, resp.StatusCode, string(body))
++	s.Equal(content, body)
++	s.Equal("application/pdf", resp.Header.Get("Content-Type"))
++	s.Equal("nosniff", resp.Header.Get("X-Content-Type-Options"))
++	s.Contains(resp.Header.Get("Cache-Control"), "private")
++	s.Equal("bytes", resp.Header.Get("Accept-Ranges"))
++	s.Equal("5000", resp.Header.Get("Content-Length"))
++	cd := resp.Header.Get("Content-Disposition")
++	s.True(strings.HasPrefix(cd, `inline; filename="`), cd)
++	s.Contains(cd, "filename*=UTF-8''%D0%BE%D1%82%D1%87%D1%91%D1%82%20%22")
++	s.NotContains(cd, `"итог"`)
++}
++
++// LV-203: Range — 206 + Content-Range; неудовлетворимый — 416 bytes */size.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_File_Range() {
++	taskID := s.newTask()
++	content := fileOf(mp4Sig, 1000)
++	a := s.mustUpload(s.execA, taskID, "clip.mp4", content)
++
++	resp, body := s.get(s.admin, a.URL, map[string]string{"Range": "bytes=10-19"})
++	s.Require().Equal(http.StatusPartialContent, resp.StatusCode)
++	s.Equal("bytes 10-19/1000", resp.Header.Get("Content-Range"))
++	s.Equal(content[10:20], body)
++	s.Equal("video/mp4", resp.Header.Get("Content-Type"))
++
++	resp, body = s.get(s.admin, a.URL, map[string]string{"Range": "bytes=-5"})
++	s.Require().Equal(http.StatusPartialContent, resp.StatusCode)
++	s.Equal(content[995:], body)
++
++	resp, _ = s.get(s.admin, a.URL, map[string]string{"Range": "bytes=5000-"})
++	s.Equal(http.StatusRequestedRangeNotSatisfiable, resp.StatusCode)
++	s.Equal("bytes */1000", resp.Header.Get("Content-Range"))
++}
++
++// ---- Validation / MIME / Limits ----
++
++// LV-204: MIME-подмена — HTML/SVG под .jpg/.png → 400 ATTACHMENT_TYPE_UNSUPPORTED; ни
++// строки, ни файла.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_MIMESpoof400() {
++	taskID := s.newTask()
++	before := s.diskFiles()
++	for name, content := range map[string][]byte{
++		"evil.jpg": []byte("<!DOCTYPE html><html><body><script>alert(1)</script></body></html>"),
++		"evil.png": []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`),
++		"a.pdf":    []byte("PK\x03\x04 zip под видом pdf"),
++	} {
++		st, _, raw := s.upload(s.admin, taskID, name, content)
++		s.Equal(http.StatusBadRequest, st, name)
++		s.Equal("ATTACHMENT_TYPE_UNSUPPORTED", s.errCode(raw), name)
++	}
++	s.Equal(0, s.countRows(taskID))
++	s.Equal(before, s.diskFiles())
++}
++
++// LV-205: лимит фото 20 МБ — ровно лимит принимается, +1 байт → 413 ATTACHMENT_TOO_LARGE;
++// частичный файл не остаётся. Лимит PDF — то же значение.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_PhotoLimit413() {
++	taskID := s.newTask()
++	before := s.diskFiles()
++	st, _, raw := s.upload(s.admin, taskID, "big.png", fileOf(pngSig, 20<<20+1))
++	s.Require().Equal(http.StatusRequestEntityTooLarge, st, string(raw))
++	s.Equal("ATTACHMENT_TOO_LARGE", s.errCode(raw))
++	s.Contains(string(raw), "20 МБ")
++	s.Equal(0, s.countRows(taskID))
++	s.Equal(before, s.diskFiles())
++
++	st, _, raw = s.upload(s.admin, taskID, "big.pdf", fileOf(pdfSig, 20<<20+1))
++	s.Equal(http.StatusRequestEntityTooLarge, st, string(raw))
++	s.Equal("ATTACHMENT_TOO_LARGE", s.errCode(raw))
++
++	a := s.mustUpload(s.admin, taskID, "edge.png", fileOf(pngSig, 20<<20))
++	s.EqualValues(20<<20, a.Size)
++}
++
++// LV-206: лимиты тела по роутам — upload: Content-Length > 501 МБ → 413 без чтения тела;
++// прочие роуты — прежние 4 МБ (Content-Length и chunked); тело > 8 КБ (поток) по-прежнему
++// читается обычными хендлерами.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_BodyLimits() {
++	taskID := s.newTask()
++
++	st, raw := s.rawRequest(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/attachments", taskID), 600<<20, []byte("--x\r\n"))
++	s.Equal(http.StatusRequestEntityTooLarge, st, raw)
++	s.Contains(raw, "REQUEST_TOO_LARGE")
++
++	st, raw = s.rawRequest(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), 5<<20, []byte("{"))
++	s.Equal(http.StatusRequestEntityTooLarge, st, raw)
++
++	// chunked (длина неизвестна) > 4 МБ на обычном роуте → 413. Превышение небольшое: хвост
++	// сервер дочитывает (overflowDrain), клиент успевает дописать тело и получить ответ.
++	big := io.MultiReader(strings.NewReader(`{"title":"`), strings.NewReader(strings.Repeat("a", 4<<20+1024)), strings.NewReader(`"}`))
++	req, err := http.NewRequest(http.MethodPost, s.BaseURL+"/api/v1/tasks", big)
++	s.Require().NoError(err)
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("X-Csrf-Token", s.admin.CSRFToken())
++	resp, err := s.admin.Client.Do(req)
++	s.Require().NoError(err)
++	_ = resp.Body.Close()
++	s.Equal(http.StatusRequestEntityTooLarge, resp.StatusCode)
++
++	// > 8 КБ (тело приходит потоком) — обычный JSON-хендлер работает как раньше
++	var clientID, colID string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `INSERT INTO clients (company_name) VALUES ('Длинное описание') RETURNING id`).Scan(&clientID))
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT id FROM columns WHERE name = 'Новые'`).Scan(&colID))
++	st2, raw2 := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++		"title": "Длинный", "client_id": clientID, "column_id": colID, "description": strings.Repeat("я", 9000),
++	})
++	s.Equal(http.StatusCreated, st2, string(raw2))
++}
++
++// LV-209: битые входы — нет файла/не multipart/пустой файл → 400, невалидные id → 404.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_InvalidInput() {
++	taskID := s.newTask()
++	path := fmt.Sprintf("/api/v1/tasks/%d/attachments", taskID)
++
++	body, ct := multipartBody("", "", nil)
++	resp := s.admin.Request(http.MethodPost, path, body, map[string]string{"Content-Type": ct})
++	raw, _ := io.ReadAll(resp.Body)
++	_ = resp.Body.Close()
++	s.Equal(http.StatusBadRequest, resp.StatusCode, string(raw))
++	s.Equal("VALIDATION", s.errCode(raw))
++	s.Contains(string(raw), `"file"`)
++
++	st, raw := s.admin.Do(http.MethodPost, path, map[string]string{"file": "x"})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("BAD_REQUEST", s.errCode(raw))
++
++	st, _, raw = s.upload(s.admin, taskID, "empty.png", nil)
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("VALIDATION", s.errCode(raw))
++
++	for _, p := range []string{"/api/v1/tasks/abc/attachments", "/api/v1/tasks/0/attachments", "/api/v1/tasks/999999999/attachments"} {
++		st, _, raw = s.uploadTo(s.admin, p, "a.png", fileOf(pngSig, 64))
++		s.Equal(http.StatusNotFound, st, p)
++		s.Equal("TASK_NOT_FOUND", s.errCode(raw), p)
++	}
++	for _, id := range []string{"not-a-uuid", uuid.NewString()} {
++		st, raw = s.admin.Do(http.MethodGet, "/api/v1/attachments/"+id+"/file", nil)
++		s.Equal(http.StatusNotFound, st, id)
++		s.Equal("ATTACHMENT_NOT_FOUND", s.errCode(raw))
++		st, raw = s.admin.Do(http.MethodDelete, "/api/v1/attachments/"+id, nil)
++		s.Equal(http.StatusNotFound, st, id)
++		s.Equal("ATTACHMENT_NOT_FOUND", s.errCode(raw))
++	}
++	s.Equal(0, s.countRows(taskID))
++}
++
++// ---- Access Control ----
++
++// LV-207: удаление — чужой executor 403 ATTACHMENT_FORBIDDEN (can_delete=false), автор —
++// 200 + файл удалён с диска, повтор — 404; admin удаляет чужое.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_Delete_Permissions() {
++	taskID := s.newTask()
++	a := s.mustUpload(s.execA, taskID, "a.png", fileOf(pngSig, 200))
++	s.Equal(s.execAID, a.UserID)
++	b := s.mustUpload(s.execB, taskID, "b.png", fileOf(pngSig, 200))
++	keyA := s.storageKey(a.ID)
++
++	st, raw := s.execB.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", taskID), nil)
++	s.Require().Equal(http.StatusOK, st)
++	var card attCardDTO
++	s.Require().NoError(json.Unmarshal(raw, &card))
++	s.Require().Len(card.Attachments, 2)
++	s.False(card.Attachments[0].CanDelete, "чужое вложение — без права удаления")
++	s.True(card.Attachments[1].CanDelete)
++
++	st, raw = s.execB.Do(http.MethodDelete, "/api/v1/attachments/"+a.ID, nil)
++	s.Equal(http.StatusForbidden, st, string(raw))
++	s.Equal("ATTACHMENT_FORBIDDEN", s.errCode(raw))
++	s.True(s.diskFiles()[keyA])
++
++	st, raw = s.execA.Do(http.MethodDelete, "/api/v1/attachments/"+a.ID, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var m attMutationDTO
++	s.Require().NoError(json.Unmarshal(raw, &m))
++	s.Require().Len(m.Card.Attachments, 1)
++	s.Equal(b.ID, m.Card.Attachments[0].ID)
++	s.False(s.diskFiles()[keyA], "файл удалён с диска")
++
++	st, raw = s.execA.Do(http.MethodDelete, "/api/v1/attachments/"+a.ID, nil)
++	s.Equal(http.StatusNotFound, st)
++	s.Equal("ATTACHMENT_NOT_FOUND", s.errCode(raw))
++	st, _ = s.execA.Do(http.MethodGet, a.URL, nil)
++	s.Equal(http.StatusNotFound, st)
++
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/attachments/"+b.ID, nil)
++	s.Equal(http.StatusOK, st, string(raw))
++	s.Equal(0, s.countRows(taskID))
++}
++
++// LV-208: без сессии — 401 на все роуты вложений; без CSRF-заголовка — 403 CSRF_INVALID.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_NoSession401_NoCSRF403() {
++	taskID := s.newTask()
++	a := s.mustUpload(s.admin, taskID, "a.png", fileOf(pngSig, 100))
++
++	anon := s.NewBrowser()
++	st, _, raw := s.upload(anon, taskID, "x.png", fileOf(pngSig, 100))
++	s.Equal(http.StatusUnauthorized, st, string(raw))
++	st, _ = anon.Do(http.MethodGet, a.URL, nil)
++	s.Equal(http.StatusUnauthorized, st)
++	st, _ = anon.Do(http.MethodDelete, "/api/v1/attachments/"+a.ID, nil)
++	s.Equal(http.StatusUnauthorized, st)
++
++	body, ct := multipartBody("file", "x.png", fileOf(pngSig, 100))
++	resp := s.admin.Request(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/attachments", taskID), body,
++		map[string]string{"Content-Type": ct, "X-Csrf-Token": ""})
++	raw, _ = io.ReadAll(resp.Body)
++	_ = resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode, string(raw))
++	s.Equal("CSRF_INVALID", s.errCode(raw))
++	s.Equal(1, s.countRows(taskID))
++}
++
++// ---- Cascade ----
++
++// LV-210: удаление заказа — строки каскадом FK, файлы удалены с диска после commit.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_TaskDelete_CascadeFiles() {
++	taskID := s.newTask()
++	a := s.mustUpload(s.admin, taskID, "a.png", fileOf(pngSig, 100))
++	b := s.mustUpload(s.execA, taskID, "b.pdf", fileOf(pdfSig, 100))
++	keys := []string{s.storageKey(a.ID), s.storageKey(b.ID)}
++
++	st, raw := s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", taskID), nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(0, s.countRows(taskID))
++	files := s.diskFiles()
++	for _, k := range keys {
++		s.False(files[k], k)
++	}
++	st, _ = s.admin.Do(http.MethodGet, a.URL, nil)
++	s.Equal(http.StatusNotFound, st)
++}
++
++// ---- Request desync (code review фазы 7, HIGH) ----
++
++// pipelined — сырой TCP: запрос с Content-Length, в теле которого после 8 КБ паддинга лежит
++// второй («контрабандный») HTTP-запрос. Возвращает первый ответ и получен ли второй ответ
++// на том же соединении (его быть не должно: тело либо дочитано целиком, либо соединение
++// закрыто).
++func (s *AttachmentsLiveSuite) pipelined(method, path, headers string) (*http.Response, bool) {
++	u, err := url.Parse(s.BaseURL)
++	s.Require().NoError(err)
++	conn, err := net.Dial("tcp", u.Host)
++	s.Require().NoError(err)
++	defer conn.Close()
++
++	smuggled := "GET /health HTTP/1.1\r\nHost: " + u.Host + "\r\n\r\n"
++	body := strings.Repeat("x", 8<<10) + smuggled
++	_, err = fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Type: multipart/form-data; boundary=zzz\r\n%sContent-Length: %d\r\n\r\n%s",
++		method, path, u.Host, headers, len(body), body)
++	s.Require().NoError(err)
++
++	s.Require().NoError(conn.SetReadDeadline(time.Now().Add(3 * time.Second)))
++	br := bufio.NewReader(conn)
++	first, err := http.ReadResponse(br, nil)
++	s.Require().NoError(err)
++	_, _ = io.Copy(io.Discard, first.Body)
++	_ = first.Body.Close()
++
++	s.Require().NoError(conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond)))
++	second, err := http.ReadResponse(br, nil)
++	if err != nil {
++		return first, false
++	}
++	_ = second.Body.Close()
++	return first, true
++}
++
++// LV-211: отказ ДО хендлера на роуте загрузки (403 CSRF, 401 без сессии) — соединение
++// закрывается, недочитанный хвост тела не исполняется как следующий запрос.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_NoRequestDesync() {
++	taskID := s.newTask()
++	path := fmt.Sprintf("/api/v1/tasks/%d/attachments", taskID)
++
++	// 403: без CSRF (аноним)
++	first, smuggled := s.pipelined(http.MethodPost, path, "")
++	s.Equal(http.StatusForbidden, first.StatusCode)
++	s.True(first.Close, "Connection: close на роуте загрузки")
++	s.False(smuggled, "контрабандный запрос из тела не обработан")
++
++	// 401: валидный CSRF, но без сессии
++	anon := s.NewBrowser()
++	tok := anon.CSRFToken()
++	first, smuggled = s.pipelined(http.MethodPost, path, "Cookie: kt_csrf="+tok+"\r\nX-Csrf-Token: "+tok+"\r\n")
++	s.Equal(http.StatusUnauthorized, first.StatusCode)
++	s.True(first.Close)
++	s.False(smuggled)
++
++	// обычный API-роут: тело читается целиком до CSRF — «запрос» внутри тела остаётся телом
++	first, smuggled = s.pipelined(http.MethodPost, "/api/v1/tasks", "")
++	s.Equal(http.StatusForbidden, first.StatusCode)
++	s.False(smuggled)
++}
++
++// zeroReader — бесконечный поток байт 'a' (без аллокации всего тела в тесте).
++type zeroReader struct{}
++
++func (zeroReader) Read(p []byte) (int, error) {
++	for i := range p {
++		p[i] = 'a'
++	}
++	return len(p), nil
++}
++
++// LV-212: chunked-тело загрузки (Content-Length неизвестен) без поля file больше лимита
++// роута → 413 REQUEST_TOO_LARGE, а не бесконечный приём.
++func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_ChunkedBodyCapped413() {
++	taskID := s.newTask()
++	const boundary = "capboundary"
++	head := "--" + boundary + "\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\n"
++	tail := "\r\n--" + boundary + "--\r\n"
++	filler := int64(board.AttachmentUploadMaxBody) + 100<<10
++	body := io.MultiReader(strings.NewReader(head), io.LimitReader(zeroReader{}, filler), strings.NewReader(tail))
++
++	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/api/v1/tasks/%d/attachments", s.BaseURL, taskID), body)
++	s.Require().NoError(err)
++	req.ContentLength = -1 // длина неизвестна → Transfer-Encoding: chunked
++	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
++	req.Header.Set("X-Csrf-Token", s.admin.CSRFToken())
++	resp, err := s.admin.Client.Do(req)
++	s.Require().NoError(err)
++	raw, _ := io.ReadAll(resp.Body)
++	_ = resp.Body.Close()
++	s.Equal(http.StatusRequestEntityTooLarge, resp.StatusCode, string(raw))
++	s.Equal("REQUEST_TOO_LARGE", s.errCode(raw))
++	s.Equal(0, s.countRows(taskID))
++}
+diff --git a/internal/features/board/attachments_repo.go b/internal/features/board/attachments_repo.go
+new file mode 100644
+index 0000000..cd18209
+--- /dev/null
++++ b/internal/features/board/attachments_repo.go
+@@ -0,0 +1,123 @@
++package board
++
++import (
++	"context"
++	"errors"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++// AttachmentRepo — метаданные вложений заказа (task_attachments, миграция 0007). Свой pool,
++// без блокировки заказа: вложения не трогают склад/итоги/version заказа (как журнал работ).
++// FK-проверка INSERT берёт KEY SHARE на tasks — параллельный DELETE заказа (FOR UPDATE)
++// дожидается либо, наоборот, INSERT падает 23503 (→ errNotFound).
++type AttachmentRepo struct {
++	pool *pgxpool.Pool
++}
++
++func NewAttachmentRepo(pool *pgxpool.Pool) *AttachmentRepo { return &AttachmentRepo{pool: pool} }
++
++// attachmentRow — строка task_attachments (+ имя автора для карточки).
++type attachmentRow struct {
++	ID           string
++	TaskID       int64
++	Kind         string
++	OriginalName string
++	ContentType  string
++	Size         int64
++	StorageKey   string
++	UserID       string
++	AuthorName   string
++	CreatedAt    time.Time
++}
++
++// TaskExists — заказ есть (проверка ДО чтения файла из тела запроса: несуществующий заказ
++// не должен заставлять сервер писать сотни мегабайт на диск).
++func (r *AttachmentRepo) TaskExists(ctx context.Context, taskID int64) (bool, error) {
++	var ok bool
++	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, taskID).Scan(&ok)
++	return ok, err
++}
++
++// Insert — 23503 на task_id (заказ удалён между TaskExists и INSERT) → errNotFound.
++func (r *AttachmentRepo) Insert(ctx context.Context, in attachmentRow) (string, error) {
++	var id string
++	err := r.pool.QueryRow(ctx, `
++		INSERT INTO task_attachments (task_id, kind, original_name, content_type, size, storage_key, user_id)
++		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
++		in.TaskID, in.Kind, in.OriginalName, in.ContentType, in.Size, in.StorageKey, in.UserID).Scan(&id)
++	if err != nil {
++		var pgErr *pgconn.PgError
++		if errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "task_attachments_task_id_fkey" {
++			return "", errNotFound
++		}
++		return "", err
++	}
++	return id, nil
++}
++
++const attachmentSelectSQL = `
++	SELECT a.id, a.task_id, a.kind, a.original_name, a.content_type, a.size, a.storage_key, a.user_id, u.name, a.created_at
++	FROM task_attachments a JOIN users u ON u.id = a.user_id`
++
++func scanAttachment(row pgx.Row, a *attachmentRow) error {
++	return row.Scan(&a.ID, &a.TaskID, &a.Kind, &a.OriginalName, &a.ContentType, &a.Size, &a.StorageKey,
++		&a.UserID, &a.AuthorName, &a.CreatedAt)
++}
++
++// Get — одна строка по id. 0 → errNotFound.
++func (r *AttachmentRepo) Get(ctx context.Context, id string) (*attachmentRow, error) {
++	var a attachmentRow
++	err := scanAttachment(r.pool.QueryRow(ctx, attachmentSelectSQL+` WHERE a.id = $1`, id), &a)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return nil, errNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	return &a, nil
++}
++
++// List — вложения заказа в порядке загрузки (карточка, AC фазы 7).
++func (r *AttachmentRepo) List(ctx context.Context, taskID int64) ([]attachmentRow, error) {
++	rows, err := r.pool.Query(ctx, attachmentSelectSQL+` WHERE a.task_id = $1 ORDER BY a.created_at, a.id`, taskID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	var out []attachmentRow
++	for rows.Next() {
++		var a attachmentRow
++		if err := scanAttachment(rows, &a); err != nil {
++			return nil, err
++		}
++		out = append(out, a)
++	}
++	return out, rows.Err()
++}
++
++// Delete — после проверки прав (сервис). 0 строк → errNotFound (параллельное удаление).
++func (r *AttachmentRepo) Delete(ctx context.Context, id string) error {
++	tag, err := r.pool.Exec(ctx, `DELETE FROM task_attachments WHERE id = $1`, id)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return errNotFound
++	}
++	return nil
++}
++
++// attachmentKeysTx — ключи файлов заказа внутри транзакции удаления заказа (строки уйдут
++// каскадом FK, файлы удаляет сервис ПОСЛЕ commit). Заказ уже под FOR UPDATE — новый
++// INSERT вложения ждёт commit и падает 23503, так что список полон.
++func attachmentKeysTx(ctx context.Context, tx pgx.Tx, taskID int64) ([]string, error) {
++	rows, err := tx.Query(ctx, `SELECT storage_key FROM task_attachments WHERE task_id = $1`, taskID)
++	if err != nil {
++		return nil, err
++	}
++	return pgx.CollectRows(rows, pgx.RowTo[string])
++}
+diff --git a/internal/features/board/attachments_service.go b/internal/features/board/attachments_service.go
+new file mode 100644
+index 0000000..7450448
+--- /dev/null
++++ b/internal/features/board/attachments_service.go
+@@ -0,0 +1,195 @@
++package board
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"io"
++	"log/slog"
++
++	"github.com/google/uuid"
++	"go.opentelemetry.io/otel"
++	"go.opentelemetry.io/otel/attribute"
++
++	"github.com/kitavrus/kanban-tree/internal/filestore"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Вложения заказа (фаза 7, D21). Доступ — по правам карточки фазы 6 (D19: любой
++// авторизованный — admin и executor); удаление — автор или admin. Ответ мутаций — тот же
++// конверт {card, warnings}, что у row-мутаций карточки (re-fetch-after-write).
++
++// attachmentFileURL — отдача файла (GET, проверка сессии).
++func attachmentFileURL(id string) string { return "/api/v1/attachments/" + id + "/file" }
++
++func toCardAttachments(a Actor, rows []attachmentRow) []CardAttachment {
++	out := make([]CardAttachment, 0, len(rows))
++	for _, r := range rows {
++		out = append(out, CardAttachment{
++			ID: r.ID, Kind: r.Kind, OriginalName: r.OriginalName, ContentType: r.ContentType, Size: r.Size,
++			UserID: r.UserID, AuthorName: r.AuthorName, CreatedAt: r.CreatedAt,
++			URL:       attachmentFileURL(r.ID),
++			CanDelete: a.IsAdmin || r.UserID == a.ID,
++		})
++	}
++	return out
++}
++
++var errFilesUnavailable = errors.New("board: attachment file store is not configured")
++
++// UploadAttachment — POST /api/v1/tasks/:id/attachments (поток файла из multipart). Порядок:
++// заказ есть → сигнатура (первые 512 байт) → поток в FileStore под uuid-ключом с лимитом
++// по виду → строка в БД; любой сбой после записи файла — файл удаляется.
++func (s *CardService) UploadAttachment(ctx context.Context, a Actor, taskID, name string, body io.Reader) (*OrderCardMutationResponse, error) {
++	id, ok := parseTaskID(taskID)
++	if !ok {
++		return nil, ErrTaskNotFound
++	}
++	if s.files == nil {
++		return nil, errFilesUnavailable
++	}
++
++	ctx, span := otel.Tracer("board").Start(ctx, "attachments.upload")
++	defer span.End()
++	span.SetAttributes(attribute.Int64("task_id", id))
++
++	exists, err := s.attachments.TaskExists(ctx, id)
++	if err != nil {
++		return nil, err
++	}
++	if !exists {
++		return nil, ErrTaskNotFound
++	}
++
++	head := make([]byte, attachmentSniffLen)
++	n, err := io.ReadFull(body, head)
++	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
++		return nil, errorspkg.BadRequest("Не удалось прочитать файл")
++	}
++	head = head[:n]
++	if n == 0 {
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "file", Message: "Файл пустой"})
++	}
++	kind, contentType, ok := sniffAttachment(head)
++	if !ok {
++		return nil, ErrAttachmentTypeUnsupported
++	}
++	span.SetAttributes(attribute.String("kind", kind))
++
++	key := filestore.NewKey()
++	size, err := s.files.Put(ctx, key, io.MultiReader(bytes.NewReader(head), body), attachmentLimit(kind))
++	if errors.Is(err, filestore.ErrTooLarge) {
++		return nil, attachmentTooLarge(kind)
++	}
++	if err != nil {
++		return nil, err
++	}
++	span.SetAttributes(attribute.Int64("size", size))
++
++	_, err = s.attachments.Insert(ctx, attachmentRow{
++		TaskID: id, Kind: kind, OriginalName: sanitizeAttachmentName(name), ContentType: contentType,
++		Size: size, StorageKey: key, UserID: a.ID,
++	})
++	if err != nil {
++		s.removeFile(ctx, key)
++		if errors.Is(err, errNotFound) {
++			return nil, ErrTaskNotFound
++		}
++		return nil, err
++	}
++	return s.cardMutation(ctx, a, id, ReconcileResult{Warnings: []StockWarning{}})
++}
++
++// DeleteAttachment — DELETE /api/v1/attachments/:id: 404 → 403 (не автор и не admin) →
++// строка удаляется → файл удаляется ПОСЛЕ (ошибка файла логируется, не валит операцию).
++func (s *CardService) DeleteAttachment(ctx context.Context, a Actor, id string) (*OrderCardMutationResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrAttachmentNotFound
++	}
++
++	ctx, span := otel.Tracer("board").Start(ctx, "attachments.delete")
++	defer span.End()
++
++	row, err := s.attachments.Get(ctx, id)
++	if errors.Is(err, errNotFound) {
++		return nil, ErrAttachmentNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	span.SetAttributes(attribute.Int64("task_id", row.TaskID))
++	if !a.IsAdmin && row.UserID != a.ID {
++		return nil, ErrAttachmentForbidden
++	}
++
++	if err := s.attachments.Delete(ctx, id); err != nil {
++		if errors.Is(err, errNotFound) {
++			return nil, ErrAttachmentNotFound
++		}
++		return nil, err
++	}
++	s.removeFile(ctx, row.StorageKey)
++
++	resp, err := s.cardMutation(ctx, a, row.TaskID, ReconcileResult{Warnings: []StockWarning{}})
++	if errors.Is(err, ErrTaskNotFound) {
++		// заказ удалён параллельно — вложение всё равно удалено; сущность пути — вложение
++		return nil, ErrAttachmentNotFound
++	}
++	return resp, err
++}
++
++// AttachmentFile — метаданные + открытый файл для GET /api/v1/attachments/:id/file.
++// Вызывающий закрывает File.
++type AttachmentFile struct {
++	Kind         string
++	OriginalName string
++	ContentType  string
++	File         io.ReadSeekCloser
++	Info         filestore.Info
++}
++
++// OpenAttachment — доступ по правам карточки (любой авторизованный, D19). Строка есть, а
++// файла на диске нет (удалён руками/потерян) → 404 + warn в лог.
++func (s *CardService) OpenAttachment(ctx context.Context, _ Actor, id string) (*AttachmentFile, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrAttachmentNotFound
++	}
++	if s.files == nil {
++		return nil, errFilesUnavailable
++	}
++	row, err := s.attachments.Get(ctx, id)
++	if errors.Is(err, errNotFound) {
++		return nil, ErrAttachmentNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	f, info, err := s.files.Open(ctx, row.StorageKey)
++	if errors.Is(err, filestore.ErrNotFound) {
++		slog.WarnContext(ctx, "attachment file missing on storage", "attachment_id", id, "storage_key", row.StorageKey)
++		return nil, ErrAttachmentNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	return &AttachmentFile{Kind: row.Kind, OriginalName: row.OriginalName, ContentType: row.ContentType, File: f, Info: info}, nil
++}
++
++// removeFile — удаление файла вне транзакции; ошибка только логируется (строка уже
++// удалена/не создана — осиротевший файл безопасен, операция пользователя успешна).
++func (s *CardService) removeFile(ctx context.Context, key string) {
++	removeAttachmentFiles(ctx, s.files, []string{key})
++}
++
++func removeAttachmentFiles(ctx context.Context, fs filestore.FileStore, keys []string) {
++	if fs == nil {
++		return
++	}
++	// Операция пользователя уже завершена: отмена запроса не должна оставлять файлы.
++	ctx = context.WithoutCancel(ctx)
++	for _, k := range keys {
++		if err := fs.Delete(ctx, k); err != nil {
++			slog.ErrorContext(ctx, "attachment file delete failed", "storage_key", k, "err", err)
++		}
++	}
++}
+diff --git a/internal/features/board/attachments_validate.go b/internal/features/board/attachments_validate.go
+new file mode 100644
+index 0000000..676275f
+--- /dev/null
++++ b/internal/features/board/attachments_validate.go
+@@ -0,0 +1,199 @@
++package board
++
++import (
++	"bytes"
++	"errors"
++	"fmt"
++	"net/http"
++	"strconv"
++	"strings"
++	"unicode"
++	"unicode/utf8"
++)
++
++// Вложения заказа (фаза 7, D21): тип определяется ТОЛЬКО по содержимому (сигнатуре), не по
++// расширению/заголовку клиента; лимиты — по виду.
++const (
++	AttachmentKindPhoto = "photo"
++	AttachmentKindVideo = "video"
++	AttachmentKindPDF   = "pdf"
++
++	mb = int64(1) << 20
++	// AttachmentMaxPhoto/Video/PDF — лимиты размера файла по виду (D21).
++	AttachmentMaxPhoto = 20 * mb
++	AttachmentMaxVideo = 500 * mb
++	AttachmentMaxPDF   = 20 * mb
++	// AttachmentUploadMaxBody — лимит тела multipart-запроса загрузки: максимальный файл +
++	// запас на заголовки частей/boundary. Прочие роуты — прежний 4 МБ (middleware.BodyLimit).
++	AttachmentUploadMaxBody = AttachmentMaxVideo + mb
++
++	// attachmentSniffLen — сколько байт начала файла читает детектор (как http.DetectContentType).
++	attachmentSniffLen = 512
++	attachmentNameMax  = 255
++)
++
++// attachmentLimit — лимит размера по виду.
++func attachmentLimit(kind string) int64 {
++	switch kind {
++	case AttachmentKindVideo:
++		return AttachmentMaxVideo
++	case AttachmentKindPDF:
++		return AttachmentMaxPDF
++	default:
++		return AttachmentMaxPhoto
++	}
++}
++
++// attachmentLimitMessage — понятный текст 413 по виду файла.
++func attachmentLimitMessage(kind string) string {
++	switch kind {
++	case AttachmentKindVideo:
++		return "Видео больше 500 МБ — загрузить нельзя"
++	case AttachmentKindPDF:
++		return "PDF больше 20 МБ — загрузить нельзя"
++	default:
++		return "Фото больше 20 МБ — загрузить нельзя"
++	}
++}
++
++// sniffAttachment — вид и Content-Type по первым байтам файла. ok=false — тип не
++// поддерживается (HTML/SVG/архивы/исполняемые/HEIC и т.п. → 400). SVG намеренно не фото:
++// это XML с возможным скриптом.
++func sniffAttachment(head []byte) (kind, contentType string, ok bool) {
++	if ct, isQT := sniffQuickTime(head); isQT {
++		return AttachmentKindVideo, ct, true
++	}
++	ct := http.DetectContentType(head)
++	switch ct {
++	case "image/jpeg", "image/png", "image/gif", "image/webp":
++		return AttachmentKindPhoto, ct, true
++	case "video/mp4", "video/webm":
++		return AttachmentKindVideo, ct, true
++	case "application/pdf":
++		return AttachmentKindPDF, ct, true
++	}
++	return "", "", false
++}
++
++// sniffQuickTime — ISO-BMFF `ftyp` с major brand "qt  " (MOV с iPhone): стандартный
++// http.DetectContentType его не распознаёт (узнаёт только бренды mp4*).
++func sniffQuickTime(head []byte) (string, bool) {
++	if len(head) < 12 || !bytes.Equal(head[4:8], []byte("ftyp")) {
++		return "", false
++	}
++	if bytes.Equal(head[8:12], []byte("qt  ")) {
++		return "video/quicktime", true
++	}
++	return "", false
++}
++
++// sanitizeAttachmentName — отображаемое имя файла: только базовое имя (без каталогов),
++// без управляющих и format-символов (Cf, в т.ч. bidi), валидный UTF-8, ≤255 рун; пустое → "file". В путь на диске
++// имя не попадает никогда (ключ хранения — uuid).
++func sanitizeAttachmentName(name string) string {
++	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
++		name = name[i+1:]
++	}
++	name = strings.ToValidUTF8(name, "")
++	name = strings.Map(func(r rune) rune {
++		// Cf — bidi/format-символы (U+202E и др.): подмена отображаемого имени
++		// («photo\u202Egpj.exe»), в имени файла не нужны.
++		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError {
++			return -1
++		}
++		return r
++	}, name)
++	name = strings.TrimSpace(name)
++	if utf8.RuneCountInString(name) > attachmentNameMax {
++		name = string([]rune(name)[:attachmentNameMax])
++	}
++	if name == "" || name == "." || name == ".." {
++		return "file"
++	}
++	return name
++}
++
++// contentDisposition — inline + filename (ASCII) + filename* (UTF-8, RFC 6266/
++// 5987): ASCII-фолбэк без кавычек/обратных слэшей/не-ASCII, точное имя — в filename*.
++func contentDisposition(name string) string {
++	var ascii strings.Builder
++	for _, r := range name {
++		if r < 0x20 || r > 0x7e || r == '"' || r == '\\' || r == '%' || r == ';' {
++			ascii.WriteByte('_')
++			continue
++		}
++		ascii.WriteRune(r)
++	}
++	return fmt.Sprintf(`inline; filename="%s"; filename*=UTF-8''%s`, ascii.String(), rfc5987Encode(name))
++}
++
++// rfc5987Encode — attr-char остаются как есть, прочие байты UTF-8 — %XX.
++func rfc5987Encode(s string) string {
++	const attrChars = "!#$&+-.^_`|~"
++	var b strings.Builder
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.IndexByte(attrChars, c) >= 0 {
++			b.WriteByte(c)
++			continue
++		}
++		fmt.Fprintf(&b, "%%%02X", c)
++	}
++	return b.String()
++}
++
++// byteRange — один диапазон [Start, Start+Length).
++type byteRange struct {
++	Start, Length int64
++}
++
++// parseRange — заголовок Range по семантике http.ServeContent для ОДНОГО диапазона:
++// ok=false, err=nil — Range нет/не bytes/несколько диапазонов → отдаём файл целиком (RFC
++// 7233 разрешает игнорировать Range); err != nil — синтаксически битый либо
++// неудовлетворимый диапазон → 416.
++func parseRange(h string, size int64) (byteRange, bool, error) {
++	if h == "" {
++		return byteRange{}, false, nil
++	}
++	const prefix = "bytes="
++	if !strings.HasPrefix(h, prefix) {
++		return byteRange{}, false, nil
++	}
++	spec := strings.TrimSpace(h[len(prefix):])
++	if strings.Contains(spec, ",") {
++		return byteRange{}, false, nil
++	}
++	startS, endS, found := strings.Cut(spec, "-")
++	if !found {
++		return byteRange{}, false, errInvalidRange
++	}
++	startS, endS = strings.TrimSpace(startS), strings.TrimSpace(endS)
++	if startS == "" {
++		// суффикс: последние N байт
++		n, err := strconv.ParseInt(endS, 10, 64)
++		if err != nil || n <= 0 || size == 0 {
++			return byteRange{}, false, errInvalidRange
++		}
++		if n > size {
++			n = size
++		}
++		return byteRange{Start: size - n, Length: n}, true, nil
++	}
++	start, err := strconv.ParseInt(startS, 10, 64)
++	if err != nil || start < 0 || start >= size {
++		return byteRange{}, false, errInvalidRange
++	}
++	end := size - 1
++	if endS != "" {
++		e, err := strconv.ParseInt(endS, 10, 64)
++		if err != nil || e < start {
++			return byteRange{}, false, errInvalidRange
++		}
++		if e < end {
++			end = e
++		}
++	}
++	return byteRange{Start: start, Length: end - start + 1}, true, nil
++}
++
++var errInvalidRange = errors.New("board: invalid range")
+diff --git a/internal/features/board/attachments_validate_test.go b/internal/features/board/attachments_validate_test.go
+new file mode 100644
+index 0000000..1e31ba6
+--- /dev/null
++++ b/internal/features/board/attachments_validate_test.go
+@@ -0,0 +1,174 @@
++package board
++
++import (
++	"io"
++	"strings"
++	"testing"
++
++	"github.com/gofiber/fiber/v3"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++	"github.com/valyala/fasthttp"
++)
++
++// Сигнатуры тест-файлов (минимальные валидные заголовки форматов).
++var (
++	sigPNG  = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
++	sigJPEG = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00")
++	sigGIF  = []byte("GIF89a\x01\x00\x01\x00")
++	sigWEBP = []byte("RIFF\x24\x00\x00\x00WEBPVP8 ")
++	sigMP4  = []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
++	sigMOV  = []byte("\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  ")
++	sigWEBM = []byte("\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01")
++	sigPDF  = []byte("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
++)
++
++func TestSniffAttachment_Supported(t *testing.T) {
++	cases := []struct {
++		name string
++		head []byte
++		kind string
++		ct   string
++	}{
++		{"png", sigPNG, AttachmentKindPhoto, "image/png"},
++		{"jpeg", sigJPEG, AttachmentKindPhoto, "image/jpeg"},
++		{"gif", sigGIF, AttachmentKindPhoto, "image/gif"},
++		{"webp", sigWEBP, AttachmentKindPhoto, "image/webp"},
++		{"mp4", sigMP4, AttachmentKindVideo, "video/mp4"},
++		{"mov", sigMOV, AttachmentKindVideo, "video/quicktime"},
++		{"webm", sigWEBM, AttachmentKindVideo, "video/webm"},
++		{"pdf", sigPDF, AttachmentKindPDF, "application/pdf"},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			kind, ct, ok := sniffAttachment(c.head)
++			require.True(t, ok)
++			assert.Equal(t, c.kind, kind)
++			assert.Equal(t, c.ct, ct)
++		})
++	}
++}
++
++func TestSniffAttachment_Rejected(t *testing.T) {
++	for name, head := range map[string][]byte{
++		"html":  []byte("<!DOCTYPE html><html><script>alert(1)</script>"),
++		"svg":   []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script/></svg>`),
++		"zip":   []byte("PK\x03\x04\x14\x00\x00\x00"),
++		"exe":   []byte("MZ\x90\x00\x03\x00\x00\x00"),
++		"text":  []byte("просто текст, переименованный в .jpg"),
++		"empty": {},
++		"heic":  []byte("\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic"),
++	} {
++		_, _, ok := sniffAttachment(head)
++		assert.False(t, ok, name)
++	}
++}
++
++func TestAttachmentLimit(t *testing.T) {
++	assert.EqualValues(t, 20<<20, attachmentLimit(AttachmentKindPhoto))
++	assert.EqualValues(t, 500<<20, attachmentLimit(AttachmentKindVideo))
++	assert.EqualValues(t, 20<<20, attachmentLimit(AttachmentKindPDF))
++	assert.Greater(t, AttachmentUploadMaxBody, AttachmentMaxVideo)
++	for _, k := range []string{AttachmentKindPhoto, AttachmentKindVideo, AttachmentKindPDF} {
++		assert.NotEmpty(t, attachmentLimitMessage(k))
++	}
++}
++
++func TestSanitizeAttachmentName(t *testing.T) {
++	assert.Equal(t, "фото.jpg", sanitizeAttachmentName("фото.jpg"))
++	assert.Equal(t, "passwd", sanitizeAttachmentName("../../etc/passwd"))
++	assert.Equal(t, "evil.png", sanitizeAttachmentName(`C:\Users\x\evil.png`))
++	assert.Equal(t, "ab.png", sanitizeAttachmentName("a\x00\r\nb.png"))
++	assert.Equal(t, "file", sanitizeAttachmentName("   "))
++	assert.Equal(t, "file", sanitizeAttachmentName(".."))
++	assert.Equal(t, "ok", sanitizeAttachmentName("o\xffk"))
++	assert.Equal(t, "photogpj.exe", sanitizeAttachmentName("photo\u202Egpj.exe"), "RLO (bidi) убран")
++	assert.Equal(t, "ab.png", sanitizeAttachmentName("a\u2066\u200Bb\uFEFF.png"), "isolate/zero-width/BOM убраны")
++	long := sanitizeAttachmentName(strings.Repeat("я", 300))
++	assert.Equal(t, 255, len([]rune(long)))
++}
++
++func TestContentDisposition(t *testing.T) {
++	assert.Equal(t, `inline; filename="a.pdf"; filename*=UTF-8''a.pdf`, contentDisposition("a.pdf"))
++	got := contentDisposition(`отчёт "1";.pdf`)
++	assert.True(t, strings.HasPrefix(got, `inline; filename="_____ _1__.pdf"; filename*=UTF-8''`), got)
++	assert.Contains(t, got, "%D0%BE%D1%82%D1%87%D1%91%D1%82%20%221%22%3B.pdf")
++	assert.NotContains(t, got, "\n")
++}
++
++func TestParseRange(t *testing.T) {
++	const size = 100
++	cases := []struct {
++		h      string
++		ok     bool
++		bad    bool
++		start  int64
++		length int64
++	}{
++		{h: ""},
++		{h: "items=0-1"},
++		{h: "bytes=0-1,5-6"}, // multi — целиком
++		{h: "bytes=0-9", ok: true, start: 0, length: 10},
++		{h: "bytes=90-", ok: true, start: 90, length: 10},
++		{h: "bytes=95-1000", ok: true, start: 95, length: 5},
++		{h: "bytes=-10", ok: true, start: 90, length: 10},
++		{h: "bytes=-1000", ok: true, start: 0, length: 100},
++		{h: "bytes=100-", bad: true},
++		{h: "bytes=5-2", bad: true},
++		{h: "bytes=abc", bad: true},
++		{h: "bytes=-0", bad: true},
++		{h: "bytes=x-5", bad: true},
++	}
++	for _, c := range cases {
++		r, ok, err := parseRange(c.h, size)
++		if c.bad {
++			assert.ErrorIs(t, err, errInvalidRange, c.h)
++			continue
++		}
++		require.NoError(t, err, c.h)
++		assert.Equal(t, c.ok, ok, c.h)
++		if c.ok {
++			assert.Equal(t, byteRange{Start: c.start, Length: c.length}, r, c.h)
++		}
++	}
++}
++
++func TestIsAttachmentUpload(t *testing.T) {
++	app := fiber.New()
++	cases := []struct {
++		method, path string
++		want         bool
++	}{
++		{fiber.MethodPost, "/api/v1/tasks/12/attachments", true},
++		{fiber.MethodPost, "/api/v1/tasks/12/attachments/", true},
++		{fiber.MethodPost, "/API/V1/Tasks/12/Attachments", true},
++		{fiber.MethodGet, "/api/v1/tasks/12/attachments", false},
++		{fiber.MethodPost, "/api/v1/tasks/12", false},
++		{fiber.MethodPost, "/api/v1/tasks//attachments", false},
++		{fiber.MethodPost, "/api/v1/tasks/12/equipment", false},
++		{fiber.MethodPost, "/api/v1/tasks/12/attachments/x", false},
++		{fiber.MethodPost, "/api/v1/attachments", false},
++	}
++	for _, c := range cases {
++		fctx := &fasthttp.RequestCtx{}
++		fctx.Request.Header.SetMethod(c.method)
++		fctx.Request.SetRequestURI(c.path)
++		ctx := app.AcquireCtx(fctx)
++		assert.Equal(t, c.want, IsAttachmentUpload(ctx), c.method+" "+c.path)
++		app.ReleaseCtx(ctx)
++	}
++}
++
++func TestCapReader(t *testing.T) {
++	exact := &capReader{r: strings.NewReader("12345"), left: 5}
++	b, err := io.ReadAll(exact)
++	require.NoError(t, err)
++	assert.Equal(t, "12345", string(b))
++	assert.False(t, exact.exceeded, "ровно лимит — допустимо")
++
++	over := &capReader{r: strings.NewReader("123456"), left: 5}
++	b, err = io.ReadAll(over)
++	assert.ErrorIs(t, err, errBodyCapExceeded)
++	assert.Equal(t, "12345", string(b))
++	assert.True(t, over.exceeded)
++}
+diff --git a/internal/features/board/card_dto.go b/internal/features/board/card_dto.go
+index ebb4c97..e9ad007 100644
+--- a/internal/features/board/card_dto.go
++++ b/internal/features/board/card_dto.go
+@@ -18,6 +18,23 @@ type OrderCardResponse struct {
+ 	Equipment []CardEquipment `json:"equipment"`
+ 	Subtasks  []CardSubtask   `json:"subtasks"`
+ 	Stock     []CardStock     `json:"stock"`
++	// Attachments — вложения заказа (фаза 7, D21), всегда массив, порядок загрузки.
++	Attachments []CardAttachment `json:"attachments"`
++}
++
++// CardAttachment — вложение заказа. URL — отдача файла с проверкой сессии (inline);
++// CanDelete — автор == актор либо актор admin.
++type CardAttachment struct {
++	ID           string    `json:"id"`
++	Kind         string    `json:"kind"` // photo | video | pdf
++	OriginalName string    `json:"original_name"`
++	ContentType  string    `json:"content_type"`
++	Size         int64     `json:"size"`
++	UserID       string    `json:"user_id"`
++	AuthorName   string    `json:"author_name"`
++	CreatedAt    time.Time `json:"created_at"`
++	URL          string    `json:"url"`
++	CanDelete    bool      `json:"can_delete"`
+ }
+ 
+ type CardColumn struct {
+diff --git a/internal/features/board/card_service.go b/internal/features/board/card_service.go
+index 81fecfe..a55b663 100644
+--- a/internal/features/board/card_service.go
++++ b/internal/features/board/card_service.go
+@@ -11,6 +11,8 @@ import (
+ 	"github.com/jackc/pgx/v5/pgxpool"
+ 	"go.opentelemetry.io/otel"
+ 	"go.opentelemetry.io/otel/attribute"
++
++	"github.com/kitavrus/kanban-tree/internal/filestore"
+ )
+ 
+ // CardService — карточка заказа (GET) + мутации строк (услуги/товары/журнал/оборудование).
+@@ -25,10 +27,22 @@ type CardService struct {
+ 	subtasks  *SubtaskRepo
+ 	products  *SubtaskProductRepo
+ 	logs      *SubtaskLogRepo
++	// Вложения (фаза 7): метаданные — attachments, файлы — files (WithFiles; nil —
++	// загрузка/отдача недоступны, карточка читается как раньше).
++	attachments *AttachmentRepo
++	files       filestore.FileStore
+ }
+ 
+ func NewCardService(pool *pgxpool.Pool, tasks *TaskRepo, card *CardRepo, equipment *TaskEquipmentRepo, engine *StockEngine, subtasks *SubtaskRepo, products *SubtaskProductRepo, logs *SubtaskLogRepo) *CardService {
+-	return &CardService{pool: pool, tasks: tasks, card: card, equipment: equipment, engine: engine, subtasks: subtasks, products: products, logs: logs}
++	return &CardService{pool: pool, tasks: tasks, card: card, equipment: equipment, engine: engine, subtasks: subtasks, products: products, logs: logs,
++		attachments: NewAttachmentRepo(pool)}
++}
++
++// WithFiles — хранилище файлов вложений (фаза 7). Сеттер, а не параметр конструктора:
++// существующие вызовы NewCardService (тесты фазы 6) не меняются.
++func (s *CardService) WithFiles(fs filestore.FileStore) *CardService {
++	s.files = fs
++	return s
+ }
+ 
+ // Card — GET /api/v1/tasks/:id/card (AC-001): 7 запросов на пуле, без tx (read committed),
+@@ -95,12 +109,18 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
+ 		return nil, err
+ 	}
+ 
++	attachments, err := s.attachments.List(ctx, id)
++	if err != nil {
++		return nil, err
++	}
++
+ 	return &OrderCardResponse{
+-		Task:      toTaskResponse(*task),
+-		Column:    *col,
+-		Equipment: equipment,
+-		Subtasks:  subtasks,
+-		Stock:     stock,
++		Task:        toTaskResponse(*task),
++		Column:      *col,
++		Equipment:   equipment,
++		Subtasks:    subtasks,
++		Stock:       stock,
++		Attachments: toCardAttachments(a, attachments),
+ 	}, nil
+ }
+ 
+diff --git a/internal/features/board/errors.go b/internal/features/board/errors.go
+index 5b606a3..23e5014 100644
+--- a/internal/features/board/errors.go
++++ b/internal/features/board/errors.go
+@@ -29,8 +29,22 @@ var (
+ 	ErrTaskEquipmentInUse     = errorspkg.New("TASK_EQUIPMENT_IN_USE", http.StatusConflict, "Оборудование выбрано в услугах заказа — сначала смените его в услугах")
+ 	ErrSubtaskFinalColumn     = errorspkg.New("SUBTASK_FINAL_COLUMN", http.StatusConflict, "Заказ в финальной колонке: нельзя добавить услугу или вернуть её из «Выполнена»")
+ 	ErrSubtaskLogForbidden    = errorspkg.New("SUBTASK_LOG_FORBIDDEN", http.StatusForbidden, "Можно менять только свои записи")
++
++	// Sentinel'ы фазы 7 (вложения заказа, D21). ATTACHMENT_TOO_LARGE — текст по виду файла
++	// собирает attachmentTooLarge (копия, sentinel не мутируется).
++	ErrAttachmentNotFound        = errorspkg.New("ATTACHMENT_NOT_FOUND", http.StatusNotFound, "Вложение не найдено")
++	ErrAttachmentForbidden       = errorspkg.New("ATTACHMENT_FORBIDDEN", http.StatusForbidden, "Удалить вложение может только автор или администратор")
++	ErrAttachmentTypeUnsupported = errorspkg.New("ATTACHMENT_TYPE_UNSUPPORTED", http.StatusBadRequest, "Неподдерживаемый тип файла: можно фото (JPEG, PNG, GIF, WebP), видео (MP4, WebM, MOV) или PDF")
++	ErrAttachmentTooLarge        = errorspkg.New("ATTACHMENT_TOO_LARGE", http.StatusRequestEntityTooLarge, "Файл слишком большой")
+ )
+ 
++// attachmentTooLarge — 413 с понятным текстом по виду файла и details.max_bytes.
++func attachmentTooLarge(kind string) *errorspkg.AppError {
++	e := ErrAttachmentTooLarge.WithDetail("max_bytes", attachmentLimit(kind))
++	e.Message = attachmentLimitMessage(kind)
++	return e
++}
++
+ // Внутренние (репозиторные) ошибки — наружу не текут, сервисный слой мапит их через
+ // errors.Is в sentinel'ы выше.
+ var (
+diff --git a/internal/features/board/routes.go b/internal/features/board/routes.go
+index ef95f58..57af78f 100644
+--- a/internal/features/board/routes.go
++++ b/internal/features/board/routes.go
+@@ -13,6 +13,8 @@ type Handlers struct {
+ 	Assignees *AssigneesHandler
+ 	Stock     *StockHandler
+ 	Card      *CardHandler
++	// Attachments — вложения заказа (фаза 7); nil — роуты вложений не регистрируются.
++	Attachments *AttachmentsHandler
+ }
+ 
+ // Register — JSON API + SSR-страницы `/` и `/stock` (доска занимает корень, ADR-100 —
+@@ -59,6 +61,16 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handlers,
+ 	sl.Put("/:id", h.Card.UpdateLog)
+ 	sl.Delete("/:id", h.Card.DeleteLog)
+ 
++	// Вложения заказа (фаза 7, D21) — D19: доступно и executor; удаление — автор или admin
++	// (проверка в сервисе, ATTACHMENT_FORBIDDEN). Лимит тела загрузки — middleware.BodyLimit
++	// по IsAttachmentUpload (router.go), остальные роуты — прежний 4 МБ.
++	if h.Attachments != nil {
++		t.Post("/:id/attachments", h.Attachments.Upload)
++		at := api.Group("/attachments", a.RequireAPI())
++		at.Get("/:id/file", h.Attachments.File)
++		at.Delete("/:id", h.Attachments.Delete)
++	}
++
+ 	api.Get("/assignees", a.RequireAPI(), h.Assignees.List)
+ 
+ 	// Остатки — чтение всем авторизованным (в т.ч. executor), правка вручную — admin (D44).
+diff --git a/internal/features/board/subtask_products_position_integration_test.go b/internal/features/board/subtask_products_position_integration_test.go
+index 46e3fc4..65b517e 100644
+--- a/internal/features/board/subtask_products_position_integration_test.go
++++ b/internal/features/board/subtask_products_position_integration_test.go
+@@ -62,9 +62,11 @@ func (s *SubtaskProductsPositionSuite) TestSubtaskProductsPosition_BackfillOnMig
+ 	s.Require().NoError(err)
+ 	defer func() { _, _ = mig.Close() }()
+ 
+-	// down до 0005 — 0006 откатывается: subtask_logs дропается, subtask_products.position
+-	// исчезает (IT-020, CM-1 MVP down).
+-	s.Require().NoError(mig.Steps(-1))
++	// down до 0005 — 0006 (и всё новее, напр. 0007 вложений) откатывается: subtask_logs
++	// дропается, subtask_products.position исчезает (IT-020, CM-1 MVP down). Явная версия, а
++	// не Steps(-1): тест не должен зависеть от того, какая миграция последняя.
++	s.Require().NoError(mig.Migrate(5))
++	defer func() { s.Require().NoError(mig.Up()) }() // вернуть схему к последней версии
+ 
+ 	var categoryID string
+ 	s.Require().NoError(s.Pool.QueryRow(ctx,
+@@ -105,7 +107,7 @@ func (s *SubtaskProductsPositionSuite) TestSubtaskProductsPosition_BackfillOnMig
+ 	}
+ 
+ 	// up — снова 0006: ADD COLUMN position + backfill row_number().
+-	s.Require().NoError(mig.Steps(1))
++	s.Require().NoError(mig.Migrate(6))
+ 
+ 	rows, err := s.Pool.Query(ctx,
+ 		`SELECT position FROM subtask_products WHERE subtask_id = $1 ORDER BY position`, subtaskID)
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index 9747e75..ac7bd6e 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -11,6 +11,7 @@ import (
+ 	"go.opentelemetry.io/otel"
+ 	"go.opentelemetry.io/otel/attribute"
+ 
++	"github.com/kitavrus/kanban-tree/internal/filestore"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+@@ -28,12 +29,19 @@ type TaskService struct {
+ 	repo      *TaskRepo
+ 	engine    *StockEngine
+ 	equipment *TaskEquipmentRepo
++	files     filestore.FileStore // фаза 7: файлы вложений удаляются после Delete заказа
+ }
+ 
+ func NewTaskService(pool *pgxpool.Pool, repo *TaskRepo, engine *StockEngine, equipment *TaskEquipmentRepo) *TaskService {
+ 	return &TaskService{pool: pool, repo: repo, engine: engine, equipment: equipment}
+ }
+ 
++// WithFiles — хранилище вложений (фаза 7): Delete заказа удаляет их файлы после commit.
++func (s *TaskService) WithFiles(fs filestore.FileStore) *TaskService {
++	s.files = fs
++	return s
++}
++
+ func (s *TaskService) List(ctx context.Context, f TaskFilter) (*TaskListResponse, error) {
+ 	items, total, err := s.repo.List(ctx, f)
+ 	if err != nil {
+@@ -331,6 +339,7 @@ func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string) (*TaskD
+ 	}
+ 
+ 	var reconcile ReconcileResult
++	var fileKeys []string
+ 	err := withTx(ctx, s.pool, func(tx pgx.Tx) error {
+ 		if _, err := s.repo.LockTask(ctx, tx, id); err != nil {
+ 			return taskLockError(err)
+@@ -340,6 +349,12 @@ func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string) (*TaskD
+ 			return err
+ 		}
+ 		reconcile = res
++		// Фаза 7: строки task_attachments уйдут каскадом FK, файлы — после commit.
++		keys, err := attachmentKeysTx(ctx, tx, id)
++		if err != nil {
++			return err
++		}
++		fileKeys = keys
+ 		if err := s.repo.Delete(ctx, tx, id); err != nil {
+ 			if errors.Is(err, errNotFound) {
+ 				return ErrTaskNotFound
+@@ -351,6 +366,7 @@ func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string) (*TaskD
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	removeAttachmentFiles(ctx, s.files, fileKeys)
+ 	return &TaskDeleteResponse{Warnings: reconcile.Warnings}, nil
+ }
+ 
+diff --git a/internal/filestore/filestore.go b/internal/filestore/filestore.go
+new file mode 100644
+index 0000000..9e0edd6
+--- /dev/null
++++ b/internal/filestore/filestore.go
+@@ -0,0 +1,152 @@
++// Package filestore — хранилище двоичных файлов (вложения заказов, фаза 7/D21) за узким
++// интерфейсом FileStore: сейчас локальный диск (LocalFileStore, каталог UPLOADS_DIR),
++// позже MinIO/S3 — новой реализацией без переписывания вызывающего кода.
++package filestore
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++	"path/filepath"
++	"time"
++
++	"github.com/google/uuid"
++)
++
++var (
++	// ErrTooLarge — поток длиннее maxBytes (Put); частично записанный файл удалён.
++	ErrTooLarge = errors.New("filestore: file too large")
++	// ErrNotFound — ключа нет в хранилище (Open).
++	ErrNotFound = errors.New("filestore: not found")
++	// ErrInvalidKey — ключ не uuid (защита от path traversal: имя пользователя в путь не
++	// попадает никогда, ключ генерирует сервер).
++	ErrInvalidKey = errors.New("filestore: invalid key")
++)
++
++// Info — метаданные открытого файла (для Content-Length/Last-Modified/Range).
++type Info struct {
++	Size    int64
++	ModTime time.Time
++}
++
++// FileStore — контракт хранилища. Ключ — uuid, выдаётся вызывающей стороной (NewKey).
++type FileStore interface {
++	// Put пишет поток под ключом; больше maxBytes → ErrTooLarge (ничего не остаётся).
++	// Возвращает число записанных байт.
++	Put(ctx context.Context, key string, r io.Reader, maxBytes int64) (int64, error)
++	// Open — поток с произвольным доступом (Range) + размер/время. Закрывает вызывающий.
++	Open(ctx context.Context, key string) (io.ReadSeekCloser, Info, error)
++	// Delete — удалить; отсутствующий ключ — не ошибка (идемпотентно).
++	Delete(ctx context.Context, key string) error
++}
++
++// NewKey — ключ хранения нового файла (uuid v4, не имя пользователя).
++func NewKey() string { return uuid.NewString() }
++
++// LocalFileStore — файлы плоско в каталоге dir, имя файла = ключ.
++type LocalFileStore struct {
++	dir string
++}
++
++// NewLocal создаёт каталог (0750), если его нет.
++func NewLocal(dir string) (*LocalFileStore, error) {
++	abs, err := filepath.Abs(dir)
++	if err != nil {
++		return nil, fmt.Errorf("filestore: %w", err)
++	}
++	if err := os.MkdirAll(abs, 0o750); err != nil {
++		return nil, fmt.Errorf("filestore: mkdir %s: %w", abs, err)
++	}
++	return &LocalFileStore{dir: abs}, nil
++}
++
++// Dir — абсолютный путь каталога (диагностика/тесты).
++func (s *LocalFileStore) Dir() string { return s.dir }
++
++func (s *LocalFileStore) path(key string) (string, error) {
++	if uuid.Validate(key) != nil {
++		return "", ErrInvalidKey
++	}
++	return filepath.Join(s.dir, key), nil
++}
++
++// Put — запись во временный файл того же каталога + rename (читатель никогда не видит
++// недописанный файл; сбой посередине не оставляет файл под целевым ключом).
++func (s *LocalFileStore) Put(ctx context.Context, key string, r io.Reader, maxBytes int64) (n int64, err error) {
++	dst, err := s.path(key)
++	if err != nil {
++		return 0, err
++	}
++	tmp, err := os.CreateTemp(s.dir, ".upload-*")
++	if err != nil {
++		return 0, fmt.Errorf("filestore: create temp: %w", err)
++	}
++	tmpName := tmp.Name()
++	defer func() {
++		if err != nil {
++			_ = tmp.Close()
++			_ = os.Remove(tmpName)
++		}
++	}()
++
++	n, err = io.Copy(tmp, io.LimitReader(ctxReader{ctx: ctx, r: r}, maxBytes+1))
++	if err != nil {
++		return 0, err
++	}
++	if n > maxBytes {
++		return 0, ErrTooLarge
++	}
++	if err = tmp.Close(); err != nil {
++		return 0, fmt.Errorf("filestore: close: %w", err)
++	}
++	if err = os.Rename(tmpName, dst); err != nil {
++		return 0, fmt.Errorf("filestore: rename: %w", err)
++	}
++	return n, nil
++}
++
++func (s *LocalFileStore) Open(_ context.Context, key string) (io.ReadSeekCloser, Info, error) {
++	p, err := s.path(key)
++	if err != nil {
++		return nil, Info{}, err
++	}
++	f, err := os.Open(p) //nolint:gosec // p — каталог хранилища + uuid-ключ (path() валидирует)
++	if errors.Is(err, os.ErrNotExist) {
++		return nil, Info{}, ErrNotFound
++	}
++	if err != nil {
++		return nil, Info{}, err
++	}
++	st, err := f.Stat()
++	if err != nil {
++		_ = f.Close()
++		return nil, Info{}, err
++	}
++	return f, Info{Size: st.Size(), ModTime: st.ModTime()}, nil
++}
++
++func (s *LocalFileStore) Delete(_ context.Context, key string) error {
++	p, err := s.path(key)
++	if err != nil {
++		return err
++	}
++	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
++		return err
++	}
++	return nil
++}
++
++// ctxReader — отмена запроса (клиент оборвал загрузку) прерывает копирование.
++type ctxReader struct {
++	ctx context.Context
++	r   io.Reader
++}
++
++func (c ctxReader) Read(p []byte) (int, error) {
++	if err := c.ctx.Err(); err != nil {
++		return 0, err
++	}
++	return c.r.Read(p)
++}
+diff --git a/internal/filestore/filestore_test.go b/internal/filestore/filestore_test.go
+new file mode 100644
+index 0000000..d7dc2d7
+--- /dev/null
++++ b/internal/filestore/filestore_test.go
+@@ -0,0 +1,97 @@
++package filestore
++
++import (
++	"context"
++	"errors"
++	"io"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func newStore(t *testing.T) *LocalFileStore {
++	t.Helper()
++	s, err := NewLocal(filepath.Join(t.TempDir(), "nested", "uploads"))
++	require.NoError(t, err)
++	return s
++}
++
++func entries(t *testing.T, dir string) []string {
++	t.Helper()
++	es, err := os.ReadDir(dir)
++	require.NoError(t, err)
++	var names []string
++	for _, e := range es {
++		names = append(names, e.Name())
++	}
++	return names
++}
++
++func TestLocalFileStore_PutOpenDelete(t *testing.T) {
++	s := newStore(t)
++	ctx := context.Background()
++	key := NewKey()
++
++	n, err := s.Put(ctx, key, strings.NewReader("hello"), 5)
++	require.NoError(t, err)
++	assert.EqualValues(t, 5, n)
++	assert.Equal(t, []string{key}, entries(t, s.Dir()), "только целевой файл, без временных")
++
++	f, info, err := s.Open(ctx, key)
++	require.NoError(t, err)
++	assert.EqualValues(t, 5, info.Size)
++	_, err = f.Seek(1, io.SeekStart)
++	require.NoError(t, err)
++	b, err := io.ReadAll(f)
++	require.NoError(t, err)
++	require.NoError(t, f.Close())
++	assert.Equal(t, "ello", string(b))
++
++	require.NoError(t, s.Delete(ctx, key))
++	require.NoError(t, s.Delete(ctx, key), "повторное удаление — не ошибка")
++	_, _, err = s.Open(ctx, key)
++	assert.ErrorIs(t, err, ErrNotFound)
++}
++
++func TestLocalFileStore_TooLarge(t *testing.T) {
++	s := newStore(t)
++	_, err := s.Put(context.Background(), NewKey(), strings.NewReader("123456"), 5)
++	assert.ErrorIs(t, err, ErrTooLarge)
++	assert.Empty(t, entries(t, s.Dir()), "частичный файл удалён")
++}
++
++func TestLocalFileStore_InvalidKey(t *testing.T) {
++	s := newStore(t)
++	ctx := context.Background()
++	for _, k := range []string{"", "../etc/passwd", "a/b", "x.jpg"} {
++		_, err := s.Put(ctx, k, strings.NewReader("x"), 10)
++		assert.ErrorIs(t, err, ErrInvalidKey, k)
++		_, _, err = s.Open(ctx, k)
++		assert.ErrorIs(t, err, ErrInvalidKey, k)
++		assert.ErrorIs(t, s.Delete(ctx, k), ErrInvalidKey, k)
++	}
++}
++
++type failReader struct{}
++
++func (failReader) Read([]byte) (int, error) { return 0, errors.New("boom") }
++
++func TestLocalFileStore_ReaderErrorCleansUp(t *testing.T) {
++	s := newStore(t)
++	_, err := s.Put(context.Background(), NewKey(), failReader{}, 10)
++	require.Error(t, err)
++	assert.Empty(t, entries(t, s.Dir()))
++}
++
++func TestLocalFileStore_CanceledContext(t *testing.T) {
++	s := newStore(t)
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	_, err := s.Put(ctx, NewKey(), strings.NewReader("abc"), 10)
++	assert.ErrorIs(t, err, context.Canceled)
++	assert.Empty(t, entries(t, s.Dir()))
++}
+diff --git a/internal/server/middleware/body_limit.go b/internal/server/middleware/body_limit.go
+new file mode 100644
+index 0000000..ce021ab
+--- /dev/null
++++ b/internal/server/middleware/body_limit.go
+@@ -0,0 +1,69 @@
++package middleware
++
++import (
++	"io"
++	"net/http"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// ErrRequestTooLarge — тело запроса больше лимита роута.
++var ErrRequestTooLarge = errorspkg.New("REQUEST_TOO_LARGE", http.StatusRequestEntityTooLarge, "Слишком большой запрос")
++
++// BodyLimit — лимит тела по роутам при fiber.Config{StreamRequestBody: true} (фаза 7):
++// fasthttp больше не буферизует тело целиком до хендлера, поэтому лимит «как было»
++// (defaultLimit, для всех роутов) держит этот middleware — тело читается в память не
++// более defaultLimit байт и подкладывается обратно (c.Body()/Bind работают как раньше).
++// Роуты, для которых large(c) == true (загрузка вложений), тело НЕ читают здесь — только
++// ранний отказ по Content-Length > largeLimit; дальше хендлер читает поток сам.
++// Превышение → 413 REQUEST_TOO_LARGE + Connection: close (непрочитанный остаток тела на
++// соединении не остаётся).
++//
++// Инвариант против request desync (CL.0, code review фазы 7): в режиме StreamRequestBody
++// fasthttp после ответа НЕ дочитывает недочитанное тело — остаток на keep-alive был бы
++// разобран как СЛЕДУЮЩИЙ запрос. Поэтому любой ответ либо идёт после полного чтения тела
++// (обычные роуты: тело целиком читается здесь, до CSRF/auth), либо закрывает соединение
++// (роут загрузки — Connection: close безусловно, ДО CSRF/auth: их 403/401 уходят раньше
++// хендлера, который дочитал бы поток; отказы этого middleware — тоже close).
++func BodyLimit(defaultLimit int64, large func(c fiber.Ctx) bool, largeLimit int64) fiber.Handler {
++	return func(c fiber.Ctx) error {
++		req := c.Request()
++		cl := int64(req.Header.ContentLength()) // -1 chunked, -2 без тела
++
++		if large != nil && large(c) {
++			c.RequestCtx().SetConnectionClose()
++			if cl > largeLimit {
++				return tooLarge(c)
++			}
++			return c.Next()
++		}
++
++		if cl > defaultLimit {
++			return tooLarge(c)
++		}
++		if req.IsBodyStream() {
++			buf, err := io.ReadAll(io.LimitReader(req.BodyStream(), defaultLimit+1))
++			if err != nil {
++				c.RequestCtx().SetConnectionClose() // тело прочитано не до конца
++				return errorspkg.BadRequest("Некорректное тело запроса")
++			}
++			if int64(len(buf)) > defaultLimit {
++				// Небольшой хвост сверх лимита дочитываем (≤ overflowDrain), чтобы клиент,
++				// уже дописывающий тело, получил 413, а не RST/«broken pipe».
++				_, _ = io.Copy(io.Discard, io.LimitReader(req.BodyStream(), overflowDrain))
++				return tooLarge(c)
++			}
++			req.SetBody(buf)
++		}
++		return c.Next()
++	}
++}
++
++const overflowDrain = 1 << 20
++
++func tooLarge(c fiber.Ctx) error {
++	c.RequestCtx().SetConnectionClose()
++	return ErrRequestTooLarge
++}
+diff --git a/internal/server/router.go b/internal/server/router.go
+index fc941de..a7c9e25 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -21,6 +21,7 @@ import (
+ 	"github.com/kitavrus/kanban-tree/internal/features/clients"
+ 	"github.com/kitavrus/kanban-tree/internal/features/equipmenttypes"
+ 	"github.com/kitavrus/kanban-tree/internal/features/users"
++	"github.com/kitavrus/kanban-tree/internal/filestore"
+ 	"github.com/kitavrus/kanban-tree/internal/observability"
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
+ 	"github.com/kitavrus/kanban-tree/internal/session"
+@@ -33,9 +34,16 @@ import (
+ // (kebab-сегменты, /api/v1/...), JSON-ключи snake_case; SSR-экраны — через
+ // ssr.NewRenderer(root, ssr.SharedRoot) + Handlers.Register(app).
+ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis.Client) (*fiber.App, error) {
++	// StreamRequestBody (фаза 7): тело не буферизуется fasthttp целиком до хендлера —
++	// загрузка видео до 500 МБ идёт потоком в FileStore. Лимит «как было» (4 МБ) для всех
++	// прочих роутов держит middleware.BodyLimit ниже; предразбор multipart на уровне
++	// сервера выключен (иначе любой роут принимал бы файлы во временные до auth/CSRF).
+ 	app := fiber.New(fiber.Config{
+-		ErrorHandler: errorspkg.FiberErrorHandler,
+-		JSONDecoder:  strictJSON,
++		ErrorHandler:                 errorspkg.FiberErrorHandler,
++		JSONDecoder:                  strictJSON,
++		BodyLimit:                    fiber.DefaultBodyLimit,
++		StreamRequestBody:            true,
++		DisablePreParseMultipartForm: true,
+ 	})
+ 
+ 	app.Use(recover.New())
+@@ -43,6 +51,8 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	app.Use(observability.TraceMiddleware("kanban-tree"))
+ 	app.Use(observability.MetricsMiddleware())
+ 	app.Use(middleware.RequestLogger(logger))
++	// Лимит тела — ДО CSRF (CSRF читает форму из тела) и до любых хендлеров.
++	app.Use(middleware.BodyLimit(fiber.DefaultBodyLimit, board.IsAttachmentUpload, board.AttachmentUploadMaxBody))
+ 
+ 	app.Get("/health", func(c fiber.Ctx) error {
+ 		return c.JSON(fiber.Map{"status": "ok"})
+@@ -136,14 +146,20 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	// board — доска заказов занимает корень «/» (ADR-100, снимает home) + «/stock» +
+ 	// печать актов (фаза 04) — один CardService на JSON API и SSR-печать (Re-fetch-after-write
+ 	// не задействован печатью, но Card() — общий контур доступа executor/admin, D19).
++	// Вложения заказов (фаза 7): локальный диск UPLOADS_DIR за интерфейсом FileStore.
++	files, err := filestore.NewLocal(cfg.UploadsDir)
++	if err != nil {
++		return nil, err
++	}
+ 	boardCardSvc := board.NewCardService(pool, boardTaskRepo, boardCardRepo, boardEquipmentRepo, boardEngine,
+-		boardSubtaskRepo, boardSubtaskProductRepo, boardSubtaskLogRepo)
++		boardSubtaskRepo, boardSubtaskProductRepo, boardSubtaskLogRepo).WithFiles(files)
+ 	board.Register(app, api, guard, &board.Handlers{
+-		Columns:   board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine)),
+-		Tasks:     board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine, boardEquipmentRepo)),
+-		Assignees: board.NewAssigneesHandler(pool),
+-		Stock:     board.NewStockHandler(boardStockSvc),
+-		Card:      board.NewCardHandler(boardCardSvc),
++		Columns:     board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine)),
++		Tasks:       board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine, boardEquipmentRepo).WithFiles(files)),
++		Assignees:   board.NewAssigneesHandler(pool),
++		Stock:       board.NewStockHandler(boardStockSvc),
++		Card:        board.NewCardHandler(boardCardSvc),
++		Attachments: board.NewAttachmentsHandler(boardCardSvc),
+ 	}, board.NewSSR(boardR, shell, status, cfg.Firm, boardCardSvc))
+ 
+ 	return app, nil

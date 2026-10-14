@@ -1,0 +1,39 @@
+# Зависимости локального стенда kanban-tree (make local-up поднимает всё разом);
+# приложение запускается отдельно (go run), не контейнером. Прод-инфра — /infra-bootstrap,
+# здесь НЕ дублируется. Имя файла БЕЗ "dev" по той же причине, что и Make-цели ниже.
+services:
+  postgres:
+    image: postgres:18
+    container_name: kanban_tree_dev_pg
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: dev
+    ports:
+      - "5432:5432"
+    # PG18+: монтировать ровно в /var/lib/postgresql (БЕЗ /data) — образ сам кладёт
+    # данные в версионированный подкаталог (pg_ctlcluster-совместимая раскладка);
+    # монтирование в /var/lib/postgresql/data образ теперь считает ошибкой конфигурации
+    # и падает при старте (даже на пустом volume). См. docker-library/postgres#1259.
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8
+    container_name: kanban_tree_dev_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+

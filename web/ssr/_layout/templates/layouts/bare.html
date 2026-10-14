@@ -1,0 +1,23 @@
+{{ define "bare" }}<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ .Shell.Title }} — Kanban-tree</title>
+<script>(function(){var d=false;try{var p=localStorage.getItem('kt-theme')||'system';d=p==='dark'||(p==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);}catch(e){}document.documentElement.setAttribute('data-bs-theme',d?'dark':'light');})();</script>
+<link rel="icon" href="/assets/ssr-shared/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/ssr-shared/vendor/bootstrap/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/ssr-shared/app.css">
+<meta name="csrf-token" content="{{ .Shell.CSRFToken }}">
+</head>
+<body>
+<!-- Без сайдбара: вход и служебные страницы (ошибки) -->
+<div class="app-bare">
+  <button type="button" class="btn btn-sm btn-outline-secondary app-bare-theme" data-theme-toggle data-testid="theme-toggle">◐ Тема</button>
+  {{ template "content" . }}
+</div>
+<script src="/assets/ssr-shared/js/theme.js"></script>
+{{ block "scripts" . }}{{ end }}
+</body>
+</html>
+{{ end }}

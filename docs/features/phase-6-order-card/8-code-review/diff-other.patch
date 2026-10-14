@@ -1,0 +1,1805 @@
+diff --git a/.env.example b/.env.example
+index 86875c7..bb3ed9b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -13,3 +13,7 @@ SESSION_COOKIE_SECURE=false
+ # защита от перебора: столько неудачных входов по логину за окно → 429
+ LOGIN_MAX_FAILURES=10
+ LOGIN_FAILURE_WINDOW=15m
++# Реквизиты фирмы для печатных актов (SSR-печать); пусто → блок реквизитов не рендерится
++FIRM_NAME=
++FIRM_ADDRESS=
++FIRM_PHONE=
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index bba4214..0690e16 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -244,6 +244,7 @@ body { background: var(--bs-body-bg); }
+ .board-col-head .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .board-col-head .count { background: var(--bs-body-bg); color: var(--bs-secondary-color); border-radius: 10px; padding: 0 8px; font-size: var(--text-xs); font-weight: 500; }
+ .board-col-head .final-mark { color: var(--bs-success); font-weight: 700; }
++.board-col-head .column-total { font-size: var(--text-xs); font-weight: 500; color: var(--bs-secondary-color); white-space: nowrap; flex-shrink: 0; }
+ .board-col-body { padding: 0 8px 8px; overflow-y: auto; min-height: 60px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+ .board-col-body.drag-over { background: rgba(var(--bs-primary-rgb), .08); border-radius: 6px; }
+ .board-add-task { margin: 0 8px 8px; border-style: dashed; }
+@@ -255,6 +256,9 @@ body { background: var(--bs-body-bg); }
+ .task-card-client { font-size: var(--text-xs); color: var(--bs-secondary-color); display: flex; align-items: center; gap: 6px; margin-bottom: 6px; min-width: 0; }
+ .task-card-client .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+ .task-card-menu-btn { margin-left: auto; flex-shrink: 0; }
++.task-card-total { font-size: var(--text-xs); font-weight: 600; margin-bottom: 2px; }
++.task-card-last-log { font-size: var(--text-xs); color: var(--bs-secondary-color); margin-bottom: 2px;
++  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+ .task-card-foot { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); margin-top: 6px; }
+ .task-card .pay { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 10px; white-space: nowrap; }
+ .task-card .pay-yes { background: rgba(var(--bs-success-rgb), .15); color: var(--bs-success); }
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index 5ece891..e3d2709 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -20,6 +20,14 @@
+   }
+   function $(sel, root) { return (root || document).querySelector(sel); }
+   function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++  function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
++  // moneySum — сумма денежных величин В КОПЕЙКАХ (ADR-005): накопление в float-рублях
++  // накапливает погрешность на десятках карточек колонки, поэтому каждое слагаемое
++  // округляется до целых копеек ДО суммирования, а результат форматируется обратно.
++  function moneySum(amounts) {
++    return amounts.reduce(function (sum, v) { return sum + Math.round(num(v) * 100); }, 0);
++  }
++  function fmtMoneyCents(cents) { return (cents / 100).toFixed(2); }
+ 
+   var COLORS = ['#94A3B8', '#7C3AED', '#2563EB', '#D97706', '#059669', '#DB2777', '#DC2626', '#0891B2'];
+ 
+@@ -63,6 +71,10 @@
+ 
+   function assigneeDefault() { return state.isAdmin ? 'all' : 'me'; }
+ 
++  // parseFilters — `task` (deep-link ADR-104, см. openDeepLinkTask/init) сюда сознательно
++  // НЕ входит: это не фильтр доски, а адрес открытой карточки, и filtersSearch/tasksQuery
++  // ниже строят query-string только из перечисленных ниже ключей — «лишний» task не
++  // просачивается в GET /tasks и не подставляется обратно при pushFiltersToUrl().
+   function parseFilters() {
+     var p = new URLSearchParams(location.search);
+     return {
+@@ -95,7 +107,11 @@
+     if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
+     p.set('assignee', f.assignee || assigneeDefault());
+     if (f.due && f.due !== 'all') p.set('due', f.due);
+-    p.set('limit', '500');
++    // Верхняя граница сервера — 1000 (tasks_dto.go §TaskListResponse); было 500 — на общей
++    // dev-БД, растущей с каждым прогоном e2e (851 заказов на момент фазы 6/05), «Сбросить»
++    // без client_id снимал матч по всем клиентам, и заказ мог не попасть в первые 500 (BD-013,
++    // найдено этой фазой на живом стенде). 1000 — временный запас, не постраничная выдача.
++    p.set('limit', '1000');
+     return '?' + p.toString();
+   }
+ 
+@@ -115,7 +131,12 @@
+   // (BD-021): запрос второй страницы получал 401 уже после разлогина.
+   function loadStatic() {
+     return Promise.all([
+-      KT.api.get('/api/v1/columns?limit=100', reqOpts()),
++      // limit=1000 — верхняя граница сервера (columns_service.go columnsMaxLimit); было 100 —
++      // на общей dev-БД, растущей с каждым прогоном BD-006 (тест намеренно оставляет
++      // непустую колонку неудалённой), общее число колонок перевалило за 100 — новые
++      // колонки (position > 100) отрезались лимитом и не появлялись на доске вовсе
++      // (найдено фикс-лупом фазы 05 на живом стенде через прямой запрос API: total=102).
++      KT.api.get('/api/v1/columns?limit=1000', reqOpts()),
+       KT.api.get('/api/v1/assignees?limit=1000', reqOpts()),
+       KT.api.get('/api/v1/clients?limit=200', reqOpts()),
+       KT.api.get('/api/v1/catalog-categories?kind=service&limit=200', reqOpts())
+@@ -251,24 +272,40 @@
+   function columnById(id) { return state.columns.filter(function (c) { return c.id === id; })[0]; }
+   function assigneeById(id) { return state.assignees.filter(function (a) { return a.id === id; })[0]; }
+ 
++  // moveMenuItemsHTML — «Переместить в…» на карточку заказа (ADR-106). Строится ЛЕНИВО,
++  // по факту открытия конкретного меню (см. bindBoardDelegates), а не для КАЖДОЙ карточки
++  // при каждом renderBoard(): на общей dev-БД счёт карточек и колонок идёт на сотни/тысячи
++  // (limit подняли до 1000 в обоих loadTasks/loadStatic), и eager-генерация count(cards) ×
++  // count(columns) пунктов списка на каждый рендер доски раздувала DOM до сотен тысяч
++  // узлов и вешала главный поток на десятки секунд (найдено фикс-лупом фазы 05: BD-006
++  // падал таймаутом на «нестабильной» кнопке диалога — реальная причина была здесь, а не в
++  // самом диалоге).
++  function moveMenuItemsHTML(t) {
++    return state.columns.filter(function (c) { return c.id !== t.column_id; }).map(function (c) {
++      return '<li><a class="dropdown-item task-move-link" href="#" data-task-id="' + t.id + '" data-column-id="' + c.id + '" data-testid="task-move-to-' + c.id + '">Переместить в «' + esc(c.name) + '»</a></li>';
++    }).join('');
++  }
++
+   function cardHTML(t) {
+     var ds = due2Class(t);
+     var late = t.subtasks_late || 0;
++    var totalAmount = num(t.total_amount);
+     return '' +
+       '<div class="task-card' + (ds === 'overdue' ? ' overdue' : '') + '" draggable="true" data-id="' + t.id + '" data-testid="task-card-' + t.id + '" style="--c:' + esc(columnColor(t.column_id)) + '">' +
+       '  <div class="d-flex align-items-start">' +
+       '    <div class="task-card-title">#' + t.id + ' ' + esc(t.title) + '</div>' +
+       '    <div class="dropdown task-card-menu-btn">' +
+-      '      <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" aria-expanded="false" data-testid="task-card-menu-' + t.id + '">⋯</button>' +
+-      '      <ul class="dropdown-menu dropdown-menu-end">' +
+-      state.columns.filter(function (c) { return c.id !== t.column_id; }).map(function (c) {
+-        return '<li><a class="dropdown-item task-move-link" href="#" data-task-id="' + t.id + '" data-column-id="' + c.id + '" data-testid="task-move-to-' + c.id + '">Переместить в «' + esc(c.name) + '»</a></li>';
+-      }).join('') +
+-      '      </ul>' +
++      '      <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" aria-expanded="false" data-task-id="' + t.id + '" data-testid="task-card-menu-' + t.id + '">⋯</button>' +
++      '      <ul class="dropdown-menu dropdown-menu-end" data-task-move-menu="' + t.id + '"></ul>' +
+       '    </div>' +
+       '  </div>' +
+       '  <div class="task-card-client">🏢 <span class="name">' + esc(t.client_name) + '</span><span class="pay ' + (t.is_paid ? 'pay-yes' : 'pay-no') + '">' + (t.is_paid ? '✓ Оплачен' : 'Не оплачен') + '</span></div>' +
+       (t.subtasks_total ? '<div class="small text-body-secondary mb-1">☑ ' + t.subtasks_done + '/' + t.subtasks_total + (late ? ' · <span class="text-danger">⚠ ' + late + '</span>' : '') + '</div>' : '') +
++      // total_amount показываем, только если >0 (AC-013) — заказ без услуг/цен не засоряет
++      // карточку нулём; last_log — последняя запись журнала ЛЮБОЙ услуги заказа (AC-012),
++      // текст уже обрезан сервером до 120 символов + «…».
++      (totalAmount > 0 ? '<div class="small task-card-total" data-testid="task-card-total">Итог: ' + fmtMoneyCents(Math.round(totalAmount * 100)) + '</div>' : '') +
++      (t.last_log ? '<div class="small text-body-secondary task-card-last-log" data-testid="task-card-last-log">💬 ' + esc(t.last_log.text) + ' — ' + esc(t.last_log.author_name) + '</div>' : '') +
+       '  <div class="task-card-foot">' +
+       (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
+       (t.assignee_name ? '<span class="avatar" title="' + esc(t.assignee_name) + '">' + esc(initials(t.assignee_name)) + '</span>' : '') +
+@@ -291,10 +328,15 @@
+ 
+     board.innerHTML = state.columns.map(function (col) {
+       var tasks = tasksByColumn[col.id] || [];
++      // column-total (ADR-005) — сумма total_amount ВИДИМЫХ карточек колонки (после
++      // клиентских фильтров, не серверный агрегат): считается тут же, из уже загруженного
++      // state.tasks, без расширения конверта GET /tasks {items,total,limit,offset}.
++      var colTotalCents = moneySum(tasks.map(function (t) { return t.total_amount; }));
+       return '' +
+         '<section class="board-col" data-column-id="' + col.id + '" data-testid="board-column-' + col.id + '" style="--c:' + esc(col.color) + '">' +
+         '  <div class="board-col-head">' +
+         '    <i class="dot"></i><span class="name">' + esc(col.name) + '</span><span class="count">' + tasks.length + '</span>' +
++        (colTotalCents > 0 ? '<span class="column-total" data-testid="column-total">' + fmtMoneyCents(colTotalCents) + '</span>' : '') +
+         (col.is_final ? '<span class="final-mark" title="Финальная колонка">✓</span>' : '') +
+         (state.isAdmin ? '<div class="dropdown"><button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" data-testid="column-menu-' + col.id + '">⋯</button>' +
+           '<ul class="dropdown-menu dropdown-menu-end">' +
+@@ -338,11 +380,28 @@
+         openTaskForm(taskById(+el.dataset.id));
+       });
+     });
+-    $$('.task-move-link').forEach(function (a) {
+-      a.addEventListener('click', function (e) {
+-        e.preventDefault();
+-        moveTaskToEnd(+a.dataset.taskId, a.dataset.columnId);
+-      });
++    // «Переместить в…» — делегированные обработчики (bindBoardDelegates, once), не здесь:
++    // .task-move-link создаётся лениво при открытии меню, per-card биндинг тут был бы
++    // бесполезен (элементов ещё нет в момент renderBoard).
++  }
++
++  // bindBoardDelegates — ОДИН раз на #board (переживает renderBoard, т.к. innerHTML меняет
++  // только детей): лениво строит «Переместить в…» по факту открытия меню карточки
++  // (Bootstrap 'show.bs.dropdown') и обрабатывает клик по уже построенному пункту.
++  function bindBoardDelegates(board) {
++    board.addEventListener('show.bs.dropdown', function (e) {
++      var btn = e.target;
++      if (!btn || !btn.matches('[data-testid^="task-card-menu-"]')) return;
++      var t = taskById(+btn.dataset.taskId);
++      if (!t) return;
++      var ul = btn.parentElement.querySelector('[data-task-move-menu="' + t.id + '"]');
++      if (ul) ul.innerHTML = moveMenuItemsHTML(t);
++    });
++    board.addEventListener('click', function (e) {
++      var a = e.target.closest('.task-move-link');
++      if (!a) return;
++      e.preventDefault();
++      moveTaskToEnd(+a.dataset.taskId, a.dataset.columnId);
+     });
+   }
+ 
+@@ -509,27 +568,10 @@
+     setTimeout(function () { el.remove(); }, 8000);
+   }
+ 
+-  // ---------- форма заказа ----------
+-  var taskModal = null;
+-  var taskSaving = false;
+-
+-  function fillTaskFormOptions() {
+-    var clientSel = $('#task-client');
+-    clientSel.innerHTML = '<option value="">Выберите клиента</option>' + state.clients.map(function (c) {
+-      return '<option value="' + esc(c.id) + '">' + esc(c.company_name) + '</option>';
+-    }).join('');
+-    wireClientCombobox(clientSel);
+-
+-    var colSel = $('#task-column');
+-    colSel.innerHTML = state.columns.map(function (c) {
+-      return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>';
+-    }).join('');
+-
+-    var aSel = $('#task-assignee');
+-    aSel.innerHTML = '<option value="">Не назначен</option>' + state.assignees.map(function (a) {
+-      return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>';
+-    }).join('');
+-  }
++  // ---------- форма заказа — карточка заказа (фаза 6, KT.taskCard, js/task-card.js) ----------
++  // Простая форма фазы 5 заменена полной карточкой (шапка + оборудование + услуги/товары +
++  // журнал + итоги + печать актов); board.js только открывает/закрывает её и передаёт
++  // общие справочники (клиенты/колонки/исполнители) через getData().
+ 
+   // loadStatic грузит только первую страницу клиентов (limit=200) — не гарантирует, что
+   // клиент открываемого заказа/фильтра в неё попал. Без этого клиент в форме молча
+@@ -547,126 +589,30 @@
+ 
+   function openTaskForm(task, defaultColumnId) {
+     ensureClientOption(task ? task.client_id : null).then(function () {
+-      fillTaskFormOptions();
+-      state.editingTaskId = task ? task.id : null;
+-      $('#task-modal-title').textContent = task ? ('Заказ #' + task.id) : 'Новый заказ';
+-      $('#task-title').value = task ? task.title : '';
+-      $('#task-client').value = task ? task.client_id : '';
+-      $('#task-column').value = task ? task.column_id : (defaultColumnId || (state.columns[0] && state.columns[0].id) || '');
+-      $('#task-assignee').value = task && task.assignee_id ? task.assignee_id : '';
+-      $('#task-due').value = task && task.due_date ? task.due_date : '';
+-      var paid = $('#task-paid');
+-      paid.checked = !!(task && task.is_paid);
+-      paid.disabled = !state.isAdmin;
+-      ['#task-client', '#task-column', '#task-assignee'].forEach(function (sel) {
+-        var el = $(sel);
+-        if (el._cbSync) el._cbSync();
+-      });
+-      $('#task-error').classList.add('d-none');
+-      $('#task-error').textContent = '';
+-      finishOpenTaskForm(task);
++      KT.taskCard.open(task ? task.id : null, defaultColumnId);
+     });
+   }
+ 
+-  function finishOpenTaskForm(task) {
+-    var canDeleteTask = !!(task && state.isAdmin);
+-    var deleteBtn = $('#task-delete-btn');
+-    deleteBtn.classList.toggle('d-none', !canDeleteTask);
+-    // testid снимается вместе с видимостью — «кнопки нет» у executor не только визуально,
+-    // но и по контракту testid (AC-012, BD-012): узел статичен в HTML модалки, поэтому
+-    // просто d-none недостаточно — getByTestId должен находить 0 элементов, не скрытый.
+-    if (canDeleteTask) deleteBtn.setAttribute('data-testid', 'task-delete');
+-    else deleteBtn.removeAttribute('data-testid');
+-    $('#task-save-btn').disabled = false;
+-    taskSaving = false;
+-
+-    if (!taskModal) taskModal = new bootstrap.Modal($('#task-modal'));
+-    taskModal.show();
+-  }
+-
+-  function taskFormPayload() {
+-    var due = $('#task-due').value;
+-    var assignee = $('#task-assignee').value;
+-    // is_paid отправляется ВСЕГДА, даже когда чекбокс disabled у executor: сервис
+-    // трактует отсутствующее поле как false (полная замена карточки, tasks_service.go
+-    // Update), а не «оставить как было» — не послать текущее значение означало бы
+-    // молча снять оплату при любой правке заказа исполнителем.
+-    return {
+-      title: $('#task-title').value.trim(),
+-      client_id: $('#task-client').value,
+-      column_id: $('#task-column').value,
+-      assignee_id: assignee || null,
+-      due_date: due || null,
+-      is_paid: $('#task-paid').checked
+-    };
+-  }
+-
+-  function showTaskError(msg) {
+-    var el = $('#task-error');
+-    el.textContent = msg;
+-    el.classList.remove('d-none');
++  // ---------- deep-link /?task=N (ADR-104) ----------
++  // stripTaskFromUrl — убирает `task` из адресной строки, СОХРАНЯЯ остальные фильтры
++  // (client_id/q/…), которые могли быть в URL вместе с deep-link'ом. Вызывается и при
++  // обычном закрытии карточки, и (через тот же 'hidden.bs.modal') после автозакрытия
++  // task-card.js на 404 «Заказ не найден» — второй путь ничего не знает про URL сам.
++  function stripTaskFromUrl() {
++    var p = new URLSearchParams(location.search);
++    if (!p.has('task')) return;
++    p.delete('task');
++    var s = p.toString();
++    history.replaceState(null, '', location.pathname + (s ? '?' + s : ''));
+   }
+ 
+-  function bindTaskForm() {
+-    $('#task-form-el').addEventListener('submit', function (e) {
+-      e.preventDefault();
+-      if (taskSaving) return; // защита от двойного клика/двойного submit
+-      taskSaving = true;
+-      $('#task-save-btn').disabled = true;
+-
+-      var payload = taskFormPayload();
+-      var req;
+-      if (state.editingTaskId) {
+-        var current = taskById(state.editingTaskId);
+-        payload.version = current ? current.version : null;
+-        req = KT.api.put('/api/v1/tasks/' + state.editingTaskId, payload);
+-      } else {
+-        req = KT.api.post('/api/v1/tasks', payload);
+-      }
+-      var wasCreate = !state.editingTaskId;
+-      req.then(function (resp) {
+-        taskModal.hide();
+-        applyTaskPatch(resp.task);
+-        var after = wasCreate ? reloadAndRender() : Promise.resolve();
+-        return after.then(function () {
+-          if (resp.warnings && resp.warnings.length) toastWarnings(resp.warnings);
+-          KT.refreshNavBadge();
+-        });
+-      }).catch(function (err) {
+-        taskSaving = false;
+-        $('#task-save-btn').disabled = false;
+-        if (err && err.code === 'TASK_VERSION_CONFLICT') {
+-          taskModal.hide();
+-          KT.uiAlert(err.message || 'Заказ уже изменён, обновите', 'Конфликт версии');
+-          reloadAndRender();
+-          return;
+-        }
+-        if (err && err.fields && err.fields.length) {
+-          showTaskError(err.fields.map(function (f) { return f.message; }).join('; '));
+-          return;
+-        }
+-        showTaskError((err && err.message) || 'Не удалось сохранить заказ');
+-      });
+-    });
+-
+-    $('#task-delete-btn').addEventListener('click', function () {
+-      var id = state.editingTaskId;
+-      if (!id) return;
+-      KT.uiConfirm('Удалить заказ #' + id + '? Товары вернутся на склад.').then(function (ok) {
+-        if (!ok) return;
+-        KT.api.del('/api/v1/tasks/' + id).then(function (resp) {
+-          taskModal.hide();
+-          state.tasks = state.tasks.filter(function (t) { return t.id !== id; });
+-          renderBoard();
+-          if (resp.warnings && resp.warnings.length) toastWarnings(resp.warnings);
+-          KT.refreshNavBadge();
+-        }).catch(function (err) {
+-          showTaskError((err && err.message) || 'Не удалось удалить заказ');
+-        });
+-      });
+-    });
+-
+-    $('#task-add-btn').addEventListener('click', function () { openTaskForm(null); });
++  // openDeepLinkTask — открывает карточку заказа по `?task=N` из адресной строки. Сообщение
++  // «Заказ не найден» на несуществующий/чужой id и уборка `task` из URL после — уже
++  // реализованы в KT.taskCard.loadCard (404 → uiAlert + close() → 'hidden.bs.modal' →
++  // stripTaskFromUrl выше), здесь достаточно просто инициировать открытие.
++  function openDeepLinkTask() {
++    var id = parseInt(new URLSearchParams(location.search).get('task'), 10);
++    if (id > 0) KT.taskCard.open(id, null); else stripTaskFromUrl();
+   }
+ 
+   // ---------- форма колонки ----------
+@@ -786,12 +732,36 @@
+   }
+ 
+   // ---------- инициализация ----------
++  // cardTouchedBoard — карточка сообщила об изменении (правка строки/шапки), но доска
++  // ПОЛНОСТЬЮ (GET /tasks?limit=1000 с коррелированными total_amount/last_log на каждый
++  // заказ) не перечитывается на каждое такое сообщение — только один раз, при закрытии
++  // карточки (MEDIUM-4 code review): автосохранение строки идёт часто (по каждому change),
++  // reloadAndRender на каждое из них — лишняя нагрузка без видимого эффекта (карточка и так
++  // открыта поверх доски).
++  var cardTouchedBoard = false;
++
+   function init() {
+     var root = $('#board');
+     if (!root) return; // страница без доски
+     state.isAdmin = root.dataset.isAdmin === 'true';
+     state.viewerId = root.dataset.viewerId || '';
+     state.filters = parseFilters();
++    bindBoardDelegates(root);
++
++    KT.taskCard.init({
++      getData: function () { return { columns: state.columns, clients: state.clients, assignees: state.assignees, isAdmin: state.isAdmin, viewerId: state.viewerId }; },
++      onChanged: function () { cardTouchedBoard = true; },
++      toastWarnings: toastWarnings
++    });
++    // 'hidden.bs.modal' — общий момент закрытия карточки ЛЮБЫМ путём (крестик/Esc/фон,
++    // а также автозакрытие task-card.js на 404 «Заказ не найден»); board.js слушает его
++    // независимо от task-card.js, чтобы убрать deep-link `task` из URL и (один раз)
++    // перечитать доску, если карточка что-то поменяла.
++    $('#task-modal').addEventListener('hidden.bs.modal', function () {
++      stripTaskFromUrl();
++      if (cardTouchedBoard) { cardTouchedBoard = false; reloadAndRender(); }
++    });
++    $('#task-add-btn').addEventListener('click', function () { openTaskForm(null); });
+ 
+     loadStatic().then(function () {
+       // клиент фильтра из URL мог не попасть в первую страницу state.clients (BD-009) —
+@@ -801,9 +771,12 @@
+       fillFilterOptions();
+       applyFiltersToForm();
+       bindFilters();
+-      bindTaskForm();
+       if (state.isAdmin) bindColumnForm();
+       return reloadAndRender();
++    }).then(function () {
++      // deep-link открываем ПОСЛЕ полного рендера доски — колонки/клиенты/исполнители уже
++      // в state, карточка заказа рендерится с корректными справочниками (не пустыми).
++      openDeepLinkTask();
+     }).catch(function (err) {
+       if (isAbortError(err)) return; // страница уходит (logout/навигация) — доска больше не нужна
+       root.innerHTML = '<div class="empty-state">Не удалось загрузить доску' + (err && err.message ? ': ' + esc(err.message) : '') + '</div>';
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+new file mode 100644
+index 0000000..246c2fb
+--- /dev/null
++++ b/web/ssr/_shared/js/task-card.js
+@@ -0,0 +1,1004 @@
++/* KT.taskCard — карточка заказа поверх доски (фаза 6, D25/SD-006/ADR-101/ADR-105).
++   Заменяет простую форму фазы 5 (`#task-modal`): шапка (title/client/column/assignee/
++   due/paid/description) сохраняется кнопкой; разделы «Оборудование»/«Услуги» заблокированы
++   у нового заказа до первого сохранения шапки (SD-006); строки услуг/товаров/оборудования
++   сохраняются по каждому change без отдельной кнопки (ADR-105 rowQueue — не более одного
++   запроса строки в полёте, накопленные изменения уходят следующим PUT).
++
++   Данные — GET /api/v1/tasks/:id/card (ADR-001, OrderCardResponse); каждая row-мутация
++   возвращает {card, warnings} — карточка перечитывается сервером заново (re-fetch-after-
++   write), клиент просто заменяет своё состояние ответом.
++
++   Весь пользовательский текст — через esc() (HTML-экранирование), без интерпретации HTML. */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++  function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
++  function money(v) { return num(v).toFixed(2); }
++
++  // ---------- модуль подключается board.js через init({getData, onChanged}) ----------
++  var host = { getData: function () { return { columns: [], clients: [], assignees: [], isAdmin: false, viewerId: '' }; }, onChanged: function () {} };
++
++  // ---------- состояние карточки ----------
++  var modal = null;
++  var card = null;           // последний известный OrderCardResponse (или null — новый заказ)
++  var taskId = null;         // null — режим «новый заказ»
++  var defaultColumnId = null;
++  var saving = false;        // защита от двойного submit шапки
++  var newEquipmentOpen = false;
++  var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
++
++  // rowQueue (ADR-105): key -> {inFlight, pending, baseGetter, requestFn}
++  var rowQueue = {};
++
++  // openGeneration/requestSeq/appliedSeq (code review MEDIUM-1) — защита от гонок ответов:
++  // (а) карточка A закрыта, открыта B, поздний ответ A не должен применяться к B —
++  // openGeneration меняется в open(), ответ с чужим поколением игнорируется; (б) ответы
++  // разных ключей (subtask:X, product:Y) могут прийти не в порядке отправки запросов —
++  // requestSeq присваивается КАЖДОМУ запросу в момент отправки (beginRequest), ответ с
++  // seq не выше уже применённого (appliedSeq) отбрасывается как устаревший, вместо того
++  // чтобы откатить более свежее состояние другой строки.
++  var openGeneration = 0;
++  var requestSeq = 0;
++  var appliedSeq = 0;
++
++  function beginRequest() { return { gen: openGeneration, seq: ++requestSeq }; }
++
++  // applyCardIfCurrent — применяет карточку из ответа мутации/loadCard, только если её
++  // «билет» всё ещё относится к текущей открытой карточке и не устарел относительно уже
++  // применённого ответа. Возвращает true, если применил (вызывающий код тогда может
++  // показать warnings/дёрнуть host.onChanged) — иначе ответ молча отброшен.
++  function applyCardIfCurrent(resp, ticket) {
++    if (!ticket || ticket.gen !== openGeneration) return false;
++    if (ticket.seq <= appliedSeq) return false;
++    appliedSeq = ticket.seq;
++    card = resp;
++    renderAll();
++    return true;
++  }
++
++  function reqKeySubtask(id) { return 'subtask:' + id; }
++  function reqKeyProduct(id) { return 'product:' + id; }
++  function reqKeyEquipment(id) { return 'equipment:' + id; }
++  function reqKeyLog(id) { return 'log:' + id; }
++
++  function enqueueRow(key, patch, baseGetter, requestFn) {
++    var q = rowQueue[key];
++    if (!q) { q = rowQueue[key] = { inFlight: false, pending: null }; }
++    q.pending = Object.assign(q.pending || {}, patch);
++    q.baseGetter = baseGetter;
++    q.requestFn = requestFn;
++    setRowBusy(key, true);
++    if (!q.inFlight) flushRow(key);
++  }
++
++  function flushRow(key) {
++    var q = rowQueue[key];
++    if (!q || q.pending == null) return;
++    var body = Object.assign({}, q.baseGetter(), q.pending);
++    q.pending = null;
++    q.inFlight = true;
++    // Re-assert busy: предыдущий ответ этой же цепочки уже мог перерисовать строку
++    // (applyCard → innerHTML), стерев атрибут aria-busy, выставленный enqueueRow раньше.
++    setRowBusy(key, true);
++    var ticket = beginRequest();
++    q.requestFn(body).then(function (resp) {
++      q.inFlight = false;
++      if (applyCardIfCurrent(resp.card, ticket)) {
++        if (resp.warnings && resp.warnings.length) host.toastWarnings(resp.warnings);
++        host.onChanged();
++      }
++      if (q.pending != null) flushRow(key); else setRowBusy(key, false);
++    }).catch(function (err) {
++      q.inFlight = false;
++      q.pending = null; // состояние сомнительно — не повторяем автоматически
++      setRowBusy(key, false);
++      if (ticket.gen === openGeneration) onRowError(key, err); // карточка уже закрыта/сменилась — ошибка чужая
++    });
++  }
++
++  function setRowBusy(key, busy) {
++    $$('[data-row-key="' + cssesc(key) + '"]').forEach(function (el) {
++      el.setAttribute('aria-busy', busy ? 'true' : 'false');
++    });
++  }
++  function cssesc(s) { return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/["\\]/g, '\\$&'); }
++
++  // onRowError — 404 (родитель/строка удалена параллельно) → «Строка уже удалена» + перечитать
++  // карточку; 400 с полями → показать текст у поля (card-warning), если у строки есть такой
++  // слот, иначе (409/403/прочее) — общий KT.uiAlert + перечитать карточку (откат к серверным
++  // значениям).
++  function onRowError(key, err) {
++    var code = err && err.code;
++    if (code === 'SUBTASK_NOT_FOUND' || code === 'SUBTASK_PRODUCT_NOT_FOUND' || code === 'SUBTASK_LOG_NOT_FOUND' || code === 'TASK_EQUIPMENT_NOT_FOUND') {
++      KT.uiAlert('Строка уже удалена', 'Не удалось сохранить').then(function () { loadCard(taskId); });
++      return;
++    }
++    if (err && err.status === 400 && err.fields && err.fields.length) {
++      var rowEl = document.querySelector('[data-row-key="' + cssesc(key) + '"]');
++      // key вида "subtask:X" — rowEl это ВСЯ карточка услуги (со вложенными товарами):
++      // обычный querySelector('[data-testid="card-warning"]') нашёл бы слот ПЕРВОГО
++      // товара внутри неё (LOW code review) — у услуги свой отдельный слот-testid.
++      var warnSelector = key.indexOf('subtask:') === 0 ? '[data-testid="card-subtask-warning"]' : '[data-testid="card-warning"]';
++      var warn = rowEl && rowEl.querySelector(warnSelector);
++      if (warn) {
++        warn.textContent = err.fields.map(function (f) { return f.message; }).join('; ');
++        warn.classList.remove('d-none');
++        loadCard(taskId); // откат значений к последнему состоянию сервера
++        return;
++      }
++    }
++    if (err && err.fields && err.fields.length) {
++      KT.uiAlert(err.fields.map(function (f) { return f.message; }).join('; '), 'Не удалось сохранить').then(function () { loadCard(taskId); });
++      return;
++    }
++    KT.uiAlert((err && err.message) || 'Не удалось сохранить изменение', 'Ошибка').then(function () { loadCard(taskId); });
++  }
++
++  // ---------- открытие/закрытие ----------
++  function open(id, defColId) {
++    taskId = id || null;
++    defaultColumnId = defColId || null;
++    card = null;
++    rowQueue = {};
++    newEquipmentOpen = false;
++    headerDirty = false;
++    openGeneration++; // новое поколение — ответы предыдущей карточки больше не применяются
++    requestSeq = 0;
++    appliedSeq = 0;
++    renderShell();
++    if (!modal) modal = new bootstrap.Modal($('#task-modal'));
++    modal.show();
++    if (taskId) loadCard(taskId);
++  }
++
++  function close() { if (modal) modal.hide(); }
++
++  function loadCard(id) {
++    var ticket = beginRequest();
++    return KT.api.get('/api/v1/tasks/' + id + '/card').then(function (resp) {
++      if (ticket.gen !== openGeneration) return; // карточка уже закрыта/переоткрыта на другой заказ
++      appliedSeq = ticket.seq;
++      headerDirty = false; // полный авторитетный ответ сервера — сбрасываем несохранённую правку
++      card = resp;
++      taskId = resp.task.id;
++      renderAll();
++    }).catch(function (err) {
++      if (ticket.gen !== openGeneration) return;
++      if (err && err.status === 404) {
++        KT.uiAlert('Заказ не найден', 'Ошибка').then(close);
++        return;
++      }
++      KT.uiAlert((err && err.message) || 'Не удалось загрузить карточку', 'Ошибка').then(close);
++    });
++  }
++
++  // applyCard — ответ row-мутации: карточка перечитана сервером заново, локальное
++  // состояние просто заменяется (re-fetch-after-write); фокус активного поля не теряется —
++  // rerenderPreserveFocus в render* хранит значение и позицию курсора активного поля.
++  // ticket (beginRequest()) — см. applyCardIfCurrent: без него ответ применяется безусловно,
++  // поэтому обработчики row-мутаций ДОЛЖНЫ передавать сюда билет, полученный ДО запроса.
++  function applyCard(resp, ticket) {
++    return applyCardIfCurrent(resp, ticket);
++  }
++
++  // ---------- каркас модалки (шапка + контейнеры секций) ----------
++  function renderShell() {
++    var data = host.getData();
++    $('#task-modal-title').textContent = taskId ? ('Заказ #' + taskId) : 'Новый заказ';
++    $('#task-error').classList.add('d-none');
++    $('#task-error').textContent = '';
++
++    fillHeaderOptions(data);
++    $('#task-title').value = '';
++    $('#task-client').value = '';
++    $('#task-column').value = defaultColumnId || (data.columns[0] && data.columns[0].id) || '';
++    $('#task-assignee').value = '';
++    $('#task-due').value = '';
++    $('#task-description').value = '';
++    var paid = $('#task-paid');
++    paid.checked = false;
++    paid.disabled = !data.isAdmin;
++    ['#task-client', '#task-column', '#task-assignee'].forEach(function (sel) { var el = $(sel); if (el && el._cbSync) el._cbSync(); });
++
++    var canDelete = false; // новый заказ — удалять нечего
++    var delBtn = $('#task-delete-btn');
++    delBtn.classList.toggle('d-none', !canDelete);
++    delBtn.removeAttribute('data-testid');
++
++    $('#task-save-btn').disabled = false;
++    saving = false;
++
++    $('#card-print-actions').innerHTML = '';
++    renderLockedSections();
++    $('#card-total').innerHTML = '';
++  }
++
++  function fillHeaderOptions(data) {
++    var clientSel = $('#task-client');
++    clientSel.innerHTML = '<option value="">Выберите клиента</option>' + data.clients.map(function (c) {
++      return '<option value="' + esc(c.id) + '">' + esc(c.company_name) + '</option>';
++    }).join('');
++    clientSel._cbFetchOptions = function (q) {
++      return KT.api.get('/api/v1/clients?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
++        return r.items.map(function (c) { return { value: c.id, text: c.company_name }; });
++      });
++    };
++
++    var colSel = $('#task-column');
++    colSel.innerHTML = data.columns.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>'; }).join('');
++
++    var aSel = $('#task-assignee');
++    aSel.innerHTML = '<option value="">Не назначен</option>' + data.assignees.map(function (a) {
++      return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>';
++    }).join('');
++  }
++
++  function renderLockedSections() {
++    $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить оборудование</p>';
++    $('#card-subtasks').innerHTML = '<p class="text-body-secondary small" data-testid="card-subtasks-locked">Сохраните заказ, чтобы добавить услуги</p>';
++  }
++
++  // ---------- полный рендер (после loadCard/applyCard) ----------
++  function renderAll() {
++    if (!card) return;
++    var data = host.getData();
++    var t = card.task;
++    $('#task-modal-title').textContent = 'Заказ #' + t.id;
++
++    // headerDirty (code review MEDIUM-2): renderAll вызывается ПОСЛЕ КАЖДОЙ row-мутации
++    // (applyCard) — если шапка правится, а между вводом и «Сохранить» успевает пройти
++    // хоть одна row-мутация (смена статуса услуги и т.п.), обычный re-render молча
++    // затирал бы несохранённые поля шапки значениями с сервера (activeElement-guard не
++    // спасает: поле уже могло потерять фокус). Пока шапка «грязная» (до loadCard —
++    // либо новой карточки, либо успешного «Сохранить»), поля шапки не трогаем вовсе.
++    if (!headerDirty) {
++      fillHeaderOptions(data);
++      if (document.activeElement !== $('#task-title')) $('#task-title').value = t.title;
++      if (document.activeElement !== $('#task-client')) $('#task-client').value = t.client_id;
++      if (document.activeElement !== $('#task-column')) $('#task-column').value = t.column_id;
++      if (document.activeElement !== $('#task-assignee')) $('#task-assignee').value = t.assignee_id || '';
++      if (document.activeElement !== $('#task-due')) $('#task-due').value = t.due_date || '';
++      if (document.activeElement !== $('#task-description')) $('#task-description').value = descriptionHtmlToText(t.description_html);
++      var paid = $('#task-paid');
++      paid.checked = !!t.is_paid;
++      paid.disabled = !data.isAdmin;
++      ['#task-client', '#task-column', '#task-assignee'].forEach(function (sel) { var el = $(sel); if (el && el._cbSync) el._cbSync(); });
++    }
++
++    var canDelete = !!data.isAdmin;
++    var delBtn = $('#task-delete-btn');
++    delBtn.classList.toggle('d-none', !canDelete);
++    if (canDelete) delBtn.setAttribute('data-testid', 'task-delete'); else delBtn.removeAttribute('data-testid');
++
++    $('#task-save-btn').disabled = false;
++    saving = false;
++
++    renderPrintActions(t.id);
++    renderEquipment();
++    renderSubtasks();
++    renderTotal();
++  }
++
++  function descriptionHtmlToText(html) {
++    if (!html) return '';
++    var doc = new DOMParser().parseFromString(html, 'text/html');
++    return [].slice.call(doc.body.children).map(function (p) {
++      return [].slice.call(p.childNodes).map(function (n) {
++        return n.nodeType === 3 ? n.textContent : (n.nodeName === 'BR' ? '\n' : n.textContent);
++      }).join('');
++    }).join('\n\n');
++  }
++
++  function renderPrintActions(id) {
++    $('#card-print-actions').innerHTML =
++      '<a class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener" href="/tasks/' + id + '/print/intake" data-testid="card-print-intake">Акт приёма</a>' +
++      '<a class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener" href="/tasks/' + id + '/print/handover" data-testid="card-print-handover">Акт выдачи</a>';
++  }
++
++  // ---------- фокус: сохранить значение/курсор активного поля секции при полном ре-рендере ----------
++  function rerenderPreserveFocus(container, html) {
++    var af = document.activeElement;
++    var info = null;
++    if (af && container.contains(af) && af.hasAttribute && af.hasAttribute('data-field')) {
++      var rowEl = af.closest('[data-row-key]');
++      info = {
++        field: af.getAttribute('data-field'),
++        rowKey: rowEl ? rowEl.getAttribute('data-row-key') : null,
++        value: af.value,
++        selStart: (typeof af.selectionStart === 'number') ? af.selectionStart : null,
++        selEnd: (typeof af.selectionEnd === 'number') ? af.selectionEnd : null
++      };
++    }
++    container.innerHTML = html;
++    if (info) {
++      var sel = (info.rowKey ? '[data-row-key="' + cssesc(info.rowKey) + '"] ' : '') + '[data-field="' + cssesc(info.field) + '"]';
++      var el = container.querySelector(sel);
++      if (el) {
++        el.value = info.value;
++        el.focus();
++        if (info.selStart != null && el.setSelectionRange) { try { el.setSelectionRange(info.selStart, info.selEnd); } catch (e) { /* select/date — не поддерживают selectionRange */ } }
++      }
++    }
++  }
++
++  // ==================================================================
++  // Оборудование заказа (AC-004/AC-005/AC-006)
++  // ==================================================================
++
++  var clientEquipmentCache = null; // {clientId, items} — эталон опций «Добавить оборудование клиента»
++
++  // renderEquipment — доступный клиенту список оборудования нужен ДО рендера <select>
++  // (не после, отдельным запросом внутри wireEquipment): иначе окно между вставкой пустого
++  // select в DOM и приходом ответа даёт combobox.js открыть список без опций (гонка,
++  // combobox.js не перерисовывает уже открытый список при появлении новых <option>).
++  function renderEquipment() {
++    var clientId = card.task.client_id;
++    if (clientEquipmentCache && clientEquipmentCache.clientId === clientId) {
++      renderEquipmentWith(clientEquipmentCache.items);
++      return;
++    }
++    KT.api.get('/api/v1/clients/' + clientId + '/equipment?limit=200').then(function (r) {
++      clientEquipmentCache = { clientId: clientId, items: r.items };
++      renderEquipmentWith(r.items);
++    }).catch(function () { renderEquipmentWith([]); });
++  }
++
++  function renderEquipmentWith(clientEquipment) {
++    var container = $('#card-equipment');
++    if (!container) return; // модалка уже закрыта раньше ответа сети
++    var already = {}; card.equipment.forEach(function (e) { already[e.equipment_id] = true; });
++    var addOptions = clientEquipment.filter(function (e) { return !already[e.id]; });
++    var html = '<div>' +
++      card.equipment.map(equipmentRowHtml).join('') +
++      equipmentAddHtml(addOptions) +
++      (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новое оборудование</button>') +
++      '</div>';
++    rerenderPreserveFocus(container, html);
++    wireEquipment(container);
++  }
++
++  function equipmentRowHtml(eq) {
++    var key = reqKeyEquipment(eq.equipment_id);
++    var history = (eq.history || []).map(function (h) {
++      return '<div class="small text-body-secondary" data-testid="card-equipment-history">Уже был в ремонте: #' + h.task_id + ' «' + esc(h.title) + '» от ' + fmtDate(h.created_at) + '</div>';
++    }).join('');
++    return '' +
++      '<div class="card mb-2" data-testid="card-equipment-row" data-row-key="' + key + '" data-equipment-id="' + esc(eq.equipment_id) + '">' +
++      '  <div class="card-body py-2">' +
++      '    <div class="d-flex justify-content-between align-items-start gap-2">' +
++      '      <div><strong>' + esc(eq.type_name) + '</strong> ' + esc(eq.brand) + ' ' + esc(eq.model) + (eq.serial ? ' · SN ' + esc(eq.serial) : '') + '</div>' +
++      '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>' +
++      '    </div>' +
++      '    <div class="row g-2 mt-1">' +
++      '      <div class="col-6"><label class="form-label small mb-0">Комплектность</label>' +
++      '        <input class="form-control form-control-sm" data-field="completeness" data-row-key="' + key + '" data-testid="card-equipment-completeness" maxlength="1000" value="' + esc(eq.completeness) + '"></div>' +
++      '      <div class="col-6"><label class="form-label small mb-0">Состояние</label>' +
++      '        <input class="form-control form-control-sm" data-field="condition" data-row-key="' + key + '" data-testid="card-equipment-condition" maxlength="1000" value="' + esc(eq.condition) + '"></div>' +
++      '    </div>' +
++      (history ? '<div class="mt-1">' + history + '</div>' : '') +
++      '  </div>' +
++      '</div>';
++  }
++
++  function equipmentAddHtml(options) {
++    return '<select class="form-select form-select-sm" data-testid="card-equipment-add"><option value="">+ Добавить оборудование клиента…</option>' +
++      (options || []).map(function (e) {
++        return '<option value="' + esc(e.id) + '">' + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + (e.serial ? ' · ' + esc(e.serial) : '') + '</option>';
++      }).join('') + '</select>';
++  }
++
++  function newEquipmentFormHtml() {
++    return '' +
++      '<div class="card mt-2" data-testid="card-equipment-new-form">' +
++      '  <div class="card-body py-2">' +
++      '    <div class="row g-2">' +
++      '      <div class="col-12"><label class="form-label small mb-0">Тип *</label>' +
++      '        <select class="form-select form-select-sm" data-testid="card-equipment-new-type"><option value="">Выберите тип</option></select></div>' +
++      '      <div class="col-6"><label class="form-label small mb-0">Бренд</label><input class="form-control form-control-sm" data-testid="card-equipment-new-brand"></div>' +
++      '      <div class="col-6"><label class="form-label small mb-0">Модель *</label><input class="form-control form-control-sm" data-testid="card-equipment-new-model"></div>' +
++      '      <div class="col-6"><label class="form-label small mb-0">Серийный №</label><input class="form-control form-control-sm" data-testid="card-equipment-new-serial"></div>' +
++      '    </div>' +
++      '    <div class="alert alert-danger d-none mt-2 py-1 px-2 small" data-testid="card-equipment-new-error"></div>' +
++      '    <div class="d-flex gap-2 mt-2">' +
++      '      <button type="button" class="btn btn-primary btn-sm" data-testid="card-equipment-new-save">Добавить</button>' +
++      '      <button type="button" class="btn btn-outline-secondary btn-sm" data-testid="card-equipment-new-cancel">Отмена</button>' +
++      '    </div>' +
++      '  </div>' +
++      '</div>';
++  }
++
++  function fmtDate(iso) {
++    if (!iso) return '';
++    var d = new Date(iso);
++    if (isNaN(d.getTime())) return '';
++    function p(n) { return String(n).padStart(2, '0'); }
++    return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear();
++  }
++
++  function wireEquipment(container) {
++    $$('[data-field="completeness"], [data-field="condition"]', container).forEach(function (input) {
++      input.addEventListener('change', function () {
++        var eqId = input.closest('[data-testid="card-equipment-row"]').dataset.equipmentId;
++        var eq = card.equipment.filter(function (e) { return e.equipment_id === eqId; })[0];
++        var field = input.dataset.field;
++        var patch = {}; patch[field] = input.value;
++        enqueueRow(reqKeyEquipment(eqId), patch, function () {
++          var cur = card.equipment.filter(function (e) { return e.equipment_id === eqId; })[0] || eq;
++          return { completeness: cur.completeness, condition: cur.condition };
++        }, function (body) {
++          return KT.api.put('/api/v1/tasks/' + taskId + '/equipment/' + eqId, body);
++        });
++      });
++    });
++
++    $$('[data-testid="card-equipment-remove"]', container).forEach(function (btn) {
++      btn.addEventListener('click', function () {
++        var eqId = btn.dataset.equipmentId;
++        KT.uiConfirm('Убрать оборудование из заказа?').then(function (ok) {
++          if (!ok) return;
++          var ticket = beginRequest();
++          KT.api.del('/api/v1/tasks/' + taskId + '/equipment/' + eqId).then(function (resp) {
++            if (!applyCard(resp.card, ticket)) return;
++            if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
++            host.onChanged();
++          }).catch(function (err) {
++            KT.uiAlert((err && err.message) || 'Не удалось убрать оборудование', 'Ошибка');
++          });
++        });
++      });
++    });
++
++    var addSel = $('[data-testid="card-equipment-add"]', container);
++    if (addSel) {
++      addSel.addEventListener('change', function () {
++        var eqId = addSel.value;
++        if (!eqId) return;
++        var ticket = beginRequest();
++        KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: eqId, completeness: '', condition: '' }).then(function (resp) {
++          if (!applyCard(resp.card, ticket)) return;
++          host.onChanged();
++        }).catch(function (err) {
++          KT.uiAlert((err && err.message) || 'Не удалось добавить оборудование', 'Ошибка');
++        });
++      });
++    }
++
++    var newBtn = $('[data-testid="card-equipment-new"]', container);
++    if (newBtn) newBtn.addEventListener('click', function () { newEquipmentOpen = true; renderEquipment(); });
++    var cancelBtn = $('[data-testid="card-equipment-new-cancel"]', container);
++    if (cancelBtn) cancelBtn.addEventListener('click', function () { newEquipmentOpen = false; renderEquipment(); });
++
++    // Список типов оборудования может быть больше «первой страницы» — как каталог услуг/
++    // товаров, тип ищем remote-поиском по вводу (а не одной статичной подгрузкой limit=200),
++    // иначе только что созданный тип может не попасть в список (эталон — combobox.js
++    // remoteClientSearch в board.js).
++    var typeSel = $('[data-testid="card-equipment-new-type"]', container);
++    if (typeSel) {
++      typeSel._cbFetchOptions = function (q) {
++        return KT.api.get('/api/v1/equipment-types?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
++          return r.items.map(function (t) { return { value: t.id, text: t.name }; });
++        });
++      };
++    }
++    var saveBtn = $('[data-testid="card-equipment-new-save"]', container);
++    if (saveBtn) saveBtn.addEventListener('click', function () {
++      // typeSel — та же ссылка на <select>, захваченная ДО того, как combobox.js перенёс
++      // data-testid на видимую кнопку (js/combobox.js enhanceSelect) — повторный поиск по
++      // testid здесь нашёл бы уже саму кнопку (HTMLButtonElement.value всегда '', баг
++      // найден вживую: клик «Добавить» без выбранного типа, хотя тип был выбран в UI).
++      var typeId = typeSel ? typeSel.value : '';
++      var brand = $('[data-testid="card-equipment-new-brand"]', container).value.trim();
++      var model = $('[data-testid="card-equipment-new-model"]', container).value.trim();
++      var serial = $('[data-testid="card-equipment-new-serial"]', container).value.trim();
++      var errEl = $('[data-testid="card-equipment-new-error"]', container);
++      if (!typeId || !model) {
++        errEl.textContent = 'Укажите тип и модель';
++        errEl.classList.remove('d-none');
++        return;
++      }
++      errEl.classList.add('d-none');
++      var ticket = beginRequest();
++      KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { type_id: typeId, brand: brand, model: model, sku: '', serial: serial, specs: [], note: '' })
++        .then(function (equipment) {
++          return KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: equipment.id, completeness: '', condition: '' });
++        }).then(function (resp) {
++          newEquipmentOpen = false;
++          clientEquipmentCache = null; // новая единица появилась у клиента — перечитать список
++          if (!applyCard(resp.card, ticket)) return;
++          host.onChanged();
++        }).catch(function (err) {
++          errEl.textContent = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return f.message; }).join('; ') : ((err && err.message) || 'Не удалось создать оборудование');
++          errEl.classList.remove('d-none');
++        });
++    });
++  }
++
++  function toastWarningsHost(w) { host.toastWarnings(w); }
++
++  // ==================================================================
++  // Услуги/товары/журнал (AC-007/AC-008/AC-009/AC-010/AC-011/AC-012/AC-013)
++  // ==================================================================
++
++  var SUBTASK_STATUSES = [{ v: 'new', t: 'Новая' }, { v: 'in_progress', t: 'В работе' }, { v: 'done', t: 'Выполнена' }];
++
++  function stockOf(productId) {
++    return (card.stock || []).filter(function (s) { return s.product_id === productId; })[0] || { stock: 0, min_stock: 0, task_reserved: 0 };
++  }
++  // stockHint — AC-009: avail = stock + task_reserved (этого заказа), need = Σ qty ЭТОГО
++  // товара по ВСЕМ услугам карточки (включая текущую строку — она уже часть суммы).
++  function stockHint(productId) {
++    var st = stockOf(productId);
++    var avail = num(st.stock) + num(st.task_reserved);
++    var need = 0;
++    card.subtasks.forEach(function (s) {
++      s.products.forEach(function (p) { if (p.product_id === productId) need += num(p.qty); });
++    });
++    var rest = avail - need;
++    if (rest < 0) return 'в наличии только ' + avail;
++    if (rest < num(st.min_stock)) return 'останется ' + rest + ' — минимум ' + num(st.min_stock);
++    return 'в наличии ' + avail;
++  }
++
++  function renderSubtasks() {
++    var container = $('#card-subtasks');
++    var locked = card.column.is_final;
++    var html = '<div>' +
++      card.subtasks.map(subtaskRowHtml).join('') +
++      (locked
++        ? '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-subtask-add" disabled title="Заказ в финальной колонке: нельзя добавить услугу">+ Добавить услугу</button>'
++        : '<select class="form-select form-select-sm mt-2" data-testid="card-subtask-add"><option value="">+ Добавить услугу…</option></select>') +
++      '</div>';
++    rerenderPreserveFocus(container, html);
++    wireSubtasks(container);
++  }
++
++  function subtaskRowHtml(sub) {
++    var key = reqKeySubtask(sub.id);
++    var equipmentOptions = '<option value="">Без оборудования</option>' + card.equipment.map(function (e) {
++      return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.type_name) + ' ' + esc(e.brand) + ' ' + esc(e.model) + '</option>';
++    }).join('');
++    var assigneeOptions = '<option value="">Не назначен</option>' + host.getData().assignees.map(function (a) {
++      return '<option value="' + esc(a.id) + '"' + (sub.assignee_id === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.is_active === false ? ' (неактивен)' : '') + '</option>';
++    }).join('');
++    return '' +
++      '<div class="card mb-2" data-testid="card-subtask-row" data-row-key="' + key + '" data-subtask-id="' + esc(sub.id) + '">' +
++      '  <div class="card-body py-2">' +
++      '    <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">' +
++      '      <strong>' + esc(sub.service_name) + '</strong>' +
++      '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-subtask-delete" data-subtask-id="' + esc(sub.id) + '">Удалить</button>' +
++      '    </div>' +
++      '    <div class="row g-2 mt-1">' +
++      '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Статус</label>' +
++      '        <select class="form-select form-select-sm" data-field="status" data-row-key="' + key + '" data-testid="card-subtask-status">' +
++             SUBTASK_STATUSES.map(function (s) { return '<option value="' + s.v + '"' + (sub.status === s.v ? ' selected' : '') + '>' + s.t + '</option>'; }).join('') +
++      '        </select></div>' +
++      '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Исполнитель</label>' +
++      '        <select class="form-select form-select-sm" data-field="assignee_id" data-row-key="' + key + '" data-testid="card-subtask-assignee">' + assigneeOptions + '</select></div>' +
++      '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Срок</label>' +
++      '        <input type="date" class="form-control form-control-sm" data-field="due_date" data-row-key="' + key + '" data-testid="card-subtask-due" value="' + esc(sub.due_date || '') + '"></div>' +
++      '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Цена (пусто — по факту)</label>' +
++      '        <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + key + '" data-testid="card-subtask-price" value="' + (sub.price == null ? '' : esc(sub.price)) + '">' +
++      '        <div class="invalid-feedback d-block d-none small" data-testid="card-subtask-warning"></div></div>' +
++      '      <div class="col-12"><label class="form-label small mb-0">Оборудование</label>' +
++      '        <select class="form-select form-select-sm" data-field="equipment_id" data-row-key="' + key + '" data-testid="card-subtask-equipment">' + equipmentOptions + '</select></div>' +
++      '    </div>' +
++      '    <div class="mt-2">' + subtaskProductsHtml(sub) + '</div>' +
++      '    <div class="mt-2">' + subtaskLogsHtml(sub) + '</div>' +
++      '    <div class="text-end small mt-1"><strong data-testid="card-subtask-total">Итог: ' + money(sub.total) + '</strong></div>' +
++      '  </div>' +
++      '</div>';
++  }
++
++  function subtaskProductsHtml(sub) {
++    var rows = sub.products.map(function (p) {
++      var pkey = reqKeyProduct(p.id);
++      return '' +
++        '<tr data-testid="card-product-row" data-row-key="' + pkey + '" data-product-id="' + esc(p.id) + '">' +
++        '  <td>' + esc(p.name) + ' <span class="text-body-secondary small">(' + esc(p.unit) + ')</span></td>' +
++        '  <td style="max-width:90px">' +
++        '    <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="qty" data-row-key="' + pkey + '" data-testid="card-product-qty" value="' + esc(p.qty) + '">' +
++        '    <div class="invalid-feedback d-block d-none small" data-testid="card-warning"></div>' +
++        '  </td>' +
++        '  <td style="max-width:100px"><input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + pkey + '" data-testid="card-product-price" value="' + (p.price == null ? '' : esc(p.price)) + '"></td>' +
++        '  <td class="small text-body-secondary" data-testid="card-product-hint">' + esc(stockHint(p.product_id)) + '</td>' +
++        '  <td data-testid="card-subtask-product-total">' + money(p.line_total) + '</td>' +
++        '  <td><button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-product-delete" data-product-row-id="' + esc(p.id) + '">×</button></td>' +
++        '</tr>';
++    }).join('');
++    return '' +
++      '<div class="table-responsive"><table class="table table-sm align-middle mb-1">' +
++      '  <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Остаток</th><th>Сумма</th><th></th></tr></thead>' +
++      '  <tbody>' + rows + '</tbody>' +
++      '</table></div>' +
++      '<select class="form-select form-select-sm" data-testid="card-product-add" data-subtask-id="' + esc(sub.id) + '"><option value="">+ Добавить товар…</option></select>';
++  }
++
++  function subtaskLogsHtml(sub) {
++    var rows = sub.logs.map(function (l) {
++      var lkey = reqKeyLog(l.id);
++      return '' +
++        '<div class="border-top py-1" data-testid="card-log-row" data-row-key="' + lkey + '" data-log-id="' + esc(l.id) + '">' +
++        '  <div class="small text-body-secondary">' + esc(l.author_name) + ' · ' + fmtDate(l.created_at) + '</div>' +
++        '  <div data-testid="card-log-text">' + esc(l.text) + '</div>' +
++        (l.can_edit
++          ? '  <div class="d-flex gap-2 mt-1">' +
++            '    <button type="button" class="btn btn-link btn-sm p-0" data-testid="card-log-edit" data-log-id="' + esc(l.id) + '">Изменить</button>' +
++            '    <button type="button" class="btn btn-link btn-sm p-0 text-danger" data-testid="card-log-delete" data-log-id="' + esc(l.id) + '">Удалить</button>' +
++            '  </div>'
++          : '') +
++        '</div>';
++    }).join('');
++    return '' +
++      '<div data-testid="card-subtask-logs">' + rows + '</div>' +
++      '<div class="d-flex gap-2 mt-1">' +
++      '  <input class="form-control form-control-sm" data-testid="card-log-new" data-subtask-id="' + esc(sub.id) + '" maxlength="4000" placeholder="Новая запись журнала">' +
++      '  <button type="button" class="btn btn-outline-secondary btn-sm" data-testid="card-log-add" data-subtask-id="' + esc(sub.id) + '">Добавить</button>' +
++      '</div>';
++  }
++
++  function currentSubtask(id) { return card.subtasks.filter(function (s) { return s.id === id; })[0]; }
++  function currentProduct(subId, prodRowId) {
++    var s = currentSubtask(subId);
++    return s && s.products.filter(function (p) { return p.id === prodRowId; })[0];
++  }
++
++  function wireSubtasks(container) {
++    // ---- статус/исполнитель/срок/цена/оборудование (LWW — PUT /subtasks/:id) ----
++    $$('[data-testid="card-subtask-row"]', container).forEach(function (row) {
++      var subId = row.dataset.subtaskId;
++      var priceWarn = row.querySelector('[data-testid="card-subtask-warning"]');
++      $$('[data-field]', row).forEach(function (input) {
++        if (input.closest('[data-testid="card-product-row"]')) return; // товары — отдельно ниже
++        input.addEventListener('change', function () {
++          var field = input.dataset.field;
++          var value = input.value;
++          if (field === 'assignee_id' || field === 'equipment_id') value = value || null;
++          if (field === 'due_date') value = value || null;
++          if (field === 'price') {
++            // LOW code review: num() молча превращал «abc»/отрицательное в 0 и сохранял —
++            // цена услуги валидируется так же, как qty/price товара (пусто — «по факту»).
++            var raw = input.value.trim();
++            if (raw === '') {
++              value = null;
++            } else {
++              var n = Number(raw);
++              if (!isFinite(n) || n < 0) {
++                input.classList.add('is-invalid');
++                if (priceWarn) { priceWarn.textContent = 'Цена должна быть ≥ 0'; priceWarn.classList.remove('d-none'); }
++                var s0 = currentSubtask(subId);
++                input.value = (s0 && s0.price != null) ? s0.price : '';
++                return;
++              }
++              value = n;
++            }
++            input.classList.remove('is-invalid');
++            if (priceWarn) priceWarn.classList.add('d-none');
++          }
++          var patch = {}; patch[field] = value;
++          enqueueRow(reqKeySubtask(subId), patch, function () {
++            var s = currentSubtask(subId) || {};
++            return { status: s.status, assignee_id: s.assignee_id, due_date: s.due_date, price: s.price == null ? null : num(s.price), equipment_id: s.equipment_id };
++          }, function (body) {
++            return KT.api.put('/api/v1/subtasks/' + subId, body);
++          });
++        });
++      });
++    });
++
++    $$('[data-testid="card-subtask-delete"]', container).forEach(function (btn) {
++      btn.addEventListener('click', function () {
++        var subId = btn.dataset.subtaskId;
++        KT.uiConfirm('Услуга удалится вместе с товарами и журналом.').then(function (ok) {
++          if (!ok) return;
++          var ticket = beginRequest();
++          KT.api.del('/api/v1/subtasks/' + subId).then(function (resp) {
++            delete rowQueue[reqKeySubtask(subId)];
++            if (!applyCard(resp.card, ticket)) return;
++            if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
++            host.onChanged();
++          }).catch(function (err) {
++            KT.uiAlert((err && err.message) || 'Не удалось удалить услугу', 'Ошибка');
++          });
++        });
++      });
++    });
++
++    var addSvc = $('[data-testid="card-subtask-add"]', container);
++    if (addSvc && !addSvc.disabled) {
++      addSvc._cbFetchOptions = function (q) {
++        return KT.api.get('/api/v1/services?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
++          return r.items.map(function (s) { return { value: s.id, text: s.name }; });
++        });
++      };
++      addSvc.addEventListener('change', function () {
++        var svcId = addSvc.value;
++        if (!svcId) return;
++        var ticket = beginRequest();
++        KT.api.post('/api/v1/tasks/' + taskId + '/subtasks', { service_id: svcId }).then(function (resp) {
++          if (!applyCard(resp.card, ticket)) return;
++          host.onChanged();
++        }).catch(function (err) {
++          KT.uiAlert((err && err.message) || 'Не удалось добавить услугу', 'Ошибка');
++        });
++      });
++    }
++
++    // ---- товары услуги ----
++    $$('[data-testid="card-product-row"]', container).forEach(function (rowEl) {
++      var prodRowId = rowEl.dataset.productId;
++      var subId = rowEl.closest('[data-testid="card-subtask-row"]').dataset.subtaskId;
++
++      var qtyInput = $('[data-testid="card-product-qty"]', rowEl);
++      var rowWarning = $('[data-testid="card-warning"]', rowEl);
++      qtyInput.addEventListener('change', function () {
++        var raw = qtyInput.value.trim();
++        var n = Number(raw);
++        if (raw === '' || !isFinite(n) || n <= 0) {
++          qtyInput.classList.add('is-invalid');
++          rowWarning.textContent = 'Должно быть больше 0';
++          rowWarning.classList.remove('d-none');
++          var p = currentProduct(subId, prodRowId);
++          qtyInput.value = p ? p.qty : '';
++          return;
++        }
++        qtyInput.classList.remove('is-invalid');
++        rowWarning.classList.add('d-none');
++        enqueueRow(reqKeyProduct(prodRowId), { qty: n }, function () {
++          var p = currentProduct(subId, prodRowId) || {};
++          return { qty: num(p.qty), price: p.price == null ? null : num(p.price) };
++        }, function (body) {
++          return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
++        });
++      });
++
++      var priceInput = $('[data-testid="card-product-price"]', rowEl);
++      priceInput.addEventListener('change', function () {
++        var raw = priceInput.value.trim();
++        var value = null;
++        if (raw !== '') {
++          var n = Number(raw);
++          if (!isFinite(n) || n < 0) {
++            priceInput.classList.add('is-invalid');
++            rowWarning.textContent = 'Цена должна быть ≥ 0';
++            rowWarning.classList.remove('d-none');
++            var p0 = currentProduct(subId, prodRowId);
++            priceInput.value = (p0 && p0.price != null) ? p0.price : '';
++            return;
++          }
++          value = n;
++        }
++        priceInput.classList.remove('is-invalid');
++        rowWarning.classList.add('d-none');
++        enqueueRow(reqKeyProduct(prodRowId), { price: value }, function () {
++          var p = currentProduct(subId, prodRowId) || {};
++          return { qty: num(p.qty), price: p.price == null ? null : num(p.price) };
++        }, function (body) {
++          return KT.api.put('/api/v1/subtask-products/' + prodRowId, body);
++        });
++      });
++
++      $('[data-testid="card-product-delete"]', rowEl).addEventListener('click', function () {
++        delete rowQueue[reqKeyProduct(prodRowId)];
++        var ticket = beginRequest();
++        KT.api.del('/api/v1/subtask-products/' + prodRowId).then(function (resp) {
++          if (!applyCard(resp.card, ticket)) return;
++          if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
++          host.onChanged();
++        }).catch(function (err) {
++          KT.uiAlert((err && err.message) || 'Не удалось удалить товар', 'Ошибка');
++        });
++      });
++    });
++
++    $$('[data-testid="card-product-add"]', container).forEach(function (sel) {
++      var subId = sel.dataset.subtaskId;
++      sel._cbFetchOptions = function (q) {
++        return KT.api.get('/api/v1/products?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
++          return r.items.map(function (p) { return { value: p.id, text: p.name }; });
++        });
++      };
++      sel.addEventListener('change', function () {
++        var prodId = sel.value;
++        if (!prodId) return;
++        var ticket = beginRequest();
++        KT.api.post('/api/v1/subtasks/' + subId + '/products', { product_id: prodId, qty: 1 }).then(function (resp) {
++          if (!applyCard(resp.card, ticket)) return;
++          if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
++          host.onChanged();
++        }).catch(function (err) {
++          KT.uiAlert((err && err.message) || 'Не удалось добавить товар', 'Ошибка');
++        });
++      });
++    });
++
++    // ---- журнал ----
++    $$('[data-testid="card-log-row"]', container).forEach(function (rowEl) {
++      var logId = rowEl.dataset.logId;
++      var editBtn = $('[data-testid="card-log-edit"]', rowEl);
++      if (editBtn) editBtn.addEventListener('click', function () { startEditLog(rowEl, logId); });
++      var delBtn = $('[data-testid="card-log-delete"]', rowEl);
++      if (delBtn) delBtn.addEventListener('click', function () {
++        KT.uiConfirm('Удалить запись журнала?').then(function (ok) {
++          if (!ok) return;
++          var ticket = beginRequest();
++          KT.api.del('/api/v1/subtask-logs/' + logId).then(function (resp) {
++            if (!applyCard(resp.card, ticket)) return;
++            host.onChanged();
++          }).catch(function (err) {
++            if (err && err.code === 'SUBTASK_LOG_FORBIDDEN') { KT.uiAlert(err.message, 'Нельзя'); return; }
++            KT.uiAlert((err && err.message) || 'Не удалось удалить запись', 'Ошибка');
++          });
++        });
++      });
++    });
++
++    $$('[data-testid="card-log-add"]', container).forEach(function (btn) {
++      var subId = btn.dataset.subtaskId;
++      btn.addEventListener('click', function () {
++        var input = $('[data-testid="card-log-new"][data-subtask-id="' + cssesc(subId) + '"]', container);
++        var text = input.value.trim();
++        if (!text) return;
++        var ticket = beginRequest();
++        KT.api.post('/api/v1/subtasks/' + subId + '/logs', { text: text }).then(function (resp) {
++          if (!applyCard(resp.card, ticket)) return;
++          host.onChanged();
++        }).catch(function (err) {
++          KT.uiAlert((err && err.message) || 'Не удалось добавить запись', 'Ошибка');
++        });
++      });
++    });
++  }
++
++  function startEditLog(rowEl, logId) {
++    var log = null;
++    card.subtasks.some(function (s) { log = s.logs.filter(function (l) { return l.id === logId; })[0]; return !!log; });
++    if (!log) return;
++    rowEl.innerHTML =
++      '<textarea class="form-control form-control-sm" data-testid="card-subtask-log-edit-input" maxlength="4000">' + esc(log.text) + '</textarea>' +
++      '<div class="d-flex gap-2 mt-1">' +
++      '  <button type="button" class="btn btn-primary btn-sm" data-testid="card-subtask-log-save">Сохранить</button>' +
++      '  <button type="button" class="btn btn-outline-secondary btn-sm" data-testid="card-subtask-log-cancel">Отмена</button>' +
++      '</div>';
++    $('[data-testid="card-subtask-log-save"]', rowEl).addEventListener('click', function () {
++      var text = $('[data-testid="card-subtask-log-edit-input"]', rowEl).value.trim();
++      if (!text) return;
++      var ticket = beginRequest();
++      KT.api.put('/api/v1/subtask-logs/' + logId, { text: text }).then(function (resp) {
++        if (!applyCard(resp.card, ticket)) return;
++        host.onChanged();
++      }).catch(function (err) {
++        if (err && err.code === 'SUBTASK_LOG_FORBIDDEN') { KT.uiAlert(err.message, 'Нельзя'); return; }
++        KT.uiAlert((err && err.message) || 'Не удалось сохранить запись', 'Ошибка');
++      });
++    });
++    $('[data-testid="card-subtask-log-cancel"]', rowEl).addEventListener('click', function () { renderSubtasks(); });
++  }
++
++  function renderTotal() {
++    $('#card-total').innerHTML = '<strong data-testid="card-total">Итог заказа: ' + money(card.task.total_amount) + '</strong>';
++  }
++
++  // ==================================================================
++  // Шапка заказа (AC-001/AC-002/AC-003/AC-004/AC-017)
++  // ==================================================================
++
++  function headerPayload() {
++    var due = $('#task-due').value;
++    var assignee = $('#task-assignee').value;
++    return {
++      title: $('#task-title').value.trim(),
++      client_id: $('#task-client').value,
++      column_id: $('#task-column').value,
++      assignee_id: assignee || null,
++      due_date: due || null,
++      is_paid: $('#task-paid').checked,
++      description: $('#task-description').value
++    };
++  }
++
++  function showHeaderError(msg) {
++    var el = $('#task-error');
++    el.textContent = msg;
++    el.classList.remove('d-none');
++  }
++
++  function bindStatic() {
++    // headerDirty (MEDIUM-2): любая правка шапки — «грязная» до следующего успешного
++    // loadCard (после «Сохранить» или полной перезагрузки карточки). Слушатели вешаются
++    // ОДИН раз здесь — сами элементы шапки не пересоздаются при re-render (rerenderPreserveFocus
++    // применяется только к секциям строк, не к шапке), поэтому переживают renderAll.
++    ['#task-title', '#task-description'].forEach(function (sel) {
++      var el = $(sel); if (el) el.addEventListener('input', function () { headerDirty = true; });
++    });
++    ['#task-client', '#task-column', '#task-assignee', '#task-due', '#task-paid'].forEach(function (sel) {
++      var el = $(sel); if (el) el.addEventListener('change', function () { headerDirty = true; });
++    });
++
++    $('#task-client').addEventListener('change', function () {
++      if (!taskId || !card) return;
++      var newClientId = $('#task-client').value;
++      if (newClientId === card.task.client_id) return;
++      if (card.equipment.length > 0) {
++        KT.uiConfirm('Оборудование другого клиента будет убрано из заказа.').then(function (ok) {
++          if (!ok) { $('#task-client').value = card.task.client_id; if ($('#task-client')._cbSync) $('#task-client')._cbSync(); }
++        });
++      }
++    });
++
++    $('#task-save-btn').addEventListener('click', function () {
++      if (saving) return;
++      saving = true;
++      $('#task-save-btn').disabled = true;
++      $('#task-error').classList.add('d-none');
++
++      var payload = headerPayload();
++      var req;
++      if (taskId) {
++        payload.version = card ? card.task.version : null;
++        req = KT.api.put('/api/v1/tasks/' + taskId, payload);
++      } else {
++        req = KT.api.post('/api/v1/tasks', payload);
++      }
++      req.then(function (resp) {
++        saving = false;
++        $('#task-save-btn').disabled = false;
++        host.onChanged();
++        // SD-006: и создание, и правка шапки — модалка остаётся открытой, карточка
++        // перечитывается заново, разделы оборудования/услуг разблокируются.
++        return loadCard(resp.task.id);
++      }).catch(function (err) {
++        saving = false;
++        $('#task-save-btn').disabled = false;
++        if (err && err.code === 'TASK_VERSION_CONFLICT') {
++          KT.uiAlert(err.message || 'Заказ уже изменён, обновите', 'Конфликт версии').then(function () { if (taskId) loadCard(taskId); });
++          return;
++        }
++        if (err && err.fields && err.fields.length) {
++          showHeaderError(err.fields.map(function (f) { return f.message; }).join('; '));
++          return;
++        }
++        showHeaderError((err && err.message) || 'Не удалось сохранить заказ');
++      });
++    });
++
++    $('#task-delete-btn').addEventListener('click', function () {
++      if (!taskId) return;
++      var id = taskId;
++      KT.uiConfirm('Удалить заказ #' + id + '? Товары вернутся на склад.').then(function (ok) {
++        if (!ok) return;
++        KT.api.del('/api/v1/tasks/' + id).then(function (resp) {
++          close();
++          host.onChanged();
++          if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
++        }).catch(function (err) {
++          showHeaderError((err && err.message) || 'Не удалось удалить заказ');
++        });
++      });
++    });
++
++    $('#task-modal').addEventListener('hidden.bs.modal', function () {
++      card = null; taskId = null; rowQueue = {}; newEquipmentOpen = false; headerDirty = false;
++      openGeneration++; // закрыли без переоткрытия — ответы запросов в полёте больше не применяем
++    });
++  }
++
++  KT.taskCard = {
++    init: function (opts) {
++      host.getData = opts.getData;
++      host.onChanged = opts.onChanged || function () {};
++      host.toastWarnings = opts.toastWarnings || function () {};
++      bindStatic();
++    },
++    open: open,
++    close: close
++  };
++})();
+diff --git a/web/ssr/_shared/print.css b/web/ssr/_shared/print.css
+new file mode 100644
+index 0000000..06c5910
+--- /dev/null
++++ b/web/ssr/_shared/print.css
+@@ -0,0 +1,79 @@
++/* print.css — печатные акты (SSR-печать, ADR-102). Раздаётся статикой /assets/ssr-shared/.
++   Формат — A4, светлый фон принудительно (layout ставит data-bs-theme="light"); @media
++   print скрывает элементы .no-print (кнопка «Печать»). */
++
++body {
++  background: #fff;
++  color: #000;
++  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
++}
++
++.print-page {
++  max-width: 210mm;
++  margin: 0 auto;
++  padding: 16px 20px;
++}
++
++.print-firm {
++  margin-bottom: 16px;
++  border-bottom: 1px solid #333;
++  padding-bottom: 8px;
++}
++
++.print-firm-name {
++  font-weight: 700;
++  font-size: 1.1rem;
++}
++
++.print-date {
++  color: #333;
++}
++
++.print-section {
++  margin: 16px 0;
++}
++
++.print-section h2 {
++  font-size: 1rem;
++  font-weight: 700;
++  margin-bottom: 6px;
++}
++
++.print-description {
++  white-space: normal;
++}
++
++.print-products-list {
++  margin: 0;
++  padding-left: 16px;
++}
++
++.print-total h2 {
++  font-size: 1.1rem;
++}
++
++.print-signatures {
++  display: flex;
++  justify-content: space-between;
++  gap: 24px;
++  margin-top: 48px;
++}
++
++.print-signature {
++  flex: 1;
++}
++
++@media print {
++  .no-print {
++    display: none !important;
++  }
++
++  .print-page {
++    padding: 0;
++  }
++
++  @page {
++    size: A4;
++    margin: 15mm;
++  }
++}
+diff --git a/web/ssr/board/templates/layouts/print.html b/web/ssr/board/templates/layouts/print.html
+new file mode 100644
+index 0000000..979ad8f
+--- /dev/null
++++ b/web/ssr/board/templates/layouts/print.html
+@@ -0,0 +1,21 @@
++{{/* print — layout печатных актов (design-go-layers.md §Handler Print, ADR-102): без
++     сайдбара/топбара/theme.js, светлый фон принудительно (data-bs-theme="light") независимо
++     от темы пользователя — печатная форма не должна зависеть от системной темы браузера. */}}
++{{ define "print" }}<!doctype html>
++<html lang="ru">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>{{ if eq .Kind "intake" }}Акт приёма{{ else }}Акт выдачи{{ end }} №{{ .Card.Task.ID }} — Kanban-tree</title>
++<link rel="icon" href="/assets/ssr-shared/favicon.svg" type="image/svg+xml">
++<link rel="stylesheet" href="/assets/ssr-shared/vendor/bootstrap/bootstrap.min.css">
++<link rel="stylesheet" href="/assets/ssr-shared/print.css">
++</head>
++<body data-bs-theme="light">
++<div class="print-page">
++  <button type="button" class="btn btn-sm btn-primary no-print" onclick="window.print()" data-testid="print-button">Печать</button>
++  {{ template "content" . }}
++</div>
++</body>
++</html>
++{{ end }}
+diff --git a/web/ssr/board/templates/pages/board.html b/web/ssr/board/templates/pages/board.html
+index 76766b7..ad4a0f9 100644
+--- a/web/ssr/board/templates/pages/board.html
++++ b/web/ssr/board/templates/pages/board.html
+@@ -38,51 +38,71 @@
+   <div class="empty-state" data-testid="board-loading">Загрузка доски…</div>
+ </div>
+ 
+-<!-- Модалка заказа (D25) -->
++<!-- Карточка заказа (фаза 6, D25/SD-006) — рендер и вся логика в js/task-card.js
++     (KT.taskCard); board.html — только каркас: шапка + контейнеры секций. -->
+ <div class="modal fade" id="task-modal" tabindex="-1" aria-hidden="true" data-testid="task-form">
+-  <div class="modal-dialog">
+-    <form class="modal-content" id="task-form-el" novalidate>
++  <div class="modal-dialog modal-xl modal-fullscreen-lg-down modal-dialog-scrollable">
++    <div class="modal-content" id="task-form-el">
+       <div class="modal-header">
+         <h2 class="modal-title fs-5" id="task-modal-title">Новый заказ</h2>
+-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++        <div class="d-flex gap-2 ms-3" id="card-print-actions"></div>
++        <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+       </div>
+       <div class="modal-body">
+         <div class="alert alert-danger d-none" id="task-error" data-testid="task-error"></div>
+-        <div class="mb-3">
+-          <label class="form-label" for="task-title">Название *</label>
+-          <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
+-        </div>
+-        <div class="mb-3">
+-          <label class="form-label" for="task-client">Клиент *</label>
+-          <select class="form-select" id="task-client" data-testid="task-client" required>
+-            <option value="">Выберите клиента</option>
+-          </select>
+-        </div>
+-        <div class="mb-3">
+-          <label class="form-label" for="task-column">Колонка *</label>
+-          <select class="form-select" id="task-column" data-testid="task-column" required></select>
+-        </div>
+-        <div class="mb-3">
+-          <label class="form-label" for="task-assignee">Ответственный</label>
+-          <select class="form-select" id="task-assignee" data-testid="task-assignee">
+-            <option value="">Не назначен</option>
+-          </select>
+-        </div>
+-        <div class="mb-3">
+-          <label class="form-label" for="task-due">Срок</label>
+-          <input type="date" class="form-control" id="task-due" data-testid="task-due">
+-        </div>
+-        <div class="form-check">
+-          <input type="checkbox" class="form-check-input" id="task-paid" data-testid="task-paid">
+-          <label class="form-check-label" for="task-paid">Оплачен</label>
++
++        <div class="row g-3">
++          <div class="col-md-6">
++            <label class="form-label" for="task-title">Название *</label>
++            <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
++          </div>
++          <div class="col-md-6">
++            <label class="form-label" for="task-client">Клиент *</label>
++            <select class="form-select" id="task-client" data-testid="task-client" required>
++              <option value="">Выберите клиента</option>
++            </select>
++          </div>
++          <div class="col-md-4">
++            <label class="form-label" for="task-column">Колонка *</label>
++            <select class="form-select" id="task-column" data-testid="task-column" required></select>
++          </div>
++          <div class="col-md-4">
++            <label class="form-label" for="task-assignee">Ответственный</label>
++            <select class="form-select" id="task-assignee" data-testid="task-assignee">
++              <option value="">Не назначен</option>
++            </select>
++          </div>
++          <div class="col-md-4">
++            <label class="form-label" for="task-due">Срок</label>
++            <input type="date" class="form-control" id="task-due" data-testid="task-due">
++          </div>
++          <div class="col-12">
++            <label class="form-label" for="task-description">Описание</label>
++            <textarea class="form-control" id="task-description" data-testid="card-description" maxlength="10000" rows="3"></textarea>
++          </div>
++          <div class="col-12 form-check">
++            <input type="checkbox" class="form-check-input" id="task-paid" data-testid="task-paid">
++            <label class="form-check-label" for="task-paid">Оплачен</label>
++          </div>
+         </div>
++
++        <hr>
++        <h3 class="fs-6">Оборудование</h3>
++        <div id="card-equipment" data-testid="card-equipment"></div>
++
++        <hr>
++        <h3 class="fs-6">Услуги</h3>
++        <div id="card-subtasks" data-testid="card-subtasks"></div>
++
++        <hr>
++        <div id="card-total"></div>
+       </div>
+       <div class="modal-footer">
+         <button type="button" class="btn btn-outline-danger me-auto d-none" id="task-delete-btn" data-testid="task-delete">Удалить</button>
+         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+-        <button type="submit" class="btn btn-primary" id="task-save-btn" data-testid="task-save">Сохранить</button>
++        <button type="button" class="btn btn-primary" id="task-save-btn" data-testid="task-save">Сохранить</button>
+       </div>
+-    </form>
++    </div>
+   </div>
+ </div>
+ 
+@@ -129,5 +149,6 @@
+ {{ end }}
+ 
+ {{ define "scripts" }}
++<script src="/assets/ssr-shared/js/task-card.js"></script>
+ <script src="/assets/ssr-shared/js/board.js"></script>
+ {{ end }}
+diff --git a/web/ssr/board/templates/pages/print-handover.html b/web/ssr/board/templates/pages/print-handover.html
+new file mode 100644
+index 0000000..8110de3
+--- /dev/null
++++ b/web/ssr/board/templates/pages/print-handover.html
+@@ -0,0 +1,89 @@
++{{/* print-handover — акт выдачи (AC-016, SD-009): ВСЕ услуги заказа со статусом и ценами
++     (не только выполненные), товары qty×цена, итог = task.total_amount (одна цифра с
++     карточкой, ADR-005), отметка оплаты. Каждый реквизит фирмы — свой `{{ if }}`. */}}
++{{ define "content" }}
++<header class="print-firm" data-testid="print-firm">
++  {{ if .Firm.Name }}<div class="print-firm-name">{{ .Firm.Name }}</div>{{ end }}
++  {{ if .Firm.Address }}<div class="print-firm-address">{{ .Firm.Address }}</div>{{ end }}
++  {{ if .Firm.Phone }}<div class="print-firm-phone">{{ .Firm.Phone }}</div>{{ end }}
++</header>
++
++<h1 data-testid="print-title">Акт выдачи №{{ .Card.Task.ID }}</h1>
++<p class="print-date" data-testid="print-date">Дата: {{ .PrintedAt.Format "02.01.2006" }}</p>
++
++<section class="print-section">
++  <h2>Клиент</h2>
++  <p data-testid="print-client">{{ .ClientName }}{{ if .ContactName }}, {{ .ContactName }}{{ end }}</p>
++  {{ if .Phones }}<p data-testid="print-phones">Телефон: {{ .Phones }}</p>{{ end }}
++</section>
++
++<section class="print-section">
++  <h2>Оборудование</h2>
++  {{ if .Card.Equipment }}
++  <table class="table table-bordered table-sm" data-testid="print-equipment">
++    <thead><tr><th>Тип</th><th>Бренд</th><th>Модель</th><th>Серийный №</th><th>Комплектность</th><th>Состояние</th></tr></thead>
++    <tbody>
++    {{ range .Card.Equipment }}
++    <tr>
++      <td>{{ .TypeName }}</td><td>{{ .Brand }}</td><td>{{ .Model }}</td><td>{{ .Serial }}</td>
++      <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
++    </tr>
++    {{ end }}
++    </tbody>
++  </table>
++  {{ else }}
++  <p class="text-body-secondary">Оборудование не указано.</p>
++  {{ end }}
++</section>
++
++{{ if .Description }}
++<section class="print-section">
++  <h2>Описание</h2>
++  <div class="print-description" data-testid="print-description">{{ .Description }}</div>
++</section>
++{{ end }}
++
++<section class="print-section">
++  <h2>Услуги</h2>
++  {{ if .Card.Subtasks }}
++  <table class="table table-bordered table-sm" data-testid="print-subtasks">
++    <thead><tr><th>Услуга</th><th>Статус</th><th>Цена работы</th><th>Товары</th><th>Итого</th></tr></thead>
++    <tbody>
++    {{ range .Card.Subtasks }}
++    <tr data-testid="print-subtask-row">
++      <td>{{ .ServiceName }}</td>
++      <td>{{ if eq .Status "new" }}Новая{{ else if eq .Status "in_progress" }}В работе{{ else if eq .Status "done" }}Выполнена{{ else }}{{ .Status }}{{ end }}</td>
++      <td>{{ if .Price }}{{ .Price }}{{ else }}—{{ end }}</td>
++      <td>
++        {{ if .Products }}
++        <ul class="print-products-list">
++          {{ range .Products }}
++          <li>{{ .Name }}: {{ .Qty }} {{ .Unit }} × {{ if .Price }}{{ .Price }}{{ else }}—{{ end }} = {{ .LineTotal }}</li>
++          {{ end }}
++        </ul>
++        {{ else }}
++        <span class="text-body-secondary">—</span>
++        {{ end }}
++      </td>
++      <td>{{ .Total }}</td>
++    </tr>
++    {{ end }}
++    </tbody>
++  </table>
++  {{ else }}
++  <p class="text-body-secondary">Услуги не добавлены.</p>
++  {{ end }}
++</section>
++
++<section class="print-section print-total" data-testid="print-total">
++  <h2>Итого: {{ .Card.Task.TotalAmount }}</h2>
++  <p data-testid="print-payment">
++    {{ if .Card.Task.IsPaid }}Оплачено{{ if .Card.Task.PaidAt }} {{ .Card.Task.PaidAt.Format "02.01.2006" }}{{ end }}{{ else }}Не оплачено{{ end }}
++  </p>
++</section>
++
++<section class="print-signatures">
++  <div class="print-signature" data-testid="print-signature-give">Выдал: ______________________</div>
++  <div class="print-signature" data-testid="print-signature-take">Получил: ______________________</div>
++</section>
++{{ end }}
+diff --git a/web/ssr/board/templates/pages/print-intake.html b/web/ssr/board/templates/pages/print-intake.html
+new file mode 100644
+index 0000000..56db2ee
+--- /dev/null
++++ b/web/ssr/board/templates/pages/print-intake.html
+@@ -0,0 +1,49 @@
++{{/* print-intake — акт приёма (AC-015). Каждый реквизит фирмы — свой `{{ if }}` (не
++     единый блок): пустая переменная окружения не должна прятать заполненные соседние. */}}
++{{ define "content" }}
++<header class="print-firm" data-testid="print-firm">
++  {{ if .Firm.Name }}<div class="print-firm-name">{{ .Firm.Name }}</div>{{ end }}
++  {{ if .Firm.Address }}<div class="print-firm-address">{{ .Firm.Address }}</div>{{ end }}
++  {{ if .Firm.Phone }}<div class="print-firm-phone">{{ .Firm.Phone }}</div>{{ end }}
++</header>
++
++<h1 data-testid="print-title">Акт приёма №{{ .Card.Task.ID }}</h1>
++<p class="print-date" data-testid="print-date">Дата: {{ .PrintedAt.Format "02.01.2006" }}</p>
++
++<section class="print-section">
++  <h2>Клиент</h2>
++  <p data-testid="print-client">{{ .ClientName }}{{ if .ContactName }}, {{ .ContactName }}{{ end }}</p>
++  {{ if .Phones }}<p data-testid="print-phones">Телефон: {{ .Phones }}</p>{{ end }}
++</section>
++
++<section class="print-section">
++  <h2>Оборудование</h2>
++  {{ if .Card.Equipment }}
++  <table class="table table-bordered table-sm" data-testid="print-equipment">
++    <thead><tr><th>Тип</th><th>Бренд</th><th>Модель</th><th>Серийный №</th><th>Комплектность</th><th>Состояние</th></tr></thead>
++    <tbody>
++    {{ range .Card.Equipment }}
++    <tr>
++      <td>{{ .TypeName }}</td><td>{{ .Brand }}</td><td>{{ .Model }}</td><td>{{ .Serial }}</td>
++      <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
++    </tr>
++    {{ end }}
++    </tbody>
++  </table>
++  {{ else }}
++  <p class="text-body-secondary">Оборудование не указано.</p>
++  {{ end }}
++</section>
++
++{{ if .Description }}
++<section class="print-section">
++  <h2>Описание</h2>
++  <div class="print-description" data-testid="print-description">{{ .Description }}</div>
++</section>
++{{ end }}
++
++<section class="print-signatures">
++  <div class="print-signature" data-testid="print-signature-give">Сдал: ______________________</div>
++  <div class="print-signature" data-testid="print-signature-take">Принял: ______________________</div>
++</section>
++{{ end }}

@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature transfers-sales --repo /Users/igorpotema/mycode/kanban-tree
+(exit 0)
+
+E2E-MODE SKIP-NO-EVIDENCE: нет docs/features/transfers-sales/9-validation/evidence/e2e-run.txt — прогонов E2E не зафиксировано (фича без фронта либо улика не сохранялась)

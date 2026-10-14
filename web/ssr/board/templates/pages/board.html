@@ -1,0 +1,174 @@
+{{ define "actions" }}
+<button type="button" class="btn btn-primary btn-sm" id="task-add-btn" data-testid="task-add">+ Заказ</button>
+{{ if .IsAdmin }}
+<button type="button" class="btn btn-outline-secondary btn-sm" id="column-add-btn" data-testid="column-add">+ Колонка</button>
+{{ end }}
+{{ end }}
+
+{{ define "content" }}
+<div class="board-filters d-flex flex-wrap gap-2 align-items-center mb-3" data-testid="board-filters">
+  <select class="form-select form-select-sm" id="filter-client" data-testid="filter-client" style="max-width:220px">
+    <option value="">Все клиенты</option>
+  </select>
+  <input type="search" class="form-control form-control-sm" id="filter-q" data-testid="filter-q"
+         placeholder="Поиск: №, заказ, клиент, услуга, товар, модель/SN" style="max-width:260px" autocomplete="off">
+  <select class="form-select form-select-sm" id="filter-category" data-testid="filter-category" style="max-width:200px">
+    <option value="">Все виды работ</option>
+  </select>
+  <select class="form-select form-select-sm" id="filter-paid" data-testid="filter-paid" style="max-width:160px">
+    <option value="all">Оплата: все</option>
+    <option value="paid">Оплачен</option>
+    <option value="unpaid">Не оплачен</option>
+  </select>
+  <select class="form-select form-select-sm" id="filter-executor-paid" data-testid="filter-executor-paid" style="max-width:230px"
+          aria-label="Выплата исполнителю">
+    <option value="all">Выплата исполнителю: все</option>
+    <option value="paid">Исполнителю выплачено</option>
+    <option value="unpaid">Исполнителю не выплачено</option>
+  </select>
+  <select class="form-select form-select-sm" id="filter-assignee" data-testid="filter-assignee" style="max-width:200px">
+    <option value="all">Все исполнители</option>
+    <option value="me">Мои</option>
+  </select>
+  <select class="form-select form-select-sm" id="filter-due" data-testid="filter-due" style="max-width:180px">
+    <option value="all">Любой срок</option>
+    <option value="soon">Горит (сегодня/завтра, просрочено)</option>
+    <option value="overdue">Только просроченные</option>
+  </select>
+  <select class="form-select form-select-sm" id="filter-warehouse" data-testid="filter-warehouse" style="max-width:200px"
+          title="Заказы, у которых оборудование на складе или едет на склад">
+    <option value="">Все склады</option>
+    {{ range .Warehouses }}<option value="{{ .ID }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
+  </select>
+  <button type="button" class="btn btn-outline-secondary btn-sm" id="filter-reset" data-testid="filter-reset">Сбросить</button>
+  <span class="text-body-secondary small ms-auto" id="board-total" data-testid="board-total"></span>{{/* pagination DS-004 */}}
+</div>
+
+<div id="board" class="board-columns" data-testid="board-root"
+     data-viewer-id="{{ .ViewerID }}" data-is-admin="{{ .IsAdmin }}">
+  <div class="empty-state" data-testid="board-loading">Загрузка доски…</div>
+</div>
+
+<!-- Карточка заказа (фаза 6, D25/SD-006) — рендер и вся логика в js/task-card.js
+     (KT.taskCard); board.html — только каркас: шапка + контейнеры секций. -->
+<div class="modal fade" id="task-modal" tabindex="-1" aria-hidden="true" data-testid="task-form">
+  <div class="modal-dialog modal-xl modal-fullscreen-lg-down modal-dialog-scrollable">
+    <div class="modal-content" id="task-form-el">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="task-modal-title">Новый заказ</h2>
+        <div class="d-flex gap-2 ms-3" id="card-print-actions"></div>
+        <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger d-none" id="task-error" data-testid="task-error"></div>
+
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label" for="task-title">Название *</label>
+            <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="task-client">Клиент * <span class="badge text-bg-secondary d-none" id="task-client-deleted" data-testid="task-client-deleted">удалён</span></label>
+            <select class="form-select" id="task-client" data-testid="task-client" required>
+              <option value="">Выберите клиента</option>
+            </select>
+            <div class="text-danger small d-none" id="task-client-error" data-testid="task-client-error"></div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="task-column">Колонка *</label>
+            <select class="form-select" id="task-column" data-testid="task-column" required></select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="task-assignee">Ответственный</label>
+            <select class="form-select" id="task-assignee" data-testid="task-assignee">
+              <option value="">Не назначен</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="task-due">Срок</label>
+            <input type="date" class="form-control" id="task-due" data-testid="task-due">
+          </div>
+          <div class="col-12">
+            <label class="form-label" for="task-description">Описание</label>
+            <textarea class="form-control" id="task-description" data-testid="card-description" maxlength="10000" rows="3"></textarea>
+          </div>
+          <div class="col-12 form-check">
+            <input type="checkbox" class="form-check-input" id="task-paid" data-testid="task-paid">
+            <label class="form-check-label" for="task-paid">Оплачен</label>
+          </div>
+        </div>
+
+        <hr>
+        <h3 class="fs-6">Оборудование</h3>
+        <div id="card-equipment" data-testid="card-equipment"></div>
+
+        <hr>
+        <h3 class="fs-6">Перемещения заказа</h3>
+        <div id="card-transfers" data-testid="card-transfers"></div>
+
+        <hr>
+        <h3 class="fs-6">Услуги</h3>
+        <div id="card-subtasks" data-testid="card-subtasks"></div>
+
+        <hr>
+        <h3 class="fs-6">Вложения</h3>
+        <div id="card-attachments" data-testid="card-attachments"></div>
+
+        <hr>
+        <div id="card-total"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-danger me-auto d-none" id="task-delete-btn" data-testid="task-delete">Удалить</button>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="button" class="btn btn-primary" id="task-save-btn" data-testid="task-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка колонки (admin, SD-005) -->
+<div class="modal fade" id="column-modal" tabindex="-1" aria-hidden="true" data-testid="column-form">
+  <div class="modal-dialog">
+    <form class="modal-content" id="column-form-el" novalidate>
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="column-modal-title">Новая колонка</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger d-none" id="column-error" data-testid="column-error"></div>
+        <div class="mb-3">
+          <label class="form-label" for="column-name">Название *</label>
+          <input class="form-control" id="column-name" data-testid="column-name" maxlength="60" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="column-color">Цвет *</label>
+          <input class="form-control" id="column-color" data-testid="column-color" pattern="^#[0-9A-Fa-f]{6}$" required placeholder="#RRGGBB">
+          <div class="swatches d-flex gap-2 mt-2" id="column-swatches" data-testid="column-swatches"></div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="column-position">Позиция</label>
+          <input type="number" min="1" step="1" class="form-control" id="column-position" data-testid="column-position">
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="column-final" data-testid="column-final">
+          <label class="form-check-label" for="column-final">Финальная колонка — заказы считаются выполненными</label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="column-consumes" data-testid="column-consumes">
+          <label class="form-check-label" for="column-consumes">Списывать товары со склада</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-danger me-auto d-none" id="column-delete-btn" data-testid="column-delete">Удалить</button>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="submit" class="btn btn-primary" id="column-save-btn" data-testid="column-save">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{ end }}
+
+{{ define "scripts" }}
+<script src="/assets/ssr-shared/js/task-card.js"></script>
+<script src="/assets/ssr-shared/js/board.js"></script>
+{{ end }}

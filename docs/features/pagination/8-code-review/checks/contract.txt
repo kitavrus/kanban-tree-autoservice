@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/contract_check.py --feature pagination --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae --go internal/features/board
+(exit 0)
+
+contract pagination: SKIP (нет /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae/frontend/src/features/pagination — frontend ещё не создан)

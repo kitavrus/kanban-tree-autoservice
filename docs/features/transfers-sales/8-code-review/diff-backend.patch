@@ -1,0 +1,1908 @@
+diff --git a/internal/features/board/card_dto.go b/internal/features/board/card_dto.go
+index fcf8483..abc348e 100644
+--- a/internal/features/board/card_dto.go
++++ b/internal/features/board/card_dto.go
+@@ -30,14 +30,17 @@ type OrderCardResponse struct {
+ }
+ 
+ // CardTransfer — документ заказа в блоке «Перемещения заказа». WarehouseName — склад
+-// назначения (приём от клиента) либо отправления (возврат клиенту).
++// назначения (приём от клиента) либо отправления (возврат клиенту). Amount — сумма документа
++// (transfers-sales DS-014): Σ price × qty_sent товарных строк; 0.00 для приёма от клиента и
++// накладной без товаров — в любом статусе (в итог заказа идут только «В пути» и «Получено»).
+ type CardTransfer struct {
+-	ID            int64     `json:"id"`
+-	Direction     string    `json:"direction"` // client_to_warehouse | warehouse_to_client
+-	Status        string    `json:"status"`
+-	WarehouseName string    `json:"warehouse_name"`
+-	ItemsCount    int       `json:"items_count"`
+-	CreatedAt     time.Time `json:"created_at"`
++	ID            int64          `json:"id"`
++	Direction     string         `json:"direction"` // client_to_warehouse | warehouse_to_client
++	Status        string         `json:"status"`
++	WarehouseName string         `json:"warehouse_name"`
++	ItemsCount    int            `json:"items_count"`
++	CreatedAt     time.Time      `json:"created_at"`
++	Amount        numeric.Amount `json:"amount"`
+ }
+ 
+ // CardAttachment — вложение заказа. URL — отдача файла с проверкой сессии (inline);
+diff --git a/internal/features/board/card_repo.go b/internal/features/board/card_repo.go
+index cfe2110..33fe6a5 100644
+--- a/internal/features/board/card_repo.go
++++ b/internal/features/board/card_repo.go
+@@ -99,7 +99,9 @@ func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment
+ func (r *CardRepo) Transfers(ctx context.Context, taskID int64) ([]CardTransfer, error) {
+ 	rows, err := r.pool.Query(ctx, `
+ 		SELECT t.id, t.direction, t.status, coalesce(w.name, ''),
+-		       (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id)::int, t.created_at
++		       (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id)::int, t.created_at,
++		       (SELECT round(coalesce(sum(round(i.price * i.qty_sent, 2)), 0), 2)
++		        FROM transfer_items i WHERE i.transfer_id = t.id AND i.kind = 'product')::text
+ 		FROM transfers t
+ 		LEFT JOIN warehouses w ON w.id = coalesce(t.to_warehouse_id, t.from_warehouse_id)
+ 		WHERE t.task_id = $1 ORDER BY t.id DESC`, taskID)
+@@ -110,9 +112,11 @@ func (r *CardRepo) Transfers(ctx context.Context, taskID int64) ([]CardTransfer,
+ 	out := []CardTransfer{}
+ 	for rows.Next() {
+ 		var t CardTransfer
+-		if err := rows.Scan(&t.ID, &t.Direction, &t.Status, &t.WarehouseName, &t.ItemsCount, &t.CreatedAt); err != nil {
++		var amount string
++		if err := rows.Scan(&t.ID, &t.Direction, &t.Status, &t.WarehouseName, &t.ItemsCount, &t.CreatedAt, &amount); err != nil {
+ 			return nil, err
+ 		}
++		t.Amount = numeric.Amount(amount)
+ 		out = append(out, t)
+ 	}
+ 	return out, rows.Err()
+diff --git a/internal/features/board/equipment_location_http_live_test.go b/internal/features/board/equipment_location_http_live_test.go
+index 8ea48bf..425c84e 100644
+--- a/internal/features/board/equipment_location_http_live_test.go
++++ b/internal/features/board/equipment_location_http_live_test.go
+@@ -229,7 +229,7 @@ func (s *OrderCardLiveSuite) TestCardTransfers_ListAndTransitToClient() {
+ 
+ 	s.Require().Len(card.Transfers, 2, string(raw))
+ 	s.Equal(cardTransferDTO{ID: back.ID, Direction: "warehouse_to_client", Status: "in_transit", WarehouseName: "Москва", ItemsCount: 1,
+-		CreatedAt: card.Transfers[0].CreatedAt}, card.Transfers[0], "новые сверху")
++		CreatedAt: card.Transfers[0].CreatedAt, Amount: "0.00"}, card.Transfers[0], "новые сверху; накладная без товаров — сумма 0.00")
+ 	s.Equal(intake.ID, card.Transfers[1].ID)
+ 	s.Equal("client_to_warehouse", card.Transfers[1].Direction)
+ 	s.Equal("received", card.Transfers[1].Status)
+diff --git a/internal/features/board/order_card_http_live_test.go b/internal/features/board/order_card_http_live_test.go
+index 8eed162..83dfd72 100644
+--- a/internal/features/board/order_card_http_live_test.go
++++ b/internal/features/board/order_card_http_live_test.go
+@@ -133,6 +133,8 @@ type cardTaskDTO struct {
+ 	DescriptionHTML string      `json:"description_html"`
+ 	TotalAmount     json.Number `json:"total_amount"`
+ 	HasInTransit    bool        `json:"has_in_transit"`
++	// TransfersAmount — «Продано по накладным» (transfers-sales DS-014).
++	TransfersAmount json.Number `json:"transfers_amount"`
+ }
+ 
+ type orderCardDTO struct {
+@@ -152,12 +154,13 @@ type orderCardDTO struct {
+ 
+ // cardTransferDTO — 1:1 с board.CardTransfer.
+ type cardTransferDTO struct {
+-	ID            int64  `json:"id"`
+-	Direction     string `json:"direction"`
+-	Status        string `json:"status"`
+-	WarehouseName string `json:"warehouse_name"`
+-	ItemsCount    int    `json:"items_count"`
+-	CreatedAt     string `json:"created_at"`
++	ID            int64       `json:"id"`
++	Direction     string      `json:"direction"`
++	Status        string      `json:"status"`
++	WarehouseName string      `json:"warehouse_name"`
++	ItemsCount    int         `json:"items_count"`
++	CreatedAt     string      `json:"created_at"`
++	Amount        json.Number `json:"amount"`
+ }
+ 
+ type orderCardMutationDTO struct {
+@@ -864,6 +867,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Totals() {
+ 	}
+ 	s.Equal(json.Number("100.00"), sub2Total, "«по факту» + 1*100")
+ 	s.Equal(json.Number("1404.33"), m.Card.Task.TotalAmount, "1304.33 + 100.00")
++	s.Equal(json.Number("0.00"), m.Card.Task.TransfersAmount, "накладных нет — итог прежний (transfers-sales DS-014)")
+ 
+ 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/tasks?client_id="+c, nil)
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+diff --git a/internal/features/board/order_card_sales_http_live_test.go b/internal/features/board/order_card_sales_http_live_test.go
+new file mode 100644
+index 0000000..e0783a0
+--- /dev/null
++++ b/internal/features/board/order_card_sales_http_live_test.go
+@@ -0,0 +1,206 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++)
++
++// Итог заказа с накладными клиенту (docs/features/transfers-sales/draft-spec.md §11, TS-014) —
++// методы OrderCardLiveSuite (§TD-8): документы создаются и проводятся через API перемещений
++// того же сервера.
++
++type salesTransferDTO struct {
++	ID      int64       `json:"id"`
++	Status  string      `json:"status"`
++	Version int         `json:"version"`
++	Amount  json.Number `json:"amount"`
++}
++
++// invoice — накладная «склад → клиент» заказа со склада «Алматы»: товары [товар, количество,
++// цена]; send — сразу отправить.
++func (s *OrderCardLiveSuite) invoice(taskID int64, send bool, lines ...[3]any) salesTransferDTO {
++	items := make([]map[string]any, len(lines))
++	for i, l := range lines {
++		items[i] = map[string]any{"kind": "product", "product_id": l[0], "qty_sent": l[1], "price": l[2]}
++	}
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/transfers", map[string]any{
++		"direction": "warehouse_to_client", "from_warehouse_id": s.warehouseID("Алматы"), "task_id": taskID,
++		"items": items, "send": send,
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var t salesTransferDTO
++	s.Require().NoError(json.Unmarshal(raw, &t), string(raw))
++	return t
++}
++
++func (s *OrderCardLiveSuite) invoiceAction(t salesTransferDTO, action string) salesTransferDTO {
++	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/%s", t.ID, action), map[string]any{"version": t.Version})
++	s.Require().Equal(http.StatusOK, st, "%s → %s", action, raw)
++	var out salesTransferDTO
++	s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
++	return out
++}
++
++// totals — total_amount / transfers_amount / is_paid карточки и total_amount того же заказа в
++// GET /tasks (одно выражение итога на проект — значения обязаны совпасть).
++func (s *OrderCardLiveSuite) totals(taskID int64, clientID string) (total, sold string, paid bool, card orderCardDTO) {
++	st, card, raw := s.getCard(s.admin, taskID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/tasks?client_id="+clientID, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var list struct {
++		Items []struct {
++			ID          int64       `json:"id"`
++			TotalAmount json.Number `json:"total_amount"`
++		} `json:"items"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list), string(raw))
++	found := false
++	for _, it := range list.Items {
++		if it.ID == taskID {
++			found = true
++			s.Equal(card.Task.TotalAmount, it.TotalAmount, "GET /tasks total_amount = карточка")
++		}
++	}
++	s.True(found, "заказ должен быть в списке")
++	return card.Task.TotalAmount.String(), card.Task.TransfersAmount.String(), card.Task.IsPaid, card
++}
++
++// TS-014: total_amount = услуги + товары услуг + накладные в статусах «В пути» и «Получено»;
++// заявка и отменённая накладная в сумму не входят; transfers_amount — в карточке, amount — у
++// каждого документа блока «Перемещения заказа»; GET /tasks совпадает с карточкой. Негатив:
++// накладная другого заказа не влияет; отмена накладной «в пути» убирает её сумму; is_paid
++// заказа при отправке накладной не меняется. Печатная форма «Выдача» — строка «Продано по
++// накладным» и тот же итог.
++func (s *OrderCardLiveSuite) TestTS014_OrderTotalIncludesSentInvoices() {
++	ctx := context.Background()
++	c := s.newClient("Клиент-Накладные")
++	col := s.columnID("Новые")
++	taskID, _ := s.newTask(c, col)
++
++	// услуги и товары услуг: 1000 + 2 × 150.50 = 1301.00.
++	svc := s.newService("1000")
++	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svc})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	p1 := s.newProduct("150.5", "100", "1")
++	st, _, raw = s.doCard(s.admin, http.MethodPost, "/api/v1/subtasks/"+m.Card.Subtasks[0].ID+"/products", map[string]any{"product_id": p1, "qty": 2})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++
++	total, sold, paid, card := s.totals(taskID, c)
++	s.Equal("1301.00", total)
++	s.Equal("0.00", sold, "накладных нет")
++	s.False(paid)
++	s.Empty(card.Transfers)
++
++	// заявка: сумма у документа есть, в итог заказа не входит.
++	goods := s.newProduct("100.10", "100", "1")
++	small := s.newProduct("0.99", "100", "1")
++	inv := s.invoice(taskID, false, [3]any{goods, 3, 100.10}, [3]any{small, 1, 0.99})
++	s.Equal("301.29", inv.Amount.String(), "300.30 + 0.99")
++	total, sold, _, card = s.totals(taskID, c)
++	s.Equal("1301.00", total, "заявка в итог не входит")
++	s.Equal("0.00", sold)
++	s.Require().Len(card.Transfers, 1)
++	s.Equal("301.29", card.Transfers[0].Amount.String())
++	s.Equal("requested", card.Transfers[0].Status)
++
++	// отправка: накладная «в пути» входит в итог; оплата заказа не меняется.
++	inv = s.invoiceAction(inv, "send")
++	total, sold, paid, _ = s.totals(taskID, c)
++	s.Equal("1602.29", total, "1301.00 + 301.29")
++	s.Equal("301.29", sold)
++	s.False(paid, "отправка накладной оплату заказа не трогает")
++
++	// оплаченный заказ: вторая накладная отправлена и получена — is_paid остаётся true.
++	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET is_paid = true, paid_at = now() WHERE id = $1`, taskID)
++	s.Require().NoError(err)
++	second := s.invoice(taskID, true, [3]any{goods, 2, 50})
++	total, sold, paid, _ = s.totals(taskID, c)
++	s.Equal("1702.29", total)
++	s.Equal("401.29", sold)
++	s.True(paid, "отправка накладной оплату заказа не трогает")
++	s.invoiceAction(second, "receive")
++	inv = s.invoiceAction(inv, "receive")
++	total, sold, paid, card = s.totals(taskID, c)
++	s.Equal("1702.29", total, "полученные накладные остаются в итоге")
++	s.Equal("401.29", sold)
++	s.True(paid)
++
++	// накладная «в пути» → отмена: её сумма уходит из итога, у документа остаётся.
++	third := s.invoice(taskID, true, [3]any{small, 10, 7.77})
++	total, sold, _, _ = s.totals(taskID, c)
++	s.Equal("1779.99", total, "1702.29 + 77.70")
++	s.Equal("478.99", sold, "401.29 + 77.70")
++	third = s.invoiceAction(third, "cancel")
++	s.Equal("cancelled", third.Status)
++	total, sold, _, card = s.totals(taskID, c)
++	s.Equal("1702.29", total, "отменённая накладная в итог не входит")
++	s.Equal("401.29", sold)
++	amounts := map[int64]string{}
++	for _, t := range card.Transfers {
++		amounts[t.ID] = t.Status + ":" + t.Amount.String()
++	}
++	s.Equal(map[int64]string{inv.ID: "received:301.29", second.ID: "received:100.00", third.ID: "cancelled:77.70"}, amounts)
++
++	// приём от клиента (без товаров) — amount 0.00, итог не меняется.
++	unit := s.newEquipment(c)
++	_, err = s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2)`, taskID, unit)
++	s.Require().NoError(err)
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/transfers", map[string]any{
++		"direction": "client_to_warehouse", "to_warehouse_id": s.warehouseID("Алматы"), "task_id": taskID,
++		"items": []map[string]any{{"kind": "equipment", "equipment_id": unit}}, "send": true,
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var intake salesTransferDTO
++	s.Require().NoError(json.Unmarshal(raw, &intake), string(raw))
++	total, sold, _, card = s.totals(taskID, c)
++	s.Equal("1702.29", total)
++	s.Equal("401.29", sold)
++	for _, t := range card.Transfers {
++		if t.ID == intake.ID {
++			s.Equal("0.00", t.Amount.String(), "приём от клиента суммы не несёт")
++		}
++	}
++
++	// негатив (abuse case 4): накладная другого заказа того же клиента на итог не влияет.
++	otherID, _ := s.newTask(c, col)
++	s.invoice(otherID, true, [3]any{goods, 1, 999})
++	total, sold, _, _ = s.totals(taskID, c)
++	s.Equal("1702.29", total, "сумма считается по task_id")
++	s.Equal("401.29", sold)
++	total, sold, _, _ = s.totals(otherID, c)
++	s.Equal("999.00", total, "заказ без услуг: итог = накладные")
++	s.Equal("999.00", sold)
++
++	// row-мутация карточки отдаёт тот же итог (card в ответе — re-fetch).
++	st, m, raw = s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": s.newService("10")})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal("1712.29", m.Card.Task.TotalAmount.String())
++	s.Equal("401.29", m.Card.Task.TransfersAmount.String())
++
++	// печатная форма «Выдача»: строка «Продано по накладным» перед итогом, итог — total_amount.
++	resp := s.admin.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/handover", taskID), nil, nil)
++	defer resp.Body.Close()
++	s.Require().Equal(http.StatusOK, resp.StatusCode)
++	b, err := io.ReadAll(resp.Body)
++	s.Require().NoError(err)
++	body := string(b)
++	s.Contains(body, "Продано по накладным: 401.29")
++	s.Contains(body, "Итого: 1712.29")
++
++	// акт заказа, у которого накладная только в заявке, строки не содержит.
++	draftID, _ := s.newTask(c, col)
++	s.invoice(draftID, false, [3]any{goods, 1, 5})
++	respDraft := s.admin.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/handover", draftID), nil, nil)
++	defer respDraft.Body.Close()
++	s.Require().Equal(http.StatusOK, respDraft.StatusCode)
++	b, err = io.ReadAll(respDraft.Body)
++	s.Require().NoError(err)
++	s.NotContains(string(b), "Продано по накладным")
++	s.Contains(string(b), "Итого: 0.00")
++}
+diff --git a/internal/features/board/print_http_live_test.go b/internal/features/board/print_http_live_test.go
+index 850252f..49bcd2a 100644
+--- a/internal/features/board/print_http_live_test.go
++++ b/internal/features/board/print_http_live_test.go
+@@ -262,6 +262,7 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Handover_FullContent() {
+ 	s.Contains(body, ">—<", "цена работы «по факту» — прочерк")
+ 	// итог: 500.00 (услуга) + 2*20.00 (товар) = 540.00 — совпадает с task.total_amount (AC-013).
+ 	s.Contains(body, "540.00")
++	s.NotContains(body, "Продано по накладным", "накладных у заказа нет — строки нет (transfers-sales DS-014)")
+ 	s.Contains(body, "Оплачено")
+ 	s.Contains(body, "Выдал:")
+ 	s.Contains(body, "Получил:")
+diff --git a/internal/features/board/tasks_dto.go b/internal/features/board/tasks_dto.go
+index bf71790..99248ff 100644
+--- a/internal/features/board/tasks_dto.go
++++ b/internal/features/board/tasks_dto.go
+@@ -73,6 +73,9 @@ type TaskResponse struct {
+ 	CreatedAt       time.Time  `json:"created_at"`
+ 	UpdatedAt       time.Time  `json:"updated_at"`
+ 	DescriptionHTML string     `json:"description_html"` // хранимый HTML (ADR-006); клиент берёт текст через DOMParser
++	// TransfersAmount — «Продано по накладным» (transfers-sales DS-014): Σ сумм накладных
++	// «склад → клиент» заказа в статусах «В пути» и «Получено»; уже входит в total_amount.
++	TransfersAmount numeric.Amount `json:"transfers_amount"`
+ }
+ 
+ // TaskCreateRequest — POST /api/v1/tasks. IsPaid: executor — nil|false, иначе 403
+diff --git a/internal/features/board/tasks_repo.go b/internal/features/board/tasks_repo.go
+index 9332fd2..ef9fc8b 100644
+--- a/internal/features/board/tasks_repo.go
++++ b/internal/features/board/tasks_repo.go
+@@ -39,6 +39,8 @@ type Task struct {
+ 	// нужно TaskService.Update, когда description в теле — nil, «не менять»).
+ 	DescriptionHTML string
+ 	TotalAmount     numeric.Amount
++	// TransfersAmount — «Продано по накладным» (transfers-sales DS-014); считает только Get.
++	TransfersAmount numeric.Amount
+ 	LastLog         *TaskLastLog
+ 	// HasInTransit — оборудование заказа в пути (DS-009); заполняет только Get.
+ 	HasInTransit bool
+@@ -107,13 +109,28 @@ const lastLogJoinSQL = `
+ 	    FROM subtasks ls JOIN subtask_logs l ON l.subtask_id = ls.id JOIN users lu ON lu.id = l.user_id
+ 	    WHERE ls.task_id = t.id ORDER BY l.created_at DESC, l.id DESC LIMIT 1) ll ON true`
+ 
++// transfersAmountSQL — «Продано по накладным» (transfers-sales DS-014): Σ сумм накладных
++// «склад → клиент» заказа t в статусах «В пути» и «Получено» (заявка и отменённая не входят);
++// сумма накладной — Σ round(price × qty_sent, 2) товарных строк (DS-038). NUMERIC-скаляр,
++// коррелирован с t.id.
++const transfersAmountSQL = `
++	(SELECT round(coalesce(sum(round(si.price * si.qty_sent, 2)), 0), 2)
++	 FROM transfers st JOIN transfer_items si ON si.transfer_id = st.id
++	 WHERE st.task_id = t.id AND st.direction = 'warehouse_to_client'
++	   AND st.status IN ('in_transit', 'received') AND si.kind = 'product')`
++
++// transfersAmountSelectSQL — transfersAmountSQL текстом (task.transfers_amount карточки).
++const transfersAmountSelectSQL = transfersAmountSQL + `::text`
++
+ // totalAmountSelectSQL — design-sql.md §Totals Expression, скаляр-фрагмент коррелирован с
+-// t.id (алиас s2 — во избежание конфликта с внешними алиасами Get/List).
++// t.id (алиас s2 — во избежание конфликта с внешними алиасами Get/List). Итог заказа =
++// услуги + товары услуг + накладные (transfers-sales DS-014); единственное выражение итога
++// на проект — им пользуются карточка (Get) и доска (boardListSQL).
+ const totalAmountSelectSQL = `
+-	(SELECT round(coalesce(sum(coalesce(s2.price, 0) +
++	((SELECT round(coalesce(sum(coalesce(s2.price, 0) +
+ 	        coalesce((SELECT sum(round(sp.qty * coalesce(sp.price, 0), 2))
+ 	                  FROM subtask_products sp WHERE sp.subtask_id = s2.id), 0)), 0), 2)
+-	 FROM subtasks s2 WHERE s2.task_id = t.id)::text`
++	 FROM subtasks s2 WHERE s2.task_id = t.id) + ` + transfersAmountSQL + `)::text`
+ 
+ // buildLastLog — nil, если записей журнала у заказа нет вовсе (ll.text IS NULL).
+ func buildLastLog(text, author sql.NullString, cut sql.NullBool, createdAt sql.NullTime) *TaskLastLog {
+@@ -267,7 +284,7 @@ func (r *TaskRepo) ActiveAssigneeExists(ctx context.Context, tx pgx.Tx, id strin
+ // DS-032, тот же источник, что TaskFilter.Today в List); пусто — current_date БД.
+ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, error) {
+ 	var t Task
+-	var totalAmount string
++	var totalAmount, transfersAmount string
+ 	var llText, llAuthor sql.NullString
+ 	var llCut sql.NullBool
+ 	var llCreatedAt sql.NullTime
+@@ -281,7 +298,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id),
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done'),
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done' AND s.due_date < COALESCE($2::date, current_date)),
+-		       t.description_html, `+totalAmountSelectSQL+`,
++		       t.description_html, `+totalAmountSelectSQL+`, `+transfersAmountSelectSQL+`,
+ 		       ll.text, ll.cut, ll.author_name, ll.created_at,
+ 		       EXISTS (SELECT 1 FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
+ 		               WHERE te.task_id = t.id AND e.location_status = 'in_transit'),
+@@ -293,7 +310,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
+ 		WHERE t.id = $1`, id, todayArg).
+ 		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.ClientName, &t.Title, &t.AssigneeID, &t.AssigneeName,
+ 			&t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
+-			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount,
++			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount, &transfersAmount,
+ 			&llText, &llCut, &llAuthor, &llCreatedAt, &t.HasInTransit, &t.ExecutorUnpaidDone)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errNotFound
+@@ -302,6 +319,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
+ 		return nil, err
+ 	}
+ 	t.TotalAmount = numeric.Amount(totalAmount)
++	t.TransfersAmount = numeric.Amount(transfersAmount)
+ 	t.LastLog = buildLastLog(llText, llAuthor, llCut, llCreatedAt)
+ 	return &t, nil
+ }
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index a9a921a..0c9f274 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -428,6 +428,7 @@ func toTaskResponse(t Task) TaskResponse {
+ 			ExecutorUnpaidDone: t.ExecutorUnpaidDone,
+ 		},
+ 		PaidAt: t.PaidAt, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, DescriptionHTML: t.DescriptionHTML,
++		TransfersAmount: t.TransfersAmount,
+ 	}
+ }
+ 
+diff --git a/internal/features/transfers/dto.go b/internal/features/transfers/dto.go
+index 97b7195..076cb2c 100644
+--- a/internal/features/transfers/dto.go
++++ b/internal/features/transfers/dto.go
+@@ -52,7 +52,7 @@ const (
+ )
+ 
+ // Причины движений перемещения (CHECK stock_movements_reason_check миграций 0008, 0015).
+-// client_out и transfer_unreceive разрешены CHECK'ом, но пишутся частями 5 и 6 (DS-040).
++// transfer_unreceive разрешён CHECK'ом, но пишется частью 6 (DS-040).
+ const (
+ 	reasonOut    = "transfer_out"
+ 	reasonIn     = "transfer_in"
+@@ -60,15 +60,20 @@ const (
+ 	reasonReturn = "transfer_return"
+ 	// reasonSupplierIn — приход факта от поставщика на склад назначения (DS-040).
+ 	reasonSupplierIn = "supplier_in"
++	// reasonClientOut — списание товара накладной клиенту при отправке (transfers-sales DS-011).
++	reasonClientOut = "client_out"
+ )
+ 
+ // ItemInput — строка документа в запросе создания/правки. kind = product — product_id +
+-// qty_sent; kind = equipment — equipment_id; «чужое» поле → 400 not_allowed (§6.2).
++// qty_sent; kind = equipment — equipment_id; «чужое» поле → 400 not_allowed (§6.2). Price —
++// цена продажи: только товарная строка накладной «склад → клиент» (transfers-sales DS-011);
++// нет поля / null → цена товара из каталога на момент сохранения (DS-039).
+ type ItemInput struct {
+-	Kind        string         `json:"kind"`
+-	ProductID   string         `json:"product_id"`
+-	EquipmentID string         `json:"equipment_id"`
+-	QtySent     numeric.Amount `json:"qty_sent"`
++	Kind        string          `json:"kind"`
++	ProductID   string          `json:"product_id"`
++	EquipmentID string          `json:"equipment_id"`
++	QtySent     numeric.Amount  `json:"qty_sent"`
++	Price       *numeric.Amount `json:"price"`
+ }
+ 
+ // TransferCreateRequest — POST /api/v1/transfers. send=true — сразу «Отправить»
+@@ -134,7 +139,8 @@ type StockWarning struct {
+ }
+ 
+ // TransferItemResponse — строка документа: у товара заполнены product_*/unit/qty_*, у
+-// единицы — equipment_* (остальное null).
++// единицы — equipment_* (остальное null). Price / LineTotal (price × qty_sent, 2 знака) —
++// только товарная строка накладной «склад → клиент», иначе null (transfers-sales DS-011).
+ type TransferItemResponse struct {
+ 	ID                  string          `json:"id"`
+ 	Kind                string          `json:"kind"`
+@@ -147,11 +153,14 @@ type TransferItemResponse struct {
+ 	EquipmentClientName *string         `json:"equipment_client_name"`
+ 	QtySent             *numeric.Amount `json:"qty_sent"`
+ 	QtyReceived         *numeric.Amount `json:"qty_received"`
++	Price               *numeric.Amount `json:"price"`
++	LineTotal           *numeric.Amount `json:"line_total"`
+ }
+ 
+ // TransferResponse — карточка перемещения (re-fetch-after-write). Warnings — только в
+ // ответе отправки (иначе пустой массив). Точки маршрута заполнены по direction: склады,
+-// заказ + клиент (документы с клиентом), поставщик — остальное null.
++// заказ + клиент (документы с клиентом), поставщик — остальное null. Amount — сумма накладной:
++// Σ line_total товарных строк; 0.00 вне «склад → клиент» и без товаров (DS-038).
+ type TransferResponse struct {
+ 	ID                int64                  `json:"id"`
+ 	Direction         string                 `json:"direction"`
+@@ -181,30 +190,33 @@ type TransferResponse struct {
+ 	CreatedAt         time.Time              `json:"created_at"`
+ 	UpdatedAt         time.Time              `json:"updated_at"`
+ 	Version           int                    `json:"version"`
++	Amount            numeric.Amount         `json:"amount"`
+ 	Items             []TransferItemResponse `json:"items"`
+ 	Warnings          []StockWarning         `json:"warnings"`
+ }
+ 
+-// TransferSummary — строка списка (без строк документа).
++// TransferSummary — строка списка (без строк документа). Amount — сумма накладной (0.00 вне
++// «склад → клиент»).
+ type TransferSummary struct {
+-	ID                int64     `json:"id"`
+-	Direction         string    `json:"direction"`
+-	FromWarehouseID   *string   `json:"from_warehouse_id"`
+-	FromWarehouseName *string   `json:"from_warehouse_name"`
+-	ToWarehouseID     *string   `json:"to_warehouse_id"`
+-	ToWarehouseName   *string   `json:"to_warehouse_name"`
+-	TaskID            *int64    `json:"task_id"`
+-	ClientID          *string   `json:"client_id"`
+-	ClientName        *string   `json:"client_name"`
+-	SupplierID        *string   `json:"supplier_id"`
+-	SupplierName      *string   `json:"supplier_name"`
+-	Status            string    `json:"status"`
+-	Note              string    `json:"note"`
+-	ItemsCount        int       `json:"items_count"`
+-	CreatedByName     string    `json:"created_by_name"`
+-	CreatedAt         time.Time `json:"created_at"`
+-	UpdatedAt         time.Time `json:"updated_at"`
+-	Version           int       `json:"version"`
++	ID                int64          `json:"id"`
++	Direction         string         `json:"direction"`
++	FromWarehouseID   *string        `json:"from_warehouse_id"`
++	FromWarehouseName *string        `json:"from_warehouse_name"`
++	ToWarehouseID     *string        `json:"to_warehouse_id"`
++	ToWarehouseName   *string        `json:"to_warehouse_name"`
++	TaskID            *int64         `json:"task_id"`
++	ClientID          *string        `json:"client_id"`
++	ClientName        *string        `json:"client_name"`
++	SupplierID        *string        `json:"supplier_id"`
++	SupplierName      *string        `json:"supplier_name"`
++	Status            string         `json:"status"`
++	Note              string         `json:"note"`
++	ItemsCount        int            `json:"items_count"`
++	CreatedByName     string         `json:"created_by_name"`
++	CreatedAt         time.Time      `json:"created_at"`
++	UpdatedAt         time.Time      `json:"updated_at"`
++	Version           int            `json:"version"`
++	Amount            numeric.Amount `json:"amount"`
+ }
+ 
+ type TransferListResponse struct {
+diff --git a/internal/features/transfers/migration_sales_integration_test.go b/internal/features/transfers/migration_sales_integration_test.go
+new file mode 100644
+index 0000000..6ccd937
+--- /dev/null
++++ b/internal/features/transfers/migration_sales_integration_test.go
+@@ -0,0 +1,129 @@
++//go:build integration
++
++package transfers_test
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// TransfersSalesMigrationSuite — миграция 0016 (transfers-sales §4.1, DS-011): цена продажи
++// transfer_items.price (существующие строки → NULL), CHECK «у строки-единицы цены нет» и
++// «цена ≥ 0»; down возвращает модель 0015 — товарные строки накладных клиенту удаляются.
++type TransfersSalesMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestTransfersSalesMigrationSuite(t *testing.T) {
++	suite.Run(t, new(TransfersSalesMigrationSuite))
++}
++
++const tsmAdminID = "aaaaaaaa-0016-0016-0016-000000000001"
++
++func (s *TransfersSalesMigrationSuite) scalar(q string, args ...any) string {
++	var v string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), q, args...).Scan(&v), q)
++	return v
++}
++
++func (s *TransfersSalesMigrationSuite) exec(q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	s.Require().NoError(err, q)
++}
++
++func (s *TransfersSalesMigrationSuite) fails(name, q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	s.Error(err, name)
++}
++
++func (s *TransfersSalesMigrationSuite) priceColumn() bool {
++	return s.scalar(`SELECT count(*)::text FROM information_schema.columns
++		WHERE table_name = 'transfer_items' AND column_name = 'price'`) == "1"
++}
++
++func (s *TransfersSalesMigrationSuite) constraint(name string) bool {
++	return s.scalar(`SELECT count(*)::text FROM pg_constraint WHERE conname = $1`, name) == "1"
++}
++
++func (s *TransfersSalesMigrationSuite) TestMigration0016_UpDown() {
++	ctx := context.Background()
++	mig, err := migrate.New(migrationsURL(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(15))
++	defer func() {
++		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	s.False(s.priceColumn(), "0015: колонки price нет")
++
++	// ---- данные «до» (0015): склад → склад с товаром, возврат клиенту с единицей ----
++	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'tsm-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, tsmAdminID)
++	almaty := s.scalar(`SELECT id::text FROM warehouses WHERE name = 'Алматы'`)
++	moscow := s.scalar(`SELECT id::text FROM warehouses WHERE name = 'Москва'`)
++	clientID := s.scalar(`INSERT INTO clients (company_name) VALUES ('TSM ' || gen_random_uuid()) RETURNING id::text`)
++	typeID := s.scalar(`INSERT INTO equipment_types (name) VALUES ('TSM ' || gen_random_uuid()) RETURNING id::text`)
++	catID := s.scalar(`INSERT INTO catalog_categories (kind, name) VALUES ('product', 'TSM ' || gen_random_uuid()) RETURNING id::text`)
++	productID := s.scalar(`INSERT INTO products (category_id, name, price) VALUES ($1, 'TSM товар', 150) RETURNING id::text`, catID)
++	var taskID, w2w, back int64
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		INSERT INTO tasks (column_id, client_id, title, position, created_by)
++		VALUES ((SELECT id FROM columns ORDER BY position, id LIMIT 1), $1, 'TSM заказ', 1, $2) RETURNING id`, clientID, tsmAdminID).Scan(&taskID))
++	// документы заказа держат его FK RESTRICT — убираются перед заказом.
++	defer s.exec(`DELETE FROM tasks WHERE id = $1`, taskID)
++	defer s.exec(`DELETE FROM transfers WHERE task_id = $1`, taskID)
++	unit := s.scalar(`INSERT INTO equipment (client_id, type_id, model) VALUES ($1, $2, 'TSM unit') RETURNING id::text`, clientID, typeID)
++
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		INSERT INTO transfers (direction, from_warehouse_id, to_warehouse_id, created_by)
++		VALUES ('warehouse_to_warehouse', $1, $2, $3) RETURNING id`, almaty, moscow, tsmAdminID).Scan(&w2w))
++	s.exec(`INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent) VALUES ($1, 'product', $2, 1, 4)`, w2w, productID)
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		INSERT INTO transfers (direction, from_warehouse_id, task_id, client_id, created_by)
++		VALUES ('warehouse_to_client', $1, $2, $3, $4) RETURNING id`, almaty, taskID, clientID, tsmAdminID).Scan(&back))
++	s.exec(`INSERT INTO transfer_items (transfer_id, kind, equipment_id, position) VALUES ($1, 'equipment', $2, 1)`, back, unit)
++
++	// ---- up → 0016 ----
++	s.Require().NoError(mig.Migrate(16))
++	s.True(s.priceColumn())
++	s.Equal("numeric|12|2|YES", s.scalar(`
++		SELECT data_type || '|' || numeric_precision || '|' || numeric_scale || '|' || is_nullable
++		FROM information_schema.columns WHERE table_name = 'transfer_items' AND column_name = 'price'`))
++	s.Equal("2", s.scalar(`SELECT count(*)::text FROM transfer_items WHERE transfer_id = ANY($1) AND price IS NULL`, []int64{w2w, back}),
++		"существующие строки → price NULL")
++	s.True(s.constraint("transfer_items_kind_check"))
++	s.True(s.constraint("transfer_items_price_check"))
++
++	// цена — у товарной строки, ≥ 0, два знака; у строки-единицы — запрещена.
++	s.exec(`INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent, price) VALUES ($1, 'product', $2, 2, 3, 18500.50)`, back, productID)
++	s.Equal("18500.50", s.scalar(`SELECT price::text FROM transfer_items WHERE transfer_id = $1 AND kind = 'product'`, back))
++	s.exec(`UPDATE transfer_items SET price = 0 WHERE transfer_id = $1 AND kind = 'product'`, back)
++	s.fails("отрицательная цена", `UPDATE transfer_items SET price = -0.01 WHERE transfer_id = $1 AND kind = 'product'`, back)
++	s.fails("цена у строки-единицы", `UPDATE transfer_items SET price = 1 WHERE transfer_id = $1 AND kind = 'equipment'`, back)
++	s.fails("прежние правила kind_check: товар без количества",
++		`INSERT INTO transfer_items (transfer_id, kind, product_id, position, price) VALUES ($1, 'product', $2, 3, 1)`, back, productID)
++	s.fails("прежние правила kind_check: единица с количеством",
++		`UPDATE transfer_items SET qty_sent = 1 WHERE transfer_id = $1 AND kind = 'equipment'`, back)
++
++	// ---- down → 0015 ----
++	s.Require().NoError(mig.Migrate(15))
++	s.False(s.priceColumn())
++	s.False(s.constraint("transfer_items_price_check"))
++	s.True(s.constraint("transfer_items_kind_check"))
++	s.Equal("equipment", s.scalar(`SELECT string_agg(kind, ',') FROM transfer_items WHERE transfer_id = $1`, back),
++		"товарная строка накладной клиенту удалена, единица осталась")
++	s.Equal("4.000", s.scalar(`SELECT qty_sent::text FROM transfer_items WHERE transfer_id = $1`, w2w), "склад → склад не тронут")
++	s.fails("0015: единица с количеством", `UPDATE transfer_items SET qty_sent = 1 WHERE transfer_id = $1 AND kind = 'equipment'`, back)
++
++	// повторный up поверх отката проходит (идемпотентность пары up/down).
++	s.Require().NoError(mig.Migrate(16))
++	s.True(s.priceColumn())
++}
+diff --git a/internal/features/transfers/repo.go b/internal/features/transfers/repo.go
+index 31e0710..db4f7e7 100644
+--- a/internal/features/transfers/repo.go
++++ b/internal/features/transfers/repo.go
+@@ -93,6 +93,13 @@ func nullable(s string) *string {
+ 	return &s
+ }
+ 
++// amountSelectSQL — сумма накладной (transfers-sales DS-038): Σ round(price × qty_sent, 2)
++// товарных строк документа t; цена есть только у накладной «склад → клиент», поэтому вне её
++// и без товаров — 0.00. Скаляр-фрагмент коррелирован с t.id.
++const amountSelectSQL = `
++       (SELECT round(coalesce(sum(round(ai.price * ai.qty_sent, 2)), 0), 2)
++        FROM transfer_items ai WHERE ai.transfer_id = t.id AND ai.kind = 'product')::text`
++
+ // List — перемещения, новые сверху; warehouse_id — откуда ИЛИ куда.
+ func (r *Repo) List(ctx context.Context, p ListParams) ([]TransferSummary, int, error) {
+ 	rows, err := r.pool.Query(ctx, `
+@@ -100,7 +107,7 @@ SELECT t.id, t.direction, t.from_warehouse_id::text, fw.name, t.to_warehouse_id:
+        t.task_id, t.client_id::text, c.company_name, t.supplier_id::text, sp.name,
+        t.status, t.note,
+        (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id)::int,
+-       cu.name, t.created_at, t.updated_at, t.version, count(*) OVER () AS total
++       cu.name, t.created_at, t.updated_at, t.version, `+amountSelectSQL+`, count(*) OVER () AS total
+ FROM transfers t
+ LEFT JOIN warehouses fw ON fw.id = t.from_warehouse_id
+ LEFT JOIN warehouses tw ON tw.id = t.to_warehouse_id
+@@ -126,11 +133,13 @@ LIMIT $10 OFFSET $11`, nullable(p.Status), nullable(p.WarehouseID), nullable(p.D
+ 	total := 0
+ 	for rows.Next() {
+ 		var t TransferSummary
++		var amount string
+ 		if err := rows.Scan(&t.ID, &t.Direction, &t.FromWarehouseID, &t.FromWarehouseName, &t.ToWarehouseID, &t.ToWarehouseName,
+ 			&t.TaskID, &t.ClientID, &t.ClientName, &t.SupplierID, &t.SupplierName,
+-			&t.Status, &t.Note, &t.ItemsCount, &t.CreatedByName, &t.CreatedAt, &t.UpdatedAt, &t.Version, &total); err != nil {
++			&t.Status, &t.Note, &t.ItemsCount, &t.CreatedByName, &t.CreatedAt, &t.UpdatedAt, &t.Version, &amount, &total); err != nil {
+ 			return nil, 0, err
+ 		}
++		t.Amount = numeric.Amount(amount)
+ 		out = append(out, t)
+ 	}
+ 	return out, total, rows.Err()
+@@ -143,6 +152,7 @@ func (r *Repo) Get(ctx context.Context, id int64) (*TransferResponse, error) {
+ 
+ func getTransfer(ctx context.Context, q querier, id int64) (*TransferResponse, error) {
+ 	var t TransferResponse
++	var amount string
+ 	err := q.QueryRow(ctx, `
+ SELECT t.id, t.direction, t.from_warehouse_id::text, fw.name, t.to_warehouse_id::text, tw.name,
+        t.task_id, tk.title, t.client_id::text, c.company_name, t.supplier_id::text, sp.name,
+@@ -151,7 +161,7 @@ SELECT t.id, t.direction, t.from_warehouse_id::text, fw.name, t.to_warehouse_id:
+        t.sent_by::text, su.name, t.sent_at,
+        t.received_by::text, ru.name, t.received_at,
+        t.cancelled_by::text, xu.name, t.cancelled_at,
+-       t.created_at, t.updated_at, t.version
++       t.created_at, t.updated_at, t.version, `+amountSelectSQL+`
+ FROM transfers t
+ LEFT JOIN warehouses fw ON fw.id = t.from_warehouse_id
+ LEFT JOIN warehouses tw ON tw.id = t.to_warehouse_id
+@@ -168,13 +178,14 @@ WHERE t.id = $1`, id).Scan(&t.ID, &t.Direction, &t.FromWarehouseID, &t.FromWareh
+ 		&t.SentBy, &t.SentByName, &t.SentAt,
+ 		&t.ReceivedBy, &t.ReceivedByName, &t.ReceivedAt,
+ 		&t.CancelledBy, &t.CancelledByName, &t.CancelledAt,
+-		&t.CreatedAt, &t.UpdatedAt, &t.Version)
++		&t.CreatedAt, &t.UpdatedAt, &t.Version, &amount)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errNotFound
+ 	}
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	t.Amount = numeric.Amount(amount)
+ 
+ 	rows, err := q.Query(ctx, `
+ SELECT i.id::text, i.kind, i.product_id::text, p.name, p.unit,
+@@ -182,7 +193,8 @@ SELECT i.id::text, i.kind, i.product_id::text, p.name, p.unit,
+        CASE WHEN e.id IS NULL THEN NULL
+             ELSE concat_ws(' ', et.name, nullif(e.brand, ''), e.model) END,
+        e.serial, c.company_name,
+-       i.qty_sent::text, i.qty_received::text
++       i.qty_sent::text, i.qty_received::text,
++       i.price::text, round(i.price * i.qty_sent, 2)::text
+ FROM transfer_items i
+ LEFT JOIN products p         ON p.id = i.product_id
+ LEFT JOIN equipment e        ON e.id = i.equipment_id
+@@ -196,13 +208,14 @@ WHERE i.transfer_id = $1 ORDER BY i.position, i.id`, id)
+ 	t.Items = []TransferItemResponse{}
+ 	for rows.Next() {
+ 		var it TransferItemResponse
+-		var sent, received *string
++		var sent, received, price, lineTotal *string
+ 		if err := rows.Scan(&it.ID, &it.Kind, &it.ProductID, &it.ProductName, &it.Unit,
+ 			&it.EquipmentID, &it.EquipmentName, &it.EquipmentSerial, &it.EquipmentClientName,
+-			&sent, &received); err != nil {
++			&sent, &received, &price, &lineTotal); err != nil {
+ 			return nil, err
+ 		}
+ 		it.QtySent, it.QtyReceived = amountPtr(sent), amountPtr(received)
++		it.Price, it.LineTotal = amountPtr(price), amountPtr(lineTotal)
+ 		t.Items = append(t.Items, it)
+ 	}
+ 	if err := rows.Err(); err != nil {
+@@ -287,11 +300,11 @@ VALUES ($1, $2::uuid, $3::uuid, $4, $5::uuid, $6::uuid, $7, $8::uuid) RETURNING
+ 			nullable(in.SupplierID), in.Note, userID).Scan(&id); err != nil {
+ 			return nil, 0, err
+ 		}
+-		if err := insertItems(ctx, tx, id, in.Items); err != nil {
++		if err := insertItems(ctx, tx, id, in.Direction, in.Items); err != nil {
+ 			return nil, 0, err
+ 		}
+ 		send = send || receive
+-		if send && in.Direction == DirWarehouseToWarehouse {
++		if send && sendsStock(in.Direction) {
+ 			// остатки блокируются ДО единиц — порядок блокировок общий с Send.
+ 			if err := lockPairs(ctx, tx, id, in.FromWarehouseID); err != nil {
+ 				return nil, 0, err
+@@ -349,16 +362,17 @@ WHERE id = $1`, id, nullable(in.FromWarehouseID), nullable(in.ToWarehouseID), nu
+ 		if _, err := tx.Exec(ctx, `DELETE FROM transfer_items WHERE transfer_id = $1`, id); err != nil {
+ 			return nil, 0, err
+ 		}
+-		if err := insertItems(ctx, tx, id, in.Items); err != nil {
++		if err := insertItems(ctx, tx, id, in.Direction, in.Items); err != nil {
+ 			return nil, 0, err
+ 		}
+ 		return nil, id, claimEquipment(ctx, tx, id, next)
+ 	})
+ }
+ 
+-// Send — requested → in_transit. Склад → склад: −qty_sent с источника (transfer_out); единицы
+-// из источника (склад отправления либо клиент) → «в пути»; приход от поставщика — только
+-// статус (DS-040).
++// Send — requested → in_transit. Склад → склад: −qty_sent с источника (transfer_out);
++// накладная «склад → клиент»: −qty_sent со склада отправления (client_out, transfers-sales
++// DS-011); единицы из источника (склад отправления либо клиент) → «в пути»; приход от
++// поставщика — только статус (DS-040).
+ func (r *Repo) Send(ctx context.Context, id int64, version int, userID string) (*TransferResponse, error) {
+ 	return r.inTx(ctx, func(tx pgx.Tx) ([]StockWarning, int64, error) {
+ 		doc, err := lockTransfer(ctx, tx, id, version, actionSend, StatusRequested)
+@@ -386,7 +400,8 @@ func (r *Repo) Receive(ctx context.Context, id int64, version int, in []ReceiveI
+ //     −недостача (transfer_loss);
+ //   - приход от поставщика: +факт на складе назначения (supplier_in; факт 0 — без движения),
+ //     факт может превышать заказанное (DS-015);
+-//   - документы с клиентом: товарных строк и факта нет.
++//   - документы с клиентом: факта нет; товар накладной «склад → клиент» списан при
++//     отправке — движений нет, qty_received остаётся NULL (transfers-sales DS-038).
+ //
+ // Единицы — целиком в точку назначения (склад либо клиент) и освобождаются (DS-037).
+ func doReceive(ctx context.Context, tx pgx.Tx, id int64, doc lockedTransfer, in []ReceiveItemInput, userID string) error {
+@@ -452,8 +467,9 @@ WHERE id = $1`, id, StatusReceived, userID)
+ }
+ 
+ // Cancel — requested → cancelled (без движений, единицы освобождаются); in_transit →
+-// cancelled: склад → склад — +qty_sent на источник (transfer_return); единицы — обратно в
+-// источник (склад отправления либо клиент); приход от поставщика — без движений (DS-040).
++// cancelled: склад → склад и накладная «склад → клиент» — +qty_sent на склад отправления
++// (transfer_return); единицы — обратно в источник (склад отправления либо клиент); приход от
++// поставщика — без движений (DS-040).
+ func (r *Repo) Cancel(ctx context.Context, id int64, version int, userID string) (*TransferResponse, error) {
+ 	return r.inTx(ctx, func(tx pgx.Tx) ([]StockWarning, int64, error) {
+ 		st, err := lockTransfer(ctx, tx, id, version, actionCancel, StatusRequested, StatusInTransit)
+@@ -461,7 +477,7 @@ func (r *Repo) Cancel(ctx context.Context, id int64, version int, userID string)
+ 			return nil, 0, err
+ 		}
+ 		if st.status == StatusInTransit {
+-			if st.direction == DirWarehouseToWarehouse {
++			if sendsStock(st.direction) {
+ 				if err := lockPairs(ctx, tx, id, st.from); err != nil {
+ 					return nil, 0, err
+ 				}
+@@ -661,15 +677,26 @@ WHERE active_transfer_id = $1 AND location_status = $4`, transferID, nullable(wa
+ 	return nil
+ }
+ 
++// sendsStock — отправка документа списывает товар со склада отправления (а отмена «в пути»
++// возвращает): склад → склад и накладная «склад → клиент» (transfers-sales DS-011).
++func sendsStock(direction string) bool {
++	return direction == DirWarehouseToWarehouse || direction == DirWarehouseToClient
++}
++
+ // doSend — отправка заявки (строка transfers уже заблокирована) + статус in_transit.
+-// Склад → склад: списание с источника, возвращает предупреждения по его остаткам
++// Склад → склад (transfer_out) и накладная «склад → клиент» (client_out): списание с
++// источника, возвращает предупреждения по его остаткам
+ // (отрицательный/на минимуме — разрешено, D17/D18). Приход от поставщика: движений нет —
+ // товар ещё не наш (DS-040). Каждая единица обязана числиться в источнике документа: на
+ // складе отправления (DS-036) либо, для приёма от клиента, «у клиента» (DS-013) — иначе
+ // notAtSourceError.
+ func doSend(ctx context.Context, tx pgx.Tx, id int64, doc lockedTransfer, userID string) ([]StockWarning, error) {
+ 	from := doc.from
+-	moveStock := doc.direction == DirWarehouseToWarehouse
++	moveStock := sendsStock(doc.direction)
++	reason := reasonOut
++	if doc.direction == DirWarehouseToClient {
++		reason = reasonClientOut
++	}
+ 	if moveStock {
+ 		if err := lockPairs(ctx, tx, id, from); err != nil {
+ 			return nil, err
+@@ -685,7 +712,7 @@ WHERE i.transfer_id = $1 AND i.kind = 'product'
+ INSERT INTO stock_movements (product_id, warehouse_id, qty_delta, reason, user_id, transfer_id)
+ SELECT i.product_id, $2::uuid, -i.qty_sent, $3, $4::uuid, $1
+ FROM transfer_items i WHERE i.transfer_id = $1 AND i.kind = 'product'`,
+-			id, from, reasonOut, userID); err != nil {
++			id, from, reason, userID); err != nil {
+ 			return nil, err
+ 		}
+ 	}
+@@ -752,14 +779,29 @@ ORDER BY p.name, p.id`, id, from)
+ 	return out, rows.Err()
+ }
+ 
+-func insertItems(ctx context.Context, tx pgx.Tx, id int64, items []ItemInput) error {
++// insertItems — строки документа. Товарная строка накладной «склад → клиент» несёт цену
++// продажи: не передана → products.price, прочитанная в этой транзакции (DS-039); в остальных
++// направлениях и у строк-единиц цена NULL.
++func insertItems(ctx context.Context, tx pgx.Tx, id int64, direction string, items []ItemInput) error {
+ 	for i, it := range items {
+ 		var err error
+-		if it.Kind == KindEquipment {
++		switch {
++		case it.Kind == KindEquipment:
+ 			_, err = tx.Exec(ctx, `
+ INSERT INTO transfer_items (transfer_id, kind, equipment_id, position) VALUES ($1, 'equipment', $2::uuid, $3)`,
+ 				id, it.EquipmentID, i+1)
+-		} else {
++		case pricedDirection(direction):
++			var price *string
++			if it.Price != nil {
++				v := it.Price.String()
++				price = &v
++			}
++			_, err = tx.Exec(ctx, `
++INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent, price)
++VALUES ($1, 'product', $2::uuid, $3, $4::numeric,
++        coalesce($5::numeric, (SELECT p.price FROM products p WHERE p.id = $2::uuid)))`,
++				id, it.ProductID, i+1, it.QtySent.String(), price)
++		default:
+ 			_, err = tx.Exec(ctx, `
+ INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent) VALUES ($1, 'product', $2::uuid, $3, $4::numeric)`,
+ 				id, it.ProductID, i+1, it.QtySent.String())
+diff --git a/internal/features/transfers/transfers_http_live_test.go b/internal/features/transfers/transfers_http_live_test.go
+index 58177e9..8704504 100644
+--- a/internal/features/transfers/transfers_http_live_test.go
++++ b/internal/features/transfers/transfers_http_live_test.go
+@@ -75,6 +75,9 @@ type itemDTO struct {
+ 	EquipmentClientName string       `json:"equipment_client_name"`
+ 	QtySent             *json.Number `json:"qty_sent"`
+ 	QtyReceived         *json.Number `json:"qty_received"`
++	// Price / LineTotal — только товарная строка накладной «склад → клиент» (transfers-sales).
++	Price     *json.Number `json:"price"`
++	LineTotal *json.Number `json:"line_total"`
+ }
+ 
+ type warningDTO struct {
+@@ -106,20 +109,22 @@ type transferDTO struct {
+ 	ReceivedAt        *string      `json:"received_at"`
+ 	CancelledAt       *string      `json:"cancelled_at"`
+ 	Version           int          `json:"version"`
++	Amount            json.Number  `json:"amount"`
+ 	Items             []itemDTO    `json:"items"`
+ 	Warnings          []warningDTO `json:"warnings"`
+ }
+ 
+ type listDTO struct {
+ 	Items []struct {
+-		ID           int64  `json:"id"`
+-		Direction    string `json:"direction"`
+-		Status       string `json:"status"`
+-		ItemsCount   int    `json:"items_count"`
+-		TaskID       *int64 `json:"task_id"`
+-		ClientName   string `json:"client_name"`
+-		SupplierID   string `json:"supplier_id"`
+-		SupplierName string `json:"supplier_name"`
++		ID           int64       `json:"id"`
++		Direction    string      `json:"direction"`
++		Status       string      `json:"status"`
++		ItemsCount   int         `json:"items_count"`
++		TaskID       *int64      `json:"task_id"`
++		ClientName   string      `json:"client_name"`
++		SupplierID   string      `json:"supplier_id"`
++		SupplierName string      `json:"supplier_name"`
++		Amount       json.Number `json:"amount"`
+ 	} `json:"items"`
+ 	Total  int `json:"total"`
+ 	Limit  int `json:"limit"`
+diff --git a/internal/features/transfers/transfers_partners_http_live_test.go b/internal/features/transfers/transfers_partners_http_live_test.go
+index bd94ef7..8984769 100644
+--- a/internal/features/transfers/transfers_partners_http_live_test.go
++++ b/internal/features/transfers/transfers_partners_http_live_test.go
+@@ -332,7 +332,6 @@ func (s *TransfersLiveSuite) TestTS004_EquipmentNotInTask() {
+ 		"заказ ≤ 0":                 {intakeBody(0, s.almaty, inTask), map[string]string{"task_id": "invalid"}},
+ 		"без заказа":                {map[string]any{"direction": "client_to_warehouse", "to_warehouse_id": s.almaty, "items": unitItems(inTask)}, map[string]string{"task_id": "required"}},
+ 		"товар в приёме от клиента": {with(intakeBody(taskID, s.almaty), "items", []map[string]any{productItem(s.newProduct("1"), 1)}), map[string]string{"items[0].kind": "not_allowed"}},
+-		"товар в возврате клиенту":  {with(returnBody(taskID, s.almaty), "items", []map[string]any{productItem(s.newProduct("1"), 1)}), map[string]string{"items[0].kind": "not_allowed"}},
+ 		"лишний склад отправления":  {with(intakeBody(taskID, s.almaty, inTask), "from_warehouse_id", s.moscow), map[string]string{"from_warehouse_id": "not_allowed"}},
+ 		"поставщик в приёме":        {with(intakeBody(taskID, s.almaty, inTask), "supplier_id", s.newSupplier(true)), map[string]string{"supplier_id": "not_allowed"}},
+ 	} {
+diff --git a/internal/features/transfers/transfers_sales_http_live_test.go b/internal/features/transfers/transfers_sales_http_live_test.go
+new file mode 100644
+index 0000000..053ba89
+--- /dev/null
++++ b/internal/features/transfers/transfers_sales_http_live_test.go
+@@ -0,0 +1,425 @@
++//go:build integration
++
++package transfers_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"sync"
++)
++
++// Накладная клиенту — товар с ценой в документе «склад → клиент»
++// (docs/features/transfers-sales/draft-spec.md §11) — методы TransfersLiveSuite (§TD-8):
++// TS-003 (цена: валидация, цена каталога по умолчанию, правка только в заявке), TS-014 (сумма
++// документа и списка), хвосты TS-002 (товар в «склад → клиент» допустим) и TS-007 (движения
++// client_out / transfer_return).
++
++// ---- фикстуры ----
++
++// newPricedProduct — товар с остатком stock на «Алматы» и ценой каталога price.
++func (s *TransfersLiveSuite) newPricedProduct(stock, price string) string {
++	id := s.newProduct(stock)
++	s.setCatalogPrice(id, price)
++	return id
++}
++
++func (s *TransfersLiveSuite) setCatalogPrice(productID, price string) {
++	_, err := s.Pool.Exec(context.Background(), `UPDATE products SET price = $2::numeric WHERE id = $1`, productID, price)
++	s.Require().NoError(err)
++}
++
++// pricedItem — товарная строка накладной с ценой продажи (JSON-число).
++func pricedItem(productID string, qty, price any) map[string]any {
++	return map[string]any{"kind": "product", "product_id": productID, "qty_sent": qty, "price": price}
++}
++
++// invoiceBody — накладная «склад → клиент» со склада «Алматы» по заказу taskID.
++func (s *TransfersLiveSuite) invoiceBody(taskID int64, items ...map[string]any) map[string]any {
++	return map[string]any{"direction": "warehouse_to_client", "from_warehouse_id": s.almaty, "task_id": taskID, "items": items}
++}
++
++// taskWithStockUnit — заказ клиента фикстуры с единицей на складе «Алматы» в его оборудовании.
++func (s *TransfersLiveSuite) taskWithStockUnit() (int64, string) {
++	taskID := s.newTask(s.clientID)
++	unit := s.newUnitOf(s.clientID, s.almaty)
++	s.attach(taskID, unit)
++	return taskID, unit
++}
++
++func num(n *json.Number) string {
++	if n == nil {
++		return "<null>"
++	}
++	return n.String()
++}
++
++// ---- TS-002 (хвост) ----
++
++// TS-002: товар в «склад → клиент» теперь допустим (201) — и вместе с единицей, и один; в
++// «клиент → склад» по-прежнему 400 items[i].kind: not_allowed.
++func (s *TransfersLiveSuite) TestTS002_ProductAllowedInClientReturn() {
++	taskID, unit := s.taskWithStockUnit()
++	p := s.newPricedProduct("5", "100")
++
++	for _, send := range []bool{false, true} {
++		st, _, raw := s.do(http.MethodPost, "/api/v1/transfers",
++			with(intakeBody(taskID, s.almaty), "items", []map[string]any{productItem(p, 1)}, "send", send))
++		s.Equal(http.StatusBadRequest, st, "товар в приёме от клиента (send=%v) → %s", send, raw)
++		s.Equal(map[string]string{"items[0].kind": "not_allowed"}, s.fields(raw))
++	}
++
++	st, t, raw := s.do(http.MethodPost, "/api/v1/transfers", s.invoiceBody(taskID, unitItem(unit), productItem(p, 2)))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal("warehouse_to_client", t.Direction)
++	s.Require().Len(t.Items, 2)
++	s.Equal("equipment", t.Items[0].Kind)
++	s.Equal("product", t.Items[1].Kind)
++	s.Equal(p, t.Items[1].ProductID)
++	s.Equal("2.000", num(t.Items[1].QtySent))
++
++	// накладная из одного товара, без оборудования.
++	st, only, raw := s.do(http.MethodPost, "/api/v1/transfers", s.invoiceBody(taskID, productItem(p, 1)))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Require().Len(only.Items, 1)
++
++	// правкой товар добавляется и в существующий «возврат клиенту».
++	st, upd, raw := s.do(http.MethodPut, fmt.Sprintf("/api/v1/transfers/%d", only.ID),
++		map[string]any{"version": only.Version, "from_warehouse_id": s.almaty, "items": []map[string]any{productItem(p, 3)}})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("3.000", num(upd.Items[0].QtySent))
++}
++
++// ---- TS-003 ----
++
++// TS-003: цена товарной строки накладной — в ответе price и line_total; не передана либо null
++// → цена каталога на момент сохранения (дальнейшие правки каталога документ не меняют; при
++// правке без цены строка получает текущую цену каталога — строки заменяются целиком);
++// отрицательная → negative; три знака, больше максимума → invalid; не число → 400; цена в
++// «склад → склад», «поставщик → склад» и в строке-единице → not_allowed. Отклонённый запрос
++// документ не создаёт.
++func (s *TransfersLiveSuite) TestTS003_PriceValidationAndCatalogDefault() {
++	taskID, unit := s.taskWithStockUnit()
++	p := s.newPricedProduct("50", "150.50")
++	p2 := s.newPricedProduct("50", "70")
++
++	// цена передана: хранится как есть, line_total = price × qty_sent (2 знака).
++	t := s.create(s.invoiceBody(taskID, unitItem(unit), pricedItem(p, 2, 18500.5), pricedItem(p2, 1.5, 0)))
++	s.Equal("requested", t.Status)
++	s.Equal("<null>", num(t.Items[0].Price), "у строки-единицы цены нет")
++	s.Equal("<null>", num(t.Items[0].LineTotal))
++	s.Equal("18500.50", num(t.Items[1].Price))
++	s.Equal("37001.00", num(t.Items[1].LineTotal))
++	s.Equal("0.00", num(t.Items[2].Price), "нулевая цена допустима")
++	s.Equal("0.00", num(t.Items[2].LineTotal))
++	s.Equal("37001.00", t.Amount.String())
++
++	// не передана / null → цена каталога на момент сохранения.
++	task2 := s.newTask(s.clientID)
++	def := s.create(s.invoiceBody(task2, productItem(p, 2), pricedItem(p2, 3, nil)))
++	s.Equal("150.50", num(def.Items[0].Price), "нет поля → цена каталога")
++	s.Equal("301.00", num(def.Items[0].LineTotal))
++	s.Equal("70.00", num(def.Items[1].Price), "null → цена каталога")
++	s.Equal("210.00", num(def.Items[1].LineTotal))
++	s.Equal("511.00", def.Amount.String())
++
++	// цена каталога изменилась — в документе остаётся сохранённая (DS-039).
++	s.setCatalogPrice(p, "999")
++	s.Equal("150.50", num(s.get(def.ID).Items[0].Price))
++	// правка без цены: строки заменяются целиком — берётся текущая цена каталога.
++	st, upd, raw := s.do(http.MethodPut, fmt.Sprintf("/api/v1/transfers/%d", def.ID), map[string]any{
++		"version": def.Version, "from_warehouse_id": s.almaty,
++		"items": []map[string]any{productItem(p, 2), pricedItem(p2, 3, 80.25)}})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("999.00", num(upd.Items[0].Price))
++	s.Equal("80.25", num(upd.Items[1].Price), "цена правится в документе")
++	s.Equal("2238.75", upd.Amount.String(), "1998.00 + 240.75")
++	s.Equal("70.00", s.scalarText(`SELECT price::text FROM products WHERE id = $1`, p2), "каталог документом не меняется")
++
++	// округление line_total до 2 знаков: 0.333 × 0.01 = 0.00333 → 0.00; 1.005 × 3.33 = 3.34665 → 3.35.
++	task3 := s.newTask(s.clientID)
++	r := s.create(s.invoiceBody(task3, pricedItem(p, 0.333, 0.01), pricedItem(p2, 1.005, 3.33)))
++	s.Equal("0.00", num(r.Items[0].LineTotal))
++	s.Equal("3.35", num(r.Items[1].LineTotal))
++	s.Equal("3.35", r.Amount.String(), "сумма документа = Σ line_total")
++	// верхняя граница цены.
++	maxDoc := s.create(s.invoiceBody(task3, pricedItem(p, 1, json.Number("9999999999.99"))))
++	s.Equal("9999999999.99", num(maxDoc.Items[0].Price))
++
++	before := s.transfersCount()
++	sup := s.newSupplier(true)
++	for name, tc := range map[string]struct {
++		body map[string]any
++		want map[string]string
++	}{
++		"отрицательная":            {s.invoiceBody(taskID, pricedItem(p, 1, -1)), map[string]string{"items[0].price": "negative"}},
++		"отрицательная копейка":    {s.invoiceBody(taskID, pricedItem(p, 1, -0.01)), map[string]string{"items[0].price": "negative"}},
++		"три знака":                {s.invoiceBody(taskID, pricedItem(p, 1, 1.999)), map[string]string{"items[0].price": "invalid"}},
++		"больше максимума":         {s.invoiceBody(taskID, pricedItem(p, 1, json.Number("10000000000"))), map[string]string{"items[0].price": "invalid"}},
++		"1e12":                     {s.invoiceBody(taskID, pricedItem(p, 1, json.Number("1e12"))), map[string]string{"items[0].price": "invalid"}},
++		"вторая строка":            {s.invoiceBody(taskID, pricedItem(p, 1, 5), pricedItem(p2, 1, -3)), map[string]string{"items[1].price": "negative"}},
++		"цена и количество":        {s.invoiceBody(taskID, pricedItem(p, 0, 1.999)), map[string]string{"items[0].qty_sent": "not_positive", "items[0].price": "invalid"}},
++		"цена в склад → склад":     {s.w2wBody(pricedItem(p, 1, 100)), map[string]string{"items[0].price": "not_allowed"}},
++		"нулевая в склад → склад":  {s.w2wBody(pricedItem(p, 1, 0)), map[string]string{"items[0].price": "not_allowed"}},
++		"цена в приходе":           {with(s.supplyBody(sup, p, 1), "items", []map[string]any{pricedItem(p, 1, 100)}), map[string]string{"items[0].price": "not_allowed"}},
++		"цена у единицы накладной": {s.invoiceBody(taskID, map[string]any{"kind": "equipment", "equipment_id": unit, "price": 100}), map[string]string{"items[0].price": "not_allowed"}},
++	} {
++		for _, send := range []bool{false, true} {
++			st, _, raw := s.do(http.MethodPost, "/api/v1/transfers", with(tc.body, "send", send))
++			s.Equal(http.StatusBadRequest, st, "%s (send=%v) → %s", name, send, raw)
++			s.Equal(tc.want, s.fields(raw), "%s (send=%v)", name, send)
++		}
++	}
++	// не число (строка) → 400 на разборе тела — без 5xx, документ не создан.
++	for _, bad := range []any{"abc", "18500.00", true, []int{1}} {
++		st, _, raw := s.do(http.MethodPost, "/api/v1/transfers", s.invoiceBody(taskID, pricedItem(p, 1, bad)))
++		s.Equal(http.StatusBadRequest, st, "price=%v → %s", bad, raw)
++	}
++	s.Equal(before, s.transfersCount(), "отклонённые запросы документ не создали")
++
++	// те же правила — при правке заявки; документ остаётся прежним.
++	for price, want := range map[any]string{-1: "negative", 1.999: "invalid"} {
++		st, _, raw := s.do(http.MethodPut, fmt.Sprintf("/api/v1/transfers/%d", t.ID), map[string]any{
++			"version": t.Version, "from_warehouse_id": s.almaty, "items": []map[string]any{pricedItem(p, 2, price)}})
++		s.Equal(http.StatusBadRequest, st, string(raw))
++		s.Equal(map[string]string{"items[0].price": want}, s.fields(raw))
++	}
++	same := s.get(t.ID)
++	s.Equal(t.Version, same.Version)
++	s.Equal("37001.00", same.Amount.String())
++}
++
++// scalarText — одно текстовое значение из БД (проверка состояния, не предмет теста).
++func (s *TransfersLiveSuite) scalarText(q string, args ...any) string {
++	var v string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), q, args...).Scan(&v), q)
++	return v
++}
++
++// TS-003 (негатив, abuse case 3): правка цены вне «Заявки» → 409 TRANSFER_STATUS_CONFLICT со
++// своим сообщением; цена и сумма документа не меняются.
++func (s *TransfersLiveSuite) TestTS003_PriceEditOnlyInRequested() {
++	p := s.newPricedProduct("50", "100")
++	edit := func(t transferDTO) (int, []byte) {
++		st, _, raw := s.do(http.MethodPut, fmt.Sprintf("/api/v1/transfers/%d", t.ID), map[string]any{
++			"version": t.Version, "from_warehouse_id": s.almaty, "items": []map[string]any{pricedItem(p, 1, 1)}})
++		return st, raw
++	}
++	check := func(t transferDTO, msg string) {
++		st, raw := edit(t)
++		s.Equal(http.StatusConflict, st, string(raw))
++		e := s.errOf(raw)
++		s.Equal("TRANSFER_STATUS_CONFLICT", e.Code)
++		s.Equal(msg, e.Message)
++		got := s.get(t.ID)
++		s.Equal("100.00", num(got.Items[0].Price), "цена не изменилась")
++		s.Equal("200.00", got.Amount.String(), "сумма не изменилась")
++	}
++
++	task := s.newTask(s.clientID)
++	sent := s.create(with(s.invoiceBody(task, pricedItem(p, 2, 100)), "send", true))
++	s.Equal("in_transit", sent.Status)
++	check(sent, "Перемещение уже отправлено — править нельзя")
++
++	st, got, raw := s.action(sent, "receive", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	check(got, "Перемещение уже получено — править нельзя")
++
++	req := s.create(s.invoiceBody(task, pricedItem(p, 2, 100)))
++	st, cancelled, raw := s.action(req, "cancel", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	check(cancelled, "Перемещение отменено — править нельзя")
++}
++
++// ---- TS-007 (хвост) ----
++
++// TS-007: накладная «склад → клиент» — заявка движений не создаёт; отправка → client_out
++// −qty_sent на складе отправления (остаток может уйти в минус — warnings); приёмка — без
++// движений, qty_received остаётся null, items → 400 not_allowed; отмена «в пути» →
++// transfer_return +qty_sent; отмена заявки — без движений. Остаток product_stock сходится с
++// суммой движений. Единица документа проходит тот же путь, что и в части 4.
++func (s *TransfersLiveSuite) TestTS007_InvoiceMovements() {
++	taskID, unit := s.taskWithStockUnit()
++	p := s.newPricedProduct("0", "250") // остаток 0 без движений — дальше он равен сумме движений
++	low := s.newPricedProduct("0", "10")
++
++	t := s.create(s.invoiceBody(taskID, unitItem(unit), pricedItem(p, 3, 250), productItem(low, 1.5)))
++	s.Empty(s.movements(t.ID), "заявка остаток не двигает")
++	s.Equal("0.000", s.pairStock(p, s.almaty))
++
++	st, sent, raw := s.action(t, "send", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("in_transit", sent.Status)
++	s.ElementsMatch([]string{"client_out:Алматы:-3.000", "client_out:Алматы:-1.500"}, s.movements(t.ID))
++	s.Equal("-3.000", s.pairStock(p, s.almaty))
++	s.Equal("-1.500", s.pairStock(low, s.almaty))
++	s.Equal("765.00", sent.Amount.String(), "750.00 + 15.00")
++	// движения накладной — без task_id: связь с заказом идёт через transfer_id (§4.2).
++	s.Equal("0", s.scalarText(`SELECT count(*)::text FROM stock_movements WHERE transfer_id = $1 AND task_id IS NOT NULL`, t.ID))
++	// отправка в минус разрешена — с предупреждением по каждому товару.
++	s.Require().Len(sent.Warnings, 2, string(raw))
++	kinds := map[string]string{}
++	for _, w := range sent.Warnings {
++		s.Equal(s.almaty, w.WarehouseID)
++		kinds[w.ProductID] = w.Kind + ":" + w.Stock.String()
++	}
++	s.Equal(map[string]string{p: "negative:-3.000", low: "negative:-1.500"}, kinds)
++	s.Equal("in_transit||"+fmt.Sprint(t.ID), s.unitLoc(unit))
++
++	// приёмка: факт по товару не вводится.
++	st, _, raw = s.action(sent, "receive", map[string]any{"items": []map[string]any{{"id": sent.Items[1].ID, "qty_received": 3}}})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"items": "not_allowed"}, s.fields(raw))
++	st, got, raw := s.action(sent, "receive", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("received", got.Status)
++	s.Equal("<null>", num(got.Items[1].QtyReceived), "факт по товару накладной не вводится")
++	s.Equal("3.000", num(got.Items[1].QtySent))
++	s.ElementsMatch([]string{"client_out:Алматы:-3.000", "client_out:Алматы:-1.500"}, s.movements(t.ID), "приёмка движений не создаёт")
++	s.Equal("-3.000", s.pairStock(p, s.almaty))
++	s.Equal("765.00", got.Amount.String())
++	s.Equal("at_client||", s.unitLoc(unit))
++	s.Equal(s.pairStock(p, s.almaty), s.productMovementsSum(p, s.almaty), "остаток = сумма движений")
++	s.Equal(s.pairStock(low, s.almaty), s.productMovementsSum(low, s.almaty))
++
++	// отмена «в пути»: товар возвращается на склад отправления.
++	c := s.create(with(s.invoiceBody(taskID, pricedItem(p, 2, 250)), "send", true))
++	s.ElementsMatch([]string{"client_out:Алматы:-2.000"}, s.movements(c.ID), "send при создании списывает так же")
++	s.Equal("-5.000", s.pairStock(p, s.almaty))
++	st, cancelled, raw := s.action(c, "cancel", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("cancelled", cancelled.Status)
++	s.ElementsMatch([]string{"client_out:Алматы:-2.000", "transfer_return:Алматы:2.000"}, s.movements(c.ID))
++	s.Equal("-3.000", s.pairStock(p, s.almaty))
++	s.Equal("500.00", cancelled.Amount.String(), "сумма документа не обнуляется — из итога заказа её убирает статус")
++	s.Equal(s.pairStock(p, s.almaty), s.productMovementsSum(p, s.almaty))
++
++	// отмена заявки: движений нет.
++	r := s.create(s.invoiceBody(taskID, pricedItem(p, 4, 250)))
++	st, _, raw = s.action(r, "cancel", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Empty(s.movements(r.ID))
++	s.Equal("-3.000", s.pairStock(p, s.almaty))
++
++	// достаточный остаток — без предупреждений; остаток на «Москве» не затронут.
++	rich := s.newPricedProduct("10", "5")
++	ok := s.create(with(s.invoiceBody(taskID, pricedItem(rich, 4, 5)), "send", true))
++	s.Empty(ok.Warnings)
++	s.Equal("6.000", s.pairStock(rich, s.almaty))
++	s.Equal("0", s.pairStock(rich, s.moscow))
++}
++
++// TS-007 (негатив, §3 п.2): двойная параллельная отправка накладной — один успех, остальные
++// 409; списание одно.
++func (s *TransfersLiveSuite) TestTS007_ParallelSendInvoice_SingleWriteOff() {
++	task := s.newTask(s.clientID)
++	p := s.newPricedProduct("0", "40")
++	t := s.create(s.invoiceBody(task, pricedItem(p, 6, 40)))
++
++	var wg sync.WaitGroup
++	codes := make([]int, 4)
++	bodies := make([][]byte, len(codes))
++	for i := range codes {
++		wg.Add(1)
++		go func(i int) {
++			defer wg.Done()
++			codes[i], bodies[i] = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/send", t.ID), map[string]any{"version": t.Version})
++		}(i)
++	}
++	wg.Wait()
++	okCount := 0
++	for i, c := range codes {
++		if c == http.StatusOK {
++			okCount++
++			continue
++		}
++		s.Equal(http.StatusConflict, c, string(bodies[i]))
++	}
++	s.Equal(1, okCount, "ровно одна отправка")
++	s.ElementsMatch([]string{"client_out:Алматы:-6.000"}, s.movements(t.ID), "списание не удвоилось")
++	s.Equal("-6.000", s.pairStock(p, s.almaty))
++
++	// повторная отправка с актуальной версией → 409 статуса, списание не удваивается (§6.4).
++	cur := s.get(t.ID)
++	st, _, raw := s.action(cur, "send", nil)
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("TRANSFER_STATUS_CONFLICT", s.errOf(raw).Code)
++	s.Equal("-6.000", s.pairStock(p, s.almaty))
++}
++
++// ---- TS-014 (документ и список) ----
++
++// TS-014: amount в объекте документа и в списке = Σ price × qty_sent товарных строк; накладная
++// без товаров и документы других направлений → 0.00, price / line_total у них null; сумма —
++// у документа в любом статусе.
++func (s *TransfersLiveSuite) TestTS014_DocumentAndListAmount() {
++	taskID, unit := s.taskWithStockUnit()
++	p := s.newPricedProduct("100", "10")
++	p2 := s.newPricedProduct("100", "20")
++
++	inv := s.create(s.invoiceBody(taskID, pricedItem(p, 3, 10.1), pricedItem(p2, 2, 20.25)))
++	s.Equal("70.80", inv.Amount.String(), "30.30 + 40.50")
++	unitsOnly := s.create(s.invoiceBody(taskID, unitItem(unit)))
++	s.Equal("0.00", unitsOnly.Amount.String(), "накладная без товаров")
++	s.Equal("<null>", num(unitsOnly.Items[0].Price))
++
++	w2w := s.create(s.w2wBody(productItem(p, 5)))
++	s.Equal("0.00", w2w.Amount.String(), "вне накладной клиенту суммы нет")
++	s.Equal("<null>", num(w2w.Items[0].Price))
++	s.Equal("<null>", num(w2w.Items[0].LineTotal))
++	supply := s.create(s.supplyBody(s.newSupplier(true), p, 5))
++	s.Equal("0.00", supply.Amount.String())
++	s.Equal("<null>", num(supply.Items[0].Price))
++
++	_, l := s.listIDs(s.admin, fmt.Sprintf("&task_id=%d", taskID))
++	amounts := map[int64]string{}
++	for _, it := range l.Items {
++		amounts[it.ID] = it.Amount.String()
++	}
++	s.Equal(map[int64]string{inv.ID: "70.80", unitsOnly.ID: "0.00"}, amounts)
++	_, all := s.listIDs(s.admin, "")
++	for _, it := range all.Items {
++		if it.ID == w2w.ID || it.ID == supply.ID {
++			s.Equal("0.00", it.Amount.String(), it.Direction)
++		}
++	}
++
++	// сумма в ответах переходов и GET — та же.
++	st, sent, raw := s.action(inv, "send", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("70.80", sent.Amount.String())
++	s.Equal("70.80", s.get(inv.ID).Amount.String())
++	s.Contains(string(raw), `"amount":70.80`, "деньги на wire — JSON-число с двумя знаками")
++	s.Contains(string(raw), `"price":10.10`)
++	s.Contains(string(raw), `"line_total":30.30`)
++}
++
++// TS-003 / TS-015: исполнитель работает с ценами накладной так же, как администратор —
++// создаёт накладную с товаром и ценой, правит цену, отправляет и принимает.
++func (s *TransfersLiveSuite) TestTS003_ExecutorWorksWithPrices() {
++	ex := s.executor()
++	taskID, unit := s.taskWithStockUnit()
++	p := s.newPricedProduct("10", "300")
++
++	st, t, raw := s.doAs(ex, http.MethodPost, "/api/v1/transfers", s.invoiceBody(taskID, unitItem(unit), productItem(p, 1)))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal("300.00", num(t.Items[1].Price), "цена каталога по умолчанию")
++
++	st, upd, raw := s.doAs(ex, http.MethodPut, fmt.Sprintf("/api/v1/transfers/%d", t.ID), map[string]any{
++		"version": t.Version, "from_warehouse_id": s.almaty, "items": []map[string]any{unitItem(unit), pricedItem(p, 2, 275.5)}})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("551.00", upd.Amount.String())
++
++	st, sent, raw := s.doAs(ex, http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/send", t.ID), map[string]any{"version": upd.Version})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.ElementsMatch([]string{"client_out:Алматы:-2.000"}, s.movements(t.ID))
++	st, got, raw := s.doAs(ex, http.MethodPost, fmt.Sprintf("/api/v1/transfers/%d/receive", t.ID), map[string]any{"version": sent.Version})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("received", got.Status)
++	s.Equal("551.00", got.Amount.String())
++
++	// цена в «склад → склад» исполнителю недоступна вместе с самим направлением (403).
++	st, _, raw = s.doAs(ex, http.MethodPost, "/api/v1/transfers", with(s.w2wBody(pricedItem(p, 1, 1)), "direction", "warehouse_to_warehouse"))
++	s.Equal(http.StatusForbidden, st, string(raw))
++}
+diff --git a/internal/features/transfers/validate.go b/internal/features/transfers/validate.go
+index 019e5a3..e887783 100644
+--- a/internal/features/transfers/validate.go
++++ b/internal/features/transfers/validate.go
+@@ -40,7 +40,7 @@ const (
+ 	msgBeforeFrom = "before_from"
+ 	// msgNotPositive — количество к отправке ≤ 0.
+ 	msgNotPositive = "not_positive"
+-	// msgNegative — факт приёмки < 0.
++	// msgNegative — факт приёмки < 0; цена продажи < 0.
+ 	msgNegative = "negative"
+ )
+ 
+@@ -52,6 +52,9 @@ const (
+ // qtyScale — NUMERIC(12,3): 9 цифр целой части, 3 дробной.
+ var qtyScale = numeric.Scale{IntDigits: 9, FracDigits: 3}
+ 
++// priceScale — NUMERIC(12,2): цена продажи 0–9999999999.99 (transfers-sales §6.1).
++var priceScale = numeric.Scale{IntDigits: 10, FracDigits: 2}
++
+ // Input — нормализованные поля перемещения (создание/правка заявки). Direction и TaskID при
+ // правке берутся из документа (после создания не меняются, DS-002/DS-012).
+ type Input struct {
+@@ -79,6 +82,7 @@ func (in Input) normalize() Input {
+ 			ProductID:   normID(it.ProductID),
+ 			EquipmentID: normID(it.EquipmentID),
+ 			QtySent:     it.QtySent,
++			Price:       it.Price,
+ 		}
+ 	}
+ 	in.Items = items
+@@ -96,12 +100,12 @@ var routes = map[string]route{
+ }
+ 
+ // kindAllowed — матрица «направление × тип строки» (DS-004): товар — склад → склад и приход
+-// от поставщика; единица — документы с клиентом и склад → склад. Товар с ценой в документе
+-// «склад → клиент» добавит часть 5 (DS-011).
++// от поставщика и накладная «склад → клиент» (товар с ценой, transfers-sales DS-011); единица —
++// документы с клиентом и склад → склад.
+ func kindAllowed(direction, kind string) bool {
+ 	switch kind {
+ 	case KindProduct:
+-		return direction == DirWarehouseToWarehouse || direction == DirSupplierToWarehouse
++		return direction != DirClientToWarehouse
+ 	case KindEquipment:
+ 		return direction != DirSupplierToWarehouse
+ 	}
+@@ -163,6 +167,7 @@ func (in Input) validate() []errorspkg.Field {
+ 		pf := fmt.Sprintf("items[%d].product_id", i)
+ 		ef := fmt.Sprintf("items[%d].equipment_id", i)
+ 		qf := fmt.Sprintf("items[%d].qty_sent", i)
++		prf := fmt.Sprintf("items[%d].price", i)
+ 		if dirOK && (it.Kind == KindProduct || it.Kind == KindEquipment) && !kindAllowed(in.Direction, it.Kind) {
+ 			add(kf, msgNotAllowed)
+ 			continue
+@@ -181,6 +186,13 @@ func (in Input) validate() []errorspkg.Field {
+ 			if msg := positiveQty(it.QtySent); msg != "" {
+ 				add(qf, msg)
+ 			}
++			if it.Price != nil {
++				if !pricedDirection(in.Direction) {
++					add(prf, msgNotAllowed)
++				} else if msg := salePrice(*it.Price); msg != "" {
++					add(prf, msg)
++				}
++			}
+ 		case KindEquipment:
+ 			if checkUUID(ef, it.EquipmentID, add) {
+ 				if seenEquipment[it.EquipmentID] {
+@@ -194,6 +206,9 @@ func (in Input) validate() []errorspkg.Field {
+ 			if it.QtySent != "" {
+ 				add(qf, msgNotAllowed)
+ 			}
++			if it.Price != nil {
++				add(prf, msgNotAllowed)
++			}
+ 		case "":
+ 			add(kf, msgRequired)
+ 		default:
+@@ -265,6 +280,22 @@ func positiveQty(a numeric.Amount) string {
+ 	return ""
+ }
+ 
++// pricedDirection — направление, товарные строки которого несут цену продажи: только
++// накладная «склад → клиент» (transfers-sales DS-011).
++func pricedDirection(direction string) bool { return direction == DirWarehouseToClient }
++
++// salePrice — цена продажи NUMERIC(12,2), 0–9999999999.99: отрицательная → negative; не
++// число, больше двух знаков после запятой, больше максимума → invalid (§6.1).
++func salePrice(a numeric.Amount) string {
++	switch a.Validate(priceScale, false) {
++	case "":
++		return ""
++	case numeric.MsgInvalid:
++		return msgNegative
++	}
++	return msgInvalid
++}
++
+ func ratOf(s string) *big.Rat {
+ 	r, ok := new(big.Rat).SetString(s)
+ 	if !ok {
+@@ -287,8 +318,13 @@ type sentItem struct {
+ // NUMERIC(12,3)); документы с клиентом факта не имеют — любой непустой items → not_allowed.
+ func resolveReceive(direction string, items []sentItem, in []ReceiveItemInput) (map[string]string, []errorspkg.Field) {
+ 	var f []errorspkg.Field
+-	if isClientDirection(direction) && len(in) > 0 {
+-		return nil, []errorspkg.Field{{Name: "items", Message: msgNotAllowed}}
++	if isClientDirection(direction) {
++		// товар накладной «склад → клиент» списан при отправке — факт не вводится, qty_received
++		// остаётся NULL и после приёмки (transfers-sales DS-038).
++		if len(in) > 0 {
++			return nil, []errorspkg.Field{{Name: "items", Message: msgNotAllowed}}
++		}
++		return map[string]string{}, nil
+ 	}
+ 	byID := make(map[string]sentItem, len(items))
+ 	out := make(map[string]string, len(items))
+diff --git a/internal/features/transfers/validate_partners_test.go b/internal/features/transfers/validate_partners_test.go
+index 7c70ab1..2988ab8 100644
+--- a/internal/features/transfers/validate_partners_test.go
++++ b/internal/features/transfers/validate_partners_test.go
+@@ -134,12 +134,13 @@ func TestTS001_ImmutableAndReceiveFlag(t *testing.T) {
+ 	assert.Empty(t, createFlags("нет такого", true), "некорректное направление — ошибка direction, не receive")
+ }
+ 
+-// TS-002: матрица «направление × kind» — товар в документах с клиентом и единица в приходе от
+-// поставщика → items[i].kind: not_allowed; прочие ошибки строки при этом не дублируются.
++// TS-002: матрица «направление × kind» — товар в приёме от клиента и единица в приходе от
++// поставщика → items[i].kind: not_allowed; прочие ошибки строки при этом не дублируются. Товар
++// в накладной «склад → клиент» допустим (хвост transfers-sales, DS-011).
+ func TestTS002_KindByDirection(t *testing.T) {
+ 	allowed := map[string]map[string]bool{
+ 		DirClientToWarehouse:    {KindProduct: false, KindEquipment: true},
+-		DirWarehouseToClient:    {KindProduct: false, KindEquipment: true},
++		DirWarehouseToClient:    {KindProduct: true, KindEquipment: true},
+ 		DirWarehouseToWarehouse: {KindProduct: true, KindEquipment: true},
+ 		DirSupplierToWarehouse:  {KindProduct: true, KindEquipment: false},
+ 	}
+@@ -220,6 +221,14 @@ func TestTS008_ResolveReceiveByDirection(t *testing.T) {
+ 		_, f = resolveReceive(d, units, []ReceiveItemInput{{}})
+ 		assert.Equal(t, map[string]string{"items": msgNotAllowed}, fieldMap(f), d)
+ 	}
++
++	// накладная «склад → клиент» с товаром (transfers-sales DS-038): факт не вводится — товарная
++	// строка в факты не попадает (qty_received остаётся NULL), items по-прежнему not_allowed.
++	facts, f = resolveReceive(DirWarehouseToClient, append(units, items...), nil)
++	require.Empty(t, f)
++	assert.Empty(t, facts, "товар накладной списан при отправке — факта нет")
++	_, f = resolveReceive(DirWarehouseToClient, items, fact("10"))
++	assert.Equal(t, map[string]string{"items": msgNotAllowed}, fieldMap(f))
+ }
+ 
+ // TS-015 (unit): администратору доступно любое направление, исполнителю — только документы с
+diff --git a/internal/features/transfers/validate_sales_test.go b/internal/features/transfers/validate_sales_test.go
+new file mode 100644
+index 0000000..d52a07d
+--- /dev/null
++++ b/internal/features/transfers/validate_sales_test.go
+@@ -0,0 +1,155 @@
++package transfers
++
++import (
++	"encoding/json"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/kitavrus/kanban-tree/pkg/numeric"
++)
++
++// Unit-сценарии части transfers-sales (docs/features/transfers-sales/draft-spec.md §11):
++// TS-003 — валидатор цены продажи товарной строки накладной «склад → клиент».
++
++func priced(id, qty, price string) ItemInput {
++	p := numeric.Amount(price)
++	return ItemInput{Kind: KindProduct, ProductID: id, QtySent: numeric.Amount(qty), Price: &p}
++}
++
++// invoice — накладная «склад → клиент» со строками items.
++func invoice(items ...ItemInput) Input {
++	in := validRoute(DirWarehouseToClient)
++	in.Items = items
++	return in
++}
++
++// TS-003: цена допустима только у товара в warehouse_to_client; отрицательная → negative; три
++// знака после запятой, не число, больше 9999999999.99 → invalid; в warehouse_to_warehouse,
++// supplier_to_warehouse и в строке-единице → not_allowed; не передана → ошибки нет (цену
++// каталога подставляет repo при сохранении, DS-039).
++func TestTS003_PriceValidator(t *testing.T) {
++	ok := []string{"0", "0.00", "0.5", "18500.00", "18500.5", "1", "9999999999.99"}
++	for _, p := range ok {
++		t.Run("допустимая "+p, func(t *testing.T) {
++			assert.Empty(t, invoice(unit(eqX), priced(prodX, "1", p)).normalize().validate())
++		})
++	}
++
++	bad := map[string]string{
++		"-1":             msgNegative,
++		"-0.01":          msgNegative,
++		"1.999":          msgInvalid,
++		"0.001":          msgInvalid,
++		"10000000000":    msgInvalid,
++		"10000000000.00": msgInvalid,
++		"1000000000000":  msgInvalid, // 1e12 (abuse case 1)
++		"1e12":           msgInvalid,
++		"abc":            msgInvalid,
++		"NaN":            msgInvalid,
++		"1,5":            msgInvalid,
++		"":               msgInvalid, // пустое значение при переданном поле — не число
++	}
++	for p, want := range bad {
++		t.Run("недопустимая "+p, func(t *testing.T) {
++			got := fieldMap(invoice(priced(prodX, "1", p)).normalize().validate())
++			assert.Equal(t, map[string]string{"items[0].price": want}, got)
++		})
++	}
++
++	t.Run("не передана — без ошибки", func(t *testing.T) {
++		in := invoice(unit(eqX), product(prodX, "2")).normalize()
++		assert.Empty(t, in.validate())
++		assert.Nil(t, in.Items[1].Price, "normalize цену не выдумывает — её подставит repo из каталога")
++	})
++
++	t.Run("normalize сохраняет цену", func(t *testing.T) {
++		in := invoice(priced(prodX, "2", "18500.00")).normalize()
++		require.NotNil(t, in.Items[0].Price)
++		assert.Equal(t, numeric.Amount("18500.00"), *in.Items[0].Price)
++	})
++
++	t.Run("накладная только из товара", func(t *testing.T) {
++		assert.Empty(t, invoice(priced(prodX, "3", "100")).normalize().validate())
++	})
++
++	// цена вне накладной клиенту → not_allowed (abuse case 2), в т.ч. нулевая.
++	for _, d := range []string{DirWarehouseToWarehouse, DirSupplierToWarehouse} {
++		for _, p := range []string{"100", "0"} {
++			t.Run("not_allowed "+d+" "+p, func(t *testing.T) {
++				in := validRoute(d)
++				in.Items = []ItemInput{priced(prodX, "1", p)}
++				assert.Equal(t, map[string]string{"items[0].price": msgNotAllowed}, fieldMap(in.normalize().validate()))
++			})
++		}
++	}
++
++	t.Run("not_allowed в строке-единице", func(t *testing.T) {
++		p := numeric.Amount("100")
++		for _, d := range []string{DirWarehouseToClient, DirClientToWarehouse, DirWarehouseToWarehouse} {
++			in := validRoute(d)
++			in.Items = []ItemInput{{Kind: KindEquipment, EquipmentID: eqX, Price: &p}}
++			assert.Equal(t, map[string]string{"items[0].price": msgNotAllowed}, fieldMap(in.normalize().validate()), d)
++		}
++	})
++
++	// товар в приёме от клиента по-прежнему недопустим — ошибка kind, цена не разбирается.
++	t.Run("client_to_warehouse: товар с ценой — kind not_allowed", func(t *testing.T) {
++		in := validRoute(DirClientToWarehouse)
++		in.Items = []ItemInput{priced(prodX, "1", "-5")}
++		assert.Equal(t, map[string]string{"items[0].kind": msgNotAllowed}, fieldMap(in.normalize().validate()))
++	})
++
++	t.Run("ошибки цены и количества — обе", func(t *testing.T) {
++		got := fieldMap(invoice(priced(prodX, "0", "-1")).normalize().validate())
++		assert.Equal(t, map[string]string{"items[0].qty_sent": msgNotPositive, "items[0].price": msgNegative}, got)
++	})
++}
++
++// TS-003 (wire): price — JSON-число; нет поля и null → nil (цена каталога); строка → ошибка
++// разбора тела (400), как у остальных числовых полей проекта.
++func TestTS003_PriceWire(t *testing.T) {
++	var it ItemInput
++	require.NoError(t, json.Unmarshal([]byte(`{"kind":"product","product_id":"`+prodX+`","qty_sent":1,"price":18500.50}`), &it))
++	require.NotNil(t, it.Price)
++	assert.Equal(t, numeric.Amount("18500.50"), *it.Price, "без потери точности и хвостовых нулей")
++
++	it = ItemInput{}
++	require.NoError(t, json.Unmarshal([]byte(`{"kind":"product","product_id":"`+prodX+`","qty_sent":1,"price":null}`), &it))
++	assert.Nil(t, it.Price, "null — цена каталога")
++
++	it = ItemInput{}
++	require.NoError(t, json.Unmarshal([]byte(`{"kind":"product","product_id":"`+prodX+`","qty_sent":1}`), &it))
++	assert.Nil(t, it.Price, "нет поля — цена каталога")
++
++	assert.Error(t, json.Unmarshal([]byte(`{"kind":"product","price":"abc"}`), &it), "строка — не число")
++	assert.Error(t, json.Unmarshal([]byte(`{"kind":"product","price":"18500.00"}`), &it), "число в кавычках — не число")
++}
++
++// TS-003: правка цены — та же правка заявки: вне статуса «Заявка» → 409 со своим сообщением.
++func TestTS003_PriceEditStatusConflict(t *testing.T) {
++	for status, msg := range map[string]string{
++		StatusInTransit: "Перемещение уже отправлено — править нельзя",
++		StatusReceived:  "Перемещение уже получено — править нельзя",
++		StatusCancelled: "Перемещение отменено — править нельзя",
++	} {
++		e := statusConflict(actionUpdate, status)
++		assert.Equal(t, codeStatusConflict, e.Code, status)
++		assert.Equal(t, msg, e.Message, status)
++	}
++}
++
++// TS-014 (unit): отправка списывает товар со склада отправления у «склад → склад» и накладной
++// «склад → клиент»; цена — только у накладной.
++func TestTS014_SendsStockAndPricedDirections(t *testing.T) {
++	for d, want := range map[string]bool{
++		DirWarehouseToWarehouse: true, DirWarehouseToClient: true,
++		DirClientToWarehouse: false, DirSupplierToWarehouse: false,
++	} {
++		assert.Equal(t, want, sendsStock(d), d)
++	}
++	for _, d := range Directions {
++		assert.Equal(t, d == DirWarehouseToClient, pricedDirection(d), d)
++	}
++}
+diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
+index ebfd295..3b08b84 100644
+--- a/internal/seeddemo/seeddemo.go
++++ b/internal/seeddemo/seeddemo.go
+@@ -30,6 +30,11 @@
+ // от поставщика» на «Алматы»: полученный с расхождением (движение supplier_in на факт) и в
+ // пути (движений нет, DS-040).
+ //
++// Накладные клиенту (transfers-sales TS-F1, DS-011/DS-014): в двух документах «склад → клиент»
++// — товар с ценой продажи: полученная накладная в оплаченном заказе и накладная «в пути» в
++// неоплаченном; товар списан со склада отправления движением client_out, сумма накладной
++// входит в итог заказа.
++//
+ // Выплаты исполнителям (executor-payouts, D71): часть выполненных услуг отмечена
+ // выплаченной с суммой выплаты, часть — с суммой, но без отметки, часть — без суммы.
+ package seeddemo
+@@ -197,6 +202,10 @@ func (s *seeder) run() (Result, error) {
+ 	}
+ 	res.Tasks = tasksCreated
+ 
++	if err := s.seedInvoices(products); err != nil {
++		return Result{}, fmt.Errorf("seeddemo: invoices: %w", err)
++	}
++
+ 	return res, nil
+ }
+ 
+@@ -1321,6 +1330,60 @@ func (s *seeder) clientTransfer(direction string, taskID int64, clientID, wareho
+ 	return id, nil
+ }
+ 
++// demoInvoices — накладные клиенту (transfers-sales TS-F1): товар с ценой продажи в документе
++// «склад → клиент» заказа. status / paid — какой документ дополняется: полученный в оплаченном
++// заказе и «в пути» в неоплаченном; price "" — цена каталога (DS-039), иначе правленая в
++// документе.
++var demoInvoices = []struct {
++	status     string
++	paid       bool
++	productIdx int
++	qty, price string
++}{
++	// товары с большим остатком на обоих складах, уже затронутые демо-перемещениями — остаток
++	// не уходит в минус, на каком бы складе ни лежало оборудование заказа.
++	{status: "received", paid: true, productIdx: 2, qty: "5"},
++	{status: "in_transit", paid: false, productIdx: 5, qty: "2", price: "250.00"},
++}
++
++// seedInvoices — товарная строка с ценой в существующих документах «склад → клиент»
++// (seedEquipmentLocation): обе накладные отправлены, поэтому товар списан со склада
++// отправления (client_out; остаток правится той же дельтой, что и журнал — как
++// transfers.Service) и их сумма входит в итог заказа (DS-014).
++func (s *seeder) seedInvoices(products []productRow) error {
++	for _, inv := range demoInvoices {
++		var docID int64
++		var warehouseID string
++		err := s.tx.QueryRow(s.ctx, `
++			SELECT t.id, t.from_warehouse_id::text FROM transfers t JOIN tasks k ON k.id = t.task_id
++			WHERE t.direction = 'warehouse_to_client' AND t.status = $1 AND k.is_paid = $2
++			ORDER BY t.id LIMIT 1`, inv.status, inv.paid).Scan(&docID, &warehouseID)
++		if err != nil {
++			return fmt.Errorf("invoice %s (paid=%v): %w", inv.status, inv.paid, err)
++		}
++		productID := products[inv.productIdx].ID
++		var price *string
++		if inv.price != "" {
++			price = &inv.price
++		}
++		if _, err := s.tx.Exec(s.ctx, `
++			INSERT INTO transfer_items (transfer_id, kind, product_id, position, qty_sent, price)
++			VALUES ($1, 'product', $2::uuid,
++			        (SELECT coalesce(max(position), 0) + 1 FROM transfer_items WHERE transfer_id = $1),
++			        $3::numeric, coalesce($4::numeric, (SELECT p.price FROM products p WHERE p.id = $2::uuid)))`,
++			docID, productID, inv.qty, price); err != nil {
++			return err
++		}
++		if _, err := s.tx.Exec(s.ctx, `UPDATE transfers SET note = 'Возврат после ремонта + расходные материалы' WHERE id = $1`, docID); err != nil {
++			return err
++		}
++		if err := s.moveStock(productID, warehouseID, "-"+inv.qty, "client_out", docID); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
+ // defaultPrice — цена подзадачи (prototype newSubtask: `price: svc.price`, extra.price
+ // переопределяет): priceOverride, если задан, иначе price услуги ("" → NULL, «по факту»).
+ func (r serviceRow) defaultPrice(override string) any {
+diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
+index b15d770..9c34880 100644
+--- a/internal/seeddemo/seeddemo_integration_test.go
++++ b/internal/seeddemo/seeddemo_integration_test.go
+@@ -243,8 +243,9 @@ func (s *SeedDemoSuite) assertWarehouses() {
+ 
+ // assertPartners — transfers-partners TS-F1: два поставщика (один в архиве); приход от
+ // поставщика: полученный — с расхождением и движением supplier_in на факт, «в пути» — без
+-// движений (DS-040); документы с клиентом — по заказу, клиент = клиент заказа, только
+-// единицы оборудования заказа, без движений остатка; единицы заказов последней колонки —
++// движений (DS-040); документы с клиентом — по заказу, клиент = клиент заказа, единицы — из
++// оборудования заказа; товар — только в накладных «склад → клиент» (transfers-sales TS-F1,
++// assertInvoices); единицы заказов последней колонки —
+ // «у клиента» через проведённую пару «приём + возврат».
+ func (s *SeedDemoSuite) assertPartners() {
+ 	ctx := context.Background()
+@@ -276,16 +277,18 @@ func (s *SeedDemoSuite) assertPartners() {
+ 		SELECT (SELECT count(*) FROM transfers t JOIN tasks k ON k.id = t.task_id
+ 		         WHERE t.direction IN ('client_to_warehouse', 'warehouse_to_client') AND t.client_id <> k.client_id),
+ 		       (SELECT count(*) FROM transfer_items i JOIN transfers t ON t.id = i.transfer_id
+-		         WHERE t.task_id IS NOT NULL AND NOT EXISTS (
++		         WHERE t.task_id IS NOT NULL AND i.kind = 'equipment' AND NOT EXISTS (
+ 		             SELECT 1 FROM task_equipment te WHERE te.task_id = t.task_id AND te.equipment_id = i.equipment_id)),
+ 		       (SELECT count(*) FROM transfer_items i JOIN transfers t ON t.id = i.transfer_id
+-		         WHERE t.task_id IS NOT NULL AND i.kind <> 'equipment'),
+-		       (SELECT count(*) FROM stock_movements m JOIN transfers t ON t.id = m.transfer_id WHERE t.task_id IS NOT NULL)`).
++		         WHERE t.direction = 'client_to_warehouse' AND i.kind <> 'equipment'),
++		       (SELECT count(*) FROM stock_movements m JOIN transfers t ON t.id = m.transfer_id
++		         WHERE t.direction = 'client_to_warehouse')`).
+ 		Scan(&foreignClient, &notInTask, &productLines, &clientMovements))
+ 	s.Zero(foreignClient, "клиент документа = клиент заказа (DS-012)")
+ 	s.Zero(notInTask, "единицы документа — из оборудования заказа (DS-035)")
+-	s.Zero(productLines, "в документах с клиентом — только оборудование (DS-004)")
+-	s.Zero(clientMovements, "документы с клиентом остаток не двигают (DS-040)")
++	s.Zero(productLines, "в приёме от клиента — только оборудование (DS-004)")
++	s.Zero(clientMovements, "приём от клиента остаток не двигает (DS-040)")
++	s.assertInvoices()
+ 
+ 	// единица «у клиента» из заказа последней колонки прошла пару «приём + возврат».
+ 	var withoutPair int
+@@ -306,6 +309,42 @@ func (s *SeedDemoSuite) assertPartners() {
+ 	s.Equal(1, toClient)
+ }
+ 
++// assertInvoices — transfers-sales TS-F1 (DS-011, DS-014): две накладные клиенту с товаром и
++// ценой — полученная в оплаченном заказе и «в пути» в неоплаченном; товар списан движением
++// client_out на количество строки со склада отправления; цена есть только у товарных строк
++// накладных; сумма каждой накладной больше нуля.
++func (s *SeedDemoSuite) assertInvoices() {
++	ctx := context.Background()
++	var receivedPaid, transitUnpaid, unpriced, pricedElsewhere, movementDrift, totalDrift int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		WITH inv AS (
++		    SELECT t.id, t.status, t.task_id, t.from_warehouse_id, k.is_paid, i.product_id, i.qty_sent, i.price
++		    FROM transfer_items i JOIN transfers t ON t.id = i.transfer_id JOIN tasks k ON k.id = t.task_id
++		    WHERE t.direction = 'warehouse_to_client' AND i.kind = 'product')
++		SELECT (SELECT count(*) FROM inv WHERE status = 'received' AND is_paid),
++		       (SELECT count(*) FROM inv WHERE status = 'in_transit' AND NOT is_paid),
++		       (SELECT count(*) FROM inv WHERE price IS NULL OR price <= 0),
++		       (SELECT count(*) FROM transfer_items i JOIN transfers t ON t.id = i.transfer_id
++		         WHERE i.price IS NOT NULL AND (t.direction <> 'warehouse_to_client' OR i.kind <> 'product')),
++		       (SELECT count(*) FROM inv WHERE NOT EXISTS (
++		             SELECT 1 FROM stock_movements m
++		             WHERE m.transfer_id = inv.id AND m.reason = 'client_out' AND m.product_id = inv.product_id
++		               AND m.warehouse_id = inv.from_warehouse_id AND m.qty_delta = -inv.qty_sent AND m.task_id IS NULL)),
++		       (SELECT count(*) FROM (
++		             SELECT inv.task_id, sum(round(inv.price * inv.qty_sent, 2)) AS sold FROM inv GROUP BY inv.task_id) x
++		         WHERE x.sold <= 0)`).
++		Scan(&receivedPaid, &transitUnpaid, &unpriced, &pricedElsewhere, &movementDrift, &totalDrift))
++	s.Equal(1, receivedPaid, "полученная накладная с товаром в оплаченном заказе")
++	s.Equal(1, transitUnpaid, "накладная «в пути» с товаром в неоплаченном заказе")
++	s.Zero(unpriced, "у товарной строки накладной есть цена")
++	s.Zero(pricedElsewhere, "цена — только у товара накладной клиенту (DS-011)")
++	s.Zero(movementDrift, "товар накладной списан client_out со склада отправления")
++	s.Zero(totalDrift, "сумма накладной больше нуля")
++	var clientOut int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM stock_movements WHERE reason = 'client_out'`).Scan(&clientOut))
++	s.Equal(2, clientOut, "client_out — по одному на товарную строку накладной")
++}
++
+ // TestSeedDemo_Run_TasksExist_NoOpWithMessage — SD-003: в БД уже есть заказ → seeddemo
+ // печатает сообщение и не создаёт демо-данные (exit 0 в cmd, здесь — Skipped=true, nil error).
+ func (s *SeedDemoSuite) TestSeedDemo_Run_TasksExist_NoOpWithMessage() {

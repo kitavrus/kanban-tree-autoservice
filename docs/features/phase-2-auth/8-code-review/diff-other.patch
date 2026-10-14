@@ -1,0 +1,1007 @@
+diff --git a/.env.example b/.env.example
+index 027d90f..86875c7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -5,5 +5,11 @@ PORT=8080
+ LOG_LEVEL=debug
+ # Пусто → трейсинг no-op; Jaeger из monitoring-стека /infra-bootstrap: 127.0.0.1:4318
+ OTLP_ENDPOINT=
+-# session-auth
+-SESSION_TTL=720h
++# session-auth (D35): sliding TTL и абсолютный потолок сессии
++SESSION_TTL=12h
++SESSION_ABSOLUTE_MAX=168h
++# true — только за HTTPS (иначе браузер не вернёт cookie)
++SESSION_COOKIE_SECURE=false
++# защита от перебора: столько неудачных входов по логину за окно → 429
++LOGIN_MAX_FAILURES=10
++LOGIN_FAILURE_WINDOW=15m
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+new file mode 100644
+index 0000000..c19dc93
+--- /dev/null
++++ b/e2e/fixtures/auth.ts
+@@ -0,0 +1,82 @@
++import { expect, request, type APIRequestContext, type BrowserContext } from '@playwright/test';
++
++// Вход и API как из браузера: cookie-сессия sid + double-submit CSRF (cookie kt_csrf
++// → заголовок X-Csrf-Token). Логин только через реальный endpoint (§TD-8).
++
++export const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:8080';
++
++// Seed-админ локального стенда (make local-up-seed / cmd/seed).
++export const SEED_ADMIN = { login: 'admin', password: 'admin1234' };
++
++// Метка прогона: логины уникальны между прогонами на постоянной БД стенда.
++// В ассертах используется сама переменная, не литерал (§TD-6.2).
++export const RUN = (process.env.E2E_RUN ?? Date.now().toString(36)).toLowerCase();
++
++export type Role = 'admin' | 'executor';
++export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean };
++export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean };
++
++type Cookies = { cookies(): Promise<Array<{ name: string; value: string }>> };
++
++async function csrfOf(jar: Cookies, get: () => Promise<unknown>): Promise<string> {
++  let c = (await jar.cookies()).find((x) => x.name === 'kt_csrf');
++  if (!c) {
++    await get();
++    c = (await jar.cookies()).find((x) => x.name === 'kt_csrf');
++  }
++  expect(c, 'cookie kt_csrf выдана').toBeTruthy();
++  return c!.value;
++}
++
++/** Вход в контексте браузера (page.request делит cookies с вкладками контекста). */
++export async function loginContext(context: BrowserContext, login: string, password: string) {
++  const token = await csrfOf(context, () => context.request.get(`${BASE_URL}/login`));
++  const res = await context.request.post(`${BASE_URL}/api/v1/auth/login`, {
++    data: { login, password },
++    headers: { 'X-Csrf-Token': token },
++  });
++  expect(res.status(), `вход ${login}: ${await res.text()}`).toBe(200);
++}
++
++/** Admin-клиент JSON API (отдельный от браузера). */
++export class AdminApi {
++  private constructor(private readonly ctx: APIRequestContext) {}
++
++  static async login(login: string, password: string): Promise<AdminApi> {
++    const ctx = await request.newContext({ baseURL: BASE_URL });
++    const api = new AdminApi(ctx);
++    const res = await ctx.post('/api/v1/auth/login', { data: { login, password }, headers: await api.headers() });
++    expect(res.status(), `admin-вход ${login}: ${await res.text()}`).toBe(200);
++    return api;
++  }
++
++  private async headers() {
++    const state = { cookies: async () => (await this.ctx.storageState()).cookies };
++    return { 'X-Csrf-Token': await csrfOf(state, () => this.ctx.get('/login')) };
++  }
++
++  async createUser(u: NewUser): Promise<User> {
++    const res = await this.ctx.post('/api/v1/users', { data: u, headers: await this.headers() });
++    expect(res.status(), `создание ${u.login}: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
++  async updateUser(id: string, u: Omit<NewUser, 'password'> & { password?: string; is_active: boolean }): Promise<User> {
++    const res = await this.ctx.put(`/api/v1/users/${id}`, { data: u, headers: await this.headers() });
++    expect(res.status(), `правка ${u.login}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async findByLogin(login: string): Promise<User> {
++    const res = await this.ctx.get(`/api/v1/users?q=${encodeURIComponent(login)}`);
++    expect(res.status()).toBe(200);
++    const body: { items: User[] } = await res.json();
++    const u = body.items.find((x) => x.login === login);
++    expect(u, `сотрудник ${login}`).toBeTruthy();
++    return u!;
++  }
++
++  async dispose() {
++    await this.ctx.dispose();
++  }
++}
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index 4540628..9943941 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -1,19 +1,80 @@
+-import { test as base, expect } from '@playwright/test';
++import { test as base, expect, type Page } from '@playwright/test';
++import { AdminApi, RUN, SEED_ADMIN, loginContext, type NewUser, type User } from './auth';
+ 
+ // §TD-4 «чистота консоли/сети»: любой console.error / pageerror (Uncaught) и любой
+ // ответ ≥ 400 от нашего origin валят тест. Тест, который проверяет ожидаемую ошибку,
+ // объявляет её через allowHttpErrors.
+ type Fixtures = {
+   allowHttpErrors: (predicate: (url: string, status: number) => boolean) => void;
++  /** Уникальный логин прогона: uniq('sidorov') → 'e2e-<run>-<worker>-sidorov'. */
++  uniq: (name: string) => string;
++  /** Новый сотрудник через admin API (пароль по умолчанию — password1). */
++  makeUser: (u: Partial<NewUser> & { login: string }) => Promise<User & { password: string }>;
++  /** Вкладка, вошедшая как указанный пользователь. */
++  loginAs: (page: Page, login: string, password: string) => Promise<void>;
++  /** page, вошедшая как администратор прогона. */
++  adminPage: Page;
+ };
+ 
+-export const test = base.extend<Fixtures>({
++type WorkerFixtures = {
++  adminApi: AdminApi;
++  runAdmin: { login: string; password: string; id: string };
++};
++
++export const test = base.extend<Fixtures, WorkerFixtures>({
++  // Админ прогона — отдельный от seed-админа: тесты могут менять его без риска
++  // лишить стенд администратора.
++  runAdmin: [
++    async ({}, use, workerInfo) => {
++      const seed = await AdminApi.login(SEED_ADMIN.login, SEED_ADMIN.password);
++      const login = `e2e-${RUN}-${workerInfo.workerIndex}-admin`;
++      const u = await seed.createUser({ login, name: 'Админ Прогона', role: 'admin', password: 'password1' });
++      await seed.dispose();
++      await use({ login, password: 'password1', id: u.id });
++    },
++    { scope: 'worker' },
++  ],
++  adminApi: [
++    async ({ runAdmin }, use) => {
++      const api = await AdminApi.login(runAdmin.login, runAdmin.password);
++      await use(api);
++      await api.dispose();
++    },
++    { scope: 'worker' },
++  ],
++
++  uniq: async ({}, use, testInfo) => {
++    let n = 0;
++    await use((name) => `e2e-${RUN}-${testInfo.workerIndex}-${testInfo.testId.slice(0, 6)}-${n++}-${name}`.toLowerCase());
++  },
++
++  makeUser: async ({ adminApi }, use) => {
++    await use(async (u) => {
++      const full = { name: `Сотрудник ${u.login}`, role: 'executor' as const, password: 'password1', ...u };
++      const created = await adminApi.createUser(full);
++      return { ...created, password: full.password };
++    });
++  },
++
++  loginAs: async ({}, use) => {
++    await use((page, login, password) => loginContext(page.context(), login, password));
++  },
++
++  adminPage: async ({ page, runAdmin }, use) => {
++    await loginContext(page.context(), runAdmin.login, runAdmin.password);
++    await use(page);
++  },
++
+   allowHttpErrors: [
+     async ({ page, baseURL }, use) => {
+       const allowed: Array<(url: string, status: number) => boolean> = [];
+       const problems: string[] = [];
+       page.on('console', (m) => {
+-        if (m.type() === 'error') problems.push(`console.error: ${m.text()}`);
++        // «Failed to load resource: … status of N» — браузерное эхо HTTP-ответа; сами
++        // ответы ≥ 400 точно проверяет обработчик response ниже (с учётом allowHttpErrors)
++        if (m.type() === 'error' && !m.text().startsWith('Failed to load resource: the server responded with a status of')) {
++          problems.push(`console.error: ${m.text()}`);
++        }
+       });
+       page.on('pageerror', (e) => problems.push(`Uncaught: ${e.message}`));
+       page.on('response', (r) => {
+diff --git a/e2e/pages/LoginPage.ts b/e2e/pages/LoginPage.ts
+new file mode 100644
+index 0000000..3d58730
+--- /dev/null
++++ b/e2e/pages/LoginPage.ts
+@@ -0,0 +1,29 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM страницы входа (web/ssr/auth/templates/pages/login.html).
++export class LoginPage {
++  readonly form: Locator;
++  readonly login: Locator;
++  readonly password: Locator;
++  readonly submit: Locator;
++  readonly error: Locator;
++
++  constructor(readonly page: Page) {
++    this.form = page.getByTestId('login-form');
++    this.login = page.getByLabel('Логин');
++    this.password = page.getByLabel('Пароль');
++    this.submit = page.getByRole('button', { name: 'Войти' });
++    this.error = page.getByTestId('login-error');
++  }
++
++  async goto(redirect?: string) {
++    await this.page.goto(redirect ? `/login?redirect=${encodeURIComponent(redirect)}` : '/login');
++    await expect(this.form).toBeVisible();
++  }
++
++  async signIn(login: string, password: string) {
++    await this.login.fill(login);
++    await this.password.fill(password);
++    await this.submit.click();
++  }
++}
+diff --git a/e2e/pages/UsersPage.ts b/e2e/pages/UsersPage.ts
+new file mode 100644
+index 0000000..d466dbf
+--- /dev/null
++++ b/e2e/pages/UsersPage.ts
+@@ -0,0 +1,77 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана «Сотрудники»: список /users и форма /users/new, /users/:id.
++export class UsersPage {
++  readonly table: Locator;
++  readonly addButton: Locator;
++  readonly flash: Locator;
++  readonly search: Locator;
++  readonly roleFilter: Locator;
++  readonly statusFilter: Locator;
++  readonly empty: Locator;
++  // форма
++  readonly form: Locator;
++  readonly name: Locator;
++  readonly login: Locator;
++  readonly role: Locator;
++  readonly phone: Locator;
++  readonly password: Locator;
++  readonly active: Locator;
++  readonly save: Locator;
++  readonly formError: Locator;
++
++  constructor(readonly page: Page) {
++    this.table = page.getByTestId('users-table');
++    this.addButton = page.getByTestId('user-add');
++    this.flash = page.getByTestId('flash');
++    this.search = page.getByTestId('filter-q');
++    this.roleFilter = page.getByTestId('filter-role');
++    this.statusFilter = page.getByTestId('filter-status');
++    this.empty = page.getByTestId('users-empty');
++    this.form = page.getByTestId('user-form');
++    this.name = page.getByLabel('ФИО *');
++    this.login = page.getByLabel('Логин *');
++    this.role = page.getByTestId('role'); // кнопка комбобокса (testid переносится на неё)
++    this.phone = page.getByLabel('Телефон');
++    this.password = page.locator('#password');
++    this.active = page.getByLabel('Активен (может входить в систему)');
++    this.save = page.getByTestId('user-save');
++    this.formError = page.getByTestId('form-error');
++  }
++
++  async goto(query = '') {
++    await this.page.goto(`/users${query}`);
++    await expect(this.page.locator('.app-title')).toHaveText('Сотрудники');
++  }
++
++  async gotoNew() {
++    await this.page.goto('/users/new');
++    await expect(this.page.locator('.app-title')).toHaveText('Новый сотрудник');
++  }
++
++  row(login: string): Locator {
++    return this.page.locator(`[data-testid="user-row"][data-login="${login}"]`);
++  }
++
++  fieldError(field: 'name' | 'login' | 'role' | 'phone' | 'password'): Locator {
++    return this.page.getByTestId(`error-${field}`);
++  }
++
++  /** Выбор роли в комбобоксе (D6). */
++  async chooseRole(label: 'Исполнитель' | 'Администратор') {
++    await this.role.click();
++    await this.page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: label }).click();
++  }
++
++  async open(login: string) {
++    await this.row(login).getByRole('link').click();
++    await expect(this.form).toBeVisible();
++  }
++
++  async fill(u: { name?: string; login?: string; phone?: string; password?: string }) {
++    if (u.name !== undefined) await this.name.fill(u.name);
++    if (u.login !== undefined) await this.login.fill(u.login);
++    if (u.phone !== undefined) await this.phone.fill(u.phone);
++    if (u.password !== undefined) await this.password.fill(u.password);
++  }
++}
+diff --git a/e2e/tests/auth.spec.ts b/e2e/tests/auth.spec.ts
+new file mode 100644
+index 0000000..3468539
+--- /dev/null
++++ b/e2e/tests/auth.spec.ts
+@@ -0,0 +1,139 @@
++import { test, expect } from '../fixtures/test';
++import { LoginPage } from '../pages/LoginPage';
++import { ShellPage } from '../pages/ShellPage';
++
++// Фаза 2 (plan.md §2): вход/выход, гарды, роли в меню, убийство сессий при блокировке.
++test.use({ colorScheme: 'light' });
++
++test.describe('AU: вход и выход', () => {
++  test('AU-001: без сессии — на /login с возвратом на исходную страницу', async ({ page, makeUser, uniq }) => {
++    const u = await makeUser({ login: uniq('back'), role: 'admin' });
++    await page.goto('/users?q=x');
++    await expect(page).toHaveURL(/\/login\?redirect=%2Fusers%3Fq%3Dx$/);
++    const login = new LoginPage(page);
++    await login.signIn(u.login, u.password);
++    await expect(page).toHaveURL(/\/users\?q=x$/);
++    await expect(page.getByTestId('filter-q')).toHaveValue('x');
++  });
++
++  test('AU-002: неверный пароль и пустые поля — ошибка, логин остаётся в форме', async ({ page, makeUser, uniq, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.endsWith('/login') && (status === 401 || status === 400));
++    const u = await makeUser({ login: uniq('wrong') });
++    const login = new LoginPage(page);
++    await login.goto();
++
++    await login.submit.click();
++    await expect(login.error).toHaveText('Введите логин и пароль');
++
++    await login.signIn(u.login, 'not-the-password');
++    await expect(login.error).toHaveText('Неверный логин или пароль');
++    await expect(login.login).toHaveValue(u.login);
++    await expect(login.password).toHaveValue('');
++    await expect(login.password).toBeFocused();
++
++    await login.signIn('nobody-' + u.login, 'whatever-pass');
++    await expect(login.error).toHaveText('Неверный логин или пароль');
++  });
++
++  test('AU-003: логин без учёта регистра и пробелов', async ({ page, makeUser, uniq }) => {
++    const u = await makeUser({ login: uniq('case') });
++    const login = new LoginPage(page);
++    await login.goto();
++    await login.signIn(`  ${u.login.toUpperCase()} `, u.password);
++    await expect(page).toHaveURL(/\/$/);
++    await expect(page.getByTestId('sidebar')).toContainText(u.name);
++  });
++
++  test('AU-004: заблокированный видит причину только при верном пароле', async ({ page, makeUser, uniq, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.endsWith('/login') && (status === 403 || status === 401));
++    const u = await makeUser({ login: uniq('blocked'), is_active: false });
++    const login = new LoginPage(page);
++    await login.goto();
++    await login.signIn(u.login, 'wrong-password');
++    await expect(login.error).toHaveText('Неверный логин или пароль');
++    await login.signIn(u.login, u.password);
++    await expect(login.error).toContainText('заблокирована');
++  });
++
++  test('AU-005: выход — на /login, назад по истории на доску не пускает', async ({ adminPage: page }) => {
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await page.getByRole('button', { name: 'Выйти' }).click();
++    await expect(page).toHaveURL(/\/login$/);
++    await page.goBack();
++    await page.reload();
++    await expect(page).toHaveURL(/\/login\?redirect=%2F$/);
++  });
++
++  test('AU-006: уже вошедшего /login отправляет дальше', async ({ adminPage: page }) => {
++    await page.goto('/login?redirect=%2Fusers');
++    await expect(page).toHaveURL(/\/users$/);
++    await page.goto('/login?redirect=https%3A%2F%2Fevil.example%2F');
++    await expect(page).toHaveURL(/localhost:\d+\/$/);
++  });
++});
++
++test.describe('AU: роли и сессии', () => {
++  test('AU-010: исполнитель не видит «Сотрудники», прямой заход — «Нет доступа»', async ({ page, makeUser, uniq, loginAs, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.endsWith('/users') && status === 403);
++    const u = await makeUser({ login: uniq('exec') });
++    await loginAs(page, u.login, u.password);
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await expect(shell.navLink('Доска')).toBeVisible();
++    await expect(shell.navLink('Сотрудники')).toHaveCount(0);
++    await expect(shell.sidebar).toContainText('Исполнитель');
++
++    await page.goto('/users');
++    await expect(page.getByTestId('status-page')).toContainText('Нет доступа');
++    await expect(page.getByTestId('status-page')).toContainText('403');
++  });
++
++  test('AU-011: блокировка выкидывает сотрудника из открытой вкладки', async ({ browser, makeUser, uniq, adminApi }) => {
++    const u = await makeUser({ login: uniq('kick') });
++    const ctx = await browser.newContext({ colorScheme: 'light' });
++    const exec = await ctx.newPage();
++    const login = new LoginPage(exec);
++    await login.goto();
++    await login.signIn(u.login, u.password);
++    await expect(exec.getByTestId('sidebar')).toContainText(u.name);
++
++    await adminApi.updateUser(u.id, { login: u.login, name: u.name, role: u.role, phone: u.phone, is_active: false });
++
++    await exec.reload();
++    await expect(exec).toHaveURL(/\/login\?redirect=%2F$/);
++    await login.signIn(u.login, u.password);
++    await expect(login.error).toContainText('заблокирована');
++    await ctx.close();
++  });
++
++  test('AU-012: смена роли действует без перелогина', async ({ page, makeUser, uniq, loginAs, adminApi }) => {
++    const u = await makeUser({ login: uniq('promote') });
++    await loginAs(page, u.login, u.password);
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await expect(shell.navLink('Сотрудники')).toHaveCount(0);
++
++    await adminApi.updateUser(u.id, { login: u.login, name: u.name, role: 'admin', phone: u.phone, is_active: true });
++    await page.reload();
++    await expect(shell.navLink('Сотрудники')).toBeVisible();
++    await expect(shell.sidebar).toContainText('Администратор');
++  });
++});
++
++test.describe('AU: вёрстка входа (adaptive:min)', () => {
++  test('AU-020: 360px и 1280px — без горизонтального переполнения, тема переключается', async ({ page }) => {
++    const login = new LoginPage(page);
++    for (const width of [360, 1280]) {
++      await page.setViewportSize({ width, height: 700 });
++      await login.goto();
++      await expect(login.form).toBeInViewport();
++      expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
++    }
++    await page.evaluate(() => localStorage.removeItem('kt-theme'));
++    await page.reload();
++    await page.getByTestId('theme-toggle').click();
++    await page.getByTestId('theme-toggle').click();
++    await expect(page.locator('html')).toHaveAttribute('data-bs-theme', 'dark');
++  });
++});
+diff --git a/e2e/tests/shell.spec.ts b/e2e/tests/shell.spec.ts
+index cc4a135..10dae1c 100644
+--- a/e2e/tests/shell.spec.ts
++++ b/e2e/tests/shell.spec.ts
+@@ -1,26 +1,26 @@
+ import { test, expect } from '../fixtures/test';
+ import { ShellPage } from '../pages/ShellPage';
+ 
+-// Фаза 1 (plan.md §6): общий SSR-layout и общие JS-компоненты, перенесённые из
++// Фаза 1 (plan.md §6), под входом с фазы 2: общий SSR-layout и общие JS-компоненты, перенесённые из
+ // prototype/index.html (тема, диалоги вместо нативных, выпадающий список с поиском D6).
+ // Системная тема зафиксирована светлой — порядок переключения детерминирован.
+ test.use({ colorScheme: 'light' });
+ 
+ test.describe('SH: каркас приложения', () => {
+-  test('SH-001: главная — layout, меню, заглушка доски', async ({ page }) => {
++  test('SH-001: главная — layout, меню, заглушка доски', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+ 
+     await expect(page).toHaveTitle('Доска заказов — Kanban-tree');
+     await expect(shell.title).toHaveText('Доска заказов');
+     await expect(shell.navLink('Доска')).toHaveAttribute('aria-current', 'page');
+-    // нереализованные разделы и admin-меню гостю не показываются
+-    await expect(shell.sidebar.getByRole('link')).toHaveCount(1);
++    // нереализованные разделы не показываются: admin видит «Доска» и «Сотрудники»
++    await expect(shell.sidebar.getByRole('link')).toHaveText(['▦ Доска', '👥 Сотрудники']);
+     await expect(page.getByTestId('home-placeholder')).toBeVisible();
+     await expect(page.locator('meta[name="csrf-token"]')).toHaveCount(1);
+   });
+ 
+-  test('SH-002: тема system → light → dark, сохраняется после перезагрузки', async ({ page }) => {
++  test('SH-002: тема system → light → dark, сохраняется после перезагрузки', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+     await page.evaluate(() => localStorage.removeItem('kt-theme'));
+@@ -44,7 +44,7 @@ test.describe('SH: каркас приложения', () => {
+     await expect(page.locator('html')).toHaveAttribute('data-bs-theme', 'light');
+   });
+ 
+-  test('SH-003: тёмная тема системы подхватывается без выбора пользователя', async ({ page }) => {
++  test('SH-003: тёмная тема системы подхватывается без выбора пользователя', async ({ adminPage: page }) => {
+     await page.emulateMedia({ colorScheme: 'dark' });
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+@@ -55,7 +55,7 @@ test.describe('SH: каркас приложения', () => {
+ });
+ 
+ test.describe('SH: диалоги вместо нативных prompt/confirm/alert', () => {
+-  test('SH-010: uiConfirm — OK → true, Отмена → false, Esc → false', async ({ page }) => {
++  test('SH-010: uiConfirm — OK → true, Отмена → false, Esc → false', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+ 
+@@ -75,7 +75,7 @@ test.describe('SH: диалоги вместо нативных prompt/confirm/a
+     expect(await shell.dialogResult()).toBe(false);
+   });
+ 
+-  test('SH-011: uiPrompt — значение по Enter, null при отмене', async ({ page }) => {
++  test('SH-011: uiPrompt — значение по Enter, null при отмене', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+ 
+@@ -91,7 +91,7 @@ test.describe('SH: диалоги вместо нативных prompt/confirm/a
+     expect(await shell.dialogResult()).toBeNull();
+   });
+ 
+-  test('SH-012: uiAlert — одна кнопка; HTML в тексте не интерпретируется', async ({ page }) => {
++  test('SH-012: uiAlert — одна кнопка; HTML в тексте не интерпретируется', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+ 
+@@ -120,7 +120,7 @@ test.describe('SH: выпадающий список с поиском (D6)', ()
+     </select>
+     <select id="e2e-native" class="form-select" data-native><option value="a">A</option></select>`;
+ 
+-  test('SH-020: select превращается в комбобокс, поиск по тексту/подсказке/data-search', async ({ page }) => {
++  test('SH-020: select превращается в комбобокс, поиск по тексту/подсказке/data-search', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+     await shell.injectSelect(SELECT);
+@@ -154,7 +154,7 @@ test.describe('SH: выпадающий список с поиском (D6)', ()
+     await expect(btn).toBeFocused();
+   });
+ 
+-  test('SH-021: выбор клавиатурой и мышью меняет value и шлёт change', async ({ page }) => {
++  test('SH-021: выбор клавиатурой и мышью меняет value и шлёт change', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+     await shell.injectSelect(SELECT);
+@@ -194,7 +194,7 @@ test.describe('SH: выпадающий список с поиском (D6)', ()
+ });
+ 
+ test.describe('SH: выпадающий список — экранирование', () => {
+-  test('SH-022: HTML в тексте опции, подсказке и группе не интерпретируется', async ({ page }) => {
++  test('SH-022: HTML в тексте опции, подсказке и группе не интерпретируется', async ({ adminPage: page }) => {
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+     await shell.injectSelect(`
+@@ -217,7 +217,7 @@ test.describe('SH: выпадающий список — экранирован
+ });
+ 
+ test.describe('SH: адаптив (US-1 adaptive:min)', () => {
+-  test('SH-030: 1280px — нет горизонтального переполнения, сайдбар виден', async ({ page }) => {
++  test('SH-030: 1280px — нет горизонтального переполнения, сайдбар виден', async ({ adminPage: page }) => {
+     await page.setViewportSize({ width: 1280, height: 800 });
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+@@ -226,7 +226,7 @@ test.describe('SH: адаптив (US-1 adaptive:min)', () => {
+     expect(await shell.hasHorizontalOverflow()).toBe(false);
+   });
+ 
+-  test('SH-031: 360px — меню за кнопкой ☰, закрывается по фону, без переполнения', async ({ page }) => {
++  test('SH-031: 360px — меню за кнопкой ☰, закрывается по фону, без переполнения', async ({ adminPage: page }) => {
+     await page.setViewportSize({ width: 360, height: 640 });
+     const shell = new ShellPage(page);
+     await shell.goto('/');
+diff --git a/e2e/tests/users.spec.ts b/e2e/tests/users.spec.ts
+new file mode 100644
+index 0000000..5dcff4c
+--- /dev/null
++++ b/e2e/tests/users.spec.ts
+@@ -0,0 +1,233 @@
++import { test, expect } from '../fixtures/test';
++import { LoginPage } from '../pages/LoginPage';
++import { UsersPage } from '../pages/UsersPage';
++
++// Фаза 2: экран «Сотрудники» (admin) — создание, правка, блокировка, фильтры, D29, D28.
++test.use({ colorScheme: 'light' });
++
++test.describe('US: создание и правка', () => {
++  test('US-001: админ создаёт исполнителя через форму, тот входит', async ({ adminPage: page, uniq, browser }) => {
++    const login = uniq('volkov');
++    const users = new UsersPage(page);
++    await users.goto();
++    await users.addButton.click();
++    await expect(page.locator('.app-title')).toHaveText('Новый сотрудник');
++    await expect(users.role).toHaveText('Исполнитель', { useInnerText: true });
++    await expect(users.active).toBeChecked();
++
++    await users.fill({ name: 'Волков Олег 🔧', login: `  ${login.toUpperCase()} `, phone: '+7 (900) 123-45-67', password: 'password1' });
++    await users.save.click();
++
++    await expect(page).toHaveURL(/\/users\?flash=created$/);
++    await expect(users.flash).toHaveText('Сотрудник создан');
++    await expect(users.row(login)).toContainText('Волков Олег 🔧');
++    await expect(users.row(login)).toContainText('Исполнитель');
++    await expect(users.row(login)).toContainText('+7 (900) 123-45-67');
++
++    const ctx = await browser.newContext();
++    const other = new LoginPage(await ctx.newPage());
++    await other.goto();
++    await other.signIn(login, 'password1');
++    await expect(other.page.getByTestId('sidebar')).toContainText('Волков Олег 🔧');
++    await ctx.close();
++  });
++
++  test('US-002: валидация каждого поля — ошибки под полями, введённое сохраняется', async ({ adminPage: page, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.endsWith('/users') && status === 422);
++    const users = new UsersPage(page);
++    await users.gotoNew();
++
++    await users.save.click();
++    await expect(users.fieldError('name')).toHaveText('Обязательное поле');
++    await expect(users.fieldError('login')).toHaveText('Обязательное поле');
++    await expect(users.fieldError('password')).toHaveText('Обязательное поле');
++    await expect(users.name).toHaveClass(/is-invalid/);
++    await expect(users.fieldError('phone')).toHaveCount(0);
++
++    await users.fill({ name: 'Имя', login: 'ab', phone: '8-900-abc', password: '1234567' });
++    await users.save.click();
++    await expect(users.fieldError('name')).toHaveCount(0);
++    await expect(users.fieldError('login')).toHaveText('Минимум 3 символа');
++    await expect(users.fieldError('phone')).toHaveText('Только цифры, пробелы и символы + ( ) -');
++    await expect(users.fieldError('password')).toHaveText('Минимум 8 символов');
++    await expect(users.name).toHaveValue('Имя');
++    await expect(users.phone).toHaveValue('8-900-abc');
++    await expect(users.password).toHaveValue(''); // пароль не возвращается в форму
++
++    await users.fill({ login: 'сидоров', phone: '', password: 'п'.repeat(37) }); // 74 байта > предела bcrypt
++    await users.save.click();
++    await expect(users.fieldError('login')).toHaveText('Только латинские буквы, цифры, точка, дефис и подчёркивание');
++    await expect(users.fieldError('password')).toHaveText('Слишком длинный пароль: до 72 латинских символов (кириллица — до 36)');
++
++    await users.fill({ name: 'Я'.repeat(200), login: 'a'.repeat(50) });
++    await expect(users.name).toHaveValue('Я'.repeat(200));
++    await expect(users.login).toHaveAttribute('maxlength', '50');
++  });
++
++  test('US-003: занятый логин (без учёта регистра) — ошибка под полем', async ({ adminPage: page, makeUser, uniq, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.endsWith('/users') && status === 409);
++    const taken = await makeUser({ login: uniq('taken') });
++    const users = new UsersPage(page);
++    await users.gotoNew();
++    await users.fill({ name: 'Дубль', login: taken.login.toUpperCase(), password: 'password1' });
++    await users.save.click();
++    await expect(users.fieldError('login')).toHaveText('Логин уже занят');
++    await expect(users.name).toHaveValue('Дубль');
++  });
++
++  test('US-004: правка — роль, телефон, ФИО; пустой пароль не меняет старый', async ({ adminPage: page, makeUser, uniq, browser }) => {
++    const u = await makeUser({ login: uniq('edit'), phone: '111' });
++    const users = new UsersPage(page);
++    await users.goto(`?q=${u.login}`);
++    await users.open(u.login);
++    await expect(users.password).toHaveValue('');
++    await expect(page.getByText('Новый пароль (пусто — не менять)')).toBeVisible();
++
++    await users.fill({ name: 'Новое Имя', phone: '' });
++    await users.chooseRole('Администратор');
++    await users.save.click();
++    await expect(users.flash).toHaveText('Изменения сохранены');
++    await expect(users.row(u.login)).toContainText('Новое Имя');
++    await expect(users.row(u.login)).toContainText('Администратор');
++
++    const ctx = await browser.newContext();
++    const other = new LoginPage(await ctx.newPage());
++    await other.goto();
++    await other.signIn(u.login, u.password);
++    await expect(other.page.getByTestId('sidebar')).toContainText('Администратор');
++    await ctx.close();
++  });
++
++  test('US-005: смена пароля — новый работает, старый нет', async ({ adminPage: page, makeUser, uniq, browser }) => {
++    const u = await makeUser({ login: uniq('pwd') });
++    const users = new UsersPage(page);
++    await users.goto(`?q=${u.login}`);
++    await users.open(u.login);
++    await users.fill({ password: 'brand-new-pass' });
++    await users.save.click();
++    await expect(users.flash).toBeVisible();
++
++    const ctx = await browser.newContext();
++    const other = new LoginPage(await ctx.newPage());
++    await other.goto();
++    await other.signIn(u.login, u.password);
++    await expect(other.error).toHaveText('Неверный логин или пароль');
++    await other.signIn(u.login, 'brand-new-pass');
++    await expect(other.page).toHaveURL(/\/$/);
++    await ctx.close();
++  });
++});
++
++test.describe('US: блокировка, D29, фильтры', () => {
++  test('US-010: блокировка — метка в списке, фильтр «Заблокированные», разблокировка', async ({ adminPage: page, makeUser, uniq }) => {
++    const u = await makeUser({ login: uniq('block') });
++    const users = new UsersPage(page);
++    await users.goto(`?q=${u.login}`);
++    await expect(users.row(u.login).getByTestId('user-blocked')).toHaveCount(0);
++    await users.open(u.login);
++    await users.active.uncheck();
++    await users.save.click();
++    await expect(users.flash).toBeVisible();
++
++    await users.goto(`?q=${u.login}&status=blocked`);
++    await expect(users.row(u.login).getByTestId('user-blocked')).toHaveText('заблокирован');
++    await users.goto(`?q=${u.login}&status=active`);
++    await expect(users.empty).toHaveText('Никого не нашли по фильтрам.');
++
++    await users.goto(`?q=${u.login}`);
++    await users.open(u.login);
++    await users.active.check();
++    await users.save.click();
++    await expect(users.row(u.login).getByTestId('user-blocked')).toHaveCount(0);
++  });
++
++  test('US-011: себя не заблокировать (D29)', async ({ adminPage: page, runAdmin, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.includes('/users/') && status === 409);
++    const users = new UsersPage(page);
++    await users.goto(`?q=${runAdmin.login}`);
++    await users.open(runAdmin.login);
++    await users.active.uncheck();
++    await users.save.click();
++    await expect(users.formError).toHaveText('Нельзя заблокировать самого себя');
++    await expect(users.active).not.toBeChecked(); // введённое сохраняется
++  });
++
++  test('US-012: поиск и фильтры живут в URL — reload и «назад» сохраняют', async ({ adminPage: page, makeUser, uniq }) => {
++    const tag = uniq('tag'); // общая метка в ФИО обоих — поиск находит обоих
++    const a = await makeUser({ login: uniq('flt-exec'), name: `Фильтр ${tag} Исп` });
++    const b = await makeUser({ login: uniq('flt-admin'), name: `Фильтр ${tag} Адм`, role: 'admin' });
++    const users = new UsersPage(page);
++    await users.goto();
++
++    await users.search.fill(tag);
++    await users.search.press('Enter');
++    await expect(users.row(a.login)).toBeVisible();
++    await expect(users.row(b.login)).toBeVisible();
++
++    await users.roleFilter.click();
++    await page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: 'Администратор' }).click();
++    await expect(page).toHaveURL(/role=admin/);
++    await expect(users.row(b.login)).toBeVisible();
++    await expect(users.row(a.login)).toHaveCount(0);
++
++    await page.reload();
++    await expect(users.search).toHaveValue(tag);
++    await expect(users.roleFilter).toHaveText('Администратор', { useInnerText: true });
++    await expect(users.row(a.login)).toHaveCount(0);
++
++    await page.goBack();
++    await expect(users.row(a.login)).toBeVisible();
++
++    await page.getByTestId('filter-reset').click();
++    await expect(page).toHaveURL(/\/users$/);
++  });
++
++  test('US-013: несуществующий сотрудник — страница 404', async ({ adminPage: page, allowHttpErrors }) => {
++    allowHttpErrors((url, status) => url.includes('/users/') && status === 404);
++    await page.goto('/users/00000000-0000-0000-0000-000000000000');
++    await expect(page.getByTestId('status-page')).toContainText('Не найдено');
++    await page.goto('/users/not-a-uuid');
++    await expect(page.getByTestId('status-page')).toContainText('404');
++  });
++});
++
++test.describe('US: конкурентность и вёрстка', () => {
++  test('US-020: два админа правят одну карточку — сохраняется последняя правка (D28)', async ({ adminPage: page, makeUser, uniq, browser, runAdmin, loginAs }) => {
++    const u = await makeUser({ login: uniq('lww') });
++    const ctx2 = await browser.newContext({ colorScheme: 'light' });
++    const page2 = await ctx2.newPage();
++    await loginAs(page2, runAdmin.login, runAdmin.password);
++
++    const one = new UsersPage(page);
++    const two = new UsersPage(page2);
++    await one.goto(`?q=${u.login}`);
++    await one.open(u.login);
++    await two.goto(`?q=${u.login}`);
++    await two.open(u.login);
++
++    await one.fill({ name: 'Правка Первого' });
++    await two.fill({ name: 'Правка Второго', phone: '222' });
++    await one.save.click();
++    await expect(one.flash).toBeVisible();
++    await two.save.click();
++    await expect(two.flash).toBeVisible();
++
++    await one.goto(`?q=${u.login}`);
++    await expect(one.row(u.login)).toContainText('Правка Второго');
++    await expect(one.row(u.login)).toContainText('222');
++    await ctx2.close();
++  });
++
++  test('US-021: 360px и 1280px — список и форма без горизонтального переполнения', async ({ adminPage: page, makeUser, uniq }) => {
++    const u = await makeUser({ login: uniq('wide-' + 'x'.repeat(12)), name: 'Очень-Длинная-Фамилия-Без-Пробелов Иван' });
++    const users = new UsersPage(page);
++    for (const width of [360, 1280]) {
++      await page.setViewportSize({ width, height: 800 });
++      await users.goto(`?q=${u.login}`);
++      await expect(users.row(u.login)).toBeVisible();
++      expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
++      await users.gotoNew();
++      expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
++    }
++  });
++});
+diff --git a/web/ssr/_layout/templates/layouts/bare.html b/web/ssr/_layout/templates/layouts/bare.html
+new file mode 100644
+index 0000000..810f8b2
+--- /dev/null
++++ b/web/ssr/_layout/templates/layouts/bare.html
+@@ -0,0 +1,23 @@
++{{ define "bare" }}<!doctype html>
++<html lang="ru">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>{{ .Shell.Title }} — Kanban-tree</title>
++<script>(function(){var d=false;try{var p=localStorage.getItem('kt-theme')||'system';d=p==='dark'||(p==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);}catch(e){}document.documentElement.setAttribute('data-bs-theme',d?'dark':'light');})();</script>
++<link rel="icon" href="/assets/ssr-shared/favicon.svg" type="image/svg+xml">
++<link rel="stylesheet" href="/assets/ssr-shared/vendor/bootstrap/bootstrap.min.css">
++<link rel="stylesheet" href="/assets/ssr-shared/app.css">
++<meta name="csrf-token" content="{{ .Shell.CSRFToken }}">
++</head>
++<body>
++<!-- Без сайдбара: вход и служебные страницы (ошибки) -->
++<div class="app-bare">
++  <button type="button" class="btn btn-sm btn-outline-secondary app-bare-theme" data-theme-toggle data-testid="theme-toggle">◐ Тема</button>
++  {{ template "content" . }}
++</div>
++<script src="/assets/ssr-shared/js/theme.js"></script>
++{{ block "scripts" . }}{{ end }}
++</body>
++</html>
++{{ end }}
+diff --git a/web/ssr/_layout/templates/pages/status.html b/web/ssr/_layout/templates/pages/status.html
+new file mode 100644
+index 0000000..0b50fcc
+--- /dev/null
++++ b/web/ssr/_layout/templates/pages/status.html
+@@ -0,0 +1,8 @@
++{{ define "content" }}
++<div class="app-status mx-auto" data-testid="status-page">
++  <div class="app-status-code">{{ .Code }}</div>
++  <h2 class="fs-4 mt-3">{{ .Heading }}</h2>
++  <p class="text-body-secondary">{{ .Message }}</p>
++  <a href="/" class="btn btn-primary">На доску</a>
++</div>
++{{ end }}
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index bd892f8..a523c6f 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -178,3 +178,15 @@ body { background: var(--bs-body-bg); }
+ .cb-opt.sel { font-weight: 600; color: var(--bs-primary); }
+ .cb-opt mark { padding: 0 1px; border-radius: 2px; color: inherit; }
+ .cb-empty { padding: 12px; color: var(--bs-secondary-color); text-align: center; }
++
++/* ---- страницы без сайдбара (вход, ошибки) ---- */
++.app-bare { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--space-4); position: relative; background: var(--bs-tertiary-bg); }
++.app-bare-theme { position: absolute; top: var(--space-4); right: var(--space-4); }
++.app-login { width: 100%; max-width: 360px; box-shadow: var(--bs-box-shadow); }
++.app-login .app-brand { margin-bottom: var(--space-5); }
++.app-status { max-width: 480px; text-align: center; }
++.app-status-code { font-size: 48px; font-weight: 700; color: var(--bs-secondary-color); line-height: 1; }
++
++/* ---- сотрудники ---- */
++.badge-off { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: rgba(var(--bs-danger-rgb), .12); color: var(--bs-danger); }
++.app-table-link { cursor: pointer; }
+diff --git a/web/ssr/auth/templates/pages/login.html b/web/ssr/auth/templates/pages/login.html
+new file mode 100644
+index 0000000..bbe4aa6
+--- /dev/null
++++ b/web/ssr/auth/templates/pages/login.html
+@@ -0,0 +1,19 @@
++{{ define "content" }}
++<form class="card app-login" method="post" action="/login" data-testid="login-form" novalidate>
++  <div class="card-body">
++    <div class="app-brand justify-content-center"><span class="app-brand-logo">▦</span> Kanban-tree</div>
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    <input type="hidden" name="redirect" value="{{ .Redirect }}">
++    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="login-error">{{ .Error }}</div>{{ end }}
++    <div class="mb-3">
++      <label for="login" class="form-label">Логин</label>
++      <input id="login" name="login" class="form-control" value="{{ .Login }}" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="50" {{ if not .Login }}autofocus{{ end }}>
++    </div>
++    <div class="mb-4">
++      <label for="password" class="form-label">Пароль</label>
++      <input id="password" name="password" type="password" class="form-control" autocomplete="current-password" maxlength="72" {{ if .Login }}autofocus{{ end }}>
++    </div>
++    <button type="submit" class="btn btn-primary w-100">Войти</button>
++  </div>
++</form>
++{{ end }}
+diff --git a/web/ssr/users/templates/pages/form.html b/web/ssr/users/templates/pages/form.html
+new file mode 100644
+index 0000000..635dc04
+--- /dev/null
++++ b/web/ssr/users/templates/pages/form.html
+@@ -0,0 +1,48 @@
++{{ define "content" }}
++<form class="card mw-760" method="post" action="{{ if .IsNew }}/users{{ else }}/users/{{ .ID }}{{ end }}" data-testid="user-form" novalidate>
++  <div class="card-body">
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
++    <div class="mb-3">
++      <label for="name" class="form-label">ФИО *</label>
++      <input id="name" name="name" class="form-control{{ if index .Errors "name" }} is-invalid{{ end }}" value="{{ .Name }}" maxlength="200" autocomplete="off">
++      {{ with index .Errors "name" }}<div class="invalid-feedback" data-testid="error-name">{{ . }}</div>{{ end }}
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-sm-6">
++        <label for="login" class="form-label">Логин *</label>
++        <input id="login" name="login" class="form-control{{ if index .Errors "login" }} is-invalid{{ end }}" value="{{ .Login }}" maxlength="50" autocomplete="off" autocapitalize="none" spellcheck="false">
++        {{ with index .Errors "login" }}<div class="invalid-feedback" data-testid="error-login">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-sm-6">
++        <label for="role" class="form-label">Роль</label>
++        <select id="role" name="role" class="form-select{{ if index .Errors "role" }} is-invalid{{ end }}" data-testid="role">
++          <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
++          <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
++        </select>
++        {{ with index .Errors "role" }}<div class="invalid-feedback d-block" data-testid="error-role">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-sm-6">
++        <label for="phone" class="form-label">Телефон</label>
++        <input id="phone" name="phone" class="form-control{{ if index .Errors "phone" }} is-invalid{{ end }}" value="{{ .Phone }}" maxlength="50" inputmode="tel" autocomplete="off">
++        {{ with index .Errors "phone" }}<div class="invalid-feedback" data-testid="error-phone">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-sm-6">
++        <label for="password" class="form-label">{{ if .IsNew }}Пароль *{{ else }}Новый пароль (пусто — не менять){{ end }}</label>
++        <input id="password" name="password" type="password" class="form-control{{ if index .Errors "password" }} is-invalid{{ end }}" maxlength="72" autocomplete="new-password">
++        {{ with index .Errors "password" }}<div class="invalid-feedback" data-testid="error-password">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="form-check mb-4">
++      <input class="form-check-input" type="checkbox" id="is_active" name="is_active"{{ if .IsActive }} checked{{ end }}>
++      <label class="form-check-label" for="is_active">Активен (может входить в систему)</label>
++    </div>
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-primary" data-testid="user-save">Сохранить</button>
++      <a href="/users" class="btn btn-outline-secondary">Отмена</a>
++    </div>
++  </div>
++</form>
++{{ end }}
+diff --git a/web/ssr/users/templates/pages/list.html b/web/ssr/users/templates/pages/list.html
+new file mode 100644
+index 0000000..662ee86
+--- /dev/null
++++ b/web/ssr/users/templates/pages/list.html
+@@ -0,0 +1,46 @@
++{{ define "actions" }}<a href="/users/new" class="btn btn-primary" data-testid="user-add">+ Сотрудник</a>{{ end }}
++{{ define "content" }}
++{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++<form class="d-flex flex-wrap gap-2 mb-3" method="get" action="/users" data-testid="users-filters">
++  <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск: ФИО, логин, телефон" aria-label="Поиск" data-testid="filter-q">
++  <select class="form-select" style="max-width:200px" name="role" aria-label="Роль" data-testid="filter-role" onchange="this.form.submit()">
++    <option value="">Все роли</option>
++    <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
++    <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
++  </select>
++  <select class="form-select" style="max-width:200px" name="status" aria-label="Статус" data-testid="filter-status" onchange="this.form.submit()">
++    <option value="">Любой статус</option>
++    <option value="active"{{ if eq .Status "active" }} selected{{ end }}>Активные</option>
++    <option value="blocked"{{ if eq .Status "blocked" }} selected{{ end }}>Заблокированные</option>
++  </select>
++  <button class="btn btn-outline-secondary" type="submit">Найти</button>
++  {{ if or .Q .Role .Status }}<a class="btn btn-link" href="/users" data-testid="filter-reset">Сбросить</a>{{ end }}
++</form>
++{{ if .Items }}
++<div class="table-responsive">
++<table class="table table-hover align-middle" data-testid="users-table">
++  <thead><tr><th>Сотрудник</th><th>Логин</th><th>Роль</th><th class="d-none d-md-table-cell">Телефон</th></tr></thead>
++  <tbody>
++  {{ range .Items }}
++    <tr data-testid="user-row" data-login="{{ .Login }}">
++      <td>
++        <div class="d-flex align-items-center gap-2">
++          <span class="app-avatar">{{ initials .Name }}</span>
++          <a href="/users/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
++          {{ if not .IsActive }}<span class="badge-off" data-testid="user-blocked">заблокирован</span>{{ end }}
++        </div>
++      </td>
++      <td>{{ .Login }}</td>
++      <td>{{ if eq .Role "admin" }}Администратор{{ else }}Исполнитель{{ end }}</td>
++      <td class="d-none d-md-table-cell">{{ .Phone }}</td>
++    </tr>
++  {{ end }}
++  </tbody>
++</table>
++</div>
++<p class="text-body-secondary small" data-testid="users-total">Сотрудников: {{ .Total }}{{ if gt .Total (len .Items) }} — показаны первые {{ len .Items }}, уточните поиск{{ end }}</p>
++{{ else }}
++<div class="empty-state" data-testid="users-empty">{{ if or .Q .Role .Status }}Никого не нашли по фильтрам.{{ else }}Сотрудников пока нет.{{ end }}</div>
++{{ end }}
++<p class="text-body-secondary small mt-3">Администратор: справочники, сотрудники, колонки, оплата, удаление заказов. Исполнитель: доска, создание и редактирование заказов, статусы услуг, вложения.</p>
++{{ end }}

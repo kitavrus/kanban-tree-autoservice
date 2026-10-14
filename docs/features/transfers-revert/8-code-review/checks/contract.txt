@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/contract_check.py --feature transfers-revert --repo /Users/igorpotema/mycode/kanban-tree --go internal/features/transfers
+(exit 0)
+
+contract transfers-revert: SKIP (нет /Users/igorpotema/mycode/kanban-tree/frontend/src/features/transfers-revert — frontend ещё не создан)

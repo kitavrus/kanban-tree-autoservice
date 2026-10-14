@@ -1,0 +1,3553 @@
+diff --git a/cmd/seed/main.go b/cmd/seed/main.go
+index 7c14054..5c9a25a 100644
+--- a/cmd/seed/main.go
++++ b/cmd/seed/main.go
+@@ -1,4 +1,4 @@
+-// Seed — идемпотентный локальный admin (make local-up-seed). ON CONFLICT DO NOTHING:
++// Seed — идемпотентный локальный администратор, role=admin (make local-up-seed). ON CONFLICT DO NOTHING:
+ // повторный прогон безопасен. Одна и та же users-таблица под session и jwt auth.mode.
+ package main
+ 
+@@ -36,9 +36,9 @@ func main() {
+ 		os.Exit(1)
+ 	}
+ 	_, err = pool.Exec(ctx,
+-		`INSERT INTO users (login, password_hash, name) VALUES ($1, $2, $3)
++		`INSERT INTO users (login, password_hash, name, role) VALUES ($1, $2, $3, 'admin')
+ 		 ON CONFLICT (login) DO NOTHING`,
+-		seedLogin, string(hash), "Admin")
++		seedLogin, string(hash), "Администратор")
+ 	if err != nil {
+ 		fmt.Fprintln(os.Stderr, "seed:", err)
+ 		os.Exit(1)
+diff --git a/go.mod b/go.mod
+index 0c0866e..e702ddc 100644
+--- a/go.mod
++++ b/go.mod
+@@ -9,6 +9,7 @@ go 1.26.0
+ require (
+ 	github.com/gofiber/fiber/v3 v3.5.0
+ 	github.com/golang-migrate/migrate/v4 v4.20.1
++	github.com/google/uuid v1.6.0
+ 	github.com/jackc/pgx/v5 v5.11.0
+ 	github.com/ory/dockertest/v3 v3.12.0
+ 	github.com/prometheus/client_golang v1.24.1
+@@ -43,7 +44,6 @@ require (
+ 	github.com/gofiber/schema v1.8.3 // indirect
+ 	github.com/gofiber/utils/v2 v2.4.1 // indirect
+ 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
+-	github.com/google/uuid v1.6.0 // indirect
+ 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
+ 	github.com/jackc/pgpassfile v1.0.0 // indirect
+ 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+diff --git a/internal/config/auth.go b/internal/config/auth.go
+index dae1577..708966c 100644
+--- a/internal/config/auth.go
++++ b/internal/config/auth.go
+@@ -2,20 +2,49 @@ package config
+ 
+ import (
+ 	"fmt"
++	"strconv"
+ 	"time"
+ )
+ 
+ // AuthConfig — session-режим (auth.mode=session, /project-bootstrap):
+-// HttpOnly cookie `sid`, store — Redis.
++// HttpOnly cookie `sid`, store — Redis. Сроки — D35: sliding TTL + абсолютный потолок.
+ type AuthConfig struct {
+-	SessionTTL time.Duration
++	SessionTTL         time.Duration // бездействие дольше — сессия истекает (sliding)
++	SessionAbsoluteMax time.Duration // потолок жизни сессии с момента входа
++	CookieSecure       bool          // Secure-флаг cookie (true за HTTPS)
++	LoginMaxFailures   int           // неудачных входов подряд по логину до блокировки попыток
++	LoginFailureWindow time.Duration // окно счётчика неудачных входов
+ }
+ 
+ func loadAuth() (AuthConfig, error) {
+-	ttl := getenv("SESSION_TTL", "720h")
+-	d, err := time.ParseDuration(ttl)
+-	if err != nil {
+-		return AuthConfig{}, fmt.Errorf("SESSION_TTL '%s': %w", ttl, err)
++	var a AuthConfig
++	var err error
++	if a.SessionTTL, err = duration("SESSION_TTL", "12h"); err != nil {
++		return a, err
+ 	}
+-	return AuthConfig{SessionTTL: d}, nil
++	if a.SessionAbsoluteMax, err = duration("SESSION_ABSOLUTE_MAX", "168h"); err != nil {
++		return a, err
++	}
++	if a.SessionTTL > a.SessionAbsoluteMax {
++		return a, fmt.Errorf("SESSION_TTL (%s) больше SESSION_ABSOLUTE_MAX (%s)", a.SessionTTL, a.SessionAbsoluteMax)
++	}
++	if a.CookieSecure, err = strconv.ParseBool(getenv("SESSION_COOKIE_SECURE", "false")); err != nil {
++		return a, fmt.Errorf("SESSION_COOKIE_SECURE: %w", err)
++	}
++	if a.LoginMaxFailures, err = strconv.Atoi(getenv("LOGIN_MAX_FAILURES", "10")); err != nil || a.LoginMaxFailures < 1 {
++		return a, fmt.Errorf("LOGIN_MAX_FAILURES: ожидается целое ≥ 1")
++	}
++	if a.LoginFailureWindow, err = duration("LOGIN_FAILURE_WINDOW", "15m"); err != nil {
++		return a, err
++	}
++	return a, nil
++}
++
++func duration(key, def string) (time.Duration, error) {
++	raw := getenv(key, def)
++	d, err := time.ParseDuration(raw)
++	if err != nil || d <= 0 {
++		return 0, fmt.Errorf("%s '%s': ожидается положительная длительность", key, raw)
++	}
++	return d, nil
+ }
+diff --git a/internal/features/auth/auth_http_live_test.go b/internal/features/auth/auth_http_live_test.go
+new file mode 100644
+index 0000000..169939e
+--- /dev/null
++++ b/internal/features/auth/auth_http_live_test.go
+@@ -0,0 +1,307 @@
++//go:build integration
++
++package auth_test
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/url"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// AuthLiveSuite (§TD-8): вход/выход, сессия, CSRF и гарды — боевой бинарь, реальная сеть.
++type AuthLiveSuite struct {
++	testutil.LiveSuite
++}
++
++func TestAuthLive(t *testing.T) {
++	suite.Run(t, &AuthLiveSuite{LiveSuite: testutil.LiveSuite{
++		BinaryPkg: "./cmd/server",
++		ExtraEnv:  []string{"LOGIN_MAX_FAILURES=3"},
++	}})
++}
++
++type apiErr struct {
++	Code    string `json:"code"`
++	Message string `json:"message"`
++	Details *struct {
++		Fields []struct{ Name, Message string } `json:"fields"`
++	} `json:"details"`
++}
++
++func decodeErr(s *AuthLiveSuite, body []byte) apiErr {
++	var e apiErr
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	return e
++}
++
++func (s *AuthLiveSuite) login(b *testutil.Browser, login, password string) (int, []byte) {
++	return b.Do(http.MethodPost, "/api/v1/auth/login", map[string]string{"login": login, "password": password})
++}
++
++func (s *AuthLiveSuite) TestLogin_SetsHardenedCookie_AndMe() {
++	s.SeedUser("a-ok", "password1", "Админ Окей", "admin", true)
++	b := s.NewBrowser()
++	resp := b.Request(http.MethodPost, "/api/v1/auth/login", map[string]string{"login": "A-OK ", "password": "password1"}, nil)
++	body, _ := io.ReadAll(resp.Body)
++	resp.Body.Close()
++	s.Require().Equal(http.StatusOK, resp.StatusCode, string(body))
++	var me map[string]string
++	s.Require().NoError(json.Unmarshal(body, &me))
++	s.NotEmpty(me["id"])
++	delete(me, "id")
++	s.Equal(map[string]string{"login": "a-ok", "name": "Админ Окей", "role": "admin"}, me, "логин нормализован")
++
++	var sid *http.Cookie
++	for _, c := range resp.Cookies() {
++		if c.Name == "sid" {
++			sid = c
++		}
++	}
++	s.Require().NotNil(sid)
++	s.True(sid.HttpOnly)
++	s.Equal(http.SameSiteStrictMode, sid.SameSite)
++	s.Equal(7*24*3600, sid.MaxAge, "срок cookie = абсолютный потолок сессии (D35)")
++
++	status, meBody := b.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusOK, status)
++	s.Contains(string(meBody), `"role":"admin"`)
++}
++
++func (s *AuthLiveSuite) TestLogin_WrongPasswordAndUnknownLoginLookTheSame() {
++	s.SeedUser("a-wrong", "password1", "X", "executor", true)
++	b := s.NewBrowser()
++	st1, body1 := s.login(b, "a-wrong", "nope-nope")
++	st2, body2 := s.login(b, "a-nobody", "nope-nope")
++	s.Equal(http.StatusUnauthorized, st1)
++	s.Equal(st1, st2)
++	s.Equal(string(body1), string(body2), "ответ не выдаёт, существует ли логин")
++	s.Equal("INVALID_CREDENTIALS", decodeErr(s, body1).Code)
++}
++
++func (s *AuthLiveSuite) TestLogin_Blocked() {
++	s.SeedUser("a-blocked", "password1", "X", "executor", false)
++	b := s.NewBrowser()
++	st, body := s.login(b, "a-blocked", "password1")
++	s.Equal(http.StatusForbidden, st)
++	s.Equal("USER_BLOCKED", decodeErr(s, body).Code)
++	st, body = s.login(b, "a-blocked", "wrong-pass")
++	s.Equal(http.StatusUnauthorized, st, "без верного пароля о блокировке не сообщаем")
++	s.Equal("INVALID_CREDENTIALS", decodeErr(s, body).Code)
++}
++
++func (s *AuthLiveSuite) TestLogin_BruteForceLimit() {
++	s.SeedUser("a-brute", "password1", "X", "executor", true)
++	s.SeedUser("a-brute2", "password1", "X", "executor", true)
++	b := s.NewBrowser()
++	for i := 0; i < 3; i++ {
++		st, _ := s.login(b, "a-brute", "wrong-pass")
++		s.Equal(http.StatusUnauthorized, st)
++	}
++	st, body := s.login(b, "A-Brute", "password1")
++	s.Equal(http.StatusTooManyRequests, st, "лимит по логину, регистр не важен")
++	s.Equal("TOO_MANY_ATTEMPTS", decodeErr(s, body).Code)
++
++	st, _ = s.login(b, "a-brute2", "password1")
++	s.Equal(http.StatusOK, st, "другой логин не затронут")
++}
++
++// Параллельный перебор не обходит лимит: счётчик атомарно увеличивается ДО проверки
++// пароля (D41) — из 20 одновременных попыток пароль проверяется ровно у LOGIN_MAX_FAILURES.
++func (s *AuthLiveSuite) TestLogin_BruteForceLimit_Parallel() {
++	s.SeedUser("a-par", "password1", "X", "executor", true)
++	codes := make([]int, 20)
++	var wg sync.WaitGroup
++	for i := range codes {
++		wg.Add(1)
++		go func(i int) {
++			defer wg.Done()
++			codes[i], _ = s.login(s.NewBrowser(), "a-par", "wrong-pass")
++		}(i)
++	}
++	wg.Wait()
++	count := map[int]int{}
++	for _, c := range codes {
++		count[c]++
++	}
++	s.Equal(map[int]int{http.StatusUnauthorized: 3, http.StatusTooManyRequests: 17}, count)
++	st, _ := s.login(s.NewBrowser(), "a-par", "password1")
++	s.Equal(http.StatusTooManyRequests, st, "верный пароль тоже ждёт окончания окна")
++}
++
++// Мусор на входе — 401, не 500: пароль > 72 байт (предел bcrypt), логин длиннее допустимого.
++func (s *AuthLiveSuite) TestLogin_OversizedInput() {
++	s.SeedUser("a-big", "password1", "X", "executor", true)
++	b := s.NewBrowser()
++	st, _ := s.login(b, "a-big", strings.Repeat("п", 100))
++	s.Equal(http.StatusUnauthorized, st)
++	st, _ = s.login(b, strings.Repeat("x", 5000), "password1")
++	s.Equal(http.StatusUnauthorized, st)
++}
++
++// Вход под другим пользователем без выхода — прежняя сессия браузера убита.
++func (s *AuthLiveSuite) TestRelogin_KillsPreviousSession() {
++	s.SeedUser("a-first", "password1", "X", "executor", true)
++	s.SeedUser("a-second", "password1", "Y", "executor", true)
++	b := s.NewBrowser()
++	b.Login("a-first", "password1")
++	u, _ := url.Parse(s.BaseURL)
++	var first string
++	for _, c := range b.Client.Jar.Cookies(u) {
++		if c.Name == "sid" {
++			first = c.Value
++		}
++	}
++	s.Require().NotEmpty(first)
++	b.Login("a-second", "password1")
++
++	resp := s.NewBrowser().Request(http.MethodGet, "/api/v1/auth/me", nil, map[string]string{"Cookie": "sid=" + first})
++	resp.Body.Close()
++	s.Equal(http.StatusUnauthorized, resp.StatusCode)
++	st, me := b.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(me), `"login":"a-second"`)
++}
++
++func (s *AuthLiveSuite) TestLogin_SuccessResetsFailures() {
++	s.SeedUser("a-reset", "password1", "X", "executor", true)
++	b := s.NewBrowser()
++	for i := 0; i < 2; i++ {
++		st, _ := s.login(b, "a-reset", "wrong-pass")
++		s.Equal(http.StatusUnauthorized, st)
++	}
++	st, _ := s.login(b, "a-reset", "password1")
++	s.Equal(http.StatusOK, st)
++	for i := 0; i < 2; i++ {
++		st, _ := s.login(s.NewBrowser(), "a-reset", "wrong-pass")
++		s.Equal(http.StatusUnauthorized, st, "счётчик сброшен успешным входом")
++	}
++}
++
++func (s *AuthLiveSuite) TestLogin_BadInput400() {
++	b := s.NewBrowser()
++	st, body := b.Do(http.MethodPost, "/api/v1/auth/login", map[string]string{})
++	s.Equal(http.StatusBadRequest, st)
++	e := decodeErr(s, body)
++	s.Require().NotNil(e.Details)
++	s.Len(e.Details.Fields, 2)
++
++	for _, raw := range []string{`{`, `null`, `[]`, `{"login":"x","password":"y","role":"admin"}`, `{"login":1}`, `{"login":"x","password":"y"} {}`} {
++		st, body := b.Do(http.MethodPost, "/api/v1/auth/login", raw)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", raw, body)
++	}
++}
++
++func (s *AuthLiveSuite) TestCSRF_RequiredOnMutations() {
++	s.SeedUser("a-csrf", "password1", "X", "executor", true)
++	b := s.NewBrowser()
++	creds := map[string]string{"login": "a-csrf", "password": "password1"}
++
++	resp := b.Request(http.MethodPost, "/api/v1/auth/login", creds, map[string]string{"X-Csrf-Token": ""})
++	body, _ := io.ReadAll(resp.Body)
++	resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode)
++	s.Equal("CSRF_INVALID", decodeErr(s, body).Code)
++
++	resp = b.Request(http.MethodPost, "/api/v1/auth/login", creds, map[string]string{"X-Csrf-Token": strings.Repeat("a", 64)})
++	resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode, "токен не совпадает с cookie")
++
++	resp = b.Request(http.MethodPost, "/api/v1/auth/login", creds, map[string]string{"Origin": "http://evil.example"})
++	resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode, "чужой Origin")
++
++	resp = b.Request(http.MethodPost, "/login", url.Values{"login": {"a-csrf"}, "password": {"password1"}}, map[string]string{"X-Csrf-Token": ""})
++	resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode, "SSR-форма без _csrf")
++
++	st, _ := s.login(b, "a-csrf", "password1")
++	s.Equal(http.StatusOK, st, "с токеном — вход проходит")
++}
++
++func (s *AuthLiveSuite) TestGuards_Anonymous() {
++	b := s.NewBrowser()
++	resp := b.Request(http.MethodGet, "/", nil, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusFound, resp.StatusCode)
++	s.Equal("/login?redirect=%2F", resp.Header.Get("Location"))
++
++	resp = b.Request(http.MethodGet, "/users?q=x", nil, nil)
++	resp.Body.Close()
++	s.Equal("/login?redirect=%2Fusers%3Fq%3Dx", resp.Header.Get("Location"))
++
++	st, body := b.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusUnauthorized, st)
++	s.Equal("UNAUTHORIZED", decodeErr(s, body).Code)
++
++	resp = b.Request(http.MethodGet, "/", nil, map[string]string{"Cookie": "sid=forged"})
++	resp.Body.Close()
++	s.Equal(http.StatusFound, resp.StatusCode, "поддельный sid — как без сессии")
++}
++
++func (s *AuthLiveSuite) TestSSRLoginForm() {
++	s.SeedUser("a-form", "password1", "Форма", "executor", true)
++	b := s.NewBrowser()
++
++	st, page := b.Do(http.MethodGet, "/login?redirect=%2Fusers", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `name="redirect" value="/users"`)
++
++	st, page = b.Do(http.MethodPost, "/login", url.Values{"login": {"a-form"}, "password": {"bad-bad-bad"}, "redirect": {"/users"}})
++	s.Equal(http.StatusUnauthorized, st)
++	s.Contains(string(page), "Неверный логин или пароль")
++	s.Contains(string(page), `value="a-form"`, "логин остаётся в форме")
++
++	st, page = b.Do(http.MethodPost, "/login", url.Values{"login": {""}, "password": {""}})
++	s.Equal(http.StatusBadRequest, st)
++	s.Contains(string(page), "Введите логин и пароль")
++
++	resp := b.Request(http.MethodPost, "/login", url.Values{"login": {"a-form"}, "password": {"password1"}, "redirect": {"https://evil.example/x"}}, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/", resp.Header.Get("Location"), "open redirect закрыт")
++
++	resp = b.Request(http.MethodGet, "/login?redirect=%2Fusers", nil, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode, "вошедшего /login отправляет дальше")
++	s.Equal("/users", resp.Header.Get("Location"))
++
++	st, page = b.Do(http.MethodGet, "/", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), "Форма")
++	s.Contains(string(page), `action="/logout"`)
++}
++
++func (s *AuthLiveSuite) TestLogout_KillsSession() {
++	s.SeedUser("a-out", "password1", "X", "executor", true)
++	b := s.NewBrowser()
++	b.Login("a-out", "password1")
++	u, _ := url.Parse(s.BaseURL)
++	var sid string
++	for _, c := range b.Client.Jar.Cookies(u) {
++		if c.Name == "sid" {
++			sid = c.Value
++		}
++	}
++	s.Require().NotEmpty(sid)
++
++	resp := b.Request(http.MethodPost, "/logout", url.Values{}, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/login", resp.Header.Get("Location"))
++
++	st, _ := b.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusUnauthorized, st)
++
++	thief := s.NewBrowser()
++	resp = thief.Request(http.MethodGet, "/api/v1/auth/me", nil, map[string]string{"Cookie": "sid=" + sid})
++	resp.Body.Close()
++	s.Equal(http.StatusUnauthorized, resp.StatusCode, "старый sid после выхода недействителен")
++}
+diff --git a/internal/features/auth/dto.go b/internal/features/auth/dto.go
+index 2197ebc..83dfbf4 100644
+--- a/internal/features/auth/dto.go
++++ b/internal/features/auth/dto.go
+@@ -11,4 +11,5 @@ type UserResponse struct {
+ 	ID    string `json:"id"`
+ 	Login string `json:"login"`
+ 	Name  string `json:"name"`
++	Role  string `json:"role"`
+ }
+diff --git a/internal/features/auth/handler.go b/internal/features/auth/handler.go
+index a86d200..b4a151a 100644
+--- a/internal/features/auth/handler.go
++++ b/internal/features/auth/handler.go
+@@ -1,19 +1,32 @@
+ package auth
+ 
+ import (
+-	"time"
++	"errors"
++	"net/url"
++	"strings"
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/internal/ssr"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
++// Root — шаблоны страницы входа относительно корня модуля.
++const Root = "web/ssr/auth/templates"
++
+ type Handler struct {
+-	svc *Service
++	svc   *Service
++	auth  *middleware.Auth
++	r     *ssr.Renderer
++	shell ssr.ShellBuilder
++}
++
++func NewHandler(svc *Service, auth *middleware.Auth, r *ssr.Renderer, shell ssr.ShellBuilder) *Handler {
++	return &Handler{svc: svc, auth: auth, r: r, shell: shell}
+ }
+ 
+-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
++// ---- JSON API ----
+ 
+ // Login — POST /api/v1/auth/login. Успех: HttpOnly cookie sid + профиль.
+ func (h *Handler) Login(c fiber.Ctx) error {
+@@ -21,44 +34,130 @@ func (h *Handler) Login(c fiber.Ctx) error {
+ 	if err := c.Bind().Body(&req); err != nil {
+ 		return errorspkg.BadRequest("invalid body")
+ 	}
+-	if req.Login == "" || req.Password == "" {
+-		return errorspkg.Validation(
+-			errorspkg.Field{Name: "login", Message: "required"},
+-			errorspkg.Field{Name: "password", Message: "required"},
+-		)
++	var fields []errorspkg.Field
++	if strings.TrimSpace(req.Login) == "" {
++		fields = append(fields, errorspkg.Field{Name: "login", Message: "required"})
++	}
++	if req.Password == "" {
++		fields = append(fields, errorspkg.Field{Name: "password", Message: "required"})
++	}
++	if len(fields) > 0 {
++		return errorspkg.Validation(fields...)
+ 	}
+ 	sid, u, err := h.svc.Login(c.Context(), req.Login, req.Password)
+ 	if err != nil {
+ 		return err
+ 	}
+-	c.Cookie(&fiber.Cookie{
+-		Name:     "sid",
+-		Value:    sid,
+-		HTTPOnly: true,
+-		SameSite: fiber.CookieSameSiteLaxMode,
+-		Path:     "/",
+-		Expires:  time.Now().Add(h.svc.cfg.Auth.SessionTTL),
+-	})
+-	return c.JSON(UserResponse{ID: u.ID, Login: u.Login, Name: u.Name})
++	if err := h.replaceSession(c, sid); err != nil {
++		return err
++	}
++	return c.JSON(UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role})
+ }
+ 
+ // Logout — POST /api/v1/auth/logout (protected).
+ func (h *Handler) Logout(c fiber.Ctx) error {
+-	if sid := c.Cookies("sid"); sid != "" {
+-		if err := h.svc.Logout(c.Context(), sid); err != nil {
+-			return err
+-		}
++	if err := h.logout(c); err != nil {
++		return err
+ 	}
+-	c.ClearCookie("sid")
+ 	return c.JSON(fiber.Map{"status": "ok"})
+ }
+ 
+ // Me — GET /api/v1/auth/me (protected).
+ func (h *Handler) Me(c fiber.Ctx) error {
+-	userID, _ := c.Locals(middleware.UserIDKey).(string)
+-	u, err := h.svc.UserByID(c.Context(), userID)
++	p := middleware.CurrentPrincipal(c)
++	return c.JSON(UserResponse{ID: p.ID, Login: p.Login, Name: p.Name, Role: p.Role})
++}
++
++// replaceSession — новая сессия в cookie; прежняя сессия этого браузера (вход под
++// другим пользователем без выхода) убивается, а не доживает до своего TTL.
++func (h *Handler) replaceSession(c fiber.Ctx, sid string) error {
++	if old := c.Cookies(middleware.SessionCookieName); old != "" && old != sid {
++		if err := h.svc.Logout(c.Context(), old); err != nil {
++			return err
++		}
++	}
++	h.auth.SetSessionCookie(c, sid)
++	return nil
++}
++
++func (h *Handler) logout(c fiber.Ctx) error {
++	if sid := c.Cookies(middleware.SessionCookieName); sid != "" {
++		if err := h.svc.Logout(c.Context(), sid); err != nil {
++			return err
++		}
++	}
++	h.auth.ClearSessionCookie(c)
++	return nil
++}
++
++// ---- SSR ----
++
++// LoginPageVM — страница входа.
++type LoginPageVM struct {
++	Shell    ssr.Shell
++	Login    string
++	Error    string
++	Redirect string
++}
++
++// LoginPage — GET /login. Уже вошедшего — сразу на redirect.
++func (h *Handler) LoginPage(c fiber.Ctx) error {
++	redirect := SafeRedirect(c.Query("redirect"))
++	if middleware.CurrentPrincipal(c) != nil {
++		return c.Redirect().Status(fiber.StatusSeeOther).To(redirect)
++	}
++	return h.renderLogin(c, fiber.StatusOK, LoginPageVM{Redirect: redirect})
++}
++
++// LoginSubmit — POST /login (форма). Успех → 303 на redirect; ошибка → форма с текстом.
++func (h *Handler) LoginSubmit(c fiber.Ctx) error {
++	vm := LoginPageVM{
++		Login:    strings.TrimSpace(c.FormValue("login")),
++		Redirect: SafeRedirect(c.FormValue("redirect")),
++	}
++	password := c.FormValue("password")
++	if vm.Login == "" || password == "" {
++		vm.Error = "Введите логин и пароль"
++		return h.renderLogin(c, fiber.StatusBadRequest, vm)
++	}
++	sid, _, err := h.svc.Login(c.Context(), vm.Login, password)
+ 	if err != nil {
++		var app *errorspkg.AppError
++		if errors.As(err, &app) && app.HTTP < fiber.StatusInternalServerError {
++			vm.Error = app.Message
++			return h.renderLogin(c, app.HTTP, vm)
++		}
++		return err
++	}
++	if err := h.replaceSession(c, sid); err != nil {
++		return err
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To(vm.Redirect)
++}
++
++// LogoutSubmit — POST /logout (форма в сайдбаре) → 303 на /login.
++func (h *Handler) LogoutSubmit(c fiber.Ctx) error {
++	if err := h.logout(c); err != nil {
+ 		return err
+ 	}
+-	return c.JSON(UserResponse{ID: u.ID, Login: u.Login, Name: u.Name})
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/login")
++}
++
++func (h *Handler) renderLogin(c fiber.Ctx, status int, vm LoginPageVM) error {
++	vm.Shell = h.shell.Build(c, "Вход")
++	c.Status(status)
++	return h.r.PageLayout(c, "login", "bare", vm)
++}
++
++// SafeRedirect — только локальный путь этого сайта; всё остальное (чужой хост,
++// протокол-relative //evil, обратные слэши, javascript:) → "/". Защита от open redirect.
++func SafeRedirect(raw string) string {
++	if raw == "" || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.ContainsAny(raw, "\\\r\n\t") {
++		return "/"
++	}
++	u, err := url.Parse(raw)
++	if err != nil || u.Scheme != "" || u.Host != "" || u.Path == "/login" {
++		return "/"
++	}
++	return raw
+ }
+diff --git a/internal/features/auth/handler_test.go b/internal/features/auth/handler_test.go
+new file mode 100644
+index 0000000..c3feb9f
+--- /dev/null
++++ b/internal/features/auth/handler_test.go
+@@ -0,0 +1,36 @@
++package auth
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++)
++
++func TestSafeRedirect(t *testing.T) {
++	cases := map[string]string{
++		"":                          "/",
++		"/":                         "/",
++		"/users":                    "/users",
++		"/users?q=%D0%B8%D0%B2&x=1": "/users?q=%D0%B8%D0%B2&x=1",
++		"/users/abc#top":            "/users/abc#top",
++		"//evil.example":            "/",
++		"///evil.example":           "/",
++		"/\\evil.example":           "/",
++		"https://evil.example/":     "/",
++		"http:/evil":                "/",
++		"javascript:alert(1)":       "/",
++		"evil.example":              "/",
++		"/login":                    "/", // петля на вход
++		"/login?redirect=/users":    "/",
++		"/users\r\nSet-Cookie: x=1": "/",
++		"/%2F%2Fevil.example":       "/%2F%2Fevil.example", // остаётся путём этого сайта
++	}
++	for in, want := range cases {
++		assert.Equal(t, want, SafeRedirect(in), "%q", in)
++	}
++}
++
++func TestNormalizeLogin(t *testing.T) {
++	assert.Equal(t, "admin", NormalizeLogin("  Admin "))
++	assert.Equal(t, "sidorov.p", NormalizeLogin("SIDOROV.P"))
++}
+diff --git a/internal/features/auth/repo.go b/internal/features/auth/repo.go
+index d991607..9ae496e 100644
+--- a/internal/features/auth/repo.go
++++ b/internal/features/auth/repo.go
+@@ -2,6 +2,7 @@ package auth
+ 
+ import (
+ 	"context"
++	"errors"
+ 
+ 	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+@@ -12,6 +13,8 @@ type User struct {
+ 	Login        string
+ 	PasswordHash string
+ 	Name         string
++	Role         string
++	IsActive     bool
+ }
+ 
+ type Repo struct {
+@@ -22,26 +25,28 @@ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
+ 
+ var ErrNotFound = pgx.ErrNoRows
+ 
+-func (r *Repo) GetByLogin(ctx context.Context, login string) (*User, error) {
++const userColumns = `id, login, password_hash, name, role, is_active`
++
++func scanUser(row pgx.Row) (*User, error) {
+ 	var u User
+-	err := r.pool.QueryRow(ctx,
+-		`SELECT id, login, password_hash, name FROM users WHERE login = $1`, login,
+-	).Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name)
+-	if err != nil {
++	if err := row.Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name, &u.Role, &u.IsActive); err != nil {
+ 		return nil, err
+ 	}
+ 	return &u, nil
+ }
+ 
++// GetByLogin — логин регистронезависимый (хранится в нижнем регистре, индекс lower(login)).
++func (r *Repo) GetByLogin(ctx context.Context, login string) (*User, error) {
++	return scanUser(r.pool.QueryRow(ctx,
++		`SELECT `+userColumns+` FROM users WHERE lower(login) = lower($1)`, login))
++}
++
++// GetByID — id уже провалидирован как uuid вызывающим кодом (иначе ::uuid → ошибка SQL).
+ func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
+-	var u User
+-	// ::uuid — id хранится как uuid, а pgx шлёт Go-string параметром как text;
+-	// Postgres не кастует text→uuid неявно в сравнении (operator does not exist).
+-	err := r.pool.QueryRow(ctx,
+-		`SELECT id, login, password_hash, name FROM users WHERE id = $1::uuid`, id,
+-	).Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name)
+-	if err != nil {
+-		return nil, err
++	u, err := scanUser(r.pool.QueryRow(ctx,
++		`SELECT `+userColumns+` FROM users WHERE id = $1::uuid`, id))
++	if errors.Is(err, ErrNotFound) {
++		return nil, ErrNotFound
+ 	}
+-	return &u, nil
++	return u, err
+ }
+diff --git a/internal/features/auth/routes.go b/internal/features/auth/routes.go
+index 1ad861b..6c7beed 100644
+--- a/internal/features/auth/routes.go
++++ b/internal/features/auth/routes.go
+@@ -2,20 +2,19 @@ package auth
+ 
+ import (
+ 	"github.com/gofiber/fiber/v3"
+-	"github.com/redis/go-redis/v9"
+ 
+-	"github.com/kitavrus/kanban-tree/internal/config"
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
+ )
+ 
+-// Register монтирует /auth/* под /api/v1 (§API-1).
+-func Register(api fiber.Router, svc *Service, cfg *config.Config, rdb *redis.Client) {
+-	h := NewHandler(svc)
++// Register монтирует /api/v1/auth/* (§API-1) и SSR-страницы /login, /logout.
++// Fiber выполняет хэндлеры В ПОРЯДКЕ АРГУМЕНТОВ: гард идёт первым.
++func Register(app *fiber.App, api fiber.Router, h *Handler, a *middleware.Auth) {
+ 	g := api.Group("/auth")
+-	// Fiber выполняет хэндлеры В ПОРЯДКЕ АРГУМЕНТОВ: middleware ОБЯЗАН идти
+-	// первым — иначе Me/Logout читают Locals(UserIDKey) до того, как RequireAuth
+-	// его заполнит (проявляется как пустой userID → битый запрос ниже по стеку).
+ 	g.Post("/login", h.Login)
+-	g.Post("/logout", middleware.RequireAuth(cfg, rdb), h.Logout)
+-	g.Get("/me", middleware.RequireAuth(cfg, rdb), h.Me)
++	g.Post("/logout", a.RequireAPI(), h.Logout)
++	g.Get("/me", a.RequireAPI(), h.Me)
++
++	app.Get("/login", a.Optional(), h.LoginPage)
++	app.Post("/login", h.LoginSubmit)
++	app.Post("/logout", h.LogoutSubmit)
+ }
+diff --git a/internal/features/auth/service.go b/internal/features/auth/service.go
+index 5b617ff..0e83928 100644
+--- a/internal/features/auth/service.go
++++ b/internal/features/auth/service.go
+@@ -2,65 +2,117 @@ package auth
+ 
+ import (
+ 	"context"
+-	"crypto/rand"
+-	"encoding/hex"
+ 	"errors"
++	"net/http"
++	"strings"
++	"unicode/utf8"
+ 
++	"github.com/google/uuid"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+ 	"github.com/redis/go-redis/v9"
+ 	"golang.org/x/crypto/bcrypt"
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/config"
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/internal/session"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+-// Service — session-auth: логин выдаёт sid, сессия живёт в Redis (SESSION_TTL).
++var (
++	// ErrInvalidCredentials — единый ответ на «нет такого логина» и «неверный пароль».
++	ErrInvalidCredentials = errorspkg.New("INVALID_CREDENTIALS", http.StatusUnauthorized, "Неверный логин или пароль")
++	// ErrBlocked — пароль верный, но учётная запись заблокирована (раскрывается только владельцу пароля).
++	ErrBlocked = errorspkg.New("USER_BLOCKED", http.StatusForbidden, "Учётная запись заблокирована — обратитесь к администратору")
++	// ErrTooManyAttempts — превышен лимит неудачных входов по логину.
++	ErrTooManyAttempts = errorspkg.New("TOO_MANY_ATTEMPTS", http.StatusTooManyRequests, "Слишком много неудачных попыток входа — попробуйте позже")
++)
++
++const (
++	failPrefix  = "login_fail:"
++	maxLoginLen = 50 // = users.loginMax
++)
++
++// dummyHash — сравнение для несуществующего логина: время ответа не выдаёт, есть ли логин.
++var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("kanban-tree-dummy-password"), bcrypt.DefaultCost)
++
++// Service — вход/выход поверх Redis-сессий (plan.md §2, D35).
+ type Service struct {
+-	repo *Repo
+-	rdb  *redis.Client
+-	cfg  *config.Config
++	repo  *Repo
++	store *session.Store
++	rdb   *redis.Client
++	cfg   config.AuthConfig
+ }
+ 
+-func NewService(pool *pgxpool.Pool, rdb *redis.Client, cfg *config.Config) *Service {
+-	return &Service{repo: NewRepo(pool), rdb: rdb, cfg: cfg}
++func NewService(pool *pgxpool.Pool, rdb *redis.Client, store *session.Store, cfg config.AuthConfig) *Service {
++	return &Service{repo: NewRepo(pool), store: store, rdb: rdb, cfg: cfg}
+ }
+ 
+-// Login проверяет пароль и создаёт сессию. Неверные креды → единый 401
+-// (без утечки "user not found" vs "wrong password").
+-func (s *Service) Login(ctx context.Context, login, password string) (sid string, u *User, err error) {
+-	u, err = s.repo.GetByLogin(ctx, login)
+-	if err != nil {
+-		if errors.Is(err, ErrNotFound) {
+-			return "", nil, errorspkg.Unauthorized("invalid credentials")
+-		}
++// NormalizeLogin — логины хранятся и сравниваются в нижнем регистре без пробелов по краям.
++func NormalizeLogin(login string) string { return strings.ToLower(strings.TrimSpace(login)) }
++
++// Login проверяет пароль и создаёт сессию; возвращает sid и пользователя.
++func (s *Service) Login(ctx context.Context, login, password string) (string, *User, error) {
++	login = NormalizeLogin(login)
++	// Логин длиннее допустимого не существует — без обращения к Redis (иначе
++	// произвольно длинный ключ счётчика).
++	if utf8.RuneCountInString(login) > maxLoginLen {
++		return "", nil, ErrInvalidCredentials
++	}
++	// Счётчик попыток — АТОМАРНО до проверки пароля: параллельные запросы получают
++	// разные номера и не могут все проскочить проверку лимита (D41). Успешный вход
++	// счётчик сбрасывает.
++	failKey := failPrefix + login
++	pipe := s.rdb.TxPipeline()
++	attempt := pipe.Incr(ctx, failKey)
++	pipe.ExpireNX(ctx, failKey, s.cfg.LoginFailureWindow)
++	if _, err := pipe.Exec(ctx); err != nil {
+ 		return "", nil, err
+ 	}
+-	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
+-		return "", nil, errorspkg.Unauthorized("invalid credentials")
++	if attempt.Val() > int64(s.cfg.LoginMaxFailures) {
++		return "", nil, ErrTooManyAttempts
+ 	}
+-	raw := make([]byte, 32)
+-	if _, err := rand.Read(raw); err != nil {
++
++	u, err := s.repo.GetByLogin(ctx, login)
++	if err != nil && !errors.Is(err, ErrNotFound) {
+ 		return "", nil, err
+ 	}
+-	sid = hex.EncodeToString(raw)
+-	if err := s.rdb.Set(ctx, middleware.SessionKeyPrefix+sid, u.ID, s.cfg.Auth.SessionTTL).Err(); err != nil {
++	hash := dummyHash
++	if u != nil {
++		hash = []byte(u.PasswordHash)
++	}
++	// bcrypt отклоняет пароль > 72 байт ошибкой — это тоже «неверный пароль», не 500.
++	if bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil || u == nil {
++		return "", nil, ErrInvalidCredentials
++	}
++	if !u.IsActive {
++		return "", nil, ErrBlocked
++	}
++	if err := s.rdb.Del(ctx, failKey).Err(); err != nil {
++		return "", nil, err
++	}
++	sid, err := s.store.Create(ctx, u.ID)
++	if err != nil {
+ 		return "", nil, err
+ 	}
+ 	return sid, u, nil
+ }
+ 
++// Logout — убить текущую сессию.
+ func (s *Service) Logout(ctx context.Context, sid string) error {
+-	return s.rdb.Del(ctx, middleware.SessionKeyPrefix+sid).Err()
++	return s.store.Kill(ctx, sid)
+ }
+ 
+-func (s *Service) UserByID(ctx context.Context, id string) (*User, error) {
++// Principal — загрузчик пользователя для middleware.Auth (nil, nil — нет такого).
++func (s *Service) Principal(ctx context.Context, id string) (*middleware.Principal, error) {
++	if uuid.Validate(id) != nil {
++		return nil, nil
++	}
+ 	u, err := s.repo.GetByID(ctx, id)
++	if errors.Is(err, ErrNotFound) {
++		return nil, nil
++	}
+ 	if err != nil {
+-		if errors.Is(err, ErrNotFound) {
+-			return nil, errorspkg.Unauthorized("user gone")
+-		}
+ 		return nil, err
+ 	}
+-	return u, nil
++	return &middleware.Principal{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, IsActive: u.IsActive}, nil
+ }
+diff --git a/internal/features/home/handler.go b/internal/features/home/handler.go
+index 6a48011..b157c49 100644
+--- a/internal/features/home/handler.go
++++ b/internal/features/home/handler.go
+@@ -5,6 +5,7 @@ package home
+ import (
+ 	"github.com/gofiber/fiber/v3"
+ 
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
+ 	"github.com/kitavrus/kanban-tree/internal/ssr"
+ )
+ 
+@@ -21,8 +22,8 @@ type Handlers struct {
+ 	Shell ssr.ShellBuilder
+ }
+ 
+-func (h *Handlers) Register(app *fiber.App) {
+-	app.Get("/", h.index)
++func (h *Handlers) Register(app *fiber.App, guard *middleware.Auth) {
++	app.Get("/", guard.RequireSSR(), h.index)
+ }
+ 
+ // index — GET /.
+diff --git a/internal/features/users/dto.go b/internal/features/users/dto.go
+index 10fb00a..9dcd875 100644
+--- a/internal/features/users/dto.go
++++ b/internal/features/users/dto.go
+@@ -2,14 +2,17 @@ package users
+ 
+ import "time"
+ 
+-// Wire-типы — JSON только snake_case (§API-1); конверт списка §FE-1.1.
++// Wire-типы — JSON только snake_case (§API-1); конверт списка {items,total,limit,offset}.
+ 
+ type UserResponse struct {
+ 	ID        string    `json:"id"`
+ 	Login     string    `json:"login"`
+ 	Name      string    `json:"name"`
++	Role      string    `json:"role"`
++	Phone     string    `json:"phone"`
+ 	IsActive  bool      `json:"is_active"`
+ 	CreatedAt time.Time `json:"created_at"`
++	UpdatedAt time.Time `json:"updated_at"`
+ }
+ 
+ type ListResponse struct {
+@@ -19,17 +22,23 @@ type ListResponse struct {
+ 	Offset int            `json:"offset"`
+ }
+ 
++// CreateRequest — POST /api/v1/users. is_active не передан — активен.
+ type CreateRequest struct {
+ 	Login    string `json:"login"`
+-	Password string `json:"password"`
+ 	Name     string `json:"name"`
++	Role     string `json:"role"`
++	Phone    string `json:"phone"`
++	Password string `json:"password"`
++	IsActive *bool  `json:"is_active"`
+ }
+ 
+-// UpdateRequest — частичное обновление: указатели, чтобы отличить «не передано»
+-// от пустого значения (переключатель статуса шлёт только is_active, форма правки —
+-// name и, при желании сменить, password).
++// UpdateRequest — PUT /api/v1/users/:id: полная замена карточки (D28 — last-write-wins,
++// без version). Пароль пустой/не передан — не меняется.
+ type UpdateRequest struct {
+-	Name     *string `json:"name"`
+-	IsActive *bool   `json:"is_active"`
+-	Password *string `json:"password"`
++	Login    string `json:"login"`
++	Name     string `json:"name"`
++	Role     string `json:"role"`
++	Phone    string `json:"phone"`
++	IsActive *bool  `json:"is_active"`
++	Password string `json:"password"`
+ }
+diff --git a/internal/features/users/handler.go b/internal/features/users/handler.go
+index 81f41d1..5055d7f 100644
+--- a/internal/features/users/handler.go
++++ b/internal/features/users/handler.go
+@@ -9,32 +9,20 @@ import (
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
++// Handler — JSON API /api/v1/users (только admin — гард вешает routes.go).
+ type Handler struct {
+ 	svc *Service
+ }
+ 
+ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+ 
+-// List — GET /api/v1/users?limit=&offset=&login=&name=&is_active=&sort=&order=
+-// (конверт §FE-1.1). Фильтры и сортировка — стандарт списочных экранов.
++// List — GET /api/v1/users?q=&role=&is_active=&sort=&order=&limit=&offset=.
+ func (h *Handler) List(c fiber.Ctx) error {
+ 	limit, _ := strconv.Atoi(c.Query("limit"))
+ 	offset, _ := strconv.Atoi(c.Query("offset"))
+-	// Пустой is_active = «любой статус»; невалидное значение трактуем так же.
+-	var isActive *bool
+-	if raw := c.Query("is_active"); raw != "" {
+-		if v, err := strconv.ParseBool(raw); err == nil {
+-			isActive = &v
+-		}
+-	}
+ 	resp, err := h.svc.List(c.Context(), ListQuery{
+-		Login:    c.Query("login"),
+-		Name:     c.Query("name"),
+-		IsActive: isActive,
+-		Sort:     c.Query("sort"),
+-		Order:    c.Query("order"),
+-		Limit:    limit,
+-		Offset:   offset,
++		Q: c.Query("q"), Role: c.Query("role"), IsActive: parseBoolPtr(c.Query("is_active")),
++		Sort: c.Query("sort"), Order: c.Query("order"), Limit: limit, Offset: offset,
+ 	})
+ 	if err != nil {
+ 		return err
+@@ -42,38 +30,59 @@ func (h *Handler) List(c fiber.Ctx) error {
+ 	return c.JSON(resp)
+ }
+ 
++// Get — GET /api/v1/users/:id.
++func (h *Handler) Get(c fiber.Ctx) error {
++	resp, err := h.svc.Get(c.Context(), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
+ // Create — POST /api/v1/users.
+ func (h *Handler) Create(c fiber.Ctx) error {
+ 	var req CreateRequest
+ 	if err := c.Bind().Body(&req); err != nil {
+ 		return errorspkg.BadRequest("invalid body")
+ 	}
+-	resp, err := h.svc.Create(c.Context(), req)
++	active := req.IsActive == nil || *req.IsActive
++	resp, err := h.svc.Create(c.Context(), Input{
++		Login: req.Login, Name: req.Name, Role: req.Role, Phone: req.Phone, Password: req.Password, IsActive: active,
++	})
+ 	if err != nil {
+ 		return err
+ 	}
+ 	return c.Status(fiber.StatusCreated).JSON(resp)
+ }
+ 
+-// Update — PATCH /api/v1/users/:id (частичное; используется и для toggle статуса).
++// Update — PUT /api/v1/users/:id (полная карточка; is_active обязателен).
+ func (h *Handler) Update(c fiber.Ctx) error {
+ 	var req UpdateRequest
+ 	if err := c.Bind().Body(&req); err != nil {
+ 		return errorspkg.BadRequest("invalid body")
+ 	}
+-	currentUserID, _ := c.Locals(middleware.UserIDKey).(string)
+-	resp, err := h.svc.Update(c.Context(), currentUserID, c.Params("id"), req)
++	if req.IsActive == nil {
++		return errorspkg.Validation(errorspkg.Field{Name: "is_active", Message: msgRequired})
++	}
++	resp, err := h.svc.Update(c.Context(), actorOf(c), c.Params("id"), Input{
++		Login: req.Login, Name: req.Name, Role: req.Role, Phone: req.Phone, Password: req.Password, IsActive: *req.IsActive,
++	})
+ 	if err != nil {
+ 		return err
+ 	}
+ 	return c.JSON(resp)
+ }
+ 
+-// Delete — DELETE /api/v1/users/:id.
+-func (h *Handler) Delete(c fiber.Ctx) error {
+-	currentUserID, _ := c.Locals(middleware.UserIDKey).(string)
+-	if err := h.svc.Delete(c.Context(), currentUserID, c.Params("id")); err != nil {
+-		return err
++func actorOf(c fiber.Ctx) Actor {
++	uid, _ := c.Locals(middleware.UserIDKey).(string)
++	sid, _ := c.Locals(middleware.SessionIDKey).(string)
++	return Actor{UserID: uid, SessionID: sid}
++}
++
++// parseBoolPtr — пусто/мусор = «любой» (nil).
++func parseBoolPtr(raw string) *bool {
++	if v, err := strconv.ParseBool(raw); err == nil {
++		return &v
+ 	}
+-	return c.JSON(fiber.Map{"status": "ok"})
++	return nil
+ }
+diff --git a/internal/features/users/repo.go b/internal/features/users/repo.go
+index c5ffc50..1646e00 100644
+--- a/internal/features/users/repo.go
++++ b/internal/features/users/repo.go
+@@ -2,11 +2,13 @@ package users
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"strings"
+ 	"time"
+ 
+ 	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+ )
+ 
+@@ -14,8 +16,11 @@ type User struct {
+ 	ID        string
+ 	Login     string
+ 	Name      string
++	Role      string
++	Phone     string
+ 	IsActive  bool
+ 	CreatedAt time.Time
++	UpdatedAt time.Time
+ }
+ 
+ type Repo struct {
+@@ -24,142 +29,146 @@ type Repo struct {
+ 
+ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
+ 
+-var ErrNotFound = pgx.ErrNoRows
++var (
++	ErrNotFound   = pgx.ErrNoRows
++	errLoginTaken = errors.New("users: login taken")
++)
++
++const columns = `id, login, name, role, phone, is_active, created_at, updated_at`
+ 
+-// ListParams — фильтры + сортировка + пагинация списка (стандарт списочных экранов).
+-// Sort/Order приходят из сервиса УЖЕ прошедшими whitelist: их нельзя передать
+-// параметром запроса, они склеиваются в SQL как идентификаторы.
++func scan(row pgx.Row) (*User, error) {
++	var u User
++	if err := row.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
++		return nil, err
++	}
++	return &u, nil
++}
++
++// ListParams — фильтры + сортировка + пагинация. Sort/Order приходят из сервиса УЖЕ
++// прошедшими whitelist: склеиваются в SQL как идентификаторы.
+ type ListParams struct {
+-	Login    string // подстрока, регистронезависимо
+-	Name     string // подстрока, регистронезависимо
++	Q        string // подстрока в ФИО / логине / телефоне, регистронезависимо
++	Role     string // "" = любая
+ 	IsActive *bool  // nil = любой статус
+-	Sort     string // login | name | is_active | created_at
++	Sort     string
+ 	Order    string // ASC | DESC
+ 	Limit    int
+ 	Offset   int
+ }
+ 
+ func (r *Repo) List(ctx context.Context, p ListParams) ([]User, int, error) {
+-	where := ""
++	var conds []string
+ 	var args []any
+ 	add := func(cond string, val any) {
+ 		args = append(args, val)
+-		if where == "" {
+-			where = " WHERE "
+-		} else {
+-			where += " AND "
+-		}
+-		where += fmt.Sprintf(cond, len(args))
++		conds = append(conds, fmt.Sprintf(cond, len(args)))
+ 	}
+-	if p.Login != "" {
+-		add("login ILIKE $%d", "%"+escapeLike(p.Login)+"%")
++	if p.Q != "" {
++		add("(name ILIKE $%[1]d OR login ILIKE $%[1]d OR phone ILIKE $%[1]d)", "%"+escapeLike(p.Q)+"%")
+ 	}
+-	if p.Name != "" {
+-		add("name ILIKE $%d", "%"+escapeLike(p.Name)+"%")
++	if p.Role != "" {
++		add("role = $%d", p.Role)
+ 	}
+ 	if p.IsActive != nil {
+ 		add("is_active = $%d", *p.IsActive)
+ 	}
+-
+-	// id вторым ключом — стабильный тай-брейк: без него строки с равным значением
+-	// сортировки прыгают между запросами и ломают пагинацию.
+-	order := fmt.Sprintf(" ORDER BY %s %s, id", p.Sort, p.Order)
++	where := ""
++	if len(conds) > 0 {
++		where = " WHERE " + strings.Join(conds, " AND ")
++	}
+ 
+ 	var total int
+ 	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM users`+where, args...).Scan(&total); err != nil {
+ 		return nil, 0, err
+ 	}
+-
+-	args = append(args, p.Limit, p.Offset)
+-	q := `SELECT id, login, name, is_active, created_at FROM users` + where + order +
+-		fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+-	rows, err := r.pool.Query(ctx, q, args...)
++	// id вторым ключом — стабильный порядок строк с равным значением сортировки.
++	q := `SELECT ` + columns + ` FROM users` + where +
++		fmt.Sprintf(" ORDER BY %s %s, id LIMIT $%d OFFSET $%d", p.Sort, p.Order, len(args)+1, len(args)+2)
++	rows, err := r.pool.Query(ctx, q, append(args, p.Limit, p.Offset)...)
+ 	if err != nil {
+ 		return nil, 0, err
+ 	}
+ 	defer rows.Close()
+-	var out []User
++	out := []User{}
+ 	for rows.Next() {
+-		var u User
+-		if err := rows.Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt); err != nil {
++		u, err := scan(rows)
++		if err != nil {
+ 			return nil, 0, err
+ 		}
+-		out = append(out, u)
+-	}
+-	if err := rows.Err(); err != nil {
+-		return nil, 0, err
++		out = append(out, *u)
+ 	}
+-	return out, total, nil
++	return out, total, rows.Err()
+ }
+ 
+ // escapeLike — символы шаблона LIKE в пользовательском вводе ищутся буквально.
+ func escapeLike(s string) string {
+-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+-	return r.Replace(s)
++	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+ }
+ 
+-func (r *Repo) Create(ctx context.Context, login, passwordHash, name string) (*User, error) {
+-	var u User
+-	err := r.pool.QueryRow(ctx,
+-		`INSERT INTO users (login, password_hash, name) VALUES ($1, $2, $3)
+-		 RETURNING id, login, name, is_active, created_at`,
+-		login, passwordHash, name,
+-	).Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt)
+-	if err != nil {
+-		return nil, err
+-	}
+-	return &u, nil
++// GetByID — id уже провалидирован как uuid сервисом.
++func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
++	return scan(r.pool.QueryRow(ctx, `SELECT `+columns+` FROM users WHERE id = $1::uuid`, id))
+ }
+ 
+-func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
+-	var u User
+-	// ::uuid — id хранится как uuid, а pgx шлёт Go-string параметром как text;
+-	// Postgres не кастует text→uuid неявно в сравнении (operator does not exist).
+-	err := r.pool.QueryRow(ctx,
+-		`SELECT id, login, name, is_active, created_at FROM users WHERE id = $1::uuid`, id,
+-	).Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt)
+-	if err != nil {
+-		return nil, err
+-	}
+-	return &u, nil
++func (r *Repo) Create(ctx context.Context, in Input, passwordHash string) (*User, error) {
++	u, err := scan(r.pool.QueryRow(ctx,
++		`INSERT INTO users (login, password_hash, name, role, phone, is_active)
++		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+columns,
++		in.Login, passwordHash, in.Name, in.Role, in.Phone, in.IsActive))
++	return u, mapUnique(err)
+ }
+ 
+-// Update — частичное обновление (nil-поля не трогаем); version бампается (§FE-1.1).
+-// passwordHash приходит уже посчитанным (bcrypt в сервисе — repo не знает про хеши).
+-func (r *Repo) Update(ctx context.Context, id string, name *string, isActive *bool, passwordHash *string) (*User, error) {
+-	var u User
+-	err := r.pool.QueryRow(ctx,
+-		`UPDATE users SET
+-		   name = COALESCE($2, name),
+-		   is_active = COALESCE($3, is_active),
+-		   password_hash = COALESCE($4, password_hash),
+-		   version = version + 1,
+-		   updated_at = now()
+-		 WHERE id = $1::uuid
+-		 RETURNING id, login, name, is_active, created_at`,
+-		id, name, isActive, passwordHash,
+-	).Scan(&u.ID, &u.Login, &u.Name, &u.IsActive, &u.CreatedAt)
++// UpdateCheck — проверка перед записью внутри транзакции: before — карточка до правки,
++// otherActiveAdmins — сколько активных админов, кроме правимого.
++type UpdateCheck func(before *User, otherActiveAdmins int) error
++
++// Update — полная замена карточки в транзакции. Строки всех активных админов и
++// правимого пользователя блокируются (FOR UPDATE, в порядке id — без дедлоков), поэтому
++// два параллельных «разжалования» админов не оставят систему без администратора (D29).
++// passwordHash nil — пароль не меняется. Возвращает карточку до и после.
++func (r *Repo) Update(ctx context.Context, id string, in Input, passwordHash *string, check UpdateCheck) (before, after *User, err error) {
++	tx, err := r.pool.Begin(ctx)
+ 	if err != nil {
+-		return nil, err
++		return nil, nil, err
+ 	}
+-	return &u, nil
+-}
++	defer func() { _ = tx.Rollback(ctx) }()
+ 
+-func (r *Repo) Delete(ctx context.Context, id string) error {
+-	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid`, id)
++	if _, err = tx.Exec(ctx,
++		`SELECT id FROM users WHERE (role = 'admin' AND is_active) OR id = $1::uuid ORDER BY id FOR UPDATE`, id); err != nil {
++		return nil, nil, err
++	}
++	if before, err = scan(tx.QueryRow(ctx, `SELECT `+columns+` FROM users WHERE id = $1::uuid`, id)); err != nil {
++		return nil, nil, err
++	}
++	var others int
++	if err = tx.QueryRow(ctx,
++		`SELECT count(*) FROM users WHERE role = 'admin' AND is_active AND id <> $1::uuid`, id).Scan(&others); err != nil {
++		return nil, nil, err
++	}
++	if err = check(before, others); err != nil {
++		return nil, nil, err
++	}
++	after, err = scan(tx.QueryRow(ctx,
++		`UPDATE users SET
++		   login = $2, name = $3, role = $4, phone = $5, is_active = $6,
++		   password_hash = COALESCE($7, password_hash),
++		   version = version + 1, updated_at = now()
++		 WHERE id = $1::uuid
++		 RETURNING `+columns,
++		id, in.Login, in.Name, in.Role, in.Phone, in.IsActive, passwordHash))
+ 	if err != nil {
+-		return err
++		return nil, nil, mapUnique(err)
+ 	}
+-	if tag.RowsAffected() == 0 {
+-		return ErrNotFound
++	if err = tx.Commit(ctx); err != nil {
++		return nil, nil, err
+ 	}
+-	return nil
++	return before, after, nil
+ }
+ 
+-func (r *Repo) LoginExists(ctx context.Context, login string) (bool, error) {
+-	var exists bool
+-	err := r.pool.QueryRow(ctx,
+-		`SELECT EXISTS(SELECT 1 FROM users WHERE login = $1)`, login,
+-	).Scan(&exists)
+-	return exists, err
++func mapUnique(err error) error {
++	var pgErr *pgconn.PgError
++	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
++		return errLoginTaken
++	}
++	return err
+ }
+diff --git a/internal/features/users/routes.go b/internal/features/users/routes.go
+index bfc9e8f..d7197e3 100644
+--- a/internal/features/users/routes.go
++++ b/internal/features/users/routes.go
+@@ -2,15 +2,23 @@ package users
+ 
+ import (
+ 	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
+ )
+ 
+-// Register монтирует /users под уже защищённую группу (§API-1) — RequireAuth
+-// вешает вызывающий код (router.go), здесь предполагается protected-роутер.
+-func Register(protected fiber.Router, svc *Service) {
+-	h := NewHandler(svc)
+-	g := protected.Group("/users")
++// Register — JSON API /api/v1/users и SSR-экран /users; всё только для admin
++// (plan.md §2). Удаления нет (D39) — блокировка через is_active.
++func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
++	g := api.Group("/users", a.RequireAPI(), middleware.RequireAdmin(nil))
+ 	g.Get("", h.List)
+ 	g.Post("", h.Create)
+-	g.Patch("/:id", h.Update)
+-	g.Delete("/:id", h.Delete)
++	g.Get("/:id", h.Get)
++	g.Put("/:id", h.Update)
++
++	p := app.Group("/users", a.RequireSSR(), middleware.RequireAdmin(s.status.Forbidden))
++	p.Get("", s.list)
++	p.Get("/new", s.formNew)
++	p.Post("", s.create)
++	p.Get("/:id", s.formEdit)
++	p.Post("/:id", s.update)
+ }
+diff --git a/internal/features/users/service.go b/internal/features/users/service.go
+index 5f46514..76ee56c 100644
+--- a/internal/features/users/service.go
++++ b/internal/features/users/service.go
+@@ -3,44 +3,52 @@ package users
+ import (
+ 	"context"
+ 	"errors"
++	"net/http"
+ 	"strings"
+-	"unicode/utf8"
+ 
+-	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/google/uuid"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+ 	"golang.org/x/crypto/bcrypt"
+ 
++	"github.com/kitavrus/kanban-tree/internal/session"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+-const (
+-	defaultLimit = 20
+-	maxLimit     = 100
++var (
++	ErrUserNotFound = errorspkg.New("USER_NOT_FOUND", http.StatusNotFound, "Сотрудник не найден")
++	ErrLoginTaken   = errorspkg.New("LOGIN_TAKEN", http.StatusConflict, "Логин уже занят")
++	// D29: себя не заблокировать и не остаться без администратора.
++	ErrSelfBlock = errorspkg.New("SELF_BLOCK", http.StatusConflict, "Нельзя заблокировать самого себя")
++	ErrLastAdmin = errorspkg.New("LAST_ADMIN", http.StatusConflict, "Нельзя снять роль или заблокировать последнего активного администратора")
+ )
+ 
+-type Service struct {
+-	repo *Repo
+-}
+-
+-func NewService(pool *pgxpool.Pool) *Service {
+-	return &Service{repo: NewRepo(pool)}
+-}
++const (
++	defaultLimit = 50
++	maxLimit     = 200
++)
+ 
+-// sortColumns — whitelist сортировки: значение query-параметра НЕ попадает в SQL,
+-// в SQL идёт только имя колонки из этой карты (иначе — SQL-инъекция через ORDER BY).
++// sortColumns — whitelist сортировки: значение из запроса в SQL не попадает.
+ var sortColumns = map[string]string{
+-	"login":      "login",
+ 	"name":       "name",
++	"login":      "login",
++	"role":       "role",
+ 	"is_active":  "is_active",
+ 	"created_at": "created_at",
+ }
+ 
+-const defaultSort = "created_at"
++type Service struct {
++	repo  *Repo
++	store *session.Store
++}
++
++func NewService(pool *pgxpool.Pool, store *session.Store) *Service {
++	return &Service{repo: NewRepo(pool), store: store}
++}
+ 
+-// ListQuery — сырые параметры из HTTP-слоя (уже разобранные, но не валидированные).
++// ListQuery — параметры списка из HTTP-слоя (сырые).
+ type ListQuery struct {
+-	Login    string
+-	Name     string
++	Q        string
++	Role     string
+ 	IsActive *bool
+ 	Sort     string
+ 	Order    string
+@@ -53,30 +61,24 @@ func (s *Service) List(ctx context.Context, q ListQuery) (*ListResponse, error)
+ 	if limit <= 0 {
+ 		limit = defaultLimit
+ 	}
+-	if limit > maxLimit {
+-		limit = maxLimit
+-	}
+-	if offset < 0 {
+-		offset = 0
+-	}
+-	// Неизвестное поле/направление — тихий откат к дефолту, а не 400: сортировка
+-	// приходит из URL, кривая ссылка не должна ломать экран.
++	limit = min(limit, maxLimit)
++	offset = max(offset, 0)
++	// Кривая сортировка/роль из URL — тихий откат к дефолту, экран не ломается.
+ 	col, ok := sortColumns[q.Sort]
+ 	if !ok {
+-		col = sortColumns[defaultSort]
++		col = "name"
+ 	}
+-	order := "DESC"
+-	if strings.EqualFold(q.Order, "asc") {
+-		order = "ASC"
++	order := "ASC"
++	if strings.EqualFold(q.Order, "desc") {
++		order = "DESC"
++	}
++	role := q.Role
++	if role != RoleAdmin && role != RoleExecutor {
++		role = ""
+ 	}
+ 	items, total, err := s.repo.List(ctx, ListParams{
+-		Login:    strings.TrimSpace(q.Login),
+-		Name:     strings.TrimSpace(q.Name),
+-		IsActive: q.IsActive,
+-		Sort:     col,
+-		Order:    order,
+-		Limit:    limit,
+-		Offset:   offset,
++		Q: strings.TrimSpace(q.Q), Role: role, IsActive: q.IsActive,
++		Sort: col, Order: order, Limit: limit, Offset: offset,
+ 	})
+ 	if err != nil {
+ 		return nil, err
+@@ -88,87 +90,104 @@ func (s *Service) List(ctx context.Context, q ListQuery) (*ListResponse, error)
+ 	return resp, nil
+ }
+ 
+-func (s *Service) Create(ctx context.Context, req CreateRequest) (*UserResponse, error) {
+-	var fields []errorspkg.Field
+-	if utf8.RuneCountInString(req.Login) < 3 {
+-		fields = append(fields, errorspkg.Field{Name: "login", Message: "min 3 chars"})
+-	}
+-	if utf8.RuneCountInString(req.Password) < 8 {
+-		fields = append(fields, errorspkg.Field{Name: "password", Message: "min 8 chars"})
++func (s *Service) Get(ctx context.Context, id string) (*UserResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrUserNotFound
+ 	}
+-	if len(fields) > 0 {
+-		return nil, errorspkg.Validation(fields...)
++	u, err := s.repo.GetByID(ctx, id)
++	if errors.Is(err, ErrNotFound) {
++		return nil, ErrUserNotFound
+ 	}
+-	exists, err := s.repo.LoginExists(ctx, req.Login)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	if exists {
+-		return nil, errorspkg.Conflict("login already taken")
++	resp := toResponse(*u)
++	return &resp, nil
++}
++
++func (s *Service) Create(ctx context.Context, in Input) (*UserResponse, error) {
++	in = in.normalize()
++	if f := in.validate(true); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
+ 	}
+-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
++	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	u, err := s.repo.Create(ctx, req.Login, string(hash), req.Name)
++	u, err := s.repo.Create(ctx, in, string(hash))
++	if errors.Is(err, errLoginTaken) {
++		return nil, ErrLoginTaken
++	}
+ 	if err != nil {
+-		var pgErr *pgconn.PgError
+-		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation — гонка мимо pre-check
+-			return nil, errorspkg.Conflict("login already taken")
+-		}
+ 		return nil, err
+ 	}
+ 	resp := toResponse(*u)
+ 	return &resp, nil
+ }
+ 
+-// Update — currentUserID из сессии: самому себе статус менять нельзя (не остаться
+-// без доступа), удобство важнее полноты — гарда «последний активный» намеренно не
+-// добавлена (минимальный набор каркаса, расширяется через /scaffold при надобности).
+-// Имя и пароль себе менять МОЖНО — это не самоблокировка.
+-func (s *Service) Update(ctx context.Context, currentUserID, id string, req UpdateRequest) (*UserResponse, error) {
+-	if req.IsActive != nil && id == currentUserID {
+-		return nil, errorspkg.Forbidden("cannot change your own status")
+-	}
+-	var passwordHash *string
+-	if req.Password != nil {
+-		if utf8.RuneCountInString(*req.Password) < 8 {
+-			return nil, errorspkg.Validation(errorspkg.Field{Name: "password", Message: "min 8 chars"})
+-		}
+-		hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
++// Actor — кто правит: id и текущая сессия (смена своего пароля её не убивает).
++type Actor struct {
++	UserID    string
++	SessionID string
++}
++
++// Update — полная замена карточки. Блокировка убивает все сессии сотрудника,
++// смена пароля — все, кроме текущей сессии самого сотрудника.
++func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input) (*UserResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrUserNotFound
++	}
++	in = in.normalize()
++	if f := in.validate(false); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	var hash *string
++	if in.Password != "" {
++		h, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		hashStr := string(hash)
+-		passwordHash = &hashStr
+-	}
+-	if req.Name != nil && *req.Name == "" {
+-		return nil, errorspkg.Validation(errorspkg.Field{Name: "name", Message: "required"})
++		hs := string(h)
++		hash = &hs
+ 	}
+-	u, err := s.repo.Update(ctx, id, req.Name, req.IsActive, passwordHash)
+-	if err != nil {
+-		if errors.Is(err, ErrNotFound) {
+-			return nil, errorspkg.NotFound("user not found")
++	before, after, err := s.repo.Update(ctx, id, in, hash, func(before *User, otherAdmins int) error {
++		if id == actor.UserID && !in.IsActive {
++			return ErrSelfBlock
++		}
++		wasActiveAdmin := before.Role == RoleAdmin && before.IsActive
++		staysActiveAdmin := in.Role == RoleAdmin && in.IsActive
++		if wasActiveAdmin && !staysActiveAdmin && otherAdmins == 0 {
++			return ErrLastAdmin
+ 		}
++		return nil
++	})
++	switch {
++	case errors.Is(err, ErrNotFound):
++		return nil, ErrUserNotFound
++	case errors.Is(err, errLoginTaken):
++		return nil, ErrLoginTaken
++	case err != nil:
+ 		return nil, err
+ 	}
+-	resp := toResponse(*u)
+-	return &resp, nil
+-}
+ 
+-func (s *Service) Delete(ctx context.Context, currentUserID, id string) error {
+-	if id == currentUserID {
+-		return errorspkg.Forbidden("cannot delete your own account")
+-	}
+-	if err := s.repo.Delete(ctx, id); err != nil {
+-		if errors.Is(err, ErrNotFound) {
+-			return errorspkg.NotFound("user not found")
++	switch {
++	case before.IsActive && !after.IsActive:
++		_, err = s.store.KillUser(ctx, id, "")
++	case hash != nil:
++		except := ""
++		if id == actor.UserID {
++			except = actor.SessionID
+ 		}
+-		return err
++		_, err = s.store.KillUser(ctx, id, except)
+ 	}
+-	return nil
++	if err != nil {
++		return nil, err
++	}
++	resp := toResponse(*after)
++	return &resp, nil
+ }
+ 
+ func toResponse(u User) UserResponse {
+-	return UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, IsActive: u.IsActive, CreatedAt: u.CreatedAt}
++	return UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone,
++		IsActive: u.IsActive, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
+ }
+diff --git a/internal/features/users/ssr.go b/internal/features/users/ssr.go
+new file mode 100644
+index 0000000..080500a
+--- /dev/null
++++ b/internal/features/users/ssr.go
+@@ -0,0 +1,210 @@
++package users
++
++import (
++	"errors"
++	"net/url"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Root — шаблоны экрана «Сотрудники» относительно корня модуля.
++const Root = "web/ssr/users/templates"
++
++// SSR — экран «Сотрудники» (admin): список + формы создания/правки (PRG).
++type SSR struct {
++	svc    *Service
++	r      *ssr.Renderer
++	shell  ssr.ShellBuilder
++	status *ssr.StatusPages
++}
++
++func NewSSR(svc *Service, r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages) *SSR {
++	return &SSR{svc: svc, r: r, shell: shell, status: status}
++}
++
++// ListVM — список сотрудников. Фильтры — в URL (reload/назад/ссылка сохраняют состояние).
++type ListVM struct {
++	Shell  ssr.Shell
++	Q      string
++	Role   string
++	Status string // "" | "active" | "blocked"
++	Flash  string
++	Items  []UserResponse
++	Total  int
++}
++
++// FormVM — форма сотрудника (создание/правка).
++type FormVM struct {
++	Shell    ssr.Shell
++	IsNew    bool
++	ID       string
++	Login    string
++	Name     string
++	Role     string
++	Phone    string
++	IsActive bool
++	Errors   map[string]string // поле → текст ошибки
++	Error    string            // общая ошибка формы
++}
++
++var flashes = map[string]string{
++	"created": "Сотрудник создан",
++	"saved":   "Изменения сохранены",
++}
++
++// list — GET /users.
++func (h *SSR) list(c fiber.Ctx) error {
++	vm := ListVM{Q: c.Query("q"), Role: c.Query("role"), Status: c.Query("status"), Flash: flashes[c.Query("flash")]}
++	var active *bool
++	switch vm.Status {
++	case "active":
++		active = ptr(true)
++	case "blocked":
++		active = ptr(false)
++	default:
++		vm.Status = ""
++	}
++	resp, err := h.svc.List(c.Context(), ListQuery{Q: vm.Q, Role: vm.Role, IsActive: active, Limit: maxLimit})
++	if err != nil {
++		return err
++	}
++	vm.Items, vm.Total = resp.Items, resp.Total
++	vm.Shell = h.shell.Build(c, "Сотрудники")
++	return h.r.Page(c, "list", vm)
++}
++
++// formNew — GET /users/new.
++func (h *SSR) formNew(c fiber.Ctx) error {
++	return h.renderForm(c, fiber.StatusOK, FormVM{IsNew: true, Role: RoleExecutor, IsActive: true})
++}
++
++// create — POST /users.
++func (h *SSR) create(c fiber.Ctx) error {
++	vm := formFrom(c)
++	vm.IsNew = true
++	_, err := h.svc.Create(c.Context(), Input{
++		Login: vm.Login, Name: vm.Name, Role: vm.Role, Phone: vm.Phone, Password: c.FormValue("password"), IsActive: vm.IsActive,
++	})
++	if err != nil {
++		return h.formError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/users?flash=created")
++}
++
++// formEdit — GET /users/:id.
++func (h *SSR) formEdit(c fiber.Ctx) error {
++	u, err := h.svc.Get(c.Context(), c.Params("id"))
++	if errors.Is(err, ErrUserNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	return h.renderForm(c, fiber.StatusOK, FormVM{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone, IsActive: u.IsActive})
++}
++
++// update — POST /users/:id.
++func (h *SSR) update(c fiber.Ctx) error {
++	vm := formFrom(c)
++	vm.ID = c.Params("id")
++	_, err := h.svc.Update(c.Context(), actorOf(c), vm.ID, Input{
++		Login: vm.Login, Name: vm.Name, Role: vm.Role, Phone: vm.Phone, Password: c.FormValue("password"), IsActive: vm.IsActive,
++	})
++	if errors.Is(err, ErrUserNotFound) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return h.formError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/users?flash=saved")
++}
++
++func formFrom(c fiber.Ctx) FormVM {
++	return FormVM{
++		Login:    c.FormValue("login"),
++		Name:     c.FormValue("name"),
++		Role:     c.FormValue("role"),
++		Phone:    c.FormValue("phone"),
++		IsActive: c.FormValue("is_active") == "on",
++	}
++}
++
++// formError — ошибки сервиса → форма с текстами (422 валидация, 409 конфликты).
++func (h *SSR) formError(c fiber.Ctx, vm FormVM, err error) error {
++	var app *errorspkg.AppError
++	if !errors.As(err, &app) || app.HTTP >= fiber.StatusInternalServerError {
++		return err
++	}
++	vm.Errors = map[string]string{}
++	for _, f := range app.Fields {
++		vm.Errors[f.Name] = fieldText(f.Name, f.Message)
++	}
++	switch {
++	case errors.Is(err, ErrLoginTaken):
++		vm.Errors["login"] = ErrLoginTaken.Message
++	case len(app.Fields) == 0:
++		vm.Error = app.Message
++	}
++	status := app.HTTP
++	if len(app.Fields) > 0 {
++		status = fiber.StatusUnprocessableEntity
++	}
++	return h.renderForm(c, status, vm)
++}
++
++func (h *SSR) renderForm(c fiber.Ctx, status int, vm FormVM) error {
++	title := "Сотрудник"
++	if vm.IsNew {
++		title = "Новый сотрудник"
++	}
++	vm.Shell = h.shell.Build(c, title)
++	c.Status(status)
++	return h.r.Page(c, "form", vm)
++}
++
++// fieldText — код ошибки поля → текст под полем.
++func fieldText(field, code string) string {
++	switch code {
++	case msgRequired:
++		return "Обязательное поле"
++	case msgTooLong:
++		if field == "password" {
++			return "Слишком длинный пароль: до 72 латинских символов (кириллица — до 36)"
++		}
++		return "Слишком длинное значение"
++	case msgTooShort:
++		if field == "password" {
++			return "Минимум 8 символов"
++		}
++		return "Минимум 3 символа"
++	case msgInvalidFormat:
++		if field == "login" {
++			return "Только латинские буквы, цифры, точка, дефис и подчёркивание"
++		}
++		return "Только цифры, пробелы и символы + ( ) -"
++	}
++	return "Недопустимое значение"
++}
++
++// FilterURL — ссылка списка с фильтрами (для шаблона: сброс одного фильтра и т.п.).
++func (vm ListVM) FilterURL(q, role, status string) string {
++	v := url.Values{}
++	if q != "" {
++		v.Set("q", q)
++	}
++	if role != "" {
++		v.Set("role", role)
++	}
++	if status != "" {
++		v.Set("status", status)
++	}
++	if len(v) == 0 {
++		return "/users"
++	}
++	return "/users?" + v.Encode()
++}
++
++func ptr[T any](v T) *T { return &v }
+diff --git a/internal/features/users/users_http_live_test.go b/internal/features/users/users_http_live_test.go
+new file mode 100644
+index 0000000..0c911c4
+--- /dev/null
++++ b/internal/features/users/users_http_live_test.go
+@@ -0,0 +1,445 @@
++//go:build integration
++
++package users_test
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/url"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// UsersLiveSuite (§TD-8): сотрудники — API и SSR-экран, права, D29, сессии.
++type UsersLiveSuite struct {
++	testutil.LiveSuite
++	admin *testutil.Browser
++}
++
++func TestUsersLive(t *testing.T) {
++	suite.Run(t, &UsersLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *UsersLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("boss", "password1", "Главный Админ", "admin", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("boss", "password1")
++}
++
++type user struct {
++	ID       string `json:"id"`
++	Login    string `json:"login"`
++	Name     string `json:"name"`
++	Role     string `json:"role"`
++	Phone    string `json:"phone"`
++	IsActive bool   `json:"is_active"`
++}
++
++type apiErr struct {
++	Code    string `json:"code"`
++	Details *struct {
++		Fields []struct{ Name, Message string } `json:"fields"`
++	} `json:"details"`
++}
++
++func (s *UsersLiveSuite) errOf(body []byte) apiErr {
++	var e apiErr
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	return e
++}
++
++func (s *UsersLiveSuite) fields(body []byte) map[string]string {
++	e := s.errOf(body)
++	s.Require().NotNil(e.Details, string(body))
++	m := map[string]string{}
++	for _, f := range e.Details.Fields {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func (s *UsersLiveSuite) create(b *testutil.Browser, body map[string]any) (int, user, []byte) {
++	st, raw := b.Do(http.MethodPost, "/api/v1/users", body)
++	var u user
++	if st == http.StatusCreated {
++		s.Require().NoError(json.Unmarshal(raw, &u))
++	}
++	return st, u, raw
++}
++
++func (s *UsersLiveSuite) put(b *testutil.Browser, id string, body map[string]any) (int, []byte) {
++	return b.Do(http.MethodPut, "/api/v1/users/"+id, body)
++}
++
++func card(u user, patch map[string]any) map[string]any {
++	m := map[string]any{"login": u.Login, "name": u.Name, "role": u.Role, "phone": u.Phone, "is_active": u.IsActive}
++	for k, v := range patch {
++		m[k] = v
++	}
++	return m
++}
++
++func (s *UsersLiveSuite) newExecutor(login string) user {
++	st, u, raw := s.create(s.admin, map[string]any{"login": login, "name": "Исп " + login, "role": "executor", "password": "password1"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	return u
++}
++
++// ---- happy path ----
++
++func (s *UsersLiveSuite) TestCreateGetListUpdate() {
++	st, u, raw := s.create(s.admin, map[string]any{
++		"login": "  Sidorov.P ", "name": " Сидоров Пётр ", "role": "executor", "phone": "+7 (900) 111-22-33", "password": "password1",
++	})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal("sidorov.p", u.Login, "логин нормализован")
++	s.Equal("Сидоров Пётр", u.Name)
++	s.True(u.IsActive, "по умолчанию активен")
++	s.NotContains(string(raw), "password")
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/users/"+u.ID, nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(raw), `"phone":"+7 (900) 111-22-33"`)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/users?q=сидоров&role=executor&is_active=true", nil)
++	s.Equal(http.StatusOK, st)
++	var list struct {
++		Items  []user `json:"items"`
++		Total  int    `json:"total"`
++		Limit  int    `json:"limit"`
++		Offset int    `json:"offset"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(1, list.Total)
++	s.Equal("sidorov.p", list.Items[0].Login)
++	s.Equal(50, list.Limit)
++
++	st, raw = s.put(s.admin, u.ID, card(u, map[string]any{"name": "Сидоров П.", "role": "admin", "phone": ""}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Contains(string(raw), `"role":"admin"`)
++	s.Contains(string(raw), `"phone":""`)
++
++	b := s.NewBrowser()
++	b.Login("SIDOROV.P", "password1")
++}
++
++func (s *UsersLiveSuite) TestListEnvelopeAndPaging() {
++	for i := 0; i < 3; i++ {
++		s.newExecutor(fmt.Sprintf("page-%d", i))
++	}
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/users?q=page-&limit=2&offset=1&sort=login&order=asc", nil)
++	s.Equal(http.StatusOK, st)
++	var list struct {
++		Items []user `json:"items"`
++		Total int    `json:"total"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(3, list.Total)
++	s.Require().Len(list.Items, 2)
++	s.Equal("page-1", list.Items[0].Login)
++
++	// мусор в параметрах списка — дефолты, не 500
++	st, _ = s.admin.Do(http.MethodGet, "/api/v1/users?limit=-5&offset=-1&sort=password_hash;drop&order=sideways&role=root&is_active=maybe", nil)
++	s.Equal(http.StatusOK, st)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/users?q=%25", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(raw), `"total":0`, "% ищется буквально")
++}
++
++// ---- authz ----
++
++func (s *UsersLiveSuite) TestExecutorAndAnonymousHaveNoAccess() {
++	u := s.newExecutor("no-access")
++	exec := s.NewBrowser()
++	exec.Login("no-access", "password1")
++
++	for _, c := range []struct{ method, path string }{
++		{http.MethodGet, "/api/v1/users"},
++		{http.MethodGet, "/api/v1/users/" + u.ID},
++		{http.MethodPost, "/api/v1/users"},
++		{http.MethodPut, "/api/v1/users/" + u.ID},
++	} {
++		st, raw := exec.Do(c.method, c.path, map[string]any{})
++		if c.method == http.MethodGet {
++			st, raw = exec.Do(c.method, c.path, nil)
++		}
++		s.Equal(http.StatusForbidden, st, "%s %s", c.method, c.path)
++		s.Equal("FORBIDDEN", s.errOf(raw).Code)
++	}
++	st, page := exec.Do(http.MethodGet, "/users", nil)
++	s.Equal(http.StatusForbidden, st)
++	s.Contains(string(page), "Нет доступа")
++	st, page = exec.Do(http.MethodGet, "/", nil)
++	s.Equal(http.StatusOK, st)
++	s.NotContains(string(page), `href="/users"`, "исполнитель не видит пункт «Сотрудники»")
++
++	anon := s.NewBrowser()
++	st, _ = anon.Do(http.MethodGet, "/api/v1/users", nil)
++	s.Equal(http.StatusUnauthorized, st)
++}
++
++func (s *UsersLiveSuite) TestRoleChangeAppliesWithoutRelogin() {
++	u := s.newExecutor("promote-me")
++	b := s.NewBrowser()
++	b.Login("promote-me", "password1")
++	st, _ := b.Do(http.MethodGet, "/api/v1/users", nil)
++	s.Equal(http.StatusForbidden, st)
++
++	st, raw := s.put(s.admin, u.ID, card(u, map[string]any{"role": "admin"}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, _ = b.Do(http.MethodGet, "/api/v1/users", nil)
++	s.Equal(http.StatusOK, st, "та же сессия — уже admin")
++}
++
++// ---- validation / garbage → 400, not 500 ----
++
++func (s *UsersLiveSuite) TestCreate_Validation() {
++	st, _, raw := s.create(s.admin, map[string]any{})
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal(map[string]string{"login": "required", "name": "required", "role": "invalid", "password": "required"}, s.fields(raw))
++
++	st, _, raw = s.create(s.admin, map[string]any{
++		"login": "ab", "name": strings.Repeat("я", 201), "role": "root", "phone": "abc", "password": "1234567",
++	})
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal(map[string]string{"login": "too_short", "name": "too_long", "role": "invalid", "phone": "invalid_format", "password": "too_short"}, s.fields(raw))
++
++	// пароль длиннее 72 байт (предел bcrypt) — 400, не 500
++	for _, pwd := range []string{strings.Repeat("a", 73), strings.Repeat("п", 37)} {
++		st, _, raw = s.create(s.admin, map[string]any{"login": "long-pwd", "name": "x", "role": "executor", "password": pwd})
++		s.Equal(http.StatusBadRequest, st, string(raw))
++		s.Equal("too_long", s.fields(raw)["password"])
++	}
++	st, _, raw = s.create(s.admin, map[string]any{"login": "pwd-72", "name": "x", "role": "executor", "password": strings.Repeat("п", 36)})
++	s.Equal(http.StatusCreated, st, "ровно 72 байта — можно: %s", raw)
++
++	st, _, raw = s.create(s.admin, map[string]any{"login": "кириллица", "name": "x", "role": "executor", "password": "password1"})
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal("invalid_format", s.fields(raw)["login"])
++
++	for _, body := range []string{`{`, `null`, `"str"`, `{"login":"x","name":"x","role":"executor","password":"password1","password_hash":"h"}`, `{"is_active":"yes"}`} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/users", body)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
++	}
++}
++
++func (s *UsersLiveSuite) TestCreate_DuplicateLogin409() {
++	s.newExecutor("dup-login")
++	st, _, raw := s.create(s.admin, map[string]any{"login": "DUP-LOGIN", "name": "x", "role": "executor", "password": "password1"})
++	s.Equal(http.StatusConflict, st)
++	s.Equal("LOGIN_TAKEN", s.errOf(raw).Code)
++
++	other := s.newExecutor("dup-other")
++	st, raw = s.put(s.admin, other.ID, card(other, map[string]any{"login": "dup-login"}))
++	s.Equal(http.StatusConflict, st)
++	s.Equal("LOGIN_TAKEN", s.errOf(raw).Code)
++}
++
++func (s *UsersLiveSuite) TestUpdate_BadIDAndBody() {
++	u := s.newExecutor("upd-bad")
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000", "1'; DROP TABLE users;--"} {
++		st, raw := s.put(s.admin, url.PathEscape(id), card(u, nil))
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, _ = s.admin.Do(http.MethodGet, "/api/v1/users/"+url.PathEscape(id), nil)
++		s.Equal(http.StatusNotFound, st)
++	}
++	body := card(u, nil)
++	delete(body, "is_active")
++	st, raw := s.put(s.admin, u.ID, body)
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal("required", s.fields(raw)["is_active"])
++
++	st, raw = s.put(s.admin, u.ID, card(u, map[string]any{"password": "short"}))
++	s.Equal(http.StatusBadRequest, st)
++	s.Equal("too_short", s.fields(raw)["password"])
++}
++
++func (s *UsersLiveSuite) TestNoDelete() {
++	u := s.newExecutor("no-delete")
++	st, _ := s.admin.Do(http.MethodDelete, "/api/v1/users/"+u.ID, nil)
++	s.NotEqual(http.StatusOK, st, "удаления нет (D39)")
++	st, _ = s.admin.Do(http.MethodGet, "/api/v1/users/"+u.ID, nil)
++	s.Equal(http.StatusOK, st)
++}
++
++// ---- sessions ----
++
++func (s *UsersLiveSuite) TestBlockKillsSessions_UnblockAllowsLogin() {
++	u := s.newExecutor("to-block")
++	phone, laptop := s.NewBrowser(), s.NewBrowser()
++	phone.Login("to-block", "password1")
++	laptop.Login("to-block", "password1")
++
++	st, raw := s.put(s.admin, u.ID, card(u, map[string]any{"is_active": false}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	for _, b := range []*testutil.Browser{phone, laptop} {
++		st, _ := b.Do(http.MethodGet, "/api/v1/auth/me", nil)
++		s.Equal(http.StatusUnauthorized, st, "все сессии заблокированного убиты")
++	}
++	st, raw = s.NewBrowser().Do(http.MethodPost, "/api/v1/auth/login", map[string]string{"login": "to-block", "password": "password1"})
++	s.Equal(http.StatusForbidden, st)
++	s.Equal("USER_BLOCKED", s.errOf(raw).Code)
++
++	st, _ = s.put(s.admin, u.ID, card(u, map[string]any{"is_active": true}))
++	s.Require().Equal(http.StatusOK, st)
++	s.NewBrowser().Login("to-block", "password1")
++}
++
++func (s *UsersLiveSuite) TestPasswordChange_KillsOtherSessions_KeepsOwnCurrent() {
++	s.SeedUser("pwd-admin", "password1", "Пароль Админ", "admin", true)
++	cur, other := s.NewBrowser(), s.NewBrowser()
++	cur.Login("pwd-admin", "password1")
++	other.Login("pwd-admin", "password1")
++
++	st, raw := cur.Do(http.MethodGet, "/api/v1/users?q=pwd-admin", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct{ Items []user }
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	me := list.Items[0]
++
++	st, raw = s.put(cur, me.ID, card(me, map[string]any{"password": "new-password"}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, _ = cur.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusOK, st, "текущая сессия того, кто сменил себе пароль, жива")
++	st, _ = other.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusUnauthorized, st, "остальные сессии убиты")
++	s.NewBrowser().Login("pwd-admin", "new-password")
++
++	// админ меняет пароль исполнителю — убиваются все его сессии
++	u := s.newExecutor("pwd-exec")
++	eb := s.NewBrowser()
++	eb.Login("pwd-exec", "password1")
++	st, _ = s.put(s.admin, u.ID, card(u, map[string]any{"password": "other-pass"}))
++	s.Require().Equal(http.StatusOK, st)
++	st, _ = eb.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusUnauthorized, st)
++}
++
++// ---- D29 ----
++
++func (s *UsersLiveSuite) TestSelfBlock409() {
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/users?q=boss", nil)
++	s.Require().Equal(http.StatusOK, st)
++	var list struct{ Items []user }
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	st, raw = s.put(s.admin, list.Items[0].ID, card(list.Items[0], map[string]any{"is_active": false}))
++	s.Equal(http.StatusConflict, st)
++	s.Equal("SELF_BLOCK", s.errOf(raw).Code)
++}
++
++// ---- SSR-экран ----
++
++func (s *UsersLiveSuite) TestSSR_CreateEditFlow() {
++	st, page := s.admin.Do(http.MethodGet, "/users", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="users-table"`)
++
++	form := url.Values{"name": {"Волков Олег"}, "login": {"ssr-volkov"}, "role": {"executor"}, "phone": {"8 900"}, "password": {"password1"}, "is_active": {"on"}}
++	resp := s.admin.Request(http.MethodPost, "/users", form, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/users?flash=created", resp.Header.Get("Location"))
++
++	st, page = s.admin.Do(http.MethodPost, "/users", url.Values{"name": {""}, "login": {"ssr-volkov"}, "role": {"executor"}, "password": {"1"}})
++	s.Equal(http.StatusUnprocessableEntity, st)
++	s.Contains(string(page), "Обязательное поле")
++	s.Contains(string(page), "Минимум 8 символов")
++
++	st, page = s.admin.Do(http.MethodPost, "/users", url.Values{"name": {"x"}, "login": {"SSR-VOLKOV"}, "role": {"executor"}, "password": {"password1"}})
++	s.Equal(http.StatusConflict, st)
++	s.Contains(string(page), "Логин уже занят")
++
++	st, page = s.admin.Do(http.MethodGet, "/users?q=ssr-volkov", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), "Волков Олег")
++
++	st, _ = s.admin.Do(http.MethodGet, "/users/not-a-uuid", nil)
++	s.Equal(http.StatusNotFound, st)
++	st, _ = s.admin.Do(http.MethodPost, "/users/00000000-0000-0000-0000-000000000000", form)
++	s.Equal(http.StatusNotFound, st)
++}
++
++// LastAdminSuite — отдельная БД: ровно контролируемый набор администраторов.
++type LastAdminSuite struct {
++	testutil.LiveSuite
++}
++
++func TestLastAdminLive(t *testing.T) {
++	suite.Run(t, &LastAdminSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *LastAdminSuite) put(b *testutil.Browser, id string, body map[string]any) (int, string) {
++	st, raw := b.Do(http.MethodPut, "/api/v1/users/"+id, body)
++	return st, string(raw)
++}
++
++func adminCard(login string, patch map[string]any) map[string]any {
++	m := map[string]any{"login": login, "name": login, "role": "admin", "phone": "", "is_active": true}
++	for k, v := range patch {
++		m[k] = v
++	}
++	return m
++}
++
++func (s *LastAdminSuite) TestLastActiveAdminProtected_AndRaceKeepsOne() {
++	aID := s.SeedUser("adm-a", "password1", "adm-a", "admin", true)
++	a := s.NewBrowser()
++	a.Login("adm-a", "password1")
++
++	st, raw := s.put(a, aID, adminCard("adm-a", map[string]any{"role": "executor"}))
++	s.Equal(http.StatusConflict, st, "единственный админ не снимает с себя роль")
++	s.Contains(raw, "LAST_ADMIN")
++
++	bID := s.SeedUser("adm-b", "password1", "adm-b", "admin", true)
++	b := s.NewBrowser()
++	b.Login("adm-b", "password1")
++	st, raw = s.put(a, aID, adminCard("adm-a", map[string]any{"role": "executor"}))
++	s.Equal(http.StatusOK, st, "при втором админе — можно: %s", raw)
++	st, _ = s.put(b, aID, adminCard("adm-a", nil))
++	s.Require().Equal(http.StatusOK, st)
++	st, raw = s.put(b, bID, adminCard("adm-b", map[string]any{"is_active": false}))
++	s.Equal(http.StatusConflict, st)
++	s.Contains(raw, "SELF_BLOCK")
++
++	// гонка: A разжалует B, B разжалует A одновременно — ровно один успех (D29, FOR UPDATE)
++	a.Login("adm-a", "password1")
++	for round := 0; round < 5; round++ {
++		var wg sync.WaitGroup
++		codes := make([]int, 2)
++		wg.Add(2)
++		go func() {
++			defer wg.Done()
++			codes[0], _ = s.put(a, bID, adminCard("adm-b", map[string]any{"role": "executor"}))
++		}()
++		go func() {
++			defer wg.Done()
++			codes[1], _ = s.put(b, aID, adminCard("adm-a", map[string]any{"role": "executor"}))
++		}()
++		wg.Wait()
++		ok := 0
++		for _, c := range codes {
++			if c == http.StatusOK {
++				ok++
++			} else {
++				// проигравший: 409 LAST_ADMIN в транзакции или 403, если победитель
++				// успел закоммитить до его проверки роли — оба исхода детерминированно безопасны
++				s.Contains([]int{http.StatusConflict, http.StatusForbidden}, c)
++			}
++		}
++		s.Equal(1, ok, "раунд %d: %v", round, codes)
++		var admins int
++		s.Require().NoError(s.Pool.QueryRow(s.T().Context(), `SELECT count(*) FROM users WHERE role='admin' AND is_active`).Scan(&admins))
++		s.Equal(1, admins, "раунд %d: остался ровно один админ", round)
++		// восстановить обоих админами (победитель — тот, кто остался admin)
++		_, err := s.Pool.Exec(s.T().Context(), `UPDATE users SET role='admin' WHERE login IN ('adm-a','adm-b')`)
++		s.Require().NoError(err)
++	}
++}
+diff --git a/internal/features/users/validate.go b/internal/features/users/validate.go
+new file mode 100644
+index 0000000..9e6d78f
+--- /dev/null
++++ b/internal/features/users/validate.go
+@@ -0,0 +1,101 @@
++package users
++
++import (
++	"regexp"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Роли (plan.md §2).
++const (
++	RoleAdmin    = "admin"
++	RoleExecutor = "executor"
++)
++
++// Коды ошибок полей (details.fields[].message) — клиент переводит их в текст.
++const (
++	msgRequired      = "required"
++	msgTooShort      = "too_short"
++	msgTooLong       = "too_long"
++	msgInvalidFormat = "invalid_format"
++	msgInvalid       = "invalid"
++)
++
++// Границы полей.
++const (
++	loginMin    = 3
++	loginMax    = 50
++	nameMax     = 200
++	phoneMax    = 50
++	passwordMin = 8
++	// passwordMaxBytes — предел bcrypt: длиннее 72 БАЙТ он отказывается хешировать
++	// (кириллица — 2 байта на символ, т.е. ~36 символов).
++	passwordMaxBytes = 72
++)
++
++var (
++	loginRe = regexp.MustCompile(`^[a-z0-9._-]+$`)
++	phoneRe = regexp.MustCompile(`^[0-9+()\- ]*$`)
++)
++
++// Input — нормализованные поля карточки сотрудника (общие для API и SSR-формы).
++type Input struct {
++	Login    string
++	Name     string
++	Role     string
++	Phone    string
++	Password string // пусто при правке — не менять
++	IsActive bool
++}
++
++// normalize — trim, логин в нижний регистр (вход регистронезависимый).
++func (in Input) normalize() Input {
++	in.Login = strings.ToLower(strings.TrimSpace(in.Login))
++	in.Name = strings.TrimSpace(in.Name)
++	in.Role = strings.TrimSpace(in.Role)
++	in.Phone = strings.TrimSpace(in.Phone)
++	return in
++}
++
++// validate — ошибки полей; passwordRequired — при создании пароль обязателен.
++func (in Input) validate(passwordRequired bool) []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	switch n := utf8.RuneCountInString(in.Login); {
++	case n == 0:
++		add("login", msgRequired)
++	case n < loginMin:
++		add("login", msgTooShort)
++	case n > loginMax:
++		add("login", msgTooLong)
++	case !loginRe.MatchString(in.Login):
++		add("login", msgInvalidFormat)
++	}
++	switch n := utf8.RuneCountInString(in.Name); {
++	case n == 0:
++		add("name", msgRequired)
++	case n > nameMax:
++		add("name", msgTooLong)
++	}
++	if in.Role != RoleAdmin && in.Role != RoleExecutor {
++		add("role", msgInvalid)
++	}
++	switch {
++	case utf8.RuneCountInString(in.Phone) > phoneMax:
++		add("phone", msgTooLong)
++	case !phoneRe.MatchString(in.Phone):
++		add("phone", msgInvalidFormat)
++	}
++	switch n := utf8.RuneCountInString(in.Password); {
++	case n == 0 && passwordRequired:
++		add("password", msgRequired)
++	case n > 0 && n < passwordMin:
++		add("password", msgTooShort)
++	case len(in.Password) > passwordMaxBytes:
++		add("password", msgTooLong)
++	}
++	return f
++}
+diff --git a/internal/features/users/validate_test.go b/internal/features/users/validate_test.go
+new file mode 100644
+index 0000000..dea69e5
+--- /dev/null
++++ b/internal/features/users/validate_test.go
+@@ -0,0 +1,106 @@
++package users
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++func valid() Input {
++	return Input{Login: "sidorov", Name: "Сидоров Пётр", Role: RoleExecutor, Phone: "+7 (900) 111-22-33", Password: "secret123", IsActive: true}
++}
++
++func fieldsOf(fs []errorspkg.Field) map[string]string {
++	m := map[string]string{}
++	for _, f := range fs {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func TestInput_Normalize(t *testing.T) {
++	in := Input{Login: "  Sidorov.P ", Name: "  Пётр  ", Role: " admin ", Phone: " 123 "}.normalize()
++	assert.Equal(t, "sidorov.p", in.Login)
++	assert.Equal(t, "Пётр", in.Name)
++	assert.Equal(t, RoleAdmin, in.Role)
++	assert.Equal(t, "123", in.Phone)
++}
++
++func TestInput_Validate_OK(t *testing.T) {
++	assert.Empty(t, valid().validate(true))
++	in := valid()
++	in.Password = ""
++	assert.Empty(t, in.validate(false), "при правке пустой пароль — не менять")
++	in.Phone = ""
++	assert.Empty(t, in.validate(false), "телефон необязателен")
++}
++
++func TestInput_Validate_Fields(t *testing.T) {
++	cases := []struct {
++		name   string
++		mutate func(*Input)
++		create bool
++		field  string
++		msg    string
++	}{
++		{"логин пуст", func(i *Input) { i.Login = "" }, true, "login", msgRequired},
++		{"логин 2 символа", func(i *Input) { i.Login = "ab" }, true, "login", msgTooShort},
++		{"логин 3 символа — граница", func(i *Input) { i.Login = "abc" }, true, "", ""},
++		{"логин 50 — граница", func(i *Input) { i.Login = strings.Repeat("a", 50) }, true, "", ""},
++		{"логин 51", func(i *Input) { i.Login = strings.Repeat("a", 51) }, true, "login", msgTooLong},
++		{"логин кириллица", func(i *Input) { i.Login = "сидоров" }, true, "login", msgInvalidFormat},
++		{"логин с пробелом", func(i *Input) { i.Login = "a b" }, true, "login", msgInvalidFormat},
++		{"логин эмодзи", func(i *Input) { i.Login = "abc😀" }, true, "login", msgInvalidFormat},
++		{"ФИО пусто", func(i *Input) { i.Name = "" }, true, "name", msgRequired},
++		{"ФИО 200 — граница", func(i *Input) { i.Name = strings.Repeat("я", 200) }, true, "", ""},
++		{"ФИО 201", func(i *Input) { i.Name = strings.Repeat("я", 201) }, true, "name", msgTooLong},
++		{"ФИО эмодзи допустимы", func(i *Input) { i.Name = "Пётр 🔧" }, true, "", ""},
++		{"роль мусор", func(i *Input) { i.Role = "root" }, true, "role", msgInvalid},
++		{"роль пусто", func(i *Input) { i.Role = "" }, true, "role", msgInvalid},
++		{"телефон буквы", func(i *Input) { i.Phone = "8-900-abc" }, true, "phone", msgInvalidFormat},
++		{"телефон 51", func(i *Input) { i.Phone = strings.Repeat("1", 51) }, true, "phone", msgTooLong},
++		{"пароль пуст при создании", func(i *Input) { i.Password = "" }, true, "password", msgRequired},
++		{"пароль 7", func(i *Input) { i.Password = "1234567" }, true, "password", msgTooShort},
++		{"пароль 8 — граница", func(i *Input) { i.Password = "12345678" }, true, "", ""},
++		{"пароль 7 при правке", func(i *Input) { i.Password = "1234567" }, false, "password", msgTooShort},
++		{"пароль 72 байта — граница", func(i *Input) { i.Password = strings.Repeat("x", 72) }, true, "", ""},
++		{"пароль 73 байта", func(i *Input) { i.Password = strings.Repeat("x", 73) }, true, "password", msgTooLong},
++		{"пароль 36 кириллических = 72 байта", func(i *Input) { i.Password = strings.Repeat("п", 36) }, true, "", ""},
++		{"пароль 37 кириллических = 74 байта", func(i *Input) { i.Password = strings.Repeat("п", 37) }, true, "password", msgTooLong},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			in := valid()
++			tc.mutate(&in)
++			got := fieldsOf(in.normalize().validate(tc.create))
++			if tc.field == "" {
++				assert.Empty(t, got)
++				return
++			}
++			assert.Equal(t, map[string]string{tc.field: tc.msg}, got)
++		})
++	}
++}
++
++func TestInput_Validate_AllAtOnce(t *testing.T) {
++	got := fieldsOf(Input{}.validate(true))
++	assert.Equal(t, map[string]string{"login": msgRequired, "name": msgRequired, "role": msgInvalid, "password": msgRequired}, got)
++}
++
++func TestFieldText(t *testing.T) {
++	assert.Equal(t, "Минимум 8 символов", fieldText("password", msgTooShort))
++	assert.Equal(t, "Минимум 3 символа", fieldText("login", msgTooShort))
++	assert.Contains(t, fieldText("login", msgInvalidFormat), "латинские")
++	assert.Contains(t, fieldText("phone", msgInvalidFormat), "цифры")
++	assert.Equal(t, "Недопустимое значение", fieldText("role", msgInvalid))
++	assert.Contains(t, fieldText("password", msgTooLong), "72")
++}
++
++func TestListVM_FilterURL(t *testing.T) {
++	var vm ListVM
++	assert.Equal(t, "/users", vm.FilterURL("", "", ""))
++	assert.Equal(t, "/users?q=%D0%BF%D1%91%D1%82%D1%80&role=admin&status=active", vm.FilterURL("пётр", "admin", "active"))
++}
+diff --git a/internal/server/json.go b/internal/server/json.go
+new file mode 100644
+index 0000000..abb0d4f
+--- /dev/null
++++ b/internal/server/json.go
+@@ -0,0 +1,21 @@
++package server
++
++import (
++	"bytes"
++	"encoding/json"
++	"errors"
++)
++
++// strictJSON — декодер тела запросов: неизвестные поля и мусор после объекта → ошибка
++// (хендлер отвечает 400, §TD-4 «валидация/мусор → 400, не 500»).
++func strictJSON(data []byte, v any) error {
++	dec := json.NewDecoder(bytes.NewReader(data))
++	dec.DisallowUnknownFields()
++	if err := dec.Decode(v); err != nil {
++		return err
++	}
++	if dec.More() {
++		return errors.New("json: unexpected data after object")
++	}
++	return nil
++}
+diff --git a/internal/server/middleware/auth.go b/internal/server/middleware/auth.go
+index dadd96f..1a5c59b 100644
+--- a/internal/server/middleware/auth.go
++++ b/internal/server/middleware/auth.go
+@@ -1,31 +1,163 @@
+ package middleware
+ 
+ import (
++	"context"
++	"errors"
++	"net/url"
++	"time"
++
+ 	"github.com/gofiber/fiber/v3"
+-	"github.com/redis/go-redis/v9"
+ 
+-	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/internal/session"
++	"github.com/kitavrus/kanban-tree/internal/ssr"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+-// SessionKeyPrefix — ключи сессий в Redis: session:<sid> → user_id.
+-const SessionKeyPrefix = "session:"
++const (
++	// SessionCookieName — HttpOnly cookie с id сессии.
++	SessionCookieName = "sid"
++	// UserIDKey — Locals-ключ id авторизованного пользователя (string uuid).
++	UserIDKey = "user_id"
++	// PrincipalKey — Locals-ключ *Principal текущего пользователя.
++	PrincipalKey = "principal"
++	// SessionIDKey — Locals-ключ sid текущей сессии (смена своего пароля не убивает её).
++	SessionIDKey = "session_id"
++
++	RoleAdmin    = ssr.RoleAdmin
++	RoleExecutor = "executor"
++)
++
++// Principal — кто делает запрос: читается из БД на каждом запросе, поэтому смена
++// роли и блокировка действуют сразу, без перелогина.
++type Principal struct {
++	ID       string
++	Login    string
++	Name     string
++	Role     string
++	IsActive bool
++}
++
++func (p *Principal) IsAdmin() bool { return p.Role == RoleAdmin }
+ 
+-// UserIDKey — Locals-ключ авторизованного пользователя.
+-const UserIDKey = "user_id"
++// PrincipalLoader — пользователь по id; (nil, nil) — пользователя нет.
++type PrincipalLoader func(ctx context.Context, id string) (*Principal, error)
++
++// Auth — гарды авторизации поверх сессий.
++type Auth struct {
++	Store  *session.Store
++	Load   PrincipalLoader
++	Secure bool          // Secure-флаг cookie sid
++	MaxAge time.Duration // срок cookie = абсолютный потолок сессии
++}
++
++// resolve — пользователь текущего запроса или nil. Заблокированный/удалённый
++// пользователь с живой сессией — сессия убивается, запрос анонимный.
++func (a *Auth) resolve(c fiber.Ctx) (*Principal, error) {
++	sid := c.Cookies(SessionCookieName)
++	if sid == "" {
++		return nil, nil
++	}
++	d, err := a.Store.Get(c.Context(), sid)
++	if errors.Is(err, session.ErrNoSession) {
++		return nil, nil
++	}
++	if err != nil {
++		return nil, err
++	}
++	p, err := a.Load(c.Context(), d.UserID)
++	if err != nil {
++		return nil, err
++	}
++	if p == nil || !p.IsActive {
++		_ = a.Store.Kill(c.Context(), sid)
++		return nil, nil
++	}
++	c.Locals(UserIDKey, p.ID)
++	c.Locals(PrincipalKey, p)
++	c.Locals(SessionIDKey, sid)
++	c.Locals(ssr.LocalViewer, ssr.Viewer{Name: p.Name, Role: p.Role})
++	return p, nil
++}
++
++// Optional — определить пользователя, если он вошёл; не требует входа (страница /login).
++func (a *Auth) Optional() fiber.Handler {
++	return func(c fiber.Ctx) error {
++		if _, err := a.resolve(c); err != nil {
++			return err
++		}
++		return c.Next()
++	}
++}
+ 
+-// RequireAuth (session-режим): cookie sid → Redis lookup. Нет/протухла → 401.
+-func RequireAuth(cfg *config.Config, rdb *redis.Client) fiber.Handler {
++// RequireAPI — JSON API: без сессии → 401 UNAUTHORIZED.
++func (a *Auth) RequireAPI() fiber.Handler {
+ 	return func(c fiber.Ctx) error {
+-		sid := c.Cookies("sid")
+-		if sid == "" {
++		p, err := a.resolve(c)
++		if err != nil {
++			return err
++		}
++		if p == nil {
+ 			return errorspkg.Unauthorized("no session")
+ 		}
+-		userID, err := rdb.Get(c.Context(), SessionKeyPrefix+sid).Result()
++		return c.Next()
++	}
++}
++
++// RequireSSR — страницы: без сессии → 302 на /login?redirect=<исходный URL>.
++func (a *Auth) RequireSSR() fiber.Handler {
++	return func(c fiber.Ctx) error {
++		p, err := a.resolve(c)
+ 		if err != nil {
+-			return errorspkg.Unauthorized("invalid session")
++			return err
++		}
++		if p == nil {
++			return c.Redirect().Status(fiber.StatusFound).To("/login?redirect=" + url.QueryEscape(c.OriginalURL()))
+ 		}
+-		c.Locals(UserIDKey, userID)
+ 		return c.Next()
+ 	}
+ }
++
++// RequireAdmin — только admin (после RequireAPI/RequireSSR). Иначе — forbidden
++// (для API — 403 JSON; для страниц вызывающий передаёт рендер 403-страницы).
++func RequireAdmin(forbidden fiber.Handler) fiber.Handler {
++	return func(c fiber.Ctx) error {
++		if p := CurrentPrincipal(c); p != nil && p.IsAdmin() {
++			return c.Next()
++		}
++		if forbidden != nil {
++			return forbidden(c)
++		}
++		return errorspkg.Forbidden("admin only")
++	}
++}
++
++// CurrentPrincipal — пользователь запроса (nil — анонимный).
++func CurrentPrincipal(c fiber.Ctx) *Principal {
++	p, _ := c.Locals(PrincipalKey).(*Principal)
++	return p
++}
++
++// SetSessionCookie / ClearSessionCookie — cookie sid: HttpOnly, SameSite=Strict (plan.md §2).
++func (a *Auth) SetSessionCookie(c fiber.Ctx, sid string) {
++	c.Cookie(&fiber.Cookie{
++		Name:     SessionCookieName,
++		Value:    sid,
++		Path:     "/",
++		HTTPOnly: true,
++		Secure:   a.Secure,
++		SameSite: fiber.CookieSameSiteStrictMode,
++		MaxAge:   int(a.MaxAge.Seconds()),
++	})
++}
++
++func (a *Auth) ClearSessionCookie(c fiber.Ctx) {
++	c.Cookie(&fiber.Cookie{
++		Name:     SessionCookieName,
++		Value:    "",
++		Path:     "/",
++		HTTPOnly: true,
++		Secure:   a.Secure,
++		SameSite: fiber.CookieSameSiteStrictMode,
++		MaxAge:   -1,
++	})
++}
+diff --git a/internal/server/middleware/csrf.go b/internal/server/middleware/csrf.go
+new file mode 100644
+index 0000000..6118b73
+--- /dev/null
++++ b/internal/server/middleware/csrf.go
+@@ -0,0 +1,84 @@
++package middleware
++
++import (
++	"crypto/rand"
++	"crypto/subtle"
++	"encoding/hex"
++	"net/url"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++const (
++	CSRFCookieName = "kt_csrf"
++	CSRFHeaderName = "X-Csrf-Token"
++	CSRFFormField  = "_csrf"
++	csrfTokenLen   = 64 // hex от 32 байт
++)
++
++// CSRF — stateless double-submit (plan.md §2): токен живёт в HttpOnly-cookie kt_csrf,
++// страница получает его через <meta name="csrf-token"> (ssr.LocalCSRFToken), формы шлют
++// полем _csrf, fetch — заголовком X-Csrf-Token. Небезопасный метод без совпадения
++// присланного токена с cookie → 403 CSRF_INVALID. Хранилища нет: токен переживает
++// рестарт сервера и не протухает на долго открытой форме.
++//
++// Дополнительно: при наличии заголовка Origin он обязан совпадать с хостом запроса
++// (запрос с чужого сайта отбивается даже при утечке токена).
++func CSRF(secure bool) fiber.Handler {
++	return func(c fiber.Ctx) error {
++		cookieToken := c.Cookies(CSRFCookieName)
++		token := cookieToken
++		if !validCSRFToken(token) {
++			token = newCSRFToken()
++			c.Cookie(&fiber.Cookie{
++				Name:     CSRFCookieName,
++				Value:    token,
++				Path:     "/",
++				HTTPOnly: true,
++				Secure:   secure,
++				SameSite: fiber.CookieSameSiteStrictMode,
++			})
++		}
++		c.Locals(ssr.LocalCSRFToken, token)
++
++		switch c.Method() {
++		case fiber.MethodGet, fiber.MethodHead, fiber.MethodOptions, fiber.MethodTrace:
++			return c.Next()
++		}
++		if origin := c.Get(fiber.HeaderOrigin); origin != "" && !sameOrigin(origin, c.Host()) {
++			return errorspkg.New("CSRF_INVALID", fiber.StatusForbidden, "cross-origin request")
++		}
++		sent := c.Get(CSRFHeaderName)
++		if sent == "" {
++			sent = c.FormValue(CSRFFormField)
++		}
++		if !validCSRFToken(cookieToken) || subtle.ConstantTimeCompare([]byte(sent), []byte(cookieToken)) != 1 {
++			return errorspkg.New("CSRF_INVALID", fiber.StatusForbidden, "csrf token missing or invalid")
++		}
++		return c.Next()
++	}
++}
++
++func newCSRFToken() string {
++	raw := make([]byte, 32)
++	if _, err := rand.Read(raw); err != nil {
++		panic(err) // crypto/rand не падает на поддерживаемых ОС
++	}
++	return hex.EncodeToString(raw)
++}
++
++func validCSRFToken(t string) bool {
++	if len(t) != csrfTokenLen {
++		return false
++	}
++	_, err := hex.DecodeString(t)
++	return err == nil
++}
++
++func sameOrigin(origin, host string) bool {
++	u, err := url.Parse(origin)
++	return err == nil && u.Host != "" && u.Host == host
++}
+diff --git a/internal/server/middleware/csrf_test.go b/internal/server/middleware/csrf_test.go
+new file mode 100644
+index 0000000..b555930
+--- /dev/null
++++ b/internal/server/middleware/csrf_test.go
+@@ -0,0 +1,29 @@
++package middleware
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++)
++
++func TestCSRFToken(t *testing.T) {
++	a, b := newCSRFToken(), newCSRFToken()
++	assert.Len(t, a, csrfTokenLen)
++	assert.NotEqual(t, a, b)
++	assert.True(t, validCSRFToken(a))
++
++	assert.False(t, validCSRFToken(""))
++	assert.False(t, validCSRFToken(a[:63]))
++	assert.False(t, validCSRFToken(strings.Repeat("z", 64)), "не hex")
++	assert.False(t, validCSRFToken(a+"0"))
++}
++
++func TestSameOrigin(t *testing.T) {
++	assert.True(t, sameOrigin("http://localhost:8080", "localhost:8080"))
++	assert.True(t, sameOrigin("https://kt.example", "kt.example"))
++	assert.False(t, sameOrigin("http://evil.example", "localhost:8080"))
++	assert.False(t, sameOrigin("http://localhost:8081", "localhost:8080"))
++	assert.False(t, sameOrigin("null", "localhost:8080"))
++	assert.False(t, sameOrigin("::::", "localhost:8080"))
++}
+diff --git a/internal/server/router.go b/internal/server/router.go
+index 8f56bdc..af14554 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/kitavrus/kanban-tree/internal/features/users"
+ 	"github.com/kitavrus/kanban-tree/internal/observability"
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/internal/session"
+ 	"github.com/kitavrus/kanban-tree/internal/ssr"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+@@ -31,6 +32,7 @@ import (
+ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis.Client) (*fiber.App, error) {
+ 	app := fiber.New(fiber.Config{
+ 		ErrorHandler: errorspkg.FiberErrorHandler,
++		JSONDecoder:  strictJSON,
+ 	})
+ 
+ 	app.Use(recover.New())
+@@ -55,26 +57,45 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	})
+ 	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
+ 
+-	api := app.Group("/api/v1")
+-	auth.Register(api, auth.NewService(pool, rdb, cfg), cfg, rdb)
+-
+-	// Защищённая зона: новые фичи регистрируются здесь через protected.Group(...).
+-	protected := api.Group("", middleware.RequireAuth(cfg, rdb))
+-	users.Register(protected, users.NewService(pool))
+-
+ 	// SSR: общая статика (Bootstrap, app.css, js/) — один маунт на проект (путь — как
+ 	// у /z-scaffold). Шаблонов под корнем статики НЕТ (они в web/ssr/_layout): фильтр
+ 	// по URL обходится кодированием/регистром/`..`, поэтому закрытость — структурная.
+ 	app.Use("/assets/ssr-shared", static.New("./web/ssr/_shared"))
+ 
++	// CSRF (double-submit) — на все маршруты ниже, включая /api/v1 и /login: API ходит
++	// с той же cookie-сессией из браузера.
++	app.Use(middleware.CSRF(cfg.Auth.CookieSecure))
++
++	store := session.NewStore(rdb, cfg.Auth.SessionTTL, cfg.Auth.SessionAbsoluteMax)
++	authSvc := auth.NewService(pool, rdb, store, cfg.Auth)
++	guard := &middleware.Auth{Store: store, Load: authSvc.Principal, Secure: cfg.Auth.CookieSecure, MaxAge: cfg.Auth.SessionAbsoluteMax}
++
+ 	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
+-	shell := ssr.NewShellBuilder("/")
++	shell := ssr.NewShellBuilder("/", "/users")
+ 
++	sharedR, err := ssr.NewRenderer(ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
++	status := ssr.NewStatusPages(sharedR, shell)
++	authR, err := ssr.NewRenderer(auth.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
++	usersR, err := ssr.NewRenderer(users.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
+ 	homeR, err := ssr.NewRenderer(home.Root, ssr.SharedRoot)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	(&home.Handlers{R: homeR, Shell: shell}).Register(app)
++
++	api := app.Group("/api/v1")
++	auth.Register(app, api, auth.NewHandler(authSvc, guard, authR, shell), guard)
++	usersSvc := users.NewService(pool, store)
++	users.Register(app, api, guard, users.NewHandler(usersSvc), users.NewSSR(usersSvc, usersR, shell, status))
++	(&home.Handlers{R: homeR, Shell: shell}).Register(app, guard)
+ 
+ 	return app, nil
+ }
+diff --git a/internal/server/shell_http_live_test.go b/internal/server/shell_http_live_test.go
+index fc183ce..b1520bd 100644
+--- a/internal/server/shell_http_live_test.go
++++ b/internal/server/shell_http_live_test.go
+@@ -23,6 +23,12 @@ func TestShellLive(t *testing.T) {
+ 	suite.Run(t, &ShellLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
+ }
+ 
++func (s *ShellLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("shell-admin", "password1", "Админ Шелл", "admin", true)
++	s.LoginAs("shell-admin", "password1")
++}
++
+ func (s *ShellLiveSuite) get(path string) (*http.Response, string) {
+ 	resp, err := s.Client.Get(s.BaseURL + path)
+ 	s.Require().NoError(err)
+@@ -40,6 +46,7 @@ func (s *ShellLiveSuite) TestHomeRendersLayout() {
+ 	s.Contains(body, `data-testid="home-placeholder"`)
+ 	s.Contains(body, `<meta name="csrf-token"`)
+ 	s.Contains(body, `href="/assets/ssr-shared/app.css"`)
++	s.Contains(body, `<span class="app-avatar">АШ</span>`, "вошедший пользователь в сайдбаре")
+ }
+ 
+ func (s *ShellLiveSuite) TestSharedAssetsServed() {
+diff --git a/internal/session/store.go b/internal/session/store.go
+new file mode 100644
+index 0000000..bd8d3cd
+--- /dev/null
++++ b/internal/session/store.go
+@@ -0,0 +1,177 @@
++// Package session — opaque-сессии в Redis (plan.md §2, D35).
++//
++//	session:<sid>        → JSON {user_id, created_at}, TTL = sliding TTL (продлевается на каждом Get)
++//	user_sessions:<uid>  → SET sid'ов пользователя — убить все сессии при блокировке/смене пароля
++//
++// Абсолютный потолок: сессия старше absoluteMax убивается на Get независимо от активности.
++// Роль/активность в сессии НЕ хранятся — middleware читает их из БД на каждом запросе,
++// поэтому смена роли действует сразу, без перелогина.
++package session
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"time"
++
++	"github.com/redis/go-redis/v9"
++)
++
++// ErrNoSession — сессии нет: не было, истекла по TTL/потолку или убита.
++var ErrNoSession = errors.New("session: no session")
++
++const (
++	sessionPrefix = "session:"
++	indexPrefix   = "user_sessions:"
++)
++
++// Data — содержимое сессии.
++type Data struct {
++	UserID    string    `json:"user_id"`
++	CreatedAt time.Time `json:"created_at"`
++}
++
++type Store struct {
++	rdb         *redis.Client
++	ttl         time.Duration
++	absoluteMax time.Duration
++	now         func() time.Time
++}
++
++func NewStore(rdb *redis.Client, ttl, absoluteMax time.Duration) *Store {
++	return &Store{rdb: rdb, ttl: ttl, absoluteMax: absoluteMax, now: time.Now}
++}
++
++func sessionKey(sid string) string  { return sessionPrefix + sid }
++func indexKey(userID string) string { return indexPrefix + userID }
++
++// Create — новая сессия пользователя; возвращает sid (256 бит случайности).
++func (s *Store) Create(ctx context.Context, userID string) (string, error) {
++	raw := make([]byte, 32)
++	if _, err := rand.Read(raw); err != nil {
++		return "", err
++	}
++	sid := hex.EncodeToString(raw)
++	payload, err := json.Marshal(Data{UserID: userID, CreatedAt: s.now().UTC()})
++	if err != nil {
++		return "", err
++	}
++	if err := s.pruneIndex(ctx, userID); err != nil {
++		return "", err
++	}
++	pipe := s.rdb.TxPipeline()
++	pipe.Set(ctx, sessionKey(sid), payload, s.ttl)
++	pipe.SAdd(ctx, indexKey(userID), sid)
++	pipe.Expire(ctx, indexKey(userID), s.absoluteMax)
++	if _, err := pipe.Exec(ctx); err != nil {
++		return "", fmt.Errorf("session create: %w", err)
++	}
++	return sid, nil
++}
++
++// pruneIndex — убрать из индекса пользователя sid'ы истёкших по TTL сессий: иначе
++// у часто входящего пользователя индекс растёт без предела (ключ продлевается входом).
++func (s *Store) pruneIndex(ctx context.Context, userID string) error {
++	sids, err := s.rdb.SMembers(ctx, indexKey(userID)).Result()
++	if err != nil || len(sids) == 0 {
++		return err
++	}
++	pipe := s.rdb.Pipeline()
++	exists := make([]*redis.IntCmd, len(sids))
++	for i, sid := range sids {
++		exists[i] = pipe.Exists(ctx, sessionKey(sid))
++	}
++	if _, err := pipe.Exec(ctx); err != nil {
++		return fmt.Errorf("session prune: %w", err)
++	}
++	var dead []any
++	for i, e := range exists {
++		if e.Val() == 0 {
++			dead = append(dead, sids[i])
++		}
++	}
++	if len(dead) == 0 {
++		return nil
++	}
++	return s.rdb.SRem(ctx, indexKey(userID), dead...).Err()
++}
++
++// Get — данные сессии со sliding-продлением TTL; ErrNoSession — сессии нет.
++func (s *Store) Get(ctx context.Context, sid string) (*Data, error) {
++	if sid == "" {
++		return nil, ErrNoSession
++	}
++	raw, err := s.rdb.Get(ctx, sessionKey(sid)).Bytes()
++	if errors.Is(err, redis.Nil) {
++		return nil, ErrNoSession
++	}
++	if err != nil {
++		return nil, fmt.Errorf("session get: %w", err)
++	}
++	var d Data
++	if err := json.Unmarshal(raw, &d); err != nil {
++		return nil, fmt.Errorf("session decode: %w", err)
++	}
++	if s.now().Sub(d.CreatedAt) >= s.absoluteMax {
++		_ = s.Kill(ctx, sid)
++		return nil, ErrNoSession
++	}
++	// TTL не выходит за потолок: иначе ключ переживёт absoluteMax в Redis
++	ttl := s.ttl
++	if left := s.absoluteMax - s.now().Sub(d.CreatedAt); left < ttl {
++		ttl = left
++	}
++	if err := s.rdb.Expire(ctx, sessionKey(sid), ttl).Err(); err != nil {
++		return nil, fmt.Errorf("session renew: %w", err)
++	}
++	return &d, nil
++}
++
++// Kill — удалить одну сессию (выход).
++func (s *Store) Kill(ctx context.Context, sid string) error {
++	raw, err := s.rdb.Get(ctx, sessionKey(sid)).Bytes()
++	if errors.Is(err, redis.Nil) {
++		return nil
++	}
++	if err != nil {
++		return fmt.Errorf("session kill: %w", err)
++	}
++	var d Data
++	_ = json.Unmarshal(raw, &d)
++	pipe := s.rdb.TxPipeline()
++	pipe.Del(ctx, sessionKey(sid))
++	if d.UserID != "" {
++		pipe.SRem(ctx, indexKey(d.UserID), sid)
++	}
++	_, err = pipe.Exec(ctx)
++	return err
++}
++
++// KillUser — удалить все сессии пользователя, кроме exceptSID (пусто — все).
++// Возвращает число убитых сессий.
++func (s *Store) KillUser(ctx context.Context, userID, exceptSID string) (int, error) {
++	sids, err := s.rdb.SMembers(ctx, indexKey(userID)).Result()
++	if err != nil {
++		return 0, fmt.Errorf("session kill user: %w", err)
++	}
++	pipe := s.rdb.TxPipeline()
++	killed := 0
++	for _, sid := range sids {
++		if sid == exceptSID {
++			continue
++		}
++		pipe.Del(ctx, sessionKey(sid))
++		pipe.SRem(ctx, indexKey(userID), sid)
++		killed++
++	}
++	if killed == 0 {
++		return 0, nil
++	}
++	if _, err := pipe.Exec(ctx); err != nil {
++		return 0, fmt.Errorf("session kill user: %w", err)
++	}
++	return killed, nil
++}
+diff --git a/internal/session/store_integration_test.go b/internal/session/store_integration_test.go
+new file mode 100644
+index 0000000..6850631
+--- /dev/null
++++ b/internal/session/store_integration_test.go
+@@ -0,0 +1,153 @@
++//go:build integration
++
++package session
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/redis/go-redis/v9"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// StoreSuite — хранилище сессий против настоящего Redis (dockertest, BaseSuite).
++type StoreSuite struct {
++	testutil.BaseSuite
++	rdb *redis.Client
++	ctx context.Context
++}
++
++func TestStore(t *testing.T) { suite.Run(t, new(StoreSuite)) }
++
++func (s *StoreSuite) SetupSuite() {
++	s.BaseSuite.SetupSuite()
++	s.rdb = redis.NewClient(&redis.Options{Addr: s.RedisAddr()})
++	s.ctx = context.Background()
++}
++
++func (s *StoreSuite) TearDownSuite() {
++	_ = s.rdb.Close()
++	s.BaseSuite.TearDownSuite()
++}
++
++// clock — управляемое время для проверки потолка.
++type clock struct{ t time.Time }
++
++func (c *clock) now() time.Time { return c.t }
++
++func (s *StoreSuite) newStore(ttl, max time.Duration) (*Store, *clock) {
++	c := &clock{t: time.Now()}
++	st := NewStore(s.rdb, ttl, max)
++	st.now = c.now
++	return st, c
++}
++
++func (s *StoreSuite) TestCreateGet() {
++	st, _ := s.newStore(time.Hour, 24*time.Hour)
++	sid, err := st.Create(s.ctx, "u-create")
++	s.Require().NoError(err)
++	s.Len(sid, 64)
++
++	d, err := st.Get(s.ctx, sid)
++	s.Require().NoError(err)
++	s.Equal("u-create", d.UserID)
++
++	_, err = st.Get(s.ctx, "nope")
++	s.ErrorIs(err, ErrNoSession)
++	_, err = st.Get(s.ctx, "")
++	s.ErrorIs(err, ErrNoSession)
++}
++
++func (s *StoreSuite) TestSlidingRenewsTTL() {
++	st, _ := s.newStore(time.Hour, 24*time.Hour)
++	sid, err := st.Create(s.ctx, "u-sliding")
++	s.Require().NoError(err)
++	s.Require().NoError(s.rdb.Expire(s.ctx, sessionKey(sid), time.Minute).Err())
++
++	_, err = st.Get(s.ctx, sid)
++	s.Require().NoError(err)
++	ttl := s.rdb.TTL(s.ctx, sessionKey(sid)).Val()
++	s.Greater(ttl, 59*time.Minute, "Get продлевает TTL до полного")
++}
++
++func (s *StoreSuite) TestTTLExpiry() {
++	st, _ := s.newStore(time.Second, time.Hour)
++	sid, err := st.Create(s.ctx, "u-ttl")
++	s.Require().NoError(err)
++	// ждём истечения, НЕ вызывая Get: он продлевает TTL (sliding) и сессия не истечёт
++	s.Require().Eventually(func() bool {
++		return s.rdb.Exists(s.ctx, sessionKey(sid)).Val() == 0
++	}, 5*time.Second, 100*time.Millisecond)
++	_, err = st.Get(s.ctx, sid)
++	s.ErrorIs(err, ErrNoSession)
++}
++
++func (s *StoreSuite) TestAbsoluteMax() {
++	st, c := s.newStore(time.Hour, 2*time.Hour)
++	sid, err := st.Create(s.ctx, "u-abs")
++	s.Require().NoError(err)
++
++	c.t = c.t.Add(90 * time.Minute)
++	_, err = st.Get(s.ctx, sid)
++	s.Require().NoError(err, "активная сессия живёт до потолка")
++	ttl := s.rdb.TTL(s.ctx, sessionKey(sid)).Val()
++	s.LessOrEqual(ttl, 31*time.Minute, "продление не выходит за потолок")
++
++	c.t = c.t.Add(31 * time.Minute)
++	_, err = st.Get(s.ctx, sid)
++	s.ErrorIs(err, ErrNoSession, "после потолка — перелогин даже при активности")
++	s.Zero(s.rdb.Exists(s.ctx, sessionKey(sid)).Val(), "ключ удалён")
++}
++
++func (s *StoreSuite) TestKill() {
++	st, _ := s.newStore(time.Hour, 24*time.Hour)
++	sid, err := st.Create(s.ctx, "u-kill")
++	s.Require().NoError(err)
++	s.Require().NoError(st.Kill(s.ctx, sid))
++	_, err = st.Get(s.ctx, sid)
++	s.ErrorIs(err, ErrNoSession)
++	s.False(s.rdb.SIsMember(s.ctx, indexKey("u-kill"), sid).Val())
++	s.NoError(st.Kill(s.ctx, sid), "повторный Kill — не ошибка")
++}
++
++func (s *StoreSuite) TestKillUser() {
++	st, _ := s.newStore(time.Hour, 24*time.Hour)
++	a, _ := st.Create(s.ctx, "u-all")
++	b, _ := st.Create(s.ctx, "u-all")
++	c, _ := st.Create(s.ctx, "u-all")
++	other, _ := st.Create(s.ctx, "u-other")
++
++	n, err := st.KillUser(s.ctx, "u-all", b)
++	s.Require().NoError(err)
++	s.Equal(2, n)
++	_, err = st.Get(s.ctx, a)
++	s.ErrorIs(err, ErrNoSession)
++	_, err = st.Get(s.ctx, c)
++	s.ErrorIs(err, ErrNoSession)
++	_, err = st.Get(s.ctx, b)
++	s.NoError(err, "исключённая сессия жива")
++	_, err = st.Get(s.ctx, other)
++	s.NoError(err, "чужие сессии не тронуты")
++
++	n, err = st.KillUser(s.ctx, "u-all", "")
++	s.Require().NoError(err)
++	s.Equal(1, n)
++	n, err = st.KillUser(s.ctx, "u-nobody", "")
++	s.Require().NoError(err)
++	s.Zero(n)
++}
++
++func (s *StoreSuite) TestCreatePrunesDeadSessionsFromIndex() {
++	st, _ := s.newStore(time.Hour, 24*time.Hour)
++	dead, _ := st.Create(s.ctx, "u-prune")
++	alive, _ := st.Create(s.ctx, "u-prune")
++	s.Require().NoError(s.rdb.Del(s.ctx, sessionKey(dead)).Err()) // истекла по TTL
++
++	fresh, err := st.Create(s.ctx, "u-prune")
++	s.Require().NoError(err)
++	members := s.rdb.SMembers(s.ctx, indexKey("u-prune")).Val()
++	s.ElementsMatch([]string{alive, fresh}, members, "мёртвый sid вычищен из индекса")
++}
+diff --git a/internal/ssr/render.go b/internal/ssr/render.go
+index 0f360b8..b8d3450 100644
+--- a/internal/ssr/render.go
++++ b/internal/ssr/render.go
+@@ -100,8 +100,13 @@ func (r *Renderer) Render(w io.Writer, page, layout string, vm any) error {
+ 
+ // Page — полная страница: layout "base" + блоки страницы.
+ func (r *Renderer) Page(c fiber.Ctx, page string, vm any) error {
++	return r.PageLayout(c, page, "base", vm)
++}
++
++// PageLayout — страница в указанном layout ("bare" — без сайдбара: вход, ошибки).
++func (r *Renderer) PageLayout(c fiber.Ctx, page, layout string, vm any) error {
+ 	var buf bytes.Buffer
+-	if err := r.Render(&buf, page, "base", vm); err != nil {
++	if err := r.Render(&buf, page, layout, vm); err != nil {
+ 		return err
+ 	}
+ 	c.Type("html", "utf-8")
+diff --git a/internal/ssr/status.go b/internal/ssr/status.go
+new file mode 100644
+index 0000000..763615a
+--- /dev/null
++++ b/internal/ssr/status.go
+@@ -0,0 +1,37 @@
++package ssr
++
++import "github.com/gofiber/fiber/v3"
++
++// StatusVM — служебная страница (403/404) внутри общего layout.
++type StatusVM struct {
++	Shell   Shell
++	Code    int
++	Heading string
++	Message string
++}
++
++// StatusPages — рендер служебных страниц из общего набора (web/ssr/_layout/templates/pages).
++type StatusPages struct {
++	R     *Renderer
++	Shell ShellBuilder
++}
++
++// NewStatusPages — r собран как NewRenderer(SharedRoot): страницы общего набора.
++func NewStatusPages(r *Renderer, shell ShellBuilder) *StatusPages {
++	return &StatusPages{R: r, Shell: shell}
++}
++
++// Forbidden — 403 для страниц, недоступных по роли (исполнитель → справочники).
++func (s *StatusPages) Forbidden(c fiber.Ctx) error {
++	return s.render(c, fiber.StatusForbidden, "Нет доступа", "Раздел доступен только администратору.")
++}
++
++// NotFound — 404 для несуществующих записей в SSR-экранах.
++func (s *StatusPages) NotFound(c fiber.Ctx) error {
++	return s.render(c, fiber.StatusNotFound, "Не найдено", "Запись не существует или была удалена.")
++}
++
++func (s *StatusPages) render(c fiber.Ctx, code int, heading, msg string) error {
++	c.Status(code)
++	return s.R.Page(c, "status", StatusVM{Shell: s.Shell.Build(c, heading), Code: code, Heading: heading, Message: msg})
++}
+diff --git a/pkg/testutil/login.go b/pkg/testutil/login.go
+index a2228d1..840dffb 100644
+--- a/pkg/testutil/login.go
++++ b/pkg/testutil/login.go
+@@ -3,21 +3,140 @@
+ package testutil
+ 
+ import (
+-	"fmt"
++	"bytes"
++	"context"
++	"encoding/json"
++	"io"
+ 	"net/http"
++	"net/http/cookiejar"
++	"net/url"
+ 	"strings"
++
++	"github.com/stretchr/testify/require"
++	"golang.org/x/crypto/bcrypt"
+ )
+ 
+ // defaultExtraEnv — session-режим: обязательного auth-env нет.
+ func defaultExtraEnv() []string { return nil }
+ 
+-// LoginAs — реальный логин через реальный endpoint (session-режим, логин/пароль —
+-// не email); cookie sid остаётся в jar. Auth-стабы запрещены §TD-8. Пользователя
+-// сидируй через s.Pool.
+-func (s *LiveSuite) LoginAs(login, password string) {
+-	body := strings.NewReader(fmt.Sprintf(`{"login":%q,"password":%q}`, login, password))
+-	resp, err := s.Client.Post(s.BaseURL+"/api/v1/auth/login", "application/json", body)
++// csrfCookie / csrfHeader — double-submit CSRF (internal/server/middleware/csrf.go).
++const (
++	csrfCookie = "kt_csrf"
++	csrfHeader = "X-Csrf-Token"
++)
++
++// Browser — отдельный «браузер»: свой cookie jar (своя сессия и CSRF-cookie),
++// редиректы НЕ следуются (тест видит 302/303 и Location).
++type Browser struct {
++	s      *LiveSuite
++	Client *http.Client
++}
++
++// NewBrowser — новый браузер с пустым jar (другой пользователь / другое устройство).
++func (s *LiveSuite) NewBrowser() *Browser {
++	jar, err := cookiejar.New(nil)
+ 	s.Require().NoError(err)
++	return &Browser{s: s, Client: &http.Client{
++		Jar:           jar,
++		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
++	}}
++}
++
++// browser — браузер по умолчанию поверх s.Client (его jar).
++func (s *LiveSuite) browser() *Browser {
++	return &Browser{s: s, Client: &http.Client{
++		Jar:           s.Client.Jar,
++		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
++	}}
++}
++
++// CSRFToken — токен из cookie kt_csrf (при отсутствии — получить его GET /login).
++func (b *Browser) CSRFToken() string {
++	u, _ := url.Parse(b.s.BaseURL)
++	for i := 0; i < 2; i++ {
++		for _, c := range b.Client.Jar.Cookies(u) {
++			if c.Name == csrfCookie {
++				return c.Value
++			}
++		}
++		resp, err := b.Client.Get(b.s.BaseURL + "/login")
++		b.s.Require().NoError(err)
++		_ = resp.Body.Close()
++	}
++	b.s.FailNow("нет cookie " + csrfCookie)
++	return ""
++}
++
++// Request — запрос как из браузера: X-Csrf-Token на мутациях (если не задан в headers).
++// body: nil | string/[]byte (как есть) | url.Values (форма) | значение (JSON).
++func (b *Browser) Request(method, path string, body any, headers map[string]string) *http.Response {
++	var r io.Reader
++	ct := ""
++	switch v := body.(type) {
++	case nil:
++	case string:
++		r, ct = strings.NewReader(v), "application/json"
++	case []byte:
++		r, ct = bytes.NewReader(v), "application/json"
++	case url.Values:
++		r, ct = strings.NewReader(v.Encode()), "application/x-www-form-urlencoded"
++	default:
++		raw, err := json.Marshal(v)
++		b.s.Require().NoError(err)
++		r, ct = bytes.NewReader(raw), "application/json"
++	}
++	req, err := http.NewRequest(method, b.s.BaseURL+path, r)
++	b.s.Require().NoError(err)
++	if ct != "" {
++		req.Header.Set("Content-Type", ct)
++	}
++	if method != http.MethodGet && method != http.MethodHead {
++		if _, ok := headers[csrfHeader]; !ok {
++			req.Header.Set(csrfHeader, b.CSRFToken())
++		}
++	}
++	for k, v := range headers {
++		if v == "" {
++			req.Header.Del(k)
++			continue
++		}
++		req.Header.Set(k, v)
++	}
++	resp, err := b.Client.Do(req)
++	b.s.Require().NoError(err)
++	return resp
++}
++
++// Do — Request + прочитанное тело.
++func (b *Browser) Do(method, path string, body any) (int, []byte) {
++	resp := b.Request(method, path, body, nil)
+ 	defer resp.Body.Close()
+-	s.Require().Equal(http.StatusOK, resp.StatusCode, "реальный логин обязан пройти (§TD-8)")
++	out, err := io.ReadAll(resp.Body)
++	b.s.Require().NoError(err)
++	return resp.StatusCode, out
++}
++
++// Login — реальный вход через POST /api/v1/auth/login (§TD-8, auth-стабы запрещены).
++func (b *Browser) Login(login, password string) {
++	status, body := b.Do(http.MethodPost, "/api/v1/auth/login", map[string]string{"login": login, "password": password})
++	b.s.Require().Equal(http.StatusOK, status, "реальный логин обязан пройти (§TD-8): %s", body)
++}
++
++// Do / LoginAs — то же через браузер по умолчанию (s.Client).
++func (s *LiveSuite) Do(method, path string, body any) (int, []byte) {
++	return s.browser().Do(method, path, body)
++}
++
++func (s *LiveSuite) LoginAs(login, password string) { s.browser().Login(login, password) }
++
++// SeedUser — пользователь прямо в БД (bcrypt MinCost — быстро); возвращает id.
++func (s *BaseSuite) SeedUser(login, password, name, role string, active bool) string {
++	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
++	require.NoError(s.T(), err)
++	var id string
++	err = s.Pool.QueryRow(context.Background(),
++		`INSERT INTO users (login, password_hash, name, role, is_active) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
++		login, string(hash), name, role, active).Scan(&id)
++	require.NoError(s.T(), err)
++	return id
+ }

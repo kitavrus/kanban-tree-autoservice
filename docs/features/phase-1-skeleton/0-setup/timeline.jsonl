@@ -1,0 +1,19 @@
+{"type": "stage_start", "stage": "light-exec", "ts": "2026-09-25T12:49:21+05:00"}
+{"type": "wait_start", "stage": "light-exec", "label": "light-exec", "ts": "2026-09-25T12:51:45+05:00"}
+{"type": "wait_end", "ts": "2026-09-25T12:54:59+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-25T13:09:02+05:00"}
+{"type": "stage_end", "stage": "light-exec", "status": "ok", "ts": "2026-09-25T13:09:49+05:00"}
+{"type": "stage_start", "stage": "light-judge", "ts": "2026-09-25T13:09:49+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 4579, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 491204, "ts": "2026-09-25T13:10:03+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.4, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.0}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-25T13:10:03+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 4174, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 491204, "ts": "2026-09-25T13:10:10+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.3, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.0}, {"name": "contract", "s": 0.0}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-25T13:10:10+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 4174, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 492046, "ts": "2026-09-25T13:11:52+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.4, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.0}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-25T13:11:52+05:00"}
+{"type": "stage_end", "stage": "light-judge", "status": "ok", "ts": "2026-09-25T13:11:52+05:00"}
+{"type": "stage_start", "stage": "light-review", "ts": "2026-09-25T13:11:52+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-25T13:18:23+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 5210, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 495665, "ts": "2026-09-25T13:18:24+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.5, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.0}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.1}], "ts": "2026-09-25T13:18:24+05:00"}
+{"type": "stage_end", "stage": "light-review", "status": "ok", "ts": "2026-09-25T13:19:46+05:00"}
+{"type": "tool", "tool": "review_verdict_check", "status": "PASS", "total_s": 0, "steps": [{"name": "verdict:APPROVED", "s": 0}], "ts": "2026-09-25T13:20:08+05:00"}

@@ -1,0 +1,6 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/artifact_lint.py --e2e-drift /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a/docs/features/soft-delete-transfers/draft-spec.md /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a/scripts/e2e --spec-glob soft-delete-transfers*.spec.ts
+(exit 1)
+
+e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 2 id, code: 0 в 0 файлах, проблем: 2)
+  DRIFT: TS-040 есть в draft-spec.md, теста test('TS-040: …') нет (сценарий без теста)
+  DRIFT: TS-041 есть в draft-spec.md, теста test('TS-041: …') нет (сценарий без теста)

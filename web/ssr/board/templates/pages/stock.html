@@ -1,0 +1,88 @@
+{{ define "content" }}
+<div id="stock" class="stock-view" data-testid="stock-root" data-is-admin="{{ .Shell.IsAdmin }}">
+  <div class="stock-kpis" data-testid="stock-kpis">
+    <div class="stock-kpi">
+      <span>Товаров</span>
+      <b id="stock-kpi-total" data-testid="stock-kpi-total">0</b>
+    </div>
+    <div class="stock-kpi" title="Пары товар × склад">
+      <span>На минимуме</span>
+      <b class="stock-low" id="stock-kpi-low" data-testid="stock-kpi-low">0</b>
+    </div>
+    <div class="stock-kpi">
+      <span>Нет в наличии</span>
+      <b class="stock-out" id="stock-kpi-out" data-testid="stock-kpi-out">0</b>
+    </div>
+    <div class="stock-kpi">
+      <span>Уйдут в минимум после заказов</span>
+      <b id="stock-kpi-will-low" data-testid="stock-kpi-will-low">0</b>
+    </div>
+  </div>
+
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="stock-filters">
+    <select class="form-select form-select-sm" id="stock-warehouse" data-testid="stock-warehouse" style="max-width:220px" aria-label="Склад">
+      <option value="">Все склады</option>
+    </select>
+    <select class="form-select form-select-sm" id="stock-scope" data-testid="stock-scope" style="max-width:220px">
+      <option value="risky">Только рисковые</option>
+      <option value="all">Все товары</option>
+    </select>
+    <input type="search" class="form-control form-control-sm" id="stock-q" data-testid="stock-q"
+           placeholder="Поиск по названию" style="max-width:260px" autocomplete="off">
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle" data-testid="stock-table">
+      <thead>
+        <tr id="stock-thead-row">
+          <th>Товар</th>
+          <th class="d-none d-md-table-cell">Где лежит</th>
+          <th data-wh-cols></th>
+          <th data-testid="stock-col-total">Итого</th>
+          <th class="d-none d-md-table-cell" data-testid="stock-col-transit" title="Товары в перемещениях между складами">В пути</th>
+          <th>Минимум</th>
+          <th class="d-none d-md-table-cell" title="Товары в заказах, которые ещё не взяты в работу">В новых заказах</th>
+          <th class="d-none d-md-table-cell">Прогноз</th>
+          <th>Состояние</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="stock-tbody"></tbody>
+    </table>
+  </div>
+  <p class="text-body-secondary small d-none" id="stock-shown" data-testid="stock-shown"></p>
+  <div class="empty-state d-none" id="stock-empty" data-testid="stock-empty">Все товары выше минимального остатка 👍</div>
+  <p class="text-body-secondary small">Товары списываются со склада, когда заказ попадает в колонку с признаком «Списывать товары». «Прогноз» — остаток после списания товаров из заказов, которые ещё не взяты в работу. Остатки ведутся по складам; «Итого» — сумма по выбранным складам, «На минимуме»/«Нет в наличии» считаются по парам товар × склад.</p>
+</div>
+
+<!-- Модалка правки остатка (admin, ADR-004) -->
+<div class="modal fade" id="stock-modal" tabindex="-1" aria-hidden="true" data-testid="stock-form">
+  <div class="modal-dialog">
+    <form class="modal-content" id="stock-form-el" novalidate>
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="stock-modal-title">Остаток товара</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger d-none" id="stock-error" data-testid="stock-error"></div>
+        <div class="mb-3">
+          <label class="form-label" for="stock-modal-warehouse">Склад *</label>
+          <select class="form-select" id="stock-modal-warehouse" data-testid="stock-modal-warehouse"></select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="stock-value">Остаток *</label>
+          <input type="number" step="any" class="form-control" id="stock-value" data-testid="stock-value" required>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="submit" class="btn btn-primary" id="stock-save-btn" data-testid="stock-save">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{ end }}
+
+{{ define "scripts" }}
+<script src="/assets/ssr-shared/js/stock.js"></script>
+{{ end }}

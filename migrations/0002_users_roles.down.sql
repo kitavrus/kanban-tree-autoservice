@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS users_login_lower_uq;
+ALTER TABLE users DROP COLUMN IF EXISTS phone, DROP COLUMN IF EXISTS role;

@@ -1,0 +1,17 @@
+Класс 1 — семантика DTO/response: формула итогов (AC-013), "по факту" (price=null), rounding.
+
+$ curl POST /api/v1/tasks/1862/subtasks {"service_id": qa-oc-service-1 (price=300, kit product1 qty2 price50)}
+-> card.task.total_amount=400.0, subtasks[0].total=400.0, products[0].line_total=100.0
+
+$ curl POST /api/v1/tasks/1862/subtasks {"service_id": qa-oc-service-2 (price=null "по факту", kit product2 qty1 price10.50)}
+-> card.task.total_amount=410.5, subtasks: [service-1 price=300 total=400.0, service-2 price=None total=10.5]
+(AC-013: услуга «по факту» — работа 0, товары входят — подтверждено)
+
+$ curl POST /api/v1/subtasks/{sub1}/products {"product_id":P2,"qty":0.333} (price=10.50)
+-> line_total=3.5  (round(0.333*10.50,2)=round(3.4965,2)=3.50 — формула design-sql.md §Totals Expression подтверждена)
+
+Edge cases qty:
+$ curl POST .../products {"qty":0}    -> 400 VALIDATION fields[qty]=not_positive
+$ curl POST .../products {"qty":-1}   -> 400 VALIDATION fields[qty]=invalid
+$ curl POST .../products {"qty":"5"}  -> 400 BAD_REQUEST (строка вместо числа — TD-4, LV-171 подтверждено)
+(коды сообщений not_positive/invalid — из pkg/numeric as-is, подтверждено unit-тестами пакета numeric — не баг)

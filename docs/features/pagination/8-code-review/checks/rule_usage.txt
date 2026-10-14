@@ -1,0 +1,5 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/rule_usage_audit.py --project /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae --last 3
+(exit 0)
+
+RULE-USAGE SKIP: логов не найдено
+RULE-USAGE SKIP: нет каталога логов /Users/igorpotema/.claude/projects/-Users-igorpotema-mycode-kanban-tree-.claude-worktrees-hungry-archimedes-6116ae

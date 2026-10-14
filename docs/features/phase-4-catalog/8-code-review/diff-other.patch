@@ -1,0 +1,478 @@
+diff --git a/web/ssr/_layout/templates/partials/catalog-tabs.html b/web/ssr/_layout/templates/partials/catalog-tabs.html
+new file mode 100644
+index 0000000..5f5448e
+--- /dev/null
++++ b/web/ssr/_layout/templates/partials/catalog-tabs.html
+@@ -0,0 +1,7 @@
++{{ define "catalogTabs" }}
++<div class="tabs mb-3" data-testid="catalog-tabs" role="tablist">
++  <a href="/catalog/services" class="tab-link{{ if eq .Active "services" }} active{{ end }}" data-testid="catalog-tab-services"{{ if eq .Active "services" }} aria-current="page"{{ end }}>🛠 Услуги <span class="count">{{ .Services }}</span></a>
++  <a href="/catalog/products" class="tab-link{{ if eq .Active "products" }} active{{ end }}" data-testid="catalog-tab-products"{{ if eq .Active "products" }} aria-current="page"{{ end }}>📦 Товары <span class="count">{{ .Products }}</span></a>
++  <a href="/catalog/equipment-types" class="tab-link{{ if eq .Active "equipment-types" }} active{{ end }}" data-testid="catalog-tab-equipment-types"{{ if eq .Active "equipment-types" }} aria-current="page"{{ end }}>🔧 Типы оборудования <span class="count">{{ .Types }}</span></a>
++</div>
++{{ end }}
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index 3744907..2b9c11a 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -194,7 +194,38 @@ body { background: var(--bs-body-bg); }
+ /* ---- row-list: динамические строки 1..N (js/row-list.js, ADR-002) ---- */
+ .row-list-item { display: flex; gap: var(--space-2); align-items: flex-start; margin-bottom: var(--space-2); }
+ .row-list-item > input.form-control { flex: 1 1 0; min-width: 0; }
++/* без min-width:0 flex-обёртка не сжимается ниже min-content своего содержимого — для
++   строки комплекта услуги (combobox товара внутри .cb-btn с текстом названия, code
++   review CT-008 fix-loop 1) это раздвигало .row-list-item (и всю страницу) шире 360px,
++   даже с overflow:hidden на .cb-label (тот же класс бага, что у .cat-panel input.form-control
++   выше — overflow:hidden у потомка не сбрасывает min-content родителя-flex-item). */
++.row-list-item > div { min-width: 0; }
+ @media (max-width: 576px) {
+   .row-list-item { flex-wrap: wrap; }
+   .row-list-item > input.form-control, .row-list-item > div { flex: 1 1 100%; }
+ }
++
++/* ---- каталог: полоса вкладок, панель категорий, метки остатка (фаза 4, эталон
++   prototype/index.html renderCatalog) ---- */
++.tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; border-bottom: 1px solid var(--bs-border-color); padding-bottom: var(--space-3); }
++.tab-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; text-decoration: none; color: var(--bs-body-color); background: var(--bs-tertiary-bg); }
++.tab-link.active { background: var(--bs-primary); color: #fff; }
++.tab-link .count { font-size: 11px; opacity: .8; }
++.two-pane { display: flex; gap: var(--space-4); align-items: flex-start; min-width: 0; }
++.cat-panel { width: 220px; flex-shrink: 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
++.cat-item { display: flex; justify-content: space-between; gap: var(--space-2); padding: 6px 10px; border-radius: 6px; text-decoration: none; color: var(--bs-body-color); overflow: hidden; }
++.cat-item:hover { background: var(--bs-secondary-bg); }
++.cat-item.active { background: var(--bs-primary); color: #fff; }
++.cat-panel-content { flex: 1; min-width: 0; }
++.stock-low { color: var(--bs-danger); font-weight: 600; }
++.stock-out { color: var(--bs-danger); font-weight: 700; }
++/* Строка категории — flex-row (имя + счётчик) + под ней formы (переименовать/архив/
++   удалить, фаза 4): без min-width:0 инпут внутри d-flex не сжимается ниже своей
++   content-ширины (дефолт браузера min-width:auto для textbox) и раздвигает .cat-panel
++   шире вьюпорта на узких экранах (adaptive:min, code review CT-008). */
++.cat-panel input.form-control { min-width: 0; flex: 1 1 auto; }
++.cat-panel form.d-flex { min-width: 0; }
++@media (max-width: 900px) {
++  .two-pane { flex-direction: column; align-items: stretch; } /* flex-start давал колонке ширину по содержимому → таблица раздвигала страницу */
++  .cat-panel { width: 100%; }
++}
+diff --git a/web/ssr/catalog/templates/pages/products-form.html b/web/ssr/catalog/templates/pages/products-form.html
+new file mode 100644
+index 0000000..d80baf7
+--- /dev/null
++++ b/web/ssr/catalog/templates/pages/products-form.html
+@@ -0,0 +1,94 @@
++{{ define "content" }}
++{{ template "catalogTabs" .Tabs }}
++<form class="card mw-760" method="post" action="{{ if .IsNew }}/catalog/products{{ else }}/catalog/products/{{ .ID }}{{ end }}" data-testid="product-form" novalidate>
++  <div class="card-body">
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
++    <div class="mb-3">
++      <label for="name" class="form-label">Название *</label>
++      <input id="name" name="name" class="form-control{{ if index .Errors "name" }} is-invalid{{ end }}" value="{{ .Name }}" maxlength="200" autocomplete="off" data-testid="product-name">
++      {{ with index .Errors "name" }}<div class="invalid-feedback" data-testid="error-name">{{ . }}</div>{{ end }}
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-md-6">
++        <label for="sku" class="form-label">Артикул</label>
++        <input id="sku" name="sku" class="form-control{{ if index .Errors "sku" }} is-invalid{{ end }}" value="{{ .SKU }}" maxlength="100" autocomplete="off" data-testid="product-sku">
++        {{ with index .Errors "sku" }}<div class="invalid-feedback" data-testid="error-sku">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-md-6">
++        <label for="category_id" class="form-label">Категория *</label>
++        <select id="category_id" name="category_id" class="form-select{{ if index .Errors "category_id" }} is-invalid{{ end }}" data-testid="product-category">
++          {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++        </select>
++        {{ with index .Errors "category_id" }}<div class="invalid-feedback" data-testid="error-category_id">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-md-6">
++        <label for="unit" class="form-label">Единица</label>
++        <select id="unit" name="unit" class="form-select{{ if index .Errors "unit" }} is-invalid{{ end }}" data-testid="product-unit">
++          <option value=""{{ if eq .Unit "" }} selected{{ end }}>—</option>
++          {{ range .Units }}<option value="{{ . }}"{{ if eq . $.Unit }} selected{{ end }}>{{ . }}</option>{{ end }}
++        </select>
++        {{ with index .Errors "unit" }}<div class="invalid-feedback" data-testid="error-unit">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-md-6">
++        <label for="price" class="form-label">Цена за единицу, ₽</label>
++        <input id="price" name="price" type="number" min="0" step="0.01" class="form-control{{ if index .Errors "price" }} is-invalid{{ end }}" value="{{ .Price }}" data-testid="product-price">
++        {{ with index .Errors "price" }}<div class="invalid-feedback" data-testid="error-price">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="section-title text-body-secondary small text-uppercase mb-2">Наличие и хранение</div>
++    <div class="row g-3 mb-3">
++      <div class="col-md-6">
++        <label for="stock" class="form-label">Количество в наличии</label>
++        <input id="stock" name="stock" type="number" step="0.001" class="form-control{{ if index .Errors "stock" }} is-invalid{{ end }}" value="{{ .Stock }}" data-testid="product-stock">
++        {{ with index .Errors "stock" }}<div class="invalid-feedback" data-testid="error-stock">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-md-6">
++        <label for="min_stock" class="form-label">Минимальный остаток</label>
++        <input id="min_stock" name="min_stock" type="number" min="0" step="0.001" class="form-control{{ if index .Errors "min_stock" }} is-invalid{{ end }}" value="{{ .MinStock }}" data-testid="product-min-stock">
++        {{ with index .Errors "min_stock" }}<div class="invalid-feedback" data-testid="error-min_stock">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="row g-3 mb-4">
++      <div class="col-md-6">
++        <label for="box" class="form-label">Коробка</label>
++        <input id="box" name="box" class="form-control{{ if index .Errors "box" }} is-invalid{{ end }}" value="{{ .Box }}" maxlength="100" autocomplete="off" data-testid="product-box">
++        {{ with index .Errors "box" }}<div class="invalid-feedback" data-testid="error-box">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-md-6">
++        <label for="place" class="form-label">Место хранения</label>
++        <input id="place" name="place" class="form-control{{ if index .Errors "place" }} is-invalid{{ end }}" value="{{ .Place }}" maxlength="100" autocomplete="off" data-testid="product-place">
++        {{ with index .Errors "place" }}<div class="invalid-feedback" data-testid="error-place">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-primary" data-testid="product-save">Сохранить</button>
++      <a href="/catalog/products" class="btn btn-outline-secondary">Отмена</a>
++      {{ if not .IsNew }}
++      <button type="submit" form="product-archive-form" class="btn btn-outline-secondary ms-auto" data-testid="product-archive">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++      {{ end }}
++    </div>
++  </div>
++</form>
++{{ if not .IsNew }}
++<form id="product-archive-form" method="post" action="/catalog/products/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-none" aria-hidden="true">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++</form>
++<form method="post" action="/catalog/products/{{ .ID }}/delete" class="mt-3" data-testid="product-delete-form">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="product-delete" data-confirm="Удалить товар «{{ .Name }}»? Отменить нельзя.">Удалить</button>
++</form>
++{{ end }}
++{{ end }}
++{{ define "scripts" }}
++<script>
++document.querySelectorAll('[data-confirm]').forEach(function (btn) {
++  btn.addEventListener('click', async function (e) {
++    e.preventDefault();
++    if (await KT.uiConfirm(btn.getAttribute('data-confirm'))) btn.closest('form').submit();
++  });
++});
++</script>
++{{ end }}
+diff --git a/web/ssr/catalog/templates/pages/products-list.html b/web/ssr/catalog/templates/pages/products-list.html
+new file mode 100644
+index 0000000..b995530
+--- /dev/null
++++ b/web/ssr/catalog/templates/pages/products-list.html
+@@ -0,0 +1,101 @@
++{{ define "actions" }}<a href="/catalog/products/new" class="btn btn-primary" data-testid="product-add">+ Товар</a>{{ end }}
++{{ define "content" }}
++{{ template "catalogTabs" .Tabs }}
++{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .CatError }}<div class="alert alert-danger py-2" role="alert" data-testid="cat-error">{{ .CatError }}</div>{{ end }}
++<form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/products" data-testid="products-filters">
++  {{ if .ActiveCategory }}<input type="hidden" name="category" value="{{ .ActiveCategory }}">{{ end }}
++  <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск по названию или артикулу" aria-label="Поиск" data-testid="filter-q">
++  <button class="btn btn-outline-secondary" type="submit">Найти</button>
++  <div class="form-check ms-2">
++    <input class="form-check-input" type="checkbox" id="archived" name="archived" value="1"{{ if .Archived }} checked{{ end }} onchange="this.form.submit()" data-testid="filter-archived">
++    <label class="form-check-label" for="archived">Показать архивные</label>
++  </div>
++  {{ if .Q }}<a class="btn btn-link" href="/catalog/products{{ if .ActiveCategory }}?category={{ .ActiveCategory }}{{ end }}" data-testid="filter-reset">Сбросить</a>{{ end }}
++</form>
++<div class="two-pane">
++  <div class="cat-panel" data-testid="category-panel">
++    <a href="/catalog/products{{ if .Q }}?q={{ .Q }}{{ end }}" class="cat-item{{ if not .ActiveCategory }} active{{ end }}" data-testid="cat-all">Все категории <span class="count">{{ .Total }}</span></a>
++    {{ range .Categories }}
++    <div class="pb-1 mb-1 border-bottom" data-testid="cat-row" data-cat-id="{{ .ID }}">
++      <div class="d-flex align-items-center gap-1">
++        <a href="/catalog/products?category={{ .ID }}" class="cat-item flex-grow-1{{ if eq $.ActiveCategory .ID }} active{{ end }}{{ if not .IsActive }} text-body-secondary{{ end }}" data-testid="cat-link">
++          {{ .Name }}{{ if not .IsActive }} <span class="badge-off">архив</span>{{ end }} <span class="count">{{ .ItemCount }}</span>
++        </a>
++      </div>
++      <form method="post" action="/catalog/categories/{{ .ID }}/rename" class="d-flex gap-1 mb-1 ps-2">
++        <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++        <input type="hidden" name="kind" value="product">
++        <input class="form-control form-control-sm" name="name" value="{{ .Name }}" data-testid="cat-rename-input" aria-label="Переименовать категорию {{ .Name }}">
++        <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-rename-submit">✎</button>
++      </form>
++      <div class="d-flex gap-1 ps-2">
++        <form method="post" action="/catalog/categories/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}">
++          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++          <input type="hidden" name="kind" value="product">
++          <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++        </form>
++        <form method="post" action="/catalog/categories/{{ .ID }}/delete">
++          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++          <input type="hidden" name="kind" value="product">
++          <button type="submit" class="btn btn-sm btn-outline-danger" data-testid="cat-delete" data-confirm="Удалить категорию «{{ .Name }}»?">Удалить</button>
++        </form>
++      </div>
++    </div>
++    {{ end }}
++    <form method="post" action="/catalog/categories" class="d-flex gap-1 mt-2">
++      <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++      <input type="hidden" name="kind" value="product">
++      <input class="form-control form-control-sm" name="name" placeholder="Новая категория" required data-testid="cat-new-name">
++      <button type="submit" class="btn btn-sm btn-primary" data-testid="cat-new-submit">+</button>
++    </form>
++  </div>
++  <div class="cat-panel-content">
++  {{ if .Items }}
++  <div class="table-responsive">
++  <table class="table table-hover align-middle" data-testid="products-table">
++    <thead><tr><th>Товар</th><th>Артикул</th><th class="d-none d-md-table-cell">Ед.</th><th>Цена</th><th>В наличии</th><th class="d-none d-md-table-cell">Где лежит</th><th></th></tr></thead>
++    <tbody>
++    {{ range .Items }}
++      <tr data-testid="product-row" data-name="{{ .Name }}">
++        <td>
++          <a href="/catalog/products/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
++          {{ if not .IsActive }}<span class="badge-off" data-testid="product-archived-badge">в архиве</span>{{ end }}
++        </td>
++        <td class="text-body-secondary">{{ .SKU }}</td>
++        <td class="d-none d-md-table-cell">{{ .Unit }}</td>
++        <td>{{ .Price }} ₽</td>
++        <td data-testid="product-stock">
++          {{ if .IsDebt }}<span class="stock-out" data-testid="stock-debt">долг {{ .Stock }} {{ .Unit }}</span>
++          {{ else if .IsLow }}<span class="stock-low" data-testid="stock-low">{{ .Stock }} {{ .Unit }} ⚠</span>
++          {{ else }}{{ .Stock }} {{ .Unit }}{{ end }}
++        </td>
++        <td class="d-none d-md-table-cell text-body-secondary small">{{ .Place }}{{ if .Box }} · коробка {{ .Box }}{{ end }}</td>
++        <td class="text-end">
++          <form method="post" action="/catalog/products/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-inline">
++            <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++            <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="product-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++          </form>
++        </td>
++      </tr>
++    {{ end }}
++    </tbody>
++  </table>
++  </div>
++  <p class="text-body-secondary small" data-testid="products-total">Товаров: {{ .Total }}</p>
++  {{ else }}
++  <div class="empty-state" data-testid="products-empty">{{ if or .Q .Archived .ActiveCategory }}Ничего не нашли по фильтру.{{ else }}Товаров пока нет.{{ end }}</div>
++  {{ end }}
++  </div>
++</div>
++{{ end }}
++{{ define "scripts" }}
++<script>
++document.querySelectorAll('[data-confirm]').forEach(function (btn) {
++  btn.addEventListener('click', function (e) {
++    e.preventDefault();
++    KT.uiConfirm(btn.getAttribute('data-confirm')).then(function (ok) { if (ok) btn.closest('form').submit(); });
++  });
++});
++</script>
++{{ end }}
+diff --git a/web/ssr/catalog/templates/pages/services-form.html b/web/ssr/catalog/templates/pages/services-form.html
+new file mode 100644
+index 0000000..ce4c585
+--- /dev/null
++++ b/web/ssr/catalog/templates/pages/services-form.html
+@@ -0,0 +1,98 @@
++{{ define "content" }}
++{{ template "catalogTabs" .Tabs }}
++<form class="card mw-760" method="post" action="{{ if .IsNew }}/catalog/services{{ else }}/catalog/services/{{ .ID }}{{ end }}" data-testid="service-form" novalidate>
++  <div class="card-body">
++    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
++    <div class="mb-3">
++      <label for="name" class="form-label">Название *</label>
++      <input id="name" name="name" class="form-control{{ if index .Errors "name" }} is-invalid{{ end }}" value="{{ .Name }}" maxlength="200" autocomplete="off" data-testid="service-name">
++      {{ with index .Errors "name" }}<div class="invalid-feedback" data-testid="error-name">{{ . }}</div>{{ end }}
++    </div>
++    <div class="row g-3 mb-3">
++      <div class="col-md-6">
++        <label for="category_id" class="form-label">Категория (вид работ)</label>
++        <select id="category_id" name="category_id" class="form-select{{ if index .Errors "category_id" }} is-invalid{{ end }}" data-testid="service-category">
++          {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++        </select>
++        {{ with index .Errors "category_id" }}<div class="invalid-feedback" data-testid="error-category_id">{{ . }}</div>{{ end }}
++      </div>
++      <div class="col-md-6">
++        <label for="price" class="form-label">Цена работы, ₽ (пусто — по факту)</label>
++        <input id="price" name="price" type="number" min="0" step="0.01" class="form-control{{ if index .Errors "price" }} is-invalid{{ end }}" value="{{ .Price }}" data-testid="service-price">
++        {{ with index .Errors "price" }}<div class="invalid-feedback" data-testid="error-price">{{ . }}</div>{{ end }}
++      </div>
++    </div>
++    <div class="section-title text-body-secondary small text-uppercase mb-2">Товары в комплекте</div>
++    <div id="products-rows" class="row-list" data-row-list data-row-min="0" data-testid="products-rows">
++      {{ range $i, $row := .Products }}
++      <div class="row-list-item d-flex gap-2 align-items-start mb-2" data-testid="product-row-item">
++        <div class="flex-grow-1">
++          <select name="product_id" class="form-select{{ if index $.Errors (printf "products[%d].product_id" $i) }} is-invalid{{ end }}" data-testid="service-product-select">
++            <option value="">— выбрать товар —</option>
++            {{ range $.ProductOptions }}<option value="{{ .ID }}" data-hint="{{ .Hint }}"{{ if eq .ID $row.ProductID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++          </select>
++          {{ with index $.Errors (printf "products[%d].product_id" $i) }}<div class="invalid-feedback d-block" data-testid="error-products-{{ $i }}-product">{{ . }}</div>{{ end }}
++        </div>
++        <div style="max-width:140px">
++          <input type="number" name="qty" min="0" step="0.001" class="form-control{{ if index $.Errors (printf "products[%d].qty" $i) }} is-invalid{{ end }}" value="{{ $row.Qty }}" placeholder="Кол-во" data-testid="service-product-qty">
++          {{ with index $.Errors (printf "products[%d].qty" $i) }}<div class="invalid-feedback d-block" data-testid="error-products-{{ $i }}-qty">{{ . }}</div>{{ end }}
++        </div>
++        <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить строку" data-testid="service-product-del">×</button>
++      </div>
++      {{ end }}
++      <template data-row-template>
++        <div class="row-list-item d-flex gap-2 align-items-start mb-2" data-testid="product-row-item">
++          <div class="flex-grow-1">
++            <select name="product_id" class="form-select" data-testid="service-product-select">
++              <option value="">— выбрать товар —</option>
++              {{ range .ProductOptions }}<option value="{{ .ID }}" data-hint="{{ .Hint }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++            </select>
++          </div>
++          <div style="max-width:140px">
++            <input type="number" name="qty" min="0" step="0.001" class="form-control" placeholder="Кол-во" data-testid="service-product-qty">
++          </div>
++          <button type="button" class="btn btn-outline-secondary" data-row-del aria-label="Удалить строку" data-testid="service-product-del">×</button>
++        </div>
++      </template>
++    </div>
++    <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-3" data-row-add="products-rows" data-testid="service-product-add">+ Товар</button>
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-primary" data-testid="service-save">Сохранить</button>
++      <a href="/catalog/services" class="btn btn-outline-secondary">Отмена</a>
++      {{ if not .IsNew }}
++      <button type="submit" form="service-archive-form" class="btn btn-outline-secondary ms-auto" data-testid="service-archive">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++      {{ end }}
++    </div>
++  </div>
++</form>
++{{ if not .IsNew }}
++<form id="service-archive-form" method="post" action="/catalog/services/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-none" aria-hidden="true">
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++</form>
++<form method="post" action="/catalog/services/{{ .ID }}/delete" class="mt-3" data-testid="service-delete-form" data-once>
++  <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="service-delete" data-confirm="Удалить услугу «{{ .Name }}»? Отменить нельзя.">Удалить</button>
++</form>
++{{ end }}
++{{ end }}
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/row-list.js"></script>
++<script>
++/* data-once на самой форме — маркер для читателя разметки; глобальный делегированный
++   обработчик (ui-dialog.js) слушает НАСТОЯЩЕЕ событие 'submit', которое form.submit()
++   ниже НЕ создаёт (WHATWG: HTMLFormElement.submit() событие submit не генерирует — этим
++   и пользуется ui-dialog.js, чтобы не зациклиться на form[data-confirm]). Поэтому
++   двойной клик после подтверждения блокируем здесь же — отключением кнопки. */
++document.querySelectorAll('[data-confirm]').forEach(function (btn) {
++  btn.addEventListener('click', async function (e) {
++    e.preventDefault();
++    if (btn.disabled) return;
++    if (await KT.uiConfirm(btn.getAttribute('data-confirm'))) {
++      btn.disabled = true;
++      btn.closest('form').submit();
++    }
++  });
++});
++</script>
++{{ end }}
+diff --git a/web/ssr/catalog/templates/pages/services-list.html b/web/ssr/catalog/templates/pages/services-list.html
+new file mode 100644
+index 0000000..c250cf4
+--- /dev/null
++++ b/web/ssr/catalog/templates/pages/services-list.html
+@@ -0,0 +1,94 @@
++{{ define "actions" }}<a href="/catalog/services/new" class="btn btn-primary" data-testid="service-add">+ Услуга</a>{{ end }}
++{{ define "content" }}
++{{ template "catalogTabs" .Tabs }}
++{{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .CatError }}<div class="alert alert-danger py-2" role="alert" data-testid="cat-error">{{ .CatError }}</div>{{ end }}
++<form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/services" data-testid="services-filters">
++  {{ if .ActiveCategory }}<input type="hidden" name="category" value="{{ .ActiveCategory }}">{{ end }}
++  <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск по названию" aria-label="Поиск" data-testid="filter-q">
++  <button class="btn btn-outline-secondary" type="submit">Найти</button>
++  <div class="form-check ms-2">
++    <input class="form-check-input" type="checkbox" id="archived" name="archived" value="1"{{ if .Archived }} checked{{ end }} onchange="this.form.submit()" data-testid="filter-archived">
++    <label class="form-check-label" for="archived">Показать архивные</label>
++  </div>
++  {{ if .Q }}<a class="btn btn-link" href="/catalog/services{{ if .ActiveCategory }}?category={{ .ActiveCategory }}{{ end }}" data-testid="filter-reset">Сбросить</a>{{ end }}
++</form>
++<div class="two-pane">
++  <div class="cat-panel" data-testid="category-panel">
++    <a href="/catalog/services{{ if .Q }}?q={{ .Q }}{{ end }}" class="cat-item{{ if not .ActiveCategory }} active{{ end }}" data-testid="cat-all">Все категории <span class="count">{{ .Total }}</span></a>
++    {{ range .Categories }}
++    <div class="pb-1 mb-1 border-bottom" data-testid="cat-row" data-cat-id="{{ .ID }}">
++      <div class="d-flex align-items-center gap-1">
++        <a href="/catalog/services?category={{ .ID }}" class="cat-item flex-grow-1{{ if eq $.ActiveCategory .ID }} active{{ end }}{{ if not .IsActive }} text-body-secondary{{ end }}" data-testid="cat-link">
++          {{ .Name }}{{ if not .IsActive }} <span class="badge-off">архив</span>{{ end }} <span class="count">{{ .ItemCount }}</span>
++        </a>
++      </div>
++      <form method="post" action="/catalog/categories/{{ .ID }}/rename" class="d-flex gap-1 mb-1 ps-2">
++        <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++        <input type="hidden" name="kind" value="service">
++        <input class="form-control form-control-sm" name="name" value="{{ .Name }}" data-testid="cat-rename-input" aria-label="Переименовать категорию {{ .Name }}">
++        <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-rename-submit">✎</button>
++      </form>
++      <div class="d-flex gap-1 ps-2">
++        <form method="post" action="/catalog/categories/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}">
++          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++          <input type="hidden" name="kind" value="service">
++          <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++        </form>
++        <form method="post" action="/catalog/categories/{{ .ID }}/delete">
++          <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++          <input type="hidden" name="kind" value="service">
++          <button type="submit" class="btn btn-sm btn-outline-danger" data-testid="cat-delete" data-confirm="Удалить категорию «{{ .Name }}»?">Удалить</button>
++        </form>
++      </div>
++    </div>
++    {{ end }}
++    <form method="post" action="/catalog/categories" class="d-flex gap-1 mt-2">
++      <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
++      <input type="hidden" name="kind" value="service">
++      <input class="form-control form-control-sm" name="name" placeholder="Новая категория" required data-testid="cat-new-name">
++      <button type="submit" class="btn btn-sm btn-primary" data-testid="cat-new-submit">+</button>
++    </form>
++  </div>
++  <div class="cat-panel-content">
++  {{ if .Items }}
++  <div class="table-responsive">
++  <table class="table table-hover align-middle" data-testid="services-table">
++    <thead><tr><th>Услуга</th><th class="d-none d-md-table-cell">Цена работы</th><th>Товары в комплекте</th><th></th></tr></thead>
++    <tbody>
++    {{ range .Items }}
++      <tr data-testid="service-row" data-name="{{ .Name }}">
++        <td>
++          <a href="/catalog/services/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
++          {{ if not .IsActive }}<span class="badge-off" data-testid="service-archived-badge">в архиве</span>{{ end }}
++        </td>
++        <td class="d-none d-md-table-cell" data-testid="service-price">{{ .PriceLabel }}</td>
++        <td class="text-body-secondary small" data-testid="service-products">{{ .ProductsLabel }}</td>
++        <td class="text-end">
++          <form method="post" action="/catalog/services/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-inline">
++            <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
++            <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="service-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
++          </form>
++        </td>
++      </tr>
++    {{ end }}
++    </tbody>
++  </table>
++  </div>
++  <p class="text-body-secondary small" data-testid="services-total">Услуг: {{ .Total }}</p>
++  {{ else }}
++  <div class="empty-state" data-testid="services-empty">{{ if or .Q .Archived .ActiveCategory }}Ничего не нашли по фильтру.{{ else }}Услуг пока нет.{{ end }}</div>
++  {{ end }}
++  </div>
++</div>
++{{ end }}
++{{ define "scripts" }}
++<script>
++document.querySelectorAll('[data-confirm]').forEach(function (btn) {
++  btn.addEventListener('click', function (e) {
++    e.preventDefault();
++    KT.uiConfirm(btn.getAttribute('data-confirm')).then(function (ok) { if (ok) btn.closest('form').submit(); });
++  });
++});
++</script>
++{{ end }}
+diff --git a/web/ssr/equipmenttypes/templates/pages/list.html b/web/ssr/equipmenttypes/templates/pages/list.html
+index 03ac3c0..35ca839 100644
+--- a/web/ssr/equipmenttypes/templates/pages/list.html
++++ b/web/ssr/equipmenttypes/templates/pages/list.html
+@@ -1,5 +1,6 @@
+ {{ define "actions" }}<a href="/catalog/equipment-types/new" class="btn btn-primary" data-testid="type-add">+ Тип оборудования</a>{{ end }}
+ {{ define "content" }}
++{{ template "catalogTabs" .Tabs }}
+ {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
+ <form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/equipment-types" data-testid="types-filters">
+   <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск по названию" aria-label="Поиск" data-testid="filter-q">

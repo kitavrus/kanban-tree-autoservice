@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fixture_sync_check.py --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a --base 022d8d6c8726e00888ceb6f325c97bbb0fd844e0
+(exit 0)
+
+fixture-sync: PASS (схемные: 2, тест-данные обновлены: 2)

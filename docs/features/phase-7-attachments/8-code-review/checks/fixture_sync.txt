@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fixture_sync_check.py --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9 --base e74edc5
+(exit 0)
+
+fixture-sync: PASS (схемные: 2, тест-данные обновлены: 2)

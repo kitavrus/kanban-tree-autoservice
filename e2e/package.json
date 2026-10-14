@@ -1,0 +1,16 @@
+{
+  "name": "kanban-tree-e2e",
+  "private": true,
+  "description": "Playwright E2E для SSR-UI (Go html/template + vanilla JS). Единственный npm-пакет проекта.",
+  "scripts": {
+    "test": "playwright test --project=chromium --headed --workers=1",
+    "test:full": "playwright test --project=chromium --headed --workers=1 --retries=1",
+    "typecheck": "tsc --noEmit -p .",
+    "install-browser": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

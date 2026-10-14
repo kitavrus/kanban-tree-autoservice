@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Swimlane: Клиенты и оборудование (фаза 3)</title>
+    <style>
+        :root {
+            --color-gray: #6b7280;
+            --color-blue: #3b82f6;
+            --color-purple: #8b5cf6;
+            --color-teal: #14b8a6;
+            --color-amber: #f59e0b;
+            --bg-light: #f9fafb;
+            --border: #e5e7eb;
+            --text: #1f2937;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: white;
+            color: var(--text);
+            padding: 40px 20px;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        .subtitle { color: var(--color-gray); font-size: 14px; margin-bottom: 24px; }
+
+        .goals {
+            background: var(--bg-light);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 32px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .swimlane-grid {
+            display: grid;
+            grid-template-columns: 140px repeat(5, 1fr);
+            gap: 0;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            background: white;
+            margin-bottom: 32px;
+        }
+
+        .lane-corner {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+        }
+
+        .phase-header {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .lane-name {
+            background: var(--bg-light);
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+        }
+
+        .lane-row-last .lane-name {
+            border-bottom: none;
+        }
+
+        .cell {
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 12px;
+            font-size: 12px;
+            line-height: 1.5;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            background: white;
+        }
+
+        .lane-row-last .cell {
+            border-bottom: none;
+        }
+
+        .cell-content {
+            padding: 8px;
+            border-radius: 4px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-weight: 500;
+            word-wrap: break-word;
+        }
+
+        .cell-gray { background: var(--color-gray); }
+        .cell-blue { background: var(--color-blue); }
+        .cell-purple { background: var(--color-purple); }
+        .cell-teal { background: var(--color-teal); }
+        .cell-amber { background: var(--color-amber); }
+        .cell-empty { background: transparent; }
+
+        .flows-section {
+            margin-top: 32px;
+            padding: 24px;
+            background: var(--bg-light);
+            border-radius: 6px;
+        }
+
+        .flows-section h2 { font-size: 16px; margin-bottom: 16px; }
+
+        .flow-item {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .flow-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .flow-title {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 8px;
+            color: var(--text);
+        }
+
+        .flow-meta {
+            font-size: 12px;
+            color: var(--color-gray);
+            margin-bottom: 8px;
+        }
+
+        .flow-section {
+            margin-bottom: 12px;
+        }
+
+        .flow-section-title {
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 4px;
+            color: var(--text);
+        }
+
+        .flow-items {
+            font-size: 11px;
+            line-height: 1.6;
+            color: #4b5563;
+            margin-left: 16px;
+        }
+
+        .flow-items li {
+            margin-bottom: 4px;
+        }
+
+        svg {
+            margin-top: 24px;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Swimlane: Клиенты и оборудование</h1>
+        <p class="subtitle">Фаза 3 — управление клиентами, телефонами, типами оборудования и реестром единиц</p>
+
+        <div class="goals">
+            <strong>Цели:</strong> CRUD для клиентов с телефонами и оборудованием; каталог типов оборудования с архивированием; разделение прав (администратор/исполнитель); оптимистичная блокировка редактирования клиентов.
+        </div>
+
+        <div class="swimlane-grid">
+            <div class="lane-corner"></div>
+            <div class="phase-header">Авторизация</div>
+            <div class="phase-header">Валидация</div>
+            <div class="phase-header">Бизнес-логика</div>
+            <div class="phase-header">Сохранение</div>
+            <div class="phase-header">Ответ</div>
+
+            <div class="lane-name">Браузер</div>
+            <div class="cell"><div class="cell-content cell-blue">Отправляет форму SSR или API-запрос</div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-blue">Получает HTML или JSON</div></div>
+
+            <div class="lane-name">Go Handler</div>
+            <div class="cell"><div class="cell-content cell-purple">ParseForm + Guard (RequireAPI/RequireSSR)</div></div>
+            <div class="cell"><div class="cell-content cell-purple">Normalize + Validate DTO</div></div>
+            <div class="cell"><div class="cell-content cell-purple">Call Service.CreateClient / UpdateClient / DeleteClient</div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-purple">Respond 200/201/204/400/409/403</div></div>
+
+            <div class="lane-name">Service</div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-teal">Validate state (version check, type exists, in-use check)</div></div>
+            <div class="cell"><div class="cell-content cell-teal">Call Repo.{Create/Update/Delete}</div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+
+            <div class="lane-name">Repository</div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+            <div class="cell"><div class="cell-content cell-amber">BEGIN TX → INSERT/UPDATE/DELETE → COMMIT (version incr, replace phones, cascade)</div></div>
+            <div class="cell"><div class="cell-content cell-empty"></div></div>
+
+            <div class="lane-name lane-row-last">PostgreSQL</div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-gray">Constraint check, FK verify, unique indexes</div></div>
+            <div class="cell lane-row-last"><div class="cell-content cell-empty"></div></div>
+        </div>
+
+        <div class="flows-section">
+            <h2>Ключевые потоки данных</h2>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-001: Создание клиента</div>
+                <div class="flow-meta">POST /api/v1/clients (Admin) → 201 ClientResponse</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Request payload:</div>
+                    <ul class="flow-items">
+                        <li>company_name (required, trim+notblank)</li>
+                        <li>address, contact_name, contact_position (optional)</li>
+                        <li>phones: [{phone, note}, …] ≥1 phone (required)</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Response fields:</div>
+                    <ul class="flow-items">
+                        <li>id, company_name, address, contact_name, contact_position</li>
+                        <li>phones: [{phone, note}]</li>
+                        <li>equipment_count, version, created_at, updated_at</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-005: Редактирование клиента (конфликт версий)</div>
+                <div class="flow-meta">PUT /api/v1/clients/:id (Admin) → 200 | 409 CLIENT_VERSION_CONFLICT | 404</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Request:</div>
+                    <ul class="flow-items">
+                        <li>version (required, int64) — проверка оптимистичной блокировки</li>
+                        <li>Прочие поля как в Create (для SSR скрытый version в форме)</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">На конфликт (409):</div>
+                    <ul class="flow-items">
+                        <li>SSR: форма перерисовывается с введёнными значениями + сообщение</li>
+                        <li>Кнопка «Открыть актуальную версию» → GET /clients/:id</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-008/AC-009: Создание и правка оборудования</div>
+                <div class="flow-meta">POST /clients/:id/equipment (Admin+Executor) → 201 EquipmentResponse</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Request payload:</div>
+                    <ul class="flow-items">
+                        <li>type_id (required, UUID, проверка is_active)</li>
+                        <li>brand, model (required), sku, serial (optional strings)</li>
+                        <li>specs: [{k, v}] — заполняются из шаблона type_id, редактируются</li>
+                        <li>note (optional)</li>
+                    </ul>
+                </div>
+                <div class="flow-section">
+                    <div class="flow-section-title">ADR-002: Шаблон spec_keys</div>
+                    <ul class="flow-items">
+                        <li>&lt;option data-spec-keys='["key1","key2"]'&gt; — JSON атрибут</li>
+                        <li>Смена типа: заполненные specs сохраняются, пустые замещаются шаблоном</li>
+                        <li>row-list.js — контроль добавления/удаления строк specs</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-012: Удаление типа оборудования (409 IN_USE)</div>
+                <div class="flow-meta">DELETE /api/v1/equipment-types/:id (Admin) → 204 | 409 EQUIPMENT_TYPE_IN_USE</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">На 409 (тип используется):</div>
+                    <ul class="flow-items">
+                        <li>SSR: форма типа перерисовывается с ошибкой</li>
+                        <li>Кнопка «В архив» вместо Delete (POST /catalog/equipment-types/:id/archive)</li>
+                        <li>Фильтр «Показать архивные» действует только для Admin (ADR-004)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-004: Поиск клиентов</div>
+                <div class="flow-meta">GET /api/v1/clients?q=…&limit=&offset= → ClientListResponse (200)</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">ADR-003: Нормализация и поиск</div>
+                    <ul class="flow-items">
+                        <li>Поиск по company_name, contact_name ILIKE %q%</li>
+                        <li>Поиск по телефонам: ILIKE %q% + regexp_replace для цифр</li>
+                        <li>EXISTS (SELECT…) — единая строка клиента, честный total</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-006: Удаление клиента</div>
+                <div class="flow-meta">DELETE /api/v1/clients/:id (Admin) → 204 | 404</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">SSR: POST /clients/:id/delete (ADR-103)</div>
+                    <ul class="flow-items">
+                        <li>Confirm-диалог: «Удалить клиента «{company}»? Вместе с ним будет удалено N единиц»</li>
+                        <li>form[data-confirm] + KT.uiConfirm + обработчик</li>
+                        <li>Каскадное удаление: телефоны и оборудование (ON DELETE CASCADE)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">AC-013: Разделение прав (Executor vs Admin)</div>
+                <div class="flow-meta">SSR меню: Executor не видит «Клиенты» и «Каталог»</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Executor может:</div>
+                    <ul class="flow-items">
+                        <li>GET /api/v1/clients (получить данные для выпадающей в заказе)</li>
+                        <li>POST /api/v1/clients/:id/equipment (завести оборудование)</li>
+                        <li>GET /api/v1/equipment-types?include_archived=false (только активные)</li>
+                        <li>include_archived=true молча игнорируется (whitelist-откат, не 403)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-item">
+                <div class="flow-title">Ошибки валидации и состояния</div>
+                <div class="flow-meta">Sentinel-коды из design-errors.md</div>
+                <div class="flow-section">
+                    <div class="flow-section-title">Основные коды:</div>
+                    <ul class="flow-items">
+                        <li>CLIENT_VERSION_CONFLICT (409) — оптимистичная блокировка</li>
+                        <li>EQUIPMENT_TYPE_IN_USE (409) — каскад FK RESTRICT</li>
+                        <li>EQUIPMENT_TYPE_NAME_TAKEN (409) — имя занято активным типом</li>
+                        <li>EQUIPMENT_TYPE_NAME_ARCHIVED (409) — имя занято архивным типом (вернуть из архива)</li>
+                        <li>Валидация (400) — поля required/format, type_id битый/в архиве</li>
+                        <li>IDOR (404) — несуществующий id или чужой ресурс</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <svg width="100%" height="300" viewBox="0 0 1000 300" xmlns="http://www.w3.org/2000/svg" style="margin-top: 24px;">
+            <!-- Примечание: на боевом swimlane стрелки отражают реальные потоки между ячейками сетки -->
+            <defs>
+                <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                    <polygon points="0 0, 10 3, 0 6" fill="#3b82f6" />
+                </marker>
+                <marker id="arrowhead-dashed" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                    <polygon points="0 0, 10 3, 0 6" fill="#ef4444" />
+                </marker>
+            </defs>
+            <text x="10" y="25" font-size="12" font-weight="600">Основной поток (Happy Path):</text>
+            <line x1="30" y1="45" x2="250" y2="45" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowhead)" />
+            <text x="30" y="65" font-size="11">Браузер → Handler → Service → Repo → DB → JSON/HTML</text>
+
+            <text x="10" y="110" font-size="12" font-weight="600">Ошибочные пути (HTTP 409/400/404):</text>
+            <line x1="30" y1="130" x2="250" y2="130" stroke="#ef4444" stroke-width="2" stroke-dasharray="5,5" marker-end="url(#arrowhead-dashed)" />
+            <text x="30" y="150" font-size="11">Handler ← errorspkg.AppError ← validation/DB constraint</text>
+
+            <text x="10" y="195" font-size="12" font-weight="600">SSR с конфликтом версии (409):</text>
+            <line x1="30" y1="215" x2="250" y2="215" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowhead)" />
+            <text x="30" y="235" font-size="11">Service обнаруживает версию конфликта → Handler рендерит форму с сообщением</text>
+
+            <text x="30" y="280" font-size="10" fill="#6b7280">Миграция: 0003_clients_equipment (up/down); Таблицы: clients, client_phones, equipment_types, equipment</text>
+        </svg>
+    </div>
+</body>
+</html>

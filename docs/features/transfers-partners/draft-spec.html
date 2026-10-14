@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Spec: Перемещения — клиент и поставщик (направления, заказ, права исполнителя)</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #24241f; --muted: #5f5e5a;
+  --border: #d3d1c7; --border-soft: #e4e2d9;
+  --surface: #f1efe8; --surface-soft: #fafaf7; --pre-bg: #f6f5f0;
+  --link: #185fa5; --open: #a32d2d;
+  --asis: #2e7d4f; --tobe: #b06000;
+  --kt: #dde9f8; --kf: #f6ecc8; --ki: #e8e6df; --ks: #dff0e2; --ke: #ece2f4; --kx: #f6dcda;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+    --border: #4c4c47; --border-soft: #3a3a36;
+    --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+    --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+  --border: #4c4c47; --border-soft: #3a3a36;
+  --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+  --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+}
+#themeBtn { position: fixed; top: 14px; right: 16px; z-index: 10;
+  width: 38px; height: 38px; border-radius: 50%; cursor: pointer; font-size: 17px;
+  background: var(--surface); color: var(--fg); border: 1px solid var(--border); }
+pre { position: relative; }
+.copyBtn { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 9px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; }
+.copyBtn:hover { color: var(--fg); border-color: var(--border); }
+a.pnum { color: var(--muted); font-size: .72em; display: inline-block; min-width: 2.2em;
+  vertical-align: baseline; opacity: .6; text-decoration: none; margin-right: .3em; }
+a.pnum:hover { opacity: 1; }
+li:has(> a.pnum:target) { background: var(--surface); border-radius: 4px; }
+tr:has(a.pnum:target) td { background: var(--surface) !important; }
+html { background: var(--bg); }
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+       color: var(--fg); background: var(--bg);
+       max-width: 920px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.55; }
+h1 { font-size: 1.7rem; border-bottom: 2px solid var(--border); padding-bottom: .4rem; }
+h2 { font-size: 1.3rem; margin-top: 2.2rem; border-bottom: 1px solid var(--border-soft); padding-bottom: .25rem; }
+h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+table { border-collapse: collapse; margin: .8rem 0; width: 100%; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+tr:nth-child(even) td { background: var(--surface-soft); }
+code { background: var(--surface); border-radius: 4px; padding: .1rem .35rem; font-size: .88em;
+       font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+pre { background: var(--pre-bg); border: 1px solid var(--border-soft); border-radius: 8px;
+      padding: .8rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid var(--border); margin: .8rem 0; padding: .2rem 1rem;
+             color: var(--muted); background: var(--surface-soft); }
+figure { margin: 1rem 0; text-align: center; }
+figure svg { max-width: 100%; height: auto; border-radius: 8px; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: .15rem 0; }
+nav.toc { background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 8px;
+          padding: .8rem 1.2rem; font-size: .92rem; }
+nav.toc ul { margin: .3rem 0; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc > ul > li { font-weight: 600; margin: .3rem 0; break-inside: avoid; }
+nav.toc ul ul { font-weight: 400; font-size: .9em; margin: .1rem 0 .25rem; }
+nav.toc ul ul li { margin: .05rem 0; }
+@media (min-width: 700px) { nav.toc > ul { column-count: 2; column-gap: 2.5rem; } }
+a { color: var(--link); }
+a.xref { text-decoration: none; border-bottom: 1px dotted var(--link); }
+a.xref:hover { border-bottom-style: solid; }
+h1, h2, h3, a[id^="ds-"] { scroll-margin-top: 14px; }
+tr:has(a:target) td { background: var(--surface) !important; }
+h2:target, h3:target { background: var(--surface-soft); }
+.badge-open { color: var(--open); font-weight: 600; }
+.badge-asis, .badge-tobe { font-weight: 600; font-size: .85em; padding: 0 .45em; border-radius: .7em; border: 1px solid currentColor; white-space: nowrap; }
+.badge-asis { color: var(--asis); }
+.badge-tobe { color: var(--tobe); }
+code.k-t { background: var(--kt); font-weight: 700; }
+code.k-f { background: var(--kf); }
+code.k-i { background: var(--ki); font-style: italic; }
+code.k-s { background: var(--ks); font-weight: 600; }
+code.k-e { background: var(--ke); }
+code.k-x { background: var(--kx); text-decoration: line-through; }
+.klegend { font-size: .85em; color: var(--muted); }
+@media print { body { max-width: none; } }
+</style>
+</head>
+<body>
+<button id="themeBtn" title="Тема: авто / тёмная / светлая">◐</button>
+<script>
+const r=document.documentElement,k='draft-spec-theme';
+const apply=v=>{v?r.setAttribute('data-theme',v):r.removeAttribute('data-theme')};
+apply(localStorage.getItem(k)||'');
+document.getElementById('themeBtn').onclick=()=>{
+  const cur=r.getAttribute('data-theme')||'';
+  const next=cur===''?'dark':cur==='dark'?'light':'';
+  next?localStorage.setItem(k,next):localStorage.removeItem(k);apply(next);
+};
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('pre').forEach(p=>{
+    const b=document.createElement('button');b.className='copyBtn';b.textContent='копировать';
+    b.onclick=()=>{navigator.clipboard.writeText(p.querySelector('code').innerText)
+      .then(()=>{b.textContent='✓ скопировано';setTimeout(()=>b.textContent='копировать',1500);});};
+    p.appendChild(b);
+  });
+});
+</script>
+<h1 id="h1-0">Draft Spec: Перемещения — клиент и поставщик (направления, заказ, права исполнителя)</h1>
+<nav class="toc"><strong>Содержание</strong><ul><li><a href="#s-1">§1. Суть задачи</a></li><li><a href="#s-2">§2. Интеграции и master-data</a></li><li><a href="#s-3">§3. Нефункциональные требования</a></li><li><a href="#s-4">§4. Данные</a><ul><li><a href="#s-4-1">§4.1. transfers</a></li><li><a href="#s-4-2">§4.2. transfer_items</a></li><li><a href="#s-4-3">§4.3. stock_movements (общая таблица, чужая — фича использует, не владеет)</a></li><li><a href="#s-4-4">§4.4. Прочие таблицы (структура не меняется)</a></li></ul></li><li><a href="#s-5">§5. Статусная модель</a></li><li><a href="#s-6">§6. API</a><ul><li><a href="#s-6-1">§6.1. GET /api/v1/transfers</a></li><li><a href="#s-6-2">§6.2. POST /api/v1/transfers</a></li><li><a href="#s-6-3">§6.3. GET /api/v1/transfers/:id</a></li><li><a href="#s-6-4">§6.4. PUT /api/v1/transfers/:id</a></li><li><a href="#s-6-5">§6.5. POST /api/v1/transfers/:id/send</a></li><li><a href="#s-6-6">§6.6. POST /api/v1/transfers/:id/receive</a></li><li><a href="#s-6-7">§6.7. POST /api/v1/transfers/:id/cancel</a></li><li><a href="#s-6-8">§6.8. GET /api/v1/tasks/:id/card (существующий, дельта)</a></li><li><a href="#s-6-9">§6.9. Прочие изменения существующих endpoints (дельта)</a></li></ul></li><li><a href="#s-7">§7. UX/UI + API (сквозной флоу)</a></li><li><a href="#s-8">§8. UI-иерархия</a><ul><li><a href="#s-8-1">§8.1. Экран/форма «Перемещения»</a></li><li><a href="#s-8-2">§8.2. Экран/форма «Карточка заказа»</a></li></ul></li><li><a href="#s-9">§9. Решения (DS-index)</a></li><li><a href="#s-10">§10. Открытые вопросы (status: open)</a></li><li><a href="#s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</a><ul><li><a href="#h3-559">Unit / Integration (Go)</a></li><li><a href="#h3-603">E2E (Playwright)</a></li><li><a href="#h3-623">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</a></li></ul></li><li><a href="#h2-629">§Impact — точки касания существующего кода</a></li></ul></nav>
+<p class="klegend">Обозначения: <code class="k-t">таблица</code> <code class="k-f">поле</code> <code class="k-i">индекс</code> <code class="k-s">статус</code> <code class="k-e">endpoint</code> <code class="k-x">удаляется</code></p>
+<p><strong>Tier:</strong> M · <strong>Совместимость:</strong> MVP · <strong>Режим:</strong> new</p>
+<p><strong>Дата:</strong> 2026-10-07 | <strong>Статус:</strong> draft → final (после подтверждения пользователя) | <strong>Tier:</strong> M <strong>Совместимость:</strong> MVP (<a class="xref" href="#ds-027">DS-027</a> — контекст, реализуется в <code>transfers-core</code>) — живых данных нет <strong>UI-scope:</strong> swagger:no | adaptive:min | themes:both (<a class="xref" href="#ds-028">DS-028</a> — контекст, реализуется в <code>transfers-core</code>) <strong>Источник:</strong> мастер-спека <code>docs/features/transfers/draft-spec.md</code> (<a class="xref" href="#s-1">§1</a>, <a class="xref" href="#s-4-1">§4.1</a>, <a class="xref" href="#s-4-2">§4.2</a>, <a class="xref" href="#s-4-6">§4.6</a>, <a class="xref" href="#s-5">§5</a>, <a class="xref" href="#s-6-1">§6.1</a>–<a class="xref" href="#s-6-8">§6.8</a>, <a class="xref" href="#s-6-14">§6.14</a>, <a class="xref" href="#s-6-15">§6.15</a>, <a class="xref" href="#s-8-1">§8.1</a>, <a class="xref" href="#s-8-3">§8.3</a>) + её журнал <code>docs/features/transfers/draft-spec-decisions.md</code> <strong>Часть 4 из 6 мастер-спеки <code>transfers</code>; зависит от: <code>suppliers</code> (1), <code>user-timezone</code> (2), <code>transfers-core</code> (3).</strong> Номера DS и TS — мастер-идентификаторы, не перенумерованы.</p>
+<blockquote><p>Эта спека — дельта поверх <code>transfers-core</code>: документ, строки, занятие единицы, optimistic lock и экран «Перемещения» уже существуют. После мержа этой части: оборудование принимается от клиента и возвращается клиенту документом по заказу; товары заказываются у поставщика и принимаются по факту; исполнитель работает с документами с клиентом; в списке есть фильтр «период». Чего ещё нет: товара с ценой в документе «склад → клиент» (часть 5 — пока клиенту уходит только оборудование, товар идёт через услуги заказа, итог заказа не меняется); отката «Получено» и удаления документа (часть 6); удаление заказа с документами отвечает 409 с общим текстом.</p></blockquote>
+<h2 id="s-1">§1. Суть задачи</h2>
+<p>Документ «Перемещение» получает направление и контрагента: клиент и поставщик становятся точками маршрута. Для администратора и исполнителя.</p>
+<p><strong>Бизнес (что делает пользователь/процесс):</strong></p>
+<ol>
+<li data-mdline="17"><a class="pnum" id="p-1" href="#p-1">1</a>Принимает оборудование клиента в ремонт документом «клиент → склад», всегда по заказу; если клиент принёс сам — создаёт и принимает одним действием (<a class="xref" href="#s-8-2">§8.2</a> → <a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-012">DS-012</a>, <a class="xref" href="#ds-013">DS-013</a>.</li>
+<li data-mdline="18"><a class="pnum" id="p-2" href="#p-2">2</a>Возвращает оборудование клиенту документом «склад → клиент» по заказу; «Принять» нажимает наш сотрудник, когда клиент получил (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-013">DS-013</a>.</li>
+<li data-mdline="19"><a class="pnum" id="p-3" href="#p-3">3</a>Администратор заказывает товары у поставщика документом «поставщик → склад» и принимает по факту: меньше или больше заказанного (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-015">DS-015</a>.</li>
+<li data-mdline="20"><a class="pnum" id="p-4" href="#p-4">4</a>Исполнитель создаёт и проводит документы с клиентом и видит в списке только их (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-018">DS-018</a>.</li>
+<li data-mdline="21"><a class="pnum" id="p-5" href="#p-5">5</a>Ищет документы за период по дате создания (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-034">DS-034</a>.</li>
+</ol>
+<p><strong>Логика (правила системы):</strong></p>
+<ol>
+<li data-mdline="24"><a class="pnum" id="p-6" href="#p-6">6</a>Четыре направления <code class="k-f">direction</code>: <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code>, <code class="k-s">warehouse_to_warehouse</code>, <code class="k-s">supplier_to_warehouse</code>; после создания не меняется — <a class="xref" href="#ds-002">DS-002</a>.</li>
+<li data-mdline="25"><a class="pnum" id="p-7" href="#p-7">7</a>Состав строк по направлениям — <a class="xref" href="#ds-004">DS-004</a>:</li>
+<ul>
+<li data-mdline="26"><a class="pnum" id="p-8" href="#p-8">8</a><code class="k-s">client_to_warehouse</code>: только единицы оборудования этого заказа;</li>
+<li data-mdline="27"><a class="pnum" id="p-9" href="#p-9">9</a><code class="k-s">warehouse_to_client</code>: только единицы оборудования этого заказа (товар с ценой добавит часть 5, <a class="xref" href="#ds-011">DS-011</a>);</li>
+<li data-mdline="28"><a class="pnum" id="p-10" href="#p-10">10</a><code class="k-s">warehouse_to_warehouse</code>: единицы оборудования любых клиентов + товары (как в ядре);</li>
+<li data-mdline="29"><a class="pnum" id="p-11" href="#p-11">11</a><code class="k-s">supplier_to_warehouse</code>: только товары, без цен — <a class="xref" href="#ds-016">DS-016</a>.</li>
+</ul>
+<li data-mdline="30"><a class="pnum" id="p-12" href="#p-12">12</a>Для направлений с клиентом заказ обязателен; клиент документа выводится сервером из заказа; единица строки должна входить в оборудование заказа — <a class="xref" href="#ds-012">DS-012</a>, <a class="xref" href="#ds-035">DS-035</a>.</li>
+<li data-mdline="31"><a class="pnum" id="p-13" href="#p-13">13</a>Три шага «Заявка → В пути → Получено» для всех направлений — <a class="xref" href="#ds-013">DS-013</a>.</li>
+<li data-mdline="32"><a class="pnum" id="p-14" href="#p-14">14</a>При добавлении единицы в заказ склад больше не выбирается: единица остаётся там, где числится; на склад её приводит документ «клиент → склад» — <a class="xref" href="#ds-045">DS-045</a>.</li>
+<li data-mdline="33"><a class="pnum" id="p-15" href="#p-15">15</a>Приход от поставщика: остаток растёт на факт при приёмке; при отправке движений нет; на «Остатках» в колонке «в пути» учитывается — <a class="xref" href="#ds-040">DS-040</a>, <a class="xref" href="#ds-047">DS-047</a>.</li>
+<li data-mdline="34"><a class="pnum" id="p-16" href="#p-16">16</a>Документ чужого направления для исполнителя — «не найдено» (404) — <a class="xref" href="#ds-042">DS-042</a>.</li>
+<li data-mdline="35"><a class="pnum" id="p-17" href="#p-17">17</a>Время: хранение UTC; границы дня фильтра «период» — по часовому поясу пользователя (<code>users.timezone</code>, часть 2), сервер переводит их в UTC и применяет к <code class="k-f">created_at</code> — <a class="xref" href="#ds-034">DS-034</a>; показ времени — общим форматтером по поясу пользователя (<a class="xref" href="#ds-031">DS-031</a> — контекст, реализуется в <code>user-timezone</code>).</li>
+<li data-mdline="36"><a class="pnum" id="p-18" href="#p-18">18</a>Конкурентный доступ (краткий дубль <a class="xref" href="#s-3">§3</a>):</li>
+<ul>
+<li data-mdline="37"><a class="pnum" id="p-19" href="#p-19">19</a>правка и переходы документа → optimistic lock <code class="k-f">version</code> + 409, как в ядре (<a class="xref" href="#ds-048">DS-048</a> — контекст, реализуется в <code>transfers-core</code>);</li>
+<li data-mdline="38"><a class="pnum" id="p-20" href="#p-20">20</a>отправка «клиент → склад» → guard «единица у клиента» под <code>FOR NO KEY UPDATE</code> строки <code class="k-t">equipment</code> (as-built, D75; не <code>FOR UPDATE</code>); отправка «склад → клиент» → guard «единица на складе отправления» — <a class="xref" href="#ds-013">DS-013</a>;</li>
+<li data-mdline="39"><a class="pnum" id="p-21" href="#p-21">21</a>приход от поставщика → <code>FOR UPDATE</code> строк <code class="k-t">product_stock</code> склада назначения в порядке product_id — <a class="xref" href="#ds-040">DS-040</a>;</li>
+<li data-mdline="40"><a class="pnum" id="p-22" href="#p-22">22</a>удаление заказа при существующих документах → 409, заказ не удаляется — <a class="xref" href="#ds-012">DS-012</a>.</li>
+</ul>
+</ol>
+<p><strong>Техника (API/данные/интеграции):</strong></p>
+<ol>
+<li data-mdline="43"><a class="pnum" id="p-23" href="#p-23">23</a><code class="k-t">transfers</code>: новые <code class="k-f">direction</code>, <code class="k-f">task_id</code>, <code class="k-f">client_id</code>, <code class="k-f">supplier_id</code>; <code class="k-f">from_warehouse_id</code> и <code class="k-f">to_warehouse_id</code> становятся необязательными по направлению; CHECK маршрута (<a class="xref" href="#s-4-1">§4.1</a>).</li>
+<li data-mdline="44"><a class="pnum" id="p-24" href="#p-24">24</a><code class="k-t">stock_movements.reason</code>: три новых значения (<a class="xref" href="#s-4-3">§4.3</a>).</li>
+<li data-mdline="45"><a class="pnum" id="p-25" href="#p-25">25</a>API <code class="k-e">/api/v1/transfers</code>: дельты семи endpoint'ов ядра (<a class="xref" href="#s-6-1">§6.1</a>–<a class="xref" href="#s-6-7">§6.7</a>); дельта карточки заказа (<a class="xref" href="#s-6-8">§6.8</a>); прочие дельты (<a class="xref" href="#s-6-9">§6.9</a>).</li>
+<li data-mdline="46"><a class="pnum" id="p-26" href="#p-26">26</a>Пакет <code>internal/features/transfers</code>; читает <code class="k-t">suppliers</code>, <code class="k-t">task_equipment</code>, <code>users.timezone</code>.</li>
+</ol>
+<p><strong>UI (графическая часть):</strong></p>
+<ol>
+<li data-mdline="49"><a class="pnum" id="p-27" href="#p-27">27</a>«Перемещения» (<code>/transfers</code>): виден исполнителю; меню выбора направления; поля «Заказ» и «Поставщик»; фильтры «Направление», «Поставщик», «Заказ», «Период» (<a class="xref" href="#s-8-1">§8.1</a>).</li>
+<li data-mdline="50"><a class="pnum" id="p-28" href="#p-28">28</a>Карточка заказа: блок «Перемещения заказа» с кнопками «Принять от клиента» и «Вернуть клиенту»; из формы добавления единицы убран select «Склад приёма» (<a class="xref" href="#s-8-2">§8.2</a>).</li>
+</ol>
+<p>Out-of-scope:</p>
+<ol>
+<li data-mdline="53"><a class="pnum" id="p-29" href="#p-29">29</a>Товар с ценой в документе «склад → клиент», сумма накладной, итог заказа — часть 5 <code>transfers-sales</code> (<a class="xref" href="#ds-011">DS-011</a>, <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-038">DS-038</a>, <a class="xref" href="#ds-039">DS-039</a>).</li>
+<li data-mdline="54"><a class="pnum" id="p-30" href="#p-30">30</a>«Отменить проведение», удаление документа, человеческое сообщение при удалении заказа с документами и удаление отменённых документов вместе с заказом — часть 6 <code>transfers-revert</code> (<a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-025">DS-025</a>, <a class="xref" href="#ds-050">DS-050</a>).</li>
+<li data-mdline="55"><a class="pnum" id="p-31" href="#p-31">31</a>Статус товара заказа «ждёт поставку» и заказ у поставщика под заказ клиента — отдельная задача после мастер-спеки; связь прихода от поставщика со строками товаров заказа не закладывается (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="56"><a class="pnum" id="p-32" href="#p-32">32</a>Закупочные цены; создание товара каталога из документа — нет (<a class="xref" href="#ds-016">DS-016</a>).</li>
+<li data-mdline="57"><a class="pnum" id="p-33" href="#p-33">33</a>Возврат товара от клиента — нет: от клиента принимается только его оборудование (<a class="xref" href="#ds-004">DS-004</a>).</li>
+</ol>
+<h2 id="s-2">§2. Интеграции и master-data</h2>
+<p>Внешних интеграций нет.</p>
+<p>Справочники (master-data, таблицей):</p>
+<table><thead><tr><th>Справочник</th><th>Источник правды</th><th>Синхронизация</th><th>Где используется</th></tr></thead><tbody><tr data-mdline="65"><td><a class="pnum" id="p-34" href="#p-34">34</a>Поставщики (<code class="k-t">suppliers</code>)</td><td>часть 1 <code>suppliers</code>, ведёт администратор</td><td>нет</td><td><code class="k-f">supplier_id</code> документа «поставщик → склад»; архивный не выбирается в новом документе</td></tr><tr data-mdline="66"><td><a class="pnum" id="p-35" href="#p-35">35</a>Заказы (<code class="k-t">tasks</code>)</td><td>фича <code>board</code></td><td>нет</td><td><code class="k-f">task_id</code> документов с клиентом</td></tr><tr data-mdline="67"><td><a class="pnum" id="p-36" href="#p-36">36</a>Клиенты (<code class="k-t">clients</code>)</td><td>фича <code>clients</code></td><td>нет</td><td><code class="k-f">client_id</code> (выводится из заказа)</td></tr><tr data-mdline="68"><td><a class="pnum" id="p-37" href="#p-37">37</a>Оборудование заказа (<code class="k-t">task_equipment</code>)</td><td>фича <code>board</code></td><td>нет</td><td>проверка «единица входит в оборудование заказа»</td></tr><tr data-mdline="69"><td><a class="pnum" id="p-38" href="#p-38">38</a>Склады (<code class="k-t">warehouses</code>)</td><td>фича <code>warehouses</code></td><td>нет</td><td><code class="k-f">from_warehouse_id</code>, <code class="k-f">to_warehouse_id</code></td></tr><tr data-mdline="70"><td><a class="pnum" id="p-39" href="#p-39">39</a>Часовой пояс (<code>users.timezone</code>)</td><td>часть 2 <code>user-timezone</code></td><td>нет</td><td>границы дня фильтра «период»</td></tr></tbody></table>
+<h2 id="s-3">§3. Нефункциональные требования</h2>
+<p><strong>Конкурентность (К-3 — по операциям):</strong></p>
+<ol>
+<li data-mdline="75"><a class="pnum" id="p-40" href="#p-40">40</a><strong>Правка и переходы документа:</strong> без изменений относительно ядра — обязательный <code class="k-f">version</code>, сверка до статуса, 409 <code>TRANSFER_VERSION_CONFLICT</code> / <code>TRANSFER_STATUS_CONFLICT</code> (<a class="xref" href="#ds-048">DS-048</a> — контекст, реализуется в <code>transfers-core</code>).</li>
+<li data-mdline="76"><a class="pnum" id="p-41" href="#p-41">41</a><strong>Отправка документа с клиентом:</strong></li>
+<ul>
+<li data-mdline="77"><a class="pnum" id="p-42" href="#p-42">42</a><code class="k-s">client_to_warehouse</code>: под <code>FOR NO KEY UPDATE</code> (as-built, D75; не <code>FOR UPDATE</code>) строки <code class="k-t">equipment</code> — единица <code class="k-s">at_client</code>; иначе 409 <code>TRANSFER_EQUIPMENT_NOT_AT_SOURCE</code> — <a class="xref" href="#ds-013">DS-013</a></li>
+<li data-mdline="78"><a class="pnum" id="p-43" href="#p-43">43</a><code class="k-s">warehouse_to_client</code>: единица <code class="k-s">at_warehouse</code> на складе отправления; иначе тот же 409 — <a class="xref" href="#ds-013">DS-013</a></li>
+</ul>
+<li data-mdline="79"><a class="pnum" id="p-44" href="#p-44">44</a><strong>Создание и приём одним действием (<code>receive: true</code>):</strong> создание, отправка и приёмка — одна транзакция; при любой ошибке не создаётся ничего — <a class="xref" href="#ds-013">DS-013</a></li>
+<li data-mdline="80"><a class="pnum" id="p-45" href="#p-45">45</a><strong>Приход от поставщика:</strong> при приёмке Lock Order — <code class="k-t">transfers</code> FOR UPDATE → строки <code class="k-t">product_stock</code> склада назначения FOR UPDATE в порядке product_id; двойной «Принять» → второй 409, остаток вырос один раз — <a class="xref" href="#ds-015">DS-015</a>, <a class="xref" href="#ds-040">DS-040</a></li>
+<li data-mdline="81"><a class="pnum" id="p-46" href="#p-46">46</a><strong>Удаление заказа с документами:</strong> проверка в транзакции удаления; есть хоть один документ заказа → 409 <code>CONFLICT</code>, ничего не удалено (FK <code class="k-f">task_id</code> RESTRICT — страховка) — <a class="xref" href="#ds-012">DS-012</a></li>
+<li data-mdline="82"><a class="pnum" id="p-47" href="#p-47">47</a><strong>Добавление единицы в заказ:</strong> местоположение больше не пишется — гонки с документом нет — <a class="xref" href="#ds-045">DS-045</a></li>
+<li data-mdline="83"><a class="pnum" id="p-48" href="#p-48">48</a><strong>as-built (D75) — блокировки и их порядок:</strong> документ (<code>FOR UPDATE</code>) → заказ (<code>FOR KEY SHARE</code> — при создании/правке документа с клиентом, до чтения оборудования заказа) → <code class="k-t">product_stock</code> (<code>FOR UPDATE</code>, по product_id) → <code class="k-t">equipment</code> (<code>FOR NO KEY UPDATE</code>, по id); при удалении заказа блокируется только заказ, его документы не блокируются</li>
+<li data-mdline="84"><a class="pnum" id="p-49" href="#p-49">49</a><strong>as-built (D84) — смена клиента заказа:</strong> пока у заказа есть хотя бы один документ в любом статусе (включая «Получено» и «Отменён»), <code>PUT /api/v1/tasks/:id</code> с другим <code>client_id</code> → 409 <code>TASK_CLIENT_LOCKED_BY_TRANSFERS</code> «У заказа есть перемещения — сменить клиента нельзя», <code>details.transfer_ids</code> — номера по возрастанию; проверка под блокировкой заказа, до любых изменений (<code class="k-f">client_id</code> документа — снимок клиента заказа)</li>
+</ol>
+<p><strong>Аудит:</strong></p>
+<ul>
+<li data-mdline="87"><a class="pnum" id="p-50" href="#p-50">50</a>как в ядре: <code class="k-f">created_by</code>, <code class="k-f">sent_by</code>, <code class="k-f">received_by</code>, <code class="k-f">cancelled_by</code> + <code>*_at</code>; движения — <code class="k-t">stock_movements</code> с <code class="k-f">transfer_id</code></li>
+</ul>
+<p><strong>Время/таймзоны (К-13):</strong></p>
+<ul>
+<li data-mdline="90"><a class="pnum" id="p-51" href="#p-51">51</a>хранение: UTC, <code>timestamptz</code></li>
+<li data-mdline="91"><a class="pnum" id="p-52" href="#p-52">52</a>фильтр «период»: <code>created_from</code> / <code>created_to</code> — календарные даты в поясе пользователя; сервер вычисляет границы <code>[начало дня created_from; конец дня created_to]</code> в <code>users.timezone</code> запрашивающего, переводит в UTC и сравнивает с <code class="k-f">created_at</code> — <a class="xref" href="#ds-034">DS-034</a></li>
+<li data-mdline="92"><a class="pnum" id="p-53" href="#p-53">53</a>показ времени — по поясу пользователя (<a class="xref" href="#ds-031">DS-031</a> — контекст, реализуется в <code>user-timezone</code>)</li>
+<li data-mdline="93"><a class="pnum" id="p-54" href="#p-54">54</a>источник времени: сервер БД (<code>now()</code>); as-built (D76): <code class="k-f">received_at</code> = <code>clock_timestamp()</code></li>
+<li data-mdline="94"><a class="pnum" id="p-55" href="#p-55">55</a>as-built (D81): единый формат показа «ДД.ММ.ГГГГ ЧЧ:ММ» на всех экранах</li>
+</ul>
+<p><strong>Метрики/таймстемпы:</strong></p>
+<ul>
+<li data-mdline="97"><a class="pnum" id="p-56" href="#p-56">56</a>новых нет</li>
+</ul>
+<p><strong>Offline / деградация / восстановление:</strong></p>
+<ul>
+<li data-mdline="100"><a class="pnum" id="p-57" href="#p-57">57</a>как в ядре; параметры <code>new</code>, <code>direction</code>, <code>task_id</code> в URL позволяют после reload снова открыть форму нового документа из карточки заказа</li>
+</ul>
+<p><strong>Логирование и чувствительные данные:</strong></p>
+<ul>
+<li data-mdline="103"><a class="pnum" id="p-58" href="#p-58">58</a>slog: мутации документа (id, направление, действие, пользователь); чувствительных данных нет</li>
+</ul>
+<p><strong>Формат ошибок:</strong></p>
+<ul>
+<li data-mdline="106"><a class="pnum" id="p-59" href="#p-59">59</a>только <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; 400 → <code>details.fields[]</code></li>
+</ul>
+<p><strong>Abuse cases (вход для adversarial E2E TD-4):</strong></p>
+<ol>
+<li data-mdline="109"><a class="pnum" id="p-60" href="#p-60">60</a>Исполнитель открывает по прямому id документ «склад → склад» или «поставщик → склад» → 404; создаёт такой документ → 403 — <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-042">DS-042</a>.</li>
+<li data-mdline="110"><a class="pnum" id="p-61" href="#p-61">61</a>Исполнитель передаёт фильтр <code>direction=supplier_to_warehouse</code> → пустой список, не чужие документы — <a class="xref" href="#ds-018">DS-018</a>.</li>
+<li data-mdline="111"><a class="pnum" id="p-62" href="#p-62">62</a>В теле передан <code>client_id</code> чужого клиента → игнорируется, клиент выводится из заказа — <a class="xref" href="#ds-012">DS-012</a>.</li>
+<li data-mdline="112"><a class="pnum" id="p-63" href="#p-63">63</a>В документ заказа подставлена единица другого заказа или другого клиента → 400 <code>not_in_task</code> — <a class="xref" href="#ds-035">DS-035</a>.</li>
+<li data-mdline="113"><a class="pnum" id="p-64" href="#p-64">64</a>В документ «поставщик → склад» подставлена строка-единица, в «клиент → склад» — товарная строка → 400 <code>not_allowed</code> — <a class="xref" href="#ds-004">DS-004</a>.</li>
+<li data-mdline="114"><a class="pnum" id="p-65" href="#p-65">65</a><code>created_from=2026-13-40</code>, <code>created_to</code> раньше <code>created_from</code> → 400 — <a class="xref" href="#ds-034">DS-034</a>.</li>
+</ol>
+<p><strong>Применённые zap-дефолты</strong> (zap-list — стандарты проекта из CLAUDE.md, применяются автоматически, без вопросов; в <a class="xref" href="#s-9">§9</a> — источник <code>zap</code>):</p>
+<ul>
+<li data-mdline="117"><a class="pnum" id="p-66" href="#p-66">66</a>404 / 403 / 409 — стандартные статусы; ошибки только <code>pkg/errorspkg</code> (zap)</li>
+<li data-mdline="118"><a class="pnum" id="p-67" href="#p-67">67</a>синхронная обработка (zap)</li>
+<li data-mdline="119"><a class="pnum" id="p-68" href="#p-68">68</a>миграции — только <code>make migrate-up</code> (zap)</li>
+</ul>
+<h2 id="s-4">§4. Данные</h2>
+<p>Легенда колонки «Обяз.»: <code>да</code> — клиент обязан передать при создании/правке; <code>нет</code> — опционально; <code>авто</code> — заполняет система (PK, дефолты, таймстемпы, значения из URL/сессии); <code>условно</code> — зависит от правила, оно указано в Описании. NULL — DDL-факт, Обяз. — семантика заполнения.</p>
+<p>Одна новая миграция (ALTER поверх состояния после <code>transfers-core</code>), режим MVP.</p>
+<h3 id="s-4-1">§4.1. <code class="k-t">transfers</code></h3>
+<p>Шапка документа. Дельта: направление и контрагенты. Таблица приведена целиком в состоянии после этой части.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="131"><td><a class="pnum" id="p-69" href="#p-69">69</a><code class="k-f">id</code></td><td>bigserial</td><td>нет</td><td>sequence</td><td>авто</td><td>PK, сквозной номер #N (без изменений)</td><td><a class="xref" href="#ds-002">DS-002</a></td></tr><tr data-mdline="132"><td><a class="pnum" id="p-70" href="#p-70">70</a><strong><code class="k-f">direction</code></strong></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>НОВОЕ. Направление: <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code>, <code class="k-s">warehouse_to_warehouse</code>, <code class="k-s">supplier_to_warehouse</code>; после создания не меняется; существующие строки при миграции → <code class="k-s">warehouse_to_warehouse</code></td><td><a class="xref" href="#ds-002">DS-002</a></td></tr><tr data-mdline="133"><td><a class="pnum" id="p-71" href="#p-71">71</a><code class="k-f">from_warehouse_id</code></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>ИЗМЕНЕНО: было NOT NULL. FK → <code class="k-t">warehouses(id)</code> <code>ON DELETE RESTRICT</code>. Обязателен для <code class="k-s">warehouse_to_client</code>, <code class="k-s">warehouse_to_warehouse</code>; иначе NULL</td><td><a class="xref" href="#ds-002">DS-002</a></td></tr><tr data-mdline="134"><td><a class="pnum" id="p-72" href="#p-72">72</a><code class="k-f">to_warehouse_id</code></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>ИЗМЕНЕНО: было NOT NULL. FK → <code class="k-t">warehouses(id)</code> <code>ON DELETE RESTRICT</code>. Обязателен для <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_warehouse</code>, <code class="k-s">supplier_to_warehouse</code>; иначе NULL</td><td><a class="xref" href="#ds-002">DS-002</a></td></tr><tr data-mdline="135"><td><a class="pnum" id="p-73" href="#p-73">73</a><strong><code class="k-f">task_id</code></strong></td><td>bigint</td><td>да</td><td>—</td><td>условно</td><td>НОВОЕ. FK → <code class="k-t">tasks(id)</code> <code>ON DELETE RESTRICT</code>. Обязателен для <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code>; иначе NULL; после создания не меняется</td><td><a class="xref" href="#ds-012">DS-012</a></td></tr><tr data-mdline="136"><td><a class="pnum" id="p-74" href="#p-74">74</a><strong><code class="k-f">client_id</code></strong></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>НОВОЕ. FK → <code class="k-t">clients(id)</code> <code>ON DELETE RESTRICT</code>. Сервер выводит из заказа (<code>tasks.client_id</code>); от клиента не принимается</td><td><a class="xref" href="#ds-012">DS-012</a></td></tr><tr data-mdline="137"><td><a class="pnum" id="p-75" href="#p-75">75</a><strong><code class="k-f">supplier_id</code></strong></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>НОВОЕ. FK → <code class="k-t">suppliers(id)</code> <code>ON DELETE RESTRICT</code>. Обязателен для <code class="k-s">supplier_to_warehouse</code>; иначе NULL</td><td><a class="xref" href="#ds-002">DS-002</a></td></tr><tr data-mdline="138"><td><a class="pnum" id="p-76" href="#p-76">76</a><code class="k-f">status</code></td><td>text</td><td>нет</td><td><code>requested</code></td><td>авто</td><td><code class="k-s">requested</code>, <code class="k-s">in_transit</code>, <code class="k-s">received</code>, <code class="k-s">cancelled</code> (без изменений)</td><td><a class="xref" href="#ds-013">DS-013</a></td></tr><tr data-mdline="139"><td><a class="pnum" id="p-77" href="#p-77">77</a><code class="k-f">note</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Примечание, 0–1000 символов (без изменений)</td><td><a class="xref" href="#ds-002">DS-002</a></td></tr><tr data-mdline="140"><td><a class="pnum" id="p-78" href="#p-78">78</a><code class="k-f">created_by</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>, из сессии (без изменений)</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr><tr data-mdline="141"><td><a class="pnum" id="p-79" href="#p-79">79</a><code class="k-f">sent_by</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr><tr data-mdline="142"><td><a class="pnum" id="p-80" href="#p-80">80</a><code class="k-f">sent_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>Момент отправки (без изменений)</td><td><a class="xref" href="#ds-013">DS-013</a></td></tr><tr data-mdline="143"><td><a class="pnum" id="p-81" href="#p-81">81</a><code class="k-f">received_by</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr><tr data-mdline="144"><td><a class="pnum" id="p-82" href="#p-82">82</a><code class="k-f">received_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>Момент приёмки (без изменений)</td><td><a class="xref" href="#ds-013">DS-013</a></td></tr><tr data-mdline="145"><td><a class="pnum" id="p-83" href="#p-83">83</a><code class="k-f">cancelled_by</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr><tr data-mdline="146"><td><a class="pnum" id="p-84" href="#p-84">84</a><code class="k-f">cancelled_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>Момент отмены (без изменений)</td><td><a class="xref" href="#ds-013">DS-013</a></td></tr><tr data-mdline="147"><td><a class="pnum" id="p-85" href="#p-85">85</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>Используется фильтром «период»</td><td><a class="xref" href="#ds-034">DS-034</a></td></tr><tr data-mdline="148"><td><a class="pnum" id="p-86" href="#p-86">86</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>(без изменений)</td><td><a class="xref" href="#ds-034">DS-034</a></td></tr><tr data-mdline="149"><td><a class="pnum" id="p-87" href="#p-87">87</a><code class="k-f">version</code></td><td>int</td><td>нет</td><td><code>1</code></td><td>авто</td><td>Optimistic lock (без изменений)</td><td><a class="xref" href="#ds-013">DS-013</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="152"><a class="pnum" id="p-88" href="#p-88">88</a>PK: <code class="k-f">id</code></li>
+<li data-mdline="153"><a class="pnum" id="p-89" href="#p-89">89</a>UNIQUE: нет</li>
+<li data-mdline="154"><a class="pnum" id="p-90" href="#p-90">90</a><code class="k-i">transfers_status_idx</code>, <code class="k-i">transfers_from_warehouse_id_idx</code>, <code class="k-i">transfers_to_warehouse_id_idx</code> — без изменений</li>
+<li data-mdline="155"><a class="pnum" id="p-91" href="#p-91">91</a><code class="k-i">transfers_direction_idx</code> (<code class="k-f">direction</code>) — НОВОЕ: фильтр списка и скоуп исполнителя</li>
+<li data-mdline="156"><a class="pnum" id="p-92" href="#p-92">92</a><code class="k-i">transfers_task_id_idx</code> (<code class="k-f">task_id</code>) — НОВОЕ: блок «Перемещения заказа», проверка при удалении заказа</li>
+<li data-mdline="157"><a class="pnum" id="p-93" href="#p-93">93</a><code class="k-i">transfers_supplier_id_idx</code> (<code class="k-f">supplier_id</code>) — НОВОЕ: фильтр «поставщик»</li>
+<li data-mdline="158"><a class="pnum" id="p-94" href="#p-94">94</a><code class="k-i">transfers_created_at_idx</code> (<code class="k-f">created_at</code>) — НОВОЕ: фильтр «период»</li>
+<li data-mdline="159"><a class="pnum" id="p-95" href="#p-95">95</a>CHECK <code class="k-i">transfers_route_check</code> — НОВОЕ, заменяет <code class="k-x">transfers_distinct_warehouses</code>: набор заполненных <code class="k-f">from_warehouse_id</code> / <code class="k-f">to_warehouse_id</code> / <code class="k-f">task_id</code> / <code class="k-f">client_id</code> / <code class="k-f">supplier_id</code> соответствует <code class="k-f">direction</code>; для <code class="k-s">warehouse_to_warehouse</code> — <code>from_warehouse_id &lt;&gt; to_warehouse_id</code></li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="162"><a class="pnum" id="p-96" href="#p-96">96</a>N→1 <code class="k-t">tasks</code> (<code class="k-f">task_id</code>) — RESTRICT — заказ с документами не удалить</li>
+<li data-mdline="163"><a class="pnum" id="p-97" href="#p-97">97</a>N→1 <code class="k-t">clients</code> (<code class="k-f">client_id</code>) — RESTRICT</li>
+<li data-mdline="164"><a class="pnum" id="p-98" href="#p-98">98</a>N→1 <code class="k-t">suppliers</code> (<code class="k-f">supplier_id</code>) — RESTRICT</li>
+<li data-mdline="165"><a class="pnum" id="p-99" href="#p-99">99</a>остальные связи (<code class="k-t">transfer_items</code>, <code class="k-t">stock_movements</code>, <code class="k-t">equipment</code>, <code class="k-t">warehouses</code>, <code class="k-t">users</code>) — без изменений</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="168"><a class="pnum" id="p-100" href="#p-100">100</a>Создание: admin — любое направление; executor — только <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code> — <a class="xref" href="#ds-018">DS-018</a></li>
+<li data-mdline="169"><a class="pnum" id="p-101" href="#p-101">101</a>Изменение: только в <code class="k-s">requested</code>; <code class="k-f">direction</code> и <code class="k-f">task_id</code> не меняются — <a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-012">DS-012</a></li>
+<li data-mdline="170"><a class="pnum" id="p-102" href="#p-102">102</a>Отправка: <code class="k-s">client_to_warehouse</code> — единицы <code class="k-s">at_client</code> → <code class="k-s">in_transit</code>; <code class="k-s">warehouse_to_client</code> — единицы со склада отправления → <code class="k-s">in_transit</code>; <code class="k-s">supplier_to_warehouse</code> — движений остатка нет — <a class="xref" href="#ds-013">DS-013</a>, <a class="xref" href="#ds-040">DS-040</a></li>
+<li data-mdline="171"><a class="pnum" id="p-103" href="#p-103">103</a>Приёмка: <code class="k-s">client_to_warehouse</code> — единицы → <code class="k-s">at_warehouse</code> на складе назначения; <code class="k-s">warehouse_to_client</code> — единицы → <code class="k-s">at_client</code>, склад пуст; <code class="k-s">supplier_to_warehouse</code> — остаток склада назначения растёт на факт (<code class="k-s">supplier_in</code>) — <a class="xref" href="#ds-013">DS-013</a>, <a class="xref" href="#ds-015">DS-015</a></li>
+<li data-mdline="172"><a class="pnum" id="p-104" href="#p-104">104</a>Отмена «в пути»: <code class="k-s">client_to_warehouse</code> — единицы → <code class="k-s">at_client</code>; <code class="k-s">warehouse_to_client</code> — единицы → склад отправления; <code class="k-s">supplier_to_warehouse</code> — движений нет — <a class="xref" href="#ds-013">DS-013</a></li>
+<li data-mdline="173"><a class="pnum" id="p-105" href="#p-105">105</a>Удаление заказа при существующих документах: запрещено (409) — <a class="xref" href="#ds-012">DS-012</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="176"><a class="pnum" id="p-106" href="#p-106">106</a>маршрут соответствует направлению → CHECK <code class="k-i">transfers_route_check</code> + валидатор → <a class="xref" href="#ds-002">DS-002</a></li>
+<li data-mdline="177"><a class="pnum" id="p-107" href="#p-107">107</a>документ с клиентом всегда по заказу, клиент = клиент заказа → валидатор сервиса + вывод <code class="k-f">client_id</code> сервером → <a class="xref" href="#ds-012">DS-012</a></li>
+<li data-mdline="178"><a class="pnum" id="p-108" href="#p-108">108</a>единица строки документа с клиентом входит в оборудование заказа → проверка по <code class="k-t">task_equipment</code> (400 <code>items[i].equipment_id: not_in_task</code>) → <a class="xref" href="#ds-035">DS-035</a></li>
+<li data-mdline="179"><a class="pnum" id="p-109" href="#p-109">109</a>состав строк соответствует направлению → валидатор сервиса (400 <code>items[i].kind: not_allowed</code>) → <a class="xref" href="#ds-004">DS-004</a></li>
+<li data-mdline="180"><a class="pnum" id="p-110" href="#p-110">110</a>исполнитель не видит и не меняет документы без клиента → скоуп в запросах сервиса (404 / 403) → <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-042">DS-042</a></li>
+</ul>
+<h3 id="s-4-2">§4.2. <code class="k-t">transfer_items</code></h3>
+<p>Строки документа. Колонки не меняются; меняется одно правило приёмки. Таблица приведена целиком.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="187"><td><a class="pnum" id="p-111" href="#p-111">111</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (без изменений)</td><td><a class="xref" href="#ds-004">DS-004</a></td></tr><tr data-mdline="188"><td><a class="pnum" id="p-112" href="#p-112">112</a><code class="k-f">transfer_id</code></td><td>bigint</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">transfers(id)</code> <code>ON DELETE CASCADE</code> (без изменений)</td><td><a class="xref" href="#ds-004">DS-004</a></td></tr><tr data-mdline="189"><td><a class="pnum" id="p-113" href="#p-113">113</a><code class="k-f">position</code></td><td>int</td><td>нет</td><td>—</td><td>авто</td><td>Порядок строки (без изменений)</td><td><a class="xref" href="#ds-004">DS-004</a></td></tr><tr data-mdline="190"><td><a class="pnum" id="p-114" href="#p-114">114</a><code class="k-f">kind</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td><code class="k-s">product</code>, <code class="k-s">equipment</code>; допустимость — по направлению документа (<a class="xref" href="#s-1">§1</a> Логика п.2)</td><td><a class="xref" href="#ds-004">DS-004</a></td></tr><tr data-mdline="191"><td><a class="pnum" id="p-115" href="#p-115">115</a><code class="k-f">product_id</code></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>FK → <code class="k-t">products(id)</code> <code>ON DELETE RESTRICT</code>; при <code class="k-s">product</code> (без изменений)</td><td><a class="xref" href="#ds-004">DS-004</a></td></tr><tr data-mdline="192"><td><a class="pnum" id="p-116" href="#p-116">116</a><code class="k-f">equipment_id</code></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>FK → <code class="k-t">equipment(id)</code> <code>ON DELETE RESTRICT</code>; при <code class="k-s">equipment</code>; для документов с клиентом — единица из оборудования заказа</td><td><a class="xref" href="#ds-035">DS-035</a></td></tr><tr data-mdline="193"><td><a class="pnum" id="p-117" href="#p-117">117</a><code class="k-f">qty_sent</code></td><td>numeric(12,3)</td><td>да</td><td>—</td><td>условно</td><td>Количество (для прихода от поставщика — заказанное), &gt; 0; при <code class="k-s">product</code> (без изменений)</td><td><a class="xref" href="#ds-015">DS-015</a></td></tr><tr data-mdline="194"><td><a class="pnum" id="p-118" href="#p-118">118</a><code class="k-f">qty_received</code></td><td>numeric(12,3)</td><td>да</td><td>—</td><td>условно</td><td>ИЗМЕНЕНО (правило): факт ≥ 0; для <code class="k-s">supplier_to_warehouse</code> может превышать <code class="k-f">qty_sent</code> (максимум 999999999.999), для <code class="k-s">warehouse_to_warehouse</code> — ≤ <code class="k-f">qty_sent</code>; в документах с клиентом — NULL</td><td><a class="xref" href="#ds-015">DS-015</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="197"><a class="pnum" id="p-119" href="#p-119">119</a>PK, оба UNIQUE, <code class="k-i">transfer_items_product_id_idx</code>, <code class="k-i">transfer_items_equipment_id_idx</code>, CHECK <code class="k-i">transfer_items_kind_check</code> — без изменений</li>
+<li data-mdline="198"><a class="pnum" id="p-120" href="#p-120">120</a>CHECK <code class="k-x">qty_received &lt;= qty_sent</code> (остался от <code>migrations/0009_stock_transfers.up.sql:32</code>) — УДАЛЯЕТСЯ; остаётся <code>qty_received &gt;= 0</code>; верхнюю границу по направлению держит валидатор сервиса</li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="201"><a class="pnum" id="p-121" href="#p-121">121</a>факт ≤ отправленного вне прихода от поставщика → валидатор сервиса (400 <code>exceeds_sent</code>) → <a class="xref" href="#ds-015">DS-015</a></li>
+</ul>
+<h3 id="s-4-3">§4.3. <code class="k-t">stock_movements</code> (общая таблица, чужая — фича использует, не владеет)</h3>
+<p>Журнал движений остатка; владелец — фича <code>board</code> (StockEngine). Дельта: расширение набора причин.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="208"><td><a class="pnum" id="p-122" href="#p-122">122</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="209"><td><a class="pnum" id="p-123" href="#p-123">123</a><code class="k-f">product_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">products(id)</code> <code>ON DELETE RESTRICT</code> (as-is)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="210"><td><a class="pnum" id="p-124" href="#p-124">124</a><code class="k-f">task_id</code></td><td>bigint</td><td>да</td><td>—</td><td>авто</td><td>Заказ движения списания/возврата услуги (as-is; тип — по миграции <code>0005_board</code>)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="211"><td><a class="pnum" id="p-125" href="#p-125">125</a><code class="k-f">warehouse_id</code></td><td>uuid</td><td>нет</td><td><code>default_warehouse_id()</code></td><td>авто</td><td>FK → <code class="k-t">warehouses(id)</code> <code>ON DELETE RESTRICT</code> (as-is)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="212"><td><a class="pnum" id="p-126" href="#p-126">126</a><code class="k-f">transfer_id</code></td><td>bigint</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">transfers(id)</code> <code>ON DELETE SET NULL</code> (as-is)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="213"><td><a class="pnum" id="p-127" href="#p-127">127</a><code class="k-f">qty_delta</code></td><td>numeric(12,3)</td><td>нет</td><td>—</td><td>авто</td><td>Дельта остатка, ≠ 0 (as-is)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="214"><td><a class="pnum" id="p-128" href="#p-128">128</a><code class="k-f">reason</code></td><td>text</td><td>нет</td><td>—</td><td>авто</td><td>Причина. As-is: <code class="k-s">task_consume</code>, <code class="k-s">task_return</code> (board), <code class="k-s">manual</code> (board, «Остатки»), <code class="k-s">transfer_out</code>, <code class="k-s">transfer_in</code>, <code class="k-s">transfer_loss</code>, <code class="k-s">transfer_return</code> (перемещения). НОВЫЕ (CHECK расширяется в этой части сразу тремя значениями): <code class="k-s">supplier_in</code> — приход факта от поставщика, пишется с этой части; <code class="k-s">client_out</code> — списание товара клиенту, начнёт писаться в части 5 <code>transfers-sales</code>; <code class="k-s">transfer_unreceive</code> — компенсирующее движение при откате, начнёт писаться в части 6 <code>transfers-revert</code></td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="215"><td><a class="pnum" id="p-129" href="#p-129">129</a><code class="k-f">user_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (as-is)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="216"><td><a class="pnum" id="p-130" href="#p-130">130</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>(as-is)</td><td><a class="xref" href="#ds-040">DS-040</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="219"><a class="pnum" id="p-131" href="#p-131">131</a>PK: <code class="k-f">id</code>; <code class="k-i">stock_movements_product_id_idx</code>, <code class="k-i">stock_movements_warehouse_id_idx</code>, <code class="k-i">stock_movements_transfer_id_idx</code> — as-is; CHECK <code class="k-i">stock_movements_reason_check</code> — расширяется значениями <code>supplier_in</code>, <code>client_out</code>, <code>transfer_unreceive</code></li>
+</ul>
+<p>Поведение при действиях (движения этой части, одна транзакция с переходом документа) — <a class="xref" href="#ds-040">DS-040</a>:</p>
+<ul>
+<li data-mdline="222"><a class="pnum" id="p-132" href="#p-132">132</a>Отправка <code class="k-s">supplier_to_warehouse</code>: движений нет (товар ещё не наш)</li>
+<li data-mdline="223"><a class="pnum" id="p-133" href="#p-133">133</a>Приёмка <code class="k-s">supplier_to_warehouse</code>: <code class="k-s">supplier_in</code> +<code class="k-f">qty_received</code> на складе назначения; при факте 0 движение не пишется</li>
+<li data-mdline="224"><a class="pnum" id="p-134" href="#p-134">134</a>Отмена <code class="k-s">supplier_to_warehouse</code> (заявка или «в пути»): движений нет</li>
+<li data-mdline="225"><a class="pnum" id="p-135" href="#p-135">135</a>Документы с клиентом в этой части товарных строк не содержат — движений нет</li>
+<li data-mdline="226"><a class="pnum" id="p-136" href="#p-136">136</a><code class="k-s">warehouse_to_warehouse</code> — без изменений (ядро)</li>
+</ul>
+<p>Используется в модулях (used by):</p>
+<table><thead><tr><th>Модуль</th><th>Ключ-дискриминатор (если есть)</th><th>Роль (writer/reader)</th><th>Что делает</th><th>Путь</th></tr></thead><tbody><tr data-mdline="231"><td><a class="pnum" id="p-137" href="#p-137">137</a>transfers (эта часть)</td><td><code class="k-f">reason</code> = supplier_in</td><td>writer</td><td>приход от поставщика</td><td><code>internal/features/transfers</code></td></tr><tr data-mdline="232"><td><a class="pnum" id="p-138" href="#p-138">138</a>transfers (ядро)</td><td><code class="k-f">reason</code> ∈ transfer_out, transfer_in, transfer_loss, transfer_return</td><td>writer</td><td>склад → склад</td><td><code>internal/features/transfers</code></td></tr><tr data-mdline="233"><td><a class="pnum" id="p-139" href="#p-139">139</a>board (StockEngine, «Остатки»)</td><td><code class="k-f">reason</code> ∈ task_consume, task_return, manual</td><td>writer</td><td>списание услугами, ручная корректировка</td><td><code>internal/features/board/stock_engine.go</code>, <code>stock_repo.go</code></td></tr><tr data-mdline="234"><td><a class="pnum" id="p-140" href="#p-140">140</a>seeddemo</td><td>все</td><td>writer</td><td>демо-движения</td><td><code>internal/seeddemo/seeddemo.go</code></td></tr></tbody></table>
+<h3 id="s-4-4">§4.4. Прочие таблицы (структура не меняется)</h3>
+<ul>
+<li data-mdline="237"><a class="pnum" id="p-141" href="#p-141">141</a><code class="k-t">equipment</code> (структура — <code>transfers-core</code>): новые переходы местоположения <code class="k-s">at_client</code> → <code class="k-s">in_transit</code> → <code class="k-s">at_warehouse</code> (приём) и <code class="k-s">at_warehouse</code> → <code class="k-s">in_transit</code> → <code class="k-s">at_client</code> (возврат); запись склада при добавлении единицы в заказ прекращается — <a class="xref" href="#ds-013">DS-013</a>, <a class="xref" href="#ds-045">DS-045</a></li>
+<li data-mdline="238"><a class="pnum" id="p-142" href="#p-142">142</a><code class="k-t">task_equipment</code>: читается для проверки <a class="xref" href="#ds-035">DS-035</a>; не меняется</li>
+<li data-mdline="239"><a class="pnum" id="p-143" href="#p-143">143</a><code class="k-t">suppliers</code>: читается (<code class="k-f">is_active</code>, <code class="k-f">name</code>); не меняется</li>
+<li data-mdline="240"><a class="pnum" id="p-144" href="#p-144">144</a><code class="k-t">users</code>: читается <code class="k-f">timezone</code> запрашивающего для фильтра «период»; не меняется</li>
+</ul>
+<h2 id="s-5">§5. Статусная модель</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 520" width="680" height="520" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="520" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="26" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="431.2" lengthAdjust="spacingAndGlyphs">Статусная модель документа (часть 4: четыре направления)</text>
+<circle cx="60" cy="110" r="8" fill="#334155"/>
+<rect x="130" y="70" width="180" height="80" rx="8" fill="#eff6ff" stroke="#1e3a8a" stroke-width="1.5"/>
+<text x="220.0" y="94" font-size="13" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="128.7" lengthAdjust="spacingAndGlyphs">requested · Заявка</text>
+<text x="220.0" y="114" font-size="11" fill="#1e3a8a" text-anchor="middle" font-weight="normal" textLength="90.8" lengthAdjust="spacingAndGlyphs">можно: править,</text>
+<text x="220.0" y="129" font-size="11" fill="#1e3a8a" text-anchor="middle" font-weight="normal" textLength="115.0" lengthAdjust="spacingAndGlyphs">отправить, отменить</text>
+<rect x="440" y="70" width="190" height="80" rx="8" fill="#fef9c3" stroke="#713f12" stroke-width="1.5"/>
+<text x="535.0" y="94" font-size="13" fill="#713f12" text-anchor="middle" font-weight="bold" textLength="135.9" lengthAdjust="spacingAndGlyphs">in_transit · В пути</text>
+<text x="535.0" y="114" font-size="11" fill="#713f12" text-anchor="middle" font-weight="normal" textLength="90.8" lengthAdjust="spacingAndGlyphs">можно: принять,</text>
+<text x="535.0" y="129" font-size="11" fill="#713f12" text-anchor="middle" font-weight="normal" textLength="48.4" lengthAdjust="spacingAndGlyphs">отменить</text>
+<rect x="440" y="270" width="190" height="80" rx="8" fill="#dcfce7" stroke="#14532d" stroke-width="1.5"/>
+<rect x="444" y="274" width="182" height="72" rx="6" fill="none" stroke="#14532d" stroke-width="1"/>
+<text x="535.0" y="294" font-size="13" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="135.9" lengthAdjust="spacingAndGlyphs">received · Получено</text>
+<text x="535.0" y="314" font-size="11" fill="#14532d" text-anchor="middle" font-weight="normal" textLength="72.6" lengthAdjust="spacingAndGlyphs">терминальный</text>
+<text x="535.0" y="329" font-size="11" fill="#14532d" text-anchor="middle" font-weight="normal" textLength="102.9" lengthAdjust="spacingAndGlyphs">(откат — часть 6)</text>
+<rect x="130" y="270" width="180" height="80" rx="8" fill="#fee2e2" stroke="#7f1d1d" stroke-width="1.5"/>
+<rect x="134" y="274" width="172" height="72" rx="6" fill="none" stroke="#7f1d1d" stroke-width="1"/>
+<text x="220.0" y="294" font-size="13" fill="#7f1d1d" text-anchor="middle" font-weight="bold" textLength="135.9" lengthAdjust="spacingAndGlyphs">cancelled · Отменён</text>
+<text x="220.0" y="314" font-size="11" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="72.6" lengthAdjust="spacingAndGlyphs">терминальный</text>
+<path d="M68,110 L128,110" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="98" y="100" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="42.4" lengthAdjust="spacingAndGlyphs">создать</text>
+<path d="M310,110 L438,110" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="374" y="100" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="108.9" lengthAdjust="spacingAndGlyphs">send · «Отправить»</text>
+<path d="M535,150 L535,268" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="590" y="205" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="54.5" lengthAdjust="spacingAndGlyphs">receive ·</text>
+<text x="590" y="220" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="54.5" lengthAdjust="spacingAndGlyphs">«Принять»</text>
+<path d="M220,150 L220,268" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="178" y="205" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="48.4" lengthAdjust="spacingAndGlyphs">cancel ·</text>
+<text x="178" y="220" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="60.5" lengthAdjust="spacingAndGlyphs">«Отменить»</text>
+<path d="M440,145 L312,275" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="360" y="190" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="108.9" lengthAdjust="spacingAndGlyphs">cancel · «Отменить</text>
+<text x="360" y="205" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="54.5" lengthAdjust="spacingAndGlyphs">отправку»</text>
+<text x="374" y="62" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="357.5" lengthAdjust="spacingAndGlyphs">«Принять сразу»: создать → отправить → принять (приём от клиента)</text>
+<rect x="30" y="375" width="620" height="130" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="44" y="396" font-size="12" fill="#1f2937" text-anchor="start" font-weight="bold" textLength="264.0" lengthAdjust="spacingAndGlyphs">Легенда — что происходит по направлениям</text>
+<text x="44" y="414" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="589.1" lengthAdjust="spacingAndGlyphs">Клиент → склад: send — единица «в пути» от клиента; receive — «на складе»; cancel — снова «у клиента».</text>
+<text x="44" y="430" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="537.1" lengthAdjust="spacingAndGlyphs">Склад → клиент: send — единица «в пути → клиент»; receive (жмёт наш сотрудник) — «у клиента».</text>
+<text x="44" y="446" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="554.4" lengthAdjust="spacingAndGlyphs">Поставщик → склад: send — движений нет; receive — остаток +факт (факт может быть больше заказа).</text>
+<text x="44" y="462" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="566.0" lengthAdjust="spacingAndGlyphs">Склад → склад: как в ядре. Кто: admin — все; executor — только документы с клиентом (чужие → 404).</text>
+<text x="44" y="478" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="519.8" lengthAdjust="spacingAndGlyphs">Недопустимое действие → 409 TRANSFER_STATUS_CONFLICT. Двойная рамка — терминальный статус.</text>
+</svg></figure></p>
+<p>Статусы — те же четыре, что в ядре; «Получено» и «Отменён» по-прежнему терминальные (откат — часть 6). Дельта — кто действует и что происходит по направлениям.</p>
+<p>Детали переходов (guard = атомарное условие; что при гонке; каждый запрет = 409 + негативный тест):</p>
+<table><thead><tr><th>Из</th><th>В</th><th>Триггер</th><th>Кто</th><th>Guard / конкурентный исход</th><th>Side effects</th></tr></thead><tbody><tr data-mdline="250"><td><a class="pnum" id="p-145" href="#p-145">145</a>—</td><td><code class="k-s">requested</code></td><td><code class="k-e">POST /api/v1/transfers</code></td><td>admin — любое направление; executor — <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code></td><td>единицы свободны, иначе 409 <code>EQUIPMENT_IN_TRANSFER</code>; единицы документа с клиентом входят в оборудование заказа</td><td>единицы занимаются; <code class="k-f">client_id</code> выведен из заказа</td></tr><tr data-mdline="251"><td><a class="pnum" id="p-146" href="#p-146">146</a><code class="k-s">requested</code></td><td><code class="k-s">in_transit</code></td><td><code class="k-e">POST /api/v1/transfers/:id/send</code> либо <code>send: true</code></td><td>как создание</td><td>версия + статус; <code class="k-s">client_to_warehouse</code> — единица <code class="k-s">at_client</code>; <code class="k-s">warehouse_to_client</code> — единица на складе отправления; иначе 409 <code>TRANSFER_EQUIPMENT_NOT_AT_SOURCE</code></td><td>единицы → <code class="k-s">in_transit</code>; для <code class="k-s">supplier_to_warehouse</code> движений нет</td></tr><tr data-mdline="252"><td><a class="pnum" id="p-147" href="#p-147">147</a><code class="k-s">in_transit</code></td><td><code class="k-s">received</code></td><td><code class="k-e">POST /api/v1/transfers/:id/receive</code> либо <code>receive: true</code> при создании <code class="k-s">client_to_warehouse</code></td><td>как создание</td><td>версия + статус; второй одновременный запрос — 409</td><td><code class="k-s">client_to_warehouse</code> — единицы на склад назначения; <code class="k-s">warehouse_to_client</code> — единицы <code class="k-s">at_client</code>; <code class="k-s">supplier_to_warehouse</code> — <code class="k-s">supplier_in</code> на факт</td></tr><tr data-mdline="253"><td><a class="pnum" id="p-148" href="#p-148">148</a><code class="k-s">requested</code></td><td><code class="k-s">cancelled</code></td><td><code class="k-e">POST /api/v1/transfers/:id/cancel</code></td><td>как создание</td><td>версия + статус</td><td>единицы освобождаются</td></tr><tr data-mdline="254"><td><a class="pnum" id="p-149" href="#p-149">149</a><code class="k-s">in_transit</code></td><td><code class="k-s">cancelled</code></td><td><code class="k-e">POST /api/v1/transfers/:id/cancel</code></td><td>как создание</td><td>версия + статус</td><td>единицы возвращаются в источник (<code class="k-s">at_client</code> либо склад отправления) и освобождаются</td></tr></tbody></table>
+<p>Переходы <code class="k-s">requested</code> → <code class="k-s">requested</code> (правка) и направление <code class="k-s">warehouse_to_warehouse</code> — без изменений относительно ядра.</p>
+<h2 id="s-6">§6. API</h2>
+<blockquote><p>Режим B «API + фронтенд». Базовый URL стенда: <code>http://localhost:8080</code>. Авторизация — сессионная cookie <code>sid</code> (плейсхолдеры <code>&lt;SID&gt;</code>, <code>&lt;SID_EXECUTOR&gt;</code>). Копируй curl в терминал или в Postman: Import → Raw text. Тело ошибки — формат <code>pkg/errorspkg</code>. Ключи — snake_case, URL — kebab-case (CLAUDE.md §API-1). Endpoint'ы существуют после <code>transfers-core</code>; для каждого приведены таблицы параметров и ошибок в состоянии после этой части, изменённое помечено «НОВОЕ» / «ИЗМЕНЕНО». as-built (D76): количества (<code>qty_sent</code>, <code>qty_received</code>) — JSON-числа в запросе и в ответе, не строки. <code>client_id</code> в теле создания/правки принимается разбором и игнорируется. Исполнитель: <code>POST /transfers/:id/unreceive</code> и <code>DELETE /transfers/:id</code> (часть 6) → 403 всегда; документ чужого направления в остальных endpoint'ах → 404.</p></blockquote>
+<h3 id="s-6-1">§6.1. <code class="k-e">GET /api/v1/transfers</code></h3>
+<ul>
+<li data-mdline="264"><a class="pnum" id="p-150" href="#p-150">150</a>Назначение: список документов.</li>
+<li data-mdline="265"><a class="pnum" id="p-151" href="#p-151">151</a>Authz: ИЗМЕНЕНО — admin видит все документы; executor — только <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code> (скоуп накладывает сервер; запрос чужого направления фильтром → пустой список) — <a class="xref" href="#ds-018">DS-018</a>.</li>
+<li data-mdline="266"><a class="pnum" id="p-152" href="#p-152">152</a>Идемпотентность/повтор: чтение, безопасно.</li>
+<li data-mdline="267"><a class="pnum" id="p-153" href="#p-153">153</a>Side effects: нет.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="273"><td><a class="pnum" id="p-154" href="#p-154">154</a><code class="k-f">status</code></td><td>query</td><td>string</td><td>нет</td><td><code>requested</code>, <code>in_transit</code>, <code>received</code>, <code>cancelled</code>; иное → 400 (без изменений)</td></tr><tr data-mdline="274"><td><a class="pnum" id="p-155" href="#p-155">155</a><code class="k-f">warehouse_id</code></td><td>query</td><td>uuid</td><td>нет</td><td>склад отправления ИЛИ назначения; не uuid → 400 (без изменений)</td></tr><tr data-mdline="275"><td><a class="pnum" id="p-156" href="#p-156">156</a><code class="k-f">direction</code></td><td>query</td><td>string</td><td>нет</td><td>НОВОЕ. <code>client_to_warehouse</code>, <code>warehouse_to_client</code>, <code>warehouse_to_warehouse</code>, <code>supplier_to_warehouse</code>; иное → 400</td></tr><tr data-mdline="276"><td><a class="pnum" id="p-157" href="#p-157">157</a><code class="k-f">task_id</code></td><td>query</td><td>integer</td><td>нет</td><td>НОВОЕ. 1–9223372036854775807; иное → 400</td></tr><tr data-mdline="277"><td><a class="pnum" id="p-158" href="#p-158">158</a><code class="k-f">supplier_id</code></td><td>query</td><td>uuid</td><td>нет</td><td>НОВОЕ. не uuid → 400</td></tr><tr data-mdline="278"><td><a class="pnum" id="p-159" href="#p-159">159</a><code class="k-f">created_from</code></td><td>query</td><td>date</td><td>нет</td><td>НОВОЕ. <code>YYYY-MM-DD</code>; начало дня в поясе пользователя; иное → 400</td></tr><tr data-mdline="279"><td><a class="pnum" id="p-160" href="#p-160">160</a><code class="k-f">created_to</code></td><td>query</td><td>date</td><td>нет</td><td>НОВОЕ. <code>YYYY-MM-DD</code>; конец дня включительно в поясе пользователя; раньше <code class="k-f">created_from</code> → 400</td></tr><tr data-mdline="280"><td><a class="pnum" id="p-161" href="#p-161">161</a><code class="k-f">limit</code></td><td>query</td><td>integer</td><td>нет</td><td>1–500, по умолчанию 50 (без изменений)</td></tr><tr data-mdline="281"><td><a class="pnum" id="p-162" href="#p-162">162</a><code class="k-f">offset</code></td><td>query</td><td>integer</td><td>нет</td><td>≥ 0, по умолчанию 0 (без изменений)</td></tr></tbody></table>
+<p>Фильтры комбинируются по «И». Сортировка: <code class="k-f">id</code> по убыванию.</p>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="289"><td><a class="pnum" id="p-163" href="#p-163">163</a><code class="k-f">items</code></td><td>array</td><td>элементы списка</td></tr><tr data-mdline="290"><td><a class="pnum" id="p-164" href="#p-164">164</a><code class="k-f">items[].id</code></td><td>integer</td><td>номер документа</td></tr><tr data-mdline="291"><td><a class="pnum" id="p-165" href="#p-165">165</a><code class="k-f">items[].direction</code></td><td>string</td><td>НОВОЕ: направление</td></tr><tr data-mdline="292"><td><a class="pnum" id="p-166" href="#p-166">166</a><code class="k-f">items[].status</code></td><td>string</td><td>статус</td></tr><tr data-mdline="293"><td><a class="pnum" id="p-167" href="#p-167">167</a><code class="k-f">items[].from_warehouse_id</code></td><td>uuid | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="294"><td><a class="pnum" id="p-168" href="#p-168">168</a><code class="k-f">items[].from_warehouse_name</code></td><td>string | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="295"><td><a class="pnum" id="p-169" href="#p-169">169</a><code class="k-f">items[].to_warehouse_id</code></td><td>uuid | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="296"><td><a class="pnum" id="p-170" href="#p-170">170</a><code class="k-f">items[].to_warehouse_name</code></td><td>string | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="297"><td><a class="pnum" id="p-171" href="#p-171">171</a><code class="k-f">items[].task_id</code></td><td>integer | null</td><td>НОВОЕ: заказ</td></tr><tr data-mdline="298"><td><a class="pnum" id="p-172" href="#p-172">172</a><code class="k-f">items[].client_id</code></td><td>uuid | null</td><td>НОВОЕ: клиент</td></tr><tr data-mdline="299"><td><a class="pnum" id="p-173" href="#p-173">173</a><code class="k-f">items[].client_name</code></td><td>string | null</td><td>НОВОЕ: название клиента</td></tr><tr data-mdline="300"><td><a class="pnum" id="p-174" href="#p-174">174</a><code class="k-f">items[].supplier_id</code></td><td>uuid | null</td><td>НОВОЕ: поставщик</td></tr><tr data-mdline="301"><td><a class="pnum" id="p-175" href="#p-175">175</a><code class="k-f">items[].supplier_name</code></td><td>string | null</td><td>НОВОЕ: название поставщика</td></tr><tr data-mdline="302"><td><a class="pnum" id="p-176" href="#p-176">176</a><code class="k-f">items[].note</code></td><td>string</td><td>примечание</td></tr><tr data-mdline="303"><td><a class="pnum" id="p-177" href="#p-177">177</a><code class="k-f">items[].items_count</code></td><td>integer</td><td>число строк</td></tr><tr data-mdline="304"><td><a class="pnum" id="p-178" href="#p-178">178</a><code class="k-f">items[].created_by_name</code></td><td>string</td><td>автор</td></tr><tr data-mdline="305"><td><a class="pnum" id="p-179" href="#p-179">179</a><code class="k-f">items[].created_at</code></td><td>datetime (UTC, RFC 3339)</td><td>создан</td></tr><tr data-mdline="306"><td><a class="pnum" id="p-180" href="#p-180">180</a><code class="k-f">items[].updated_at</code></td><td>datetime (UTC, RFC 3339)</td><td>изменён</td></tr><tr data-mdline="307"><td><a class="pnum" id="p-181" href="#p-181">181</a><code class="k-f">items[].version</code></td><td>integer</td><td>версия</td></tr><tr data-mdline="308"><td><a class="pnum" id="p-182" href="#p-182">182</a><code class="k-f">total</code></td><td>integer</td><td>всего под фильтрами</td></tr><tr data-mdline="309"><td><a class="pnum" id="p-183" href="#p-183">183</a><code class="k-f">limit</code></td><td>integer</td><td>применённый лимит</td></tr><tr data-mdline="310"><td><a class="pnum" id="p-184" href="#p-184">184</a><code class="k-f">offset</code></td><td>integer</td><td>применённое смещение</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="316"><td><a class="pnum" id="p-185" href="#p-185">185</a>400 <code>VALIDATION</code></td><td><code>status: invalid</code></td><td>«Некорректный статус»</td></tr><tr data-mdline="317"><td><a class="pnum" id="p-186" href="#p-186">186</a>400 <code>VALIDATION</code></td><td><code>direction: invalid</code></td><td>«Некорректное направление»</td></tr><tr data-mdline="318"><td><a class="pnum" id="p-187" href="#p-187">187</a>400 <code>VALIDATION</code></td><td><code>warehouse_id: invalid</code>, <code>supplier_id: invalid</code>, <code>task_id: invalid</code></td><td>«Некорректное значение фильтра»</td></tr><tr data-mdline="319"><td><a class="pnum" id="p-188" href="#p-188">188</a>400 <code>VALIDATION</code></td><td><code>created_from: invalid</code>, <code>created_to: invalid</code>, <code>created_to: before_from</code></td><td>«Некорректный период»</td></tr><tr data-mdline="320"><td><a class="pnum" id="p-189" href="#p-189">189</a>401 <code>UNAUTHORIZED</code></td><td>нет сессии</td><td>переход на вход</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' 'http://localhost:8080/api/v1/transfers?direction=client_to_warehouse&amp;created_from=2026-10-07&amp;created_to=2026-10-07&amp;limit=50&amp;offset=0'</code></pre>
+<pre><code>{
+  "items": [
+    { "id": 12, "direction": "client_to_warehouse", "status": "received",
+      "from_warehouse_id": null, "from_warehouse_name": null,
+      "to_warehouse_id": "5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11", "to_warehouse_name": "Алматы",
+      "task_id": 37, "client_id": "a3f1d6c2-0c5e-4a52-8f0e-6f3c4a0b9d21", "client_name": "ТОО «Принт-Сервис»",
+      "supplier_id": null, "supplier_name": null,
+      "note": "", "items_count": 1, "created_by_name": "Петров Иван",
+      "created_at": "2026-10-06T19:30:00Z", "updated_at": "2026-10-06T19:30:00Z", "version": 1 }
+  ],
+  "total": 1, "limit": 50, "offset": 0
+}</code></pre>
+<p>Ошибка (VALIDATION → 400):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' 'http://localhost:8080/api/v1/transfers?created_from=2026-10-07&amp;created_to=2026-10-01'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "Проверьте поля",
+  "details": { "fields": [ { "name": "created_to", "message": "before_from" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-034">DS-034</a>.</p>
+<h3 id="s-6-2">§6.2. <code class="k-e">POST /api/v1/transfers</code></h3>
+<ul>
+<li data-mdline="354"><a class="pnum" id="p-190" href="#p-190">190</a>Назначение: создать документ любого из четырёх направлений; опционально сразу отправить и (для приёма от клиента) принять.</li>
+<li data-mdline="355"><a class="pnum" id="p-191" href="#p-191">191</a>Authz: ИЗМЕНЕНО — admin — любое <code class="k-f">direction</code>; executor — только <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code>, иначе 403 — <a class="xref" href="#ds-018">DS-018</a>.</li>
+<li data-mdline="356"><a class="pnum" id="p-192" href="#p-192">192</a>Спец-механика: <code>send: true</code> — создать и отправить; НОВОЕ <code>receive: true</code> — создать, отправить и принять одной транзакцией, только для <code class="k-s">client_to_warehouse</code> (клиент принёс сам) — <a class="xref" href="#ds-013">DS-013</a>.</li>
+<li data-mdline="357"><a class="pnum" id="p-193" href="#p-193">193</a>Идемпотентность/повтор: как в ядре; повтор документа с единицами → 409 <code>EQUIPMENT_IN_TRANSFER</code>.</li>
+<li data-mdline="358"><a class="pnum" id="p-194" href="#p-194">194</a>Side effects: одна транзакция — <code class="k-t">transfers</code>, <code class="k-t">transfer_items</code>, <code class="k-t">equipment.active_transfer_id</code>; при <code>send</code> / <code>receive</code> — эффекты <a class="xref" href="#s-6-5">§6.5</a> / <a class="xref" href="#s-6-6">§6.6</a>.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="364"><td><a class="pnum" id="p-195" href="#p-195">195</a><code class="k-f">direction</code></td><td>body</td><td>string</td><td>да</td><td>НОВОЕ. <code>client_to_warehouse</code>, <code>warehouse_to_client</code>, <code>warehouse_to_warehouse</code>, <code>supplier_to_warehouse</code>; отсутствует → 400 <code>required</code>; иное → 400 <code>invalid</code></td></tr><tr data-mdline="365"><td><a class="pnum" id="p-196" href="#p-196">196</a><code class="k-f">from_warehouse_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>ИЗМЕНЕНО. Обязателен для <code>warehouse_to_client</code>, <code>warehouse_to_warehouse</code>; активный склад; для остальных направлений передан → 400 <code>not_allowed</code></td></tr><tr data-mdline="366"><td><a class="pnum" id="p-197" href="#p-197">197</a><code class="k-f">to_warehouse_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>ИЗМЕНЕНО. Обязателен для <code>client_to_warehouse</code>, <code>warehouse_to_warehouse</code>, <code>supplier_to_warehouse</code>; активный склад; для <code>warehouse_to_client</code> передан → 400 <code>not_allowed</code>; равен <code class="k-f">from_warehouse_id</code> → 400 <code>same_warehouse</code></td></tr><tr data-mdline="367"><td><a class="pnum" id="p-198" href="#p-198">198</a><code class="k-f">task_id</code></td><td>body</td><td>integer</td><td>условно</td><td>НОВОЕ. Обязателен для <code>client_to_warehouse</code>, <code>warehouse_to_client</code>; существующий заказ (нет → 400 <code>not_found</code>); для остальных передан → 400 <code>not_allowed</code></td></tr><tr data-mdline="368"><td><a class="pnum" id="p-199" href="#p-199">199</a><code class="k-f">supplier_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>НОВОЕ. Обязателен для <code>supplier_to_warehouse</code>; существующий активный поставщик (нет → 400 <code>not_found</code>, архивный → 400 <code>archived</code>); для остальных передан → 400 <code>not_allowed</code></td></tr><tr data-mdline="369"><td><a class="pnum" id="p-200" href="#p-200">200</a><code class="k-f">note</code></td><td>body</td><td>string</td><td>нет</td><td>0–1000 символов (без изменений)</td></tr><tr data-mdline="370"><td><a class="pnum" id="p-201" href="#p-201">201</a><code class="k-f">items</code></td><td>body</td><td>array</td><td>да</td><td>1–200 строк (без изменений)</td></tr><tr data-mdline="371"><td><a class="pnum" id="p-202" href="#p-202">202</a><code class="k-f">items[].kind</code></td><td>body</td><td>string</td><td>да</td><td><code>product</code>, <code>equipment</code>; ИЗМЕНЕНО: недопустимый для направления → 400 <code>not_allowed</code> (товар — только <code>warehouse_to_warehouse</code>, <code>supplier_to_warehouse</code>; единица — только <code>client_to_warehouse</code>, <code>warehouse_to_client</code>, <code>warehouse_to_warehouse</code>)</td></tr><tr data-mdline="372"><td><a class="pnum" id="p-203" href="#p-203">203</a><code class="k-f">items[].product_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>при <code>product</code>; активный товар; дубль → 400 <code>duplicate</code> (без изменений)</td></tr><tr data-mdline="373"><td><a class="pnum" id="p-204" href="#p-204">204</a><code class="k-f">items[].equipment_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>при <code>equipment</code>; дубль → 400 <code>duplicate</code>; НОВОЕ: для документов с клиентом — входит в оборудование заказа, иначе 400 <code>not_in_task</code></td></tr><tr data-mdline="374"><td><a class="pnum" id="p-205" href="#p-205">205</a><code class="k-f">items[].qty_sent</code></td><td>body</td><td>decimal</td><td>условно</td><td>при <code>product</code>; &gt; 0, до 3 знаков, ≤ 999999999.999 (без изменений)</td></tr><tr data-mdline="375"><td><a class="pnum" id="p-206" href="#p-206">206</a><code class="k-f">send</code></td><td>body</td><td>boolean</td><td>нет</td><td>по умолчанию <code>false</code> (без изменений)</td></tr><tr data-mdline="376"><td><a class="pnum" id="p-207" href="#p-207">207</a><code class="k-f">receive</code></td><td>body</td><td>boolean</td><td>нет</td><td>НОВОЕ. По умолчанию <code>false</code>; <code>true</code> допустим только для <code>client_to_warehouse</code> → иначе 400 <code>not_allowed</code></td></tr></tbody></table>
+<p>Поле <code class="k-f">client_id</code> от клиента не принимается: сервер выводит его из заказа (<a class="xref" href="#ds-012">DS-012</a>).</p>
+<p>Response 201 — объект документа; поля ядра без изменений (<code>id</code>, <code>status</code>, <code>note</code>, <code>created_by</code>, <code>created_by_name</code>, <code>sent_by</code>, <code>sent_by_name</code>, <code>sent_at</code>, <code>received_by</code>, <code>received_by_name</code>, <code>received_at</code>, <code>cancelled_by</code>, <code>cancelled_by_name</code>, <code>cancelled_at</code>, <code>created_at</code>, <code>updated_at</code>, <code>version</code>, <code>items[].id</code>, <code>items[].kind</code>, <code>items[].product_id</code>, <code>items[].product_name</code>, <code>items[].unit</code>, <code>items[].equipment_id</code>, <code>items[].equipment_name</code>, <code>items[].equipment_serial</code>, <code>items[].qty_sent</code>, <code>items[].qty_received</code>, <code>warnings[].product_id</code>, <code>warnings[].warehouse_id</code>, <code>warnings[].warehouse_name</code>, <code>warnings[].name</code>, <code>warnings[].stock</code>, <code>warnings[].min_stock</code>, <code>warnings[].kind</code>); новые и изменённые:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="384"><td><a class="pnum" id="p-208" href="#p-208">208</a><code class="k-f">direction</code></td><td>string</td><td>НОВОЕ: направление</td></tr><tr data-mdline="385"><td><a class="pnum" id="p-209" href="#p-209">209</a><code class="k-f">from_warehouse_id</code></td><td>uuid | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="386"><td><a class="pnum" id="p-210" href="#p-210">210</a><code class="k-f">from_warehouse_name</code></td><td>string | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="387"><td><a class="pnum" id="p-211" href="#p-211">211</a><code class="k-f">to_warehouse_id</code></td><td>uuid | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="388"><td><a class="pnum" id="p-212" href="#p-212">212</a><code class="k-f">to_warehouse_name</code></td><td>string | null</td><td>ИЗМЕНЕНО: может быть null</td></tr><tr data-mdline="389"><td><a class="pnum" id="p-213" href="#p-213">213</a><code class="k-f">task_id</code></td><td>integer | null</td><td>НОВОЕ: заказ</td></tr><tr data-mdline="390"><td><a class="pnum" id="p-214" href="#p-214">214</a><code class="k-f">task_title</code></td><td>string | null</td><td>НОВОЕ: название заказа</td></tr><tr data-mdline="391"><td><a class="pnum" id="p-215" href="#p-215">215</a><code class="k-f">client_id</code></td><td>uuid | null</td><td>НОВОЕ: клиент</td></tr><tr data-mdline="392"><td><a class="pnum" id="p-216" href="#p-216">216</a><code class="k-f">client_name</code></td><td>string | null</td><td>НОВОЕ: название клиента</td></tr><tr data-mdline="393"><td><a class="pnum" id="p-217" href="#p-217">217</a><code class="k-f">supplier_id</code></td><td>uuid | null</td><td>НОВОЕ: поставщик</td></tr><tr data-mdline="394"><td><a class="pnum" id="p-218" href="#p-218">218</a><code class="k-f">supplier_name</code></td><td>string | null</td><td>НОВОЕ: название поставщика</td></tr></tbody></table>
+<p>Ошибки (новые и изменённые; ошибки строк ядра — <code>items: required</code>, <code>items: too_many</code>, <code>items[i].product_id</code>, <code>items[i].qty_sent</code>, <code>note: too_long</code> — без изменений):</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="400"><td><a class="pnum" id="p-219" href="#p-219">219</a>400 <code>VALIDATION</code></td><td><code>direction: required</code> / <code>invalid</code></td><td>«Укажите направление»</td></tr><tr data-mdline="401"><td><a class="pnum" id="p-220" href="#p-220">220</a>400 <code>VALIDATION</code></td><td><code>from_warehouse_id</code> / <code>to_warehouse_id</code>: <code>required</code>, <code>invalid</code>, <code>not_found</code>, <code>archived</code></td><td>«Проверьте склад»</td></tr><tr data-mdline="402"><td><a class="pnum" id="p-221" href="#p-221">221</a>400 <code>VALIDATION</code></td><td><code>from_warehouse_id</code> / <code>to_warehouse_id</code>: <code>not_allowed</code></td><td>«Этот склад не указывается для выбранного направления»</td></tr><tr data-mdline="403"><td><a class="pnum" id="p-222" href="#p-222">222</a>400 <code>VALIDATION</code></td><td><code>task_id</code>: <code>required</code>, <code>not_found</code></td><td>«Укажите заказ»</td></tr><tr data-mdline="404"><td><a class="pnum" id="p-223" href="#p-223">223</a>400 <code>VALIDATION</code></td><td><code>task_id: not_allowed</code></td><td>«Заказ указывается только для документов с клиентом»</td></tr><tr data-mdline="405"><td><a class="pnum" id="p-224" href="#p-224">224</a>400 <code>VALIDATION</code></td><td><code>supplier_id</code>: <code>required</code>, <code>not_found</code></td><td>«Укажите поставщика»</td></tr><tr data-mdline="406"><td><a class="pnum" id="p-225" href="#p-225">225</a>400 <code>VALIDATION</code></td><td><code>supplier_id: archived</code></td><td>«Поставщик в архиве»</td></tr><tr data-mdline="407"><td><a class="pnum" id="p-226" href="#p-226">226</a>400 <code>VALIDATION</code></td><td><code>supplier_id: not_allowed</code></td><td>«Поставщик указывается только для прихода от поставщика»</td></tr><tr data-mdline="408"><td><a class="pnum" id="p-227" href="#p-227">227</a>400 <code>VALIDATION</code></td><td><code>items[i].kind: not_allowed</code></td><td>«Этот тип строки недопустим для направления»</td></tr><tr data-mdline="409"><td><a class="pnum" id="p-228" href="#p-228">228</a>400 <code>VALIDATION</code></td><td><code>items[i].equipment_id: not_in_task</code></td><td>«Оборудование не из этого заказа»</td></tr><tr data-mdline="410"><td><a class="pnum" id="p-229" href="#p-229">229</a>400 <code>VALIDATION</code></td><td><code>receive: not_allowed</code></td><td>«Принять сразу можно только приём от клиента»</td></tr><tr data-mdline="411"><td><a class="pnum" id="p-230" href="#p-230">230</a>403 <code>FORBIDDEN</code></td><td>executor создаёт <code>warehouse_to_warehouse</code> / <code>supplier_to_warehouse</code></td><td>«Нет доступа»</td></tr><tr data-mdline="412"><td><a class="pnum" id="p-231" href="#p-231">231</a>409 <code>EQUIPMENT_IN_TRANSFER</code></td><td>единица уже в незавершённом документе</td><td>«Оборудование уже в перемещении #N»</td></tr><tr data-mdline="413"><td><a class="pnum" id="p-232" href="#p-232">232</a>409 <code>TRANSFER_EQUIPMENT_NOT_AT_SOURCE</code></td><td>при <code>send</code> / <code>receive</code>, <code>client_to_warehouse</code>: единица не «у клиента»</td><td>«Оборудование уже не у клиента»</td></tr><tr data-mdline="414"><td><a class="pnum" id="p-233" href="#p-233">233</a>409 <code>TRANSFER_EQUIPMENT_NOT_AT_SOURCE</code></td><td>при <code>send</code>, <code>warehouse_to_client</code>: единица не на складе отправления</td><td>«Оборудование находится не на складе отправления»</td></tr></tbody></table>
+<p>Успех (исполнитель принимает оборудование, клиент принёс сам):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers' -d '{
+  "direction": "client_to_warehouse",
+  "to_warehouse_id": "5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11",
+  "task_id": 37,
+  "items": [ {"kind": "equipment", "equipment_id": "0d9a4c1b-7e2f-4b63-9a51-2c8e5f7d3a90"} ],
+  "receive": true
+}'</code></pre>
+<pre><code>{
+  "id": 12, "direction": "client_to_warehouse", "status": "received",
+  "from_warehouse_id": null, "from_warehouse_name": null,
+  "to_warehouse_id": "5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11", "to_warehouse_name": "Алматы",
+  "task_id": 37, "task_title": "Ремонт принтера HP", "client_id": "a3f1d6c2-0c5e-4a52-8f0e-6f3c4a0b9d21", "client_name": "ТОО «Принт-Сервис»",
+  "supplier_id": null, "supplier_name": null, "note": "",
+  "sent_at": "2026-10-07T06:20:00Z", "received_at": "2026-10-07T06:20:00Z", "version": 1,
+  "items": [ {"id": "e1a2b3c4-d5e6-4f70-8a9b-0c1d2e3f4a5b", "kind": "equipment", "equipment_id": "0d9a4c1b-7e2f-4b63-9a51-2c8e5f7d3a90", "equipment_name": "Принтер HP LaserJet 1020", "equipment_serial": "CNC1234567", "qty_sent": null, "qty_received": null} ],
+  "warnings": []
+}</code></pre>
+<p>Ошибка (VALIDATION → 400, единица не из заказа):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers' -d '{"direction":"client_to_warehouse","to_warehouse_id":"5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11","task_id":37,"items":[{"kind":"equipment","equipment_id":"11111111-2222-4333-8444-555555555555"}]}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "Проверьте поля",
+  "details": { "fields": [ { "name": "items[0].equipment_id", "message": "not_in_task" } ] }
+}</code></pre>
+<p>Спец-механика (приход от поставщика, заявка):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers' -d '{"direction":"supplier_to_warehouse","to_warehouse_id":"5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11","supplier_id":"d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f","items":[{"kind":"product","product_id":"c7e2a9f4-1b3d-4e6a-8c2f-9d0b5a4e3f12","qty_sent":10}]}'</code></pre>
+<pre><code>{ "id": 17, "direction": "supplier_to_warehouse", "status": "requested", "supplier_id": "d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f", "supplier_name": "ТОО «Картридж-Опт»", "version": 1, "warnings": [] }</code></pre>
+<p>DS: <a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-004">DS-004</a>, <a class="xref" href="#ds-012">DS-012</a>, <a class="xref" href="#ds-013">DS-013</a>, <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-035">DS-035</a>.</p>
+<h3 id="s-6-3">§6.3. <code class="k-e">GET /api/v1/transfers/:id</code></h3>
+<ul>
+<li data-mdline="459"><a class="pnum" id="p-234" href="#p-234">234</a>Назначение: один документ со строками.</li>
+<li data-mdline="460"><a class="pnum" id="p-235" href="#p-235">235</a>Authz: ИЗМЕНЕНО — admin — любой; executor — только <code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code>; документ другого направления для executor → 404 (существование не раскрывается) — <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-042">DS-042</a>.</li>
+<li data-mdline="461"><a class="pnum" id="p-236" href="#p-236">236</a>Идемпотентность/повтор: чтение, безопасно.</li>
+<li data-mdline="462"><a class="pnum" id="p-237" href="#p-237">237</a>Side effects: нет.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="468"><td><a class="pnum" id="p-238" href="#p-238">238</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>1–9223372036854775807; не число → 404 (без изменений)</td></tr></tbody></table>
+<p>Response 200 — объект документа: поля ядра + новые поля из таблицы <a class="xref" href="#s-6-2">§6.2</a> (<code>direction</code>, <code>task_id</code>, <code>task_title</code>, <code>client_id</code>, <code>client_name</code>, <code>supplier_id</code>, <code>supplier_name</code>; склады могут быть null).</p>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="476"><td><a class="pnum" id="p-239" href="#p-239">239</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>нет документа / id не число</td><td>«Перемещение не найдено»</td></tr><tr data-mdline="477"><td><a class="pnum" id="p-240" href="#p-240">240</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>executor запрашивает <code>warehouse_to_warehouse</code> / <code>supplier_to_warehouse</code></td><td>«Перемещение не найдено»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' 'http://localhost:8080/api/v1/transfers/12'</code></pre>
+<pre><code>{ "id": 12, "direction": "client_to_warehouse", "status": "received", "task_id": 37, "client_name": "ТОО «Принт-Сервис»", "to_warehouse_name": "Алматы", "version": 1, "items": [], "warnings": [] }</code></pre>
+<p>Ошибка (TRANSFER_NOT_FOUND → 404, исполнитель открывает приход от поставщика):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' 'http://localhost:8080/api/v1/transfers/17'</code></pre>
+<pre><code>{
+  "code": "TRANSFER_NOT_FOUND",
+  "message": "Перемещение не найдено"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-042">DS-042</a>.</p>
+<h3 id="s-6-4">§6.4. <code class="k-e">PUT /api/v1/transfers/:id</code></h3>
+<ul>
+<li data-mdline="499"><a class="pnum" id="p-241" href="#p-241">241</a>Назначение: изменить заявку.</li>
+<li data-mdline="500"><a class="pnum" id="p-242" href="#p-242">242</a>Authz: ИЗМЕНЕНО — как создание (<a class="xref" href="#s-6-2">§6.2</a>); чужое направление для executor → 404.</li>
+<li data-mdline="501"><a class="pnum" id="p-243" href="#p-243">243</a>Идемпотентность/повтор: без изменений (повтор с той же версией → 409).</li>
+<li data-mdline="502"><a class="pnum" id="p-244" href="#p-244">244</a>Side effects: без изменений (шапка, полная замена строк, занятие/освобождение единиц).</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="508"><td><a class="pnum" id="p-245" href="#p-245">245</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>существующий документ (без изменений)</td></tr><tr data-mdline="509"><td><a class="pnum" id="p-246" href="#p-246">246</a><code class="k-f">version</code></td><td>body</td><td>integer</td><td>да</td><td>≥ 1 (без изменений)</td></tr><tr data-mdline="510"><td><a class="pnum" id="p-247" href="#p-247">247</a><code class="k-f">from_warehouse_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>ИЗМЕНЕНО: правила <a class="xref" href="#s-6-2">§6.2</a> для направления документа</td></tr><tr data-mdline="511"><td><a class="pnum" id="p-248" href="#p-248">248</a><code class="k-f">to_warehouse_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>ИЗМЕНЕНО: правила <a class="xref" href="#s-6-2">§6.2</a> для направления документа</td></tr><tr data-mdline="512"><td><a class="pnum" id="p-249" href="#p-249">249</a><code class="k-f">supplier_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>НОВОЕ. Обязателен для <code>supplier_to_warehouse</code>; активный либо уже стоящий в документе архивный</td></tr><tr data-mdline="513"><td><a class="pnum" id="p-250" href="#p-250">250</a><code class="k-f">note</code></td><td>body</td><td>string</td><td>нет</td><td>0–1000 символов (без изменений)</td></tr><tr data-mdline="514"><td><a class="pnum" id="p-251" href="#p-251">251</a><code class="k-f">items</code></td><td>body</td><td>array</td><td>да</td><td>1–200 строк (без изменений)</td></tr><tr data-mdline="515"><td><a class="pnum" id="p-252" href="#p-252">252</a><code class="k-f">items[].kind</code></td><td>body</td><td>string</td><td>да</td><td>ИЗМЕНЕНО: допустимость по направлению документа (<a class="xref" href="#s-6-2">§6.2</a>)</td></tr><tr data-mdline="516"><td><a class="pnum" id="p-253" href="#p-253">253</a><code class="k-f">items[].product_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>при <code>product</code> (без изменений)</td></tr><tr data-mdline="517"><td><a class="pnum" id="p-254" href="#p-254">254</a><code class="k-f">items[].equipment_id</code></td><td>body</td><td>uuid</td><td>условно</td><td>при <code>equipment</code>; НОВОЕ: для документов с клиентом — из оборудования заказа</td></tr><tr data-mdline="518"><td><a class="pnum" id="p-255" href="#p-255">255</a><code class="k-f">items[].qty_sent</code></td><td>body</td><td>decimal</td><td>условно</td><td>при <code>product</code> (без изменений)</td></tr></tbody></table>
+<p><code class="k-f">direction</code> и <code class="k-f">task_id</code> в теле не принимаются: переданы → 400 <code>not_allowed</code> (не меняются после создания).</p>
+<p>Response 200 — объект документа (ядро + новые поля <a class="xref" href="#s-6-2">§6.2</a>).</p>
+<p>Ошибки (новые; ошибки ядра — <code>version</code>, склады, строки, 409 по версии / статусу / <code>EQUIPMENT_IN_TRANSFER</code> — без изменений):</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="528"><td><a class="pnum" id="p-256" href="#p-256">256</a>400 <code>VALIDATION</code></td><td><code>direction: not_allowed</code>, <code>task_id: not_allowed</code></td><td>«Направление и заказ изменить нельзя»</td></tr><tr data-mdline="529"><td><a class="pnum" id="p-257" href="#p-257">257</a>400 <code>VALIDATION</code></td><td><code>supplier_id</code>: <code>required</code>, <code>not_found</code>, <code>archived</code>, <code>not_allowed</code></td><td>по полю, тексты <a class="xref" href="#s-6-2">§6.2</a></td></tr><tr data-mdline="530"><td><a class="pnum" id="p-258" href="#p-258">258</a>400 <code>VALIDATION</code></td><td><code>items[i].kind: not_allowed</code></td><td>«Этот тип строки недопустим для направления»</td></tr><tr data-mdline="531"><td><a class="pnum" id="p-259" href="#p-259">259</a>400 <code>VALIDATION</code></td><td><code>items[i].equipment_id: not_in_task</code></td><td>«Оборудование не из этого заказа»</td></tr><tr data-mdline="532"><td><a class="pnum" id="p-260" href="#p-260">260</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>чужое направление для executor</td><td>«Перемещение не найдено»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/transfers/17' -d '{"version":1,"to_warehouse_id":"5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11","supplier_id":"d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f","note":"","items":[{"kind":"product","product_id":"c7e2a9f4-1b3d-4e6a-8c2f-9d0b5a4e3f12","qty_sent":12}]}'</code></pre>
+<pre><code>{ "id": 17, "direction": "supplier_to_warehouse", "status": "requested", "version": 2, "items": [ { "id": "b7c8d9e0-f1a2-4b34-8c5d-6e7f8a9b0c1d", "kind": "product", "qty_sent": 12.000 } ], "warnings": [] }</code></pre>
+<p>Ошибка (VALIDATION → 400):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/transfers/17' -d '{"version":2,"direction":"warehouse_to_warehouse","to_warehouse_id":"5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11","supplier_id":"d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f","items":[{"kind":"product","product_id":"c7e2a9f4-1b3d-4e6a-8c2f-9d0b5a4e3f12","qty_sent":12}]}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "Проверьте поля",
+  "details": { "fields": [ { "name": "direction", "message": "not_allowed" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-012">DS-012</a>, <a class="xref" href="#ds-018">DS-018</a>.</p>
+<h3 id="s-6-5">§6.5. <code class="k-e">POST /api/v1/transfers/:id/send</code></h3>
+<ul>
+<li data-mdline="555"><a class="pnum" id="p-261" href="#p-261">261</a>Назначение: отправить заявку.</li>
+<li data-mdline="556"><a class="pnum" id="p-262" href="#p-262">262</a>Authz: ИЗМЕНЕНО — как создание (<a class="xref" href="#s-6-2">§6.2</a>); чужое направление для executor → 404.</li>
+<li data-mdline="557"><a class="pnum" id="p-263" href="#p-263">263</a>Идемпотентность/повтор: без изменений (повтор → 409).</li>
+<li data-mdline="558"><a class="pnum" id="p-264" href="#p-264">264</a>Side effects: ИЗМЕНЕНО по направлениям — <code class="k-s">client_to_warehouse</code>: единицы <code class="k-s">at_client</code> → <code class="k-s">in_transit</code>; <code class="k-s">warehouse_to_client</code>: единицы со склада отправления → <code class="k-s">in_transit</code>; <code class="k-s">supplier_to_warehouse</code>: только статус, <code class="k-f">sent_by</code>, <code class="k-f">sent_at</code> (движений остатка нет); <code class="k-s">warehouse_to_warehouse</code> — как в ядре.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="564"><td><a class="pnum" id="p-265" href="#p-265">265</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>существующий документ (без изменений)</td></tr><tr data-mdline="565"><td><a class="pnum" id="p-266" href="#p-266">266</a><code class="k-f">version</code></td><td>body</td><td>integer</td><td>да</td><td>≥ 1 (без изменений)</td></tr></tbody></table>
+<p>Response 200 — объект документа (ядро + новые поля <a class="xref" href="#s-6-2">§6.2</a>).</p>
+<p>Ошибки (новые; <code>version: required</code>, 409 по версии и статусу — без изменений):</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="573"><td><a class="pnum" id="p-267" href="#p-267">267</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>чужое направление для executor</td><td>«Перемещение не найдено»</td></tr><tr data-mdline="574"><td><a class="pnum" id="p-268" href="#p-268">268</a>409 <code>TRANSFER_EQUIPMENT_NOT_AT_SOURCE</code></td><td><code>client_to_warehouse</code>: единица не «у клиента» (<code>details.equipment_id</code>)</td><td>«Оборудование уже не у клиента»</td></tr><tr data-mdline="575"><td><a class="pnum" id="p-269" href="#p-269">269</a>409 <code>TRANSFER_EQUIPMENT_NOT_AT_SOURCE</code></td><td><code>warehouse_to_client</code>: единица не на складе отправления</td><td>«Оборудование находится не на складе отправления»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/14/send' -d '{"version":1}'</code></pre>
+<pre><code>{ "id": 14, "direction": "warehouse_to_client", "status": "in_transit", "sent_at": "2026-10-07T07:00:00Z", "version": 2, "warnings": [] }</code></pre>
+<p>Ошибка (TRANSFER_EQUIPMENT_NOT_AT_SOURCE → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/13/send' -d '{"version":1}'</code></pre>
+<pre><code>{
+  "code": "TRANSFER_EQUIPMENT_NOT_AT_SOURCE",
+  "message": "Оборудование уже не у клиента",
+  "details": { "equipment_id": "0d9a4c1b-7e2f-4b63-9a51-2c8e5f7d3a90" }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-013">DS-013</a>, <a class="xref" href="#ds-040">DS-040</a>.</p>
+<h3 id="s-6-6">§6.6. <code class="k-e">POST /api/v1/transfers/:id/receive</code></h3>
+<ul>
+<li data-mdline="598"><a class="pnum" id="p-270" href="#p-270">270</a>Назначение: принять документ.</li>
+<li data-mdline="599"><a class="pnum" id="p-271" href="#p-271">271</a>Authz: ИЗМЕНЕНО — как создание (<a class="xref" href="#s-6-2">§6.2</a>); чужое направление для executor → 404.</li>
+<li data-mdline="600"><a class="pnum" id="p-272" href="#p-272">272</a>Спец-механика: НОВОЕ — для <code class="k-s">supplier_to_warehouse</code> факт может быть больше заказанного (<a class="xref" href="#ds-015">DS-015</a>); для документов с клиентом факт не вводится.</li>
+<li data-mdline="601"><a class="pnum" id="p-273" href="#p-273">273</a>Идемпотентность/повтор: без изменений (повтор → 409; остаток дважды не растёт).</li>
+<li data-mdline="602"><a class="pnum" id="p-274" href="#p-274">274</a>Side effects: ИЗМЕНЕНО по направлениям — <code class="k-s">client_to_warehouse</code>: единицы → <code class="k-s">at_warehouse</code> на складе назначения; <code class="k-s">warehouse_to_client</code>: единицы → <code class="k-s">at_client</code>, <code class="k-f">warehouse_id</code> = NULL; <code class="k-s">supplier_to_warehouse</code>: <code class="k-t">transfer_items.qty_received</code>, <code class="k-t">product_stock</code> +факт, <code class="k-t">stock_movements</code> (<code class="k-s">supplier_in</code>); во всех случаях единицы освобождаются.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="608"><td><a class="pnum" id="p-275" href="#p-275">275</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>существующий документ (без изменений)</td></tr><tr data-mdline="609"><td><a class="pnum" id="p-276" href="#p-276">276</a><code class="k-f">version</code></td><td>body</td><td>integer</td><td>да</td><td>≥ 1 (без изменений)</td></tr><tr data-mdline="610"><td><a class="pnum" id="p-277" href="#p-277">277</a><code class="k-f">items</code></td><td>body</td><td>array</td><td>нет</td><td>факт по товарным строкам; строка без записи — факт = <code>qty_sent</code>; ИЗМЕНЕНО: для <code>client_to_warehouse</code>, <code>warehouse_to_client</code> непустой → 400 <code>not_allowed</code></td></tr><tr data-mdline="611"><td><a class="pnum" id="p-278" href="#p-278">278</a><code class="k-f">items[].id</code></td><td>body</td><td>uuid</td><td>да</td><td>id товарной строки документа (без изменений)</td></tr><tr data-mdline="612"><td><a class="pnum" id="p-279" href="#p-279">279</a><code class="k-f">items[].qty_received</code></td><td>body</td><td>decimal</td><td>да</td><td>≥ 0, до 3 знаков; ИЗМЕНЕНО: для <code>warehouse_to_warehouse</code> ≤ <code>qty_sent</code> (иначе 400 <code>exceeds_sent</code>); для <code>supplier_to_warehouse</code> ≤ 999999999.999 (иначе 400 <code>invalid</code>)</td></tr></tbody></table>
+<p>Response 200 — объект документа (ядро + новые поля <a class="xref" href="#s-6-2">§6.2</a>).</p>
+<p>Ошибки (новые; ошибки ядра — <code>version</code>, <code>items[i].id</code>, отрицательный факт, 409 по версии / статусу, <code>STOCK_OVERFLOW</code> — без изменений):</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="620"><td><a class="pnum" id="p-280" href="#p-280">280</a>400 <code>VALIDATION</code></td><td><code>items: not_allowed</code></td><td>«Для этого направления факт не вводится»</td></tr><tr data-mdline="621"><td><a class="pnum" id="p-281" href="#p-281">281</a>400 <code>VALIDATION</code></td><td><code>items[i].qty_received: exceeds_sent</code> (только <code>warehouse_to_warehouse</code>)</td><td>«Факт больше отправленного»</td></tr><tr data-mdline="622"><td><a class="pnum" id="p-282" href="#p-282">282</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>чужое направление для executor</td><td>«Перемещение не найдено»</td></tr></tbody></table>
+<p>Успех (приход от поставщика: заказано 10, пришло 12):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/17/receive' -d '{"version":3,"items":[{"id":"b7c8d9e0-f1a2-4b34-8c5d-6e7f8a9b0c1d","qty_received":12}]}'</code></pre>
+<pre><code>{ "id": 17, "direction": "supplier_to_warehouse", "status": "received", "received_at": "2026-10-07T09:30:00Z", "version": 4, "items": [ { "id": "b7c8d9e0-f1a2-4b34-8c5d-6e7f8a9b0c1d", "kind": "product", "qty_sent": 10.000, "qty_received": 12.000 } ], "warnings": [] }</code></pre>
+<p>Ошибка (VALIDATION → 400, факт в документе с клиентом):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/14/receive' -d '{"version":2,"items":[{"id":"e1a2b3c4-d5e6-4f70-8a9b-0c1d2e3f4a5b","qty_received":1}]}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "Проверьте поля",
+  "details": { "fields": [ { "name": "items", "message": "not_allowed" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-013">DS-013</a>, <a class="xref" href="#ds-015">DS-015</a>, <a class="xref" href="#ds-040">DS-040</a>.</p>
+<h3 id="s-6-7">§6.7. <code class="k-e">POST /api/v1/transfers/:id/cancel</code></h3>
+<ul>
+<li data-mdline="645"><a class="pnum" id="p-283" href="#p-283">283</a>Назначение: отменить заявку или документ «в пути».</li>
+<li data-mdline="646"><a class="pnum" id="p-284" href="#p-284">284</a>Authz: ИЗМЕНЕНО — как создание (<a class="xref" href="#s-6-2">§6.2</a>); чужое направление для executor → 404.</li>
+<li data-mdline="647"><a class="pnum" id="p-285" href="#p-285">285</a>Идемпотентность/повтор: без изменений (повтор → 409).</li>
+<li data-mdline="648"><a class="pnum" id="p-286" href="#p-286">286</a>Side effects: ИЗМЕНЕНО по направлениям, из «В пути» — <code class="k-s">client_to_warehouse</code>: единицы → <code class="k-s">at_client</code>; <code class="k-s">warehouse_to_client</code>: единицы → <code class="k-s">at_warehouse</code> на складе отправления; <code class="k-s">supplier_to_warehouse</code>: только статус; единицы освобождаются.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="654"><td><a class="pnum" id="p-287" href="#p-287">287</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>существующий документ (без изменений)</td></tr><tr data-mdline="655"><td><a class="pnum" id="p-288" href="#p-288">288</a><code class="k-f">version</code></td><td>body</td><td>integer</td><td>да</td><td>≥ 1 (без изменений)</td></tr></tbody></table>
+<p>Response 200 — объект документа (ядро + новые поля <a class="xref" href="#s-6-2">§6.2</a>).</p>
+<p>Ошибки (новая одна; <code>version: required</code>, 409 по версии и статусу — без изменений):</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="663"><td><a class="pnum" id="p-289" href="#p-289">289</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>чужое направление для executor</td><td>«Перемещение не найдено»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/14/cancel' -d '{"version":2}'</code></pre>
+<pre><code>{ "id": 14, "direction": "warehouse_to_client", "status": "cancelled", "cancelled_at": "2026-10-07T08:00:00Z", "version": 3, "warnings": [] }</code></pre>
+<p>Ошибка (TRANSFER_NOT_FOUND → 404):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/17/cancel' -d '{"version":2}'</code></pre>
+<pre><code>{
+  "code": "TRANSFER_NOT_FOUND",
+  "message": "Перемещение не найдено"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-013">DS-013</a>, <a class="xref" href="#ds-018">DS-018</a>.</p>
+<h3 id="s-6-8">§6.8. <code class="k-e">GET /api/v1/tasks/:id/card</code> (существующий, дельта)</h3>
+<ul>
+<li data-mdline="685"><a class="pnum" id="p-290" href="#p-290">290</a>Назначение: карточка заказа; дельта — документы заказа.</li>
+<li data-mdline="686"><a class="pnum" id="p-291" href="#p-291">291</a>Authz: без изменений — любой авторизованный.</li>
+<li data-mdline="687"><a class="pnum" id="p-292" href="#p-292">292</a>Идемпотентность/повтор: чтение, безопасно.</li>
+<li data-mdline="688"><a class="pnum" id="p-293" href="#p-293">293</a>Side effects: нет.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="694"><td><a class="pnum" id="p-294" href="#p-294">294</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>существующий заказ; иначе 404</td></tr></tbody></table>
+<p>Response 200 — только новые и изменённые поля:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="700"><td><a class="pnum" id="p-295" href="#p-295">295</a><code class="k-f">transfers</code></td><td>array</td><td>НОВОЕ: документы заказа, новые сверху (всегда массив)</td></tr><tr data-mdline="701"><td><a class="pnum" id="p-296" href="#p-296">296</a><code class="k-f">transfers[].id</code></td><td>integer</td><td>номер документа</td></tr><tr data-mdline="702"><td><a class="pnum" id="p-297" href="#p-297">297</a><code class="k-f">transfers[].direction</code></td><td>string</td><td><code>client_to_warehouse</code> | <code>warehouse_to_client</code></td></tr><tr data-mdline="703"><td><a class="pnum" id="p-298" href="#p-298">298</a><code class="k-f">transfers[].status</code></td><td>string</td><td>статус</td></tr><tr data-mdline="704"><td><a class="pnum" id="p-299" href="#p-299">299</a><code class="k-f">transfers[].warehouse_name</code></td><td>string</td><td>склад назначения (приём) либо отправления (возврат)</td></tr><tr data-mdline="705"><td><a class="pnum" id="p-300" href="#p-300">300</a><code class="k-f">transfers[].items_count</code></td><td>integer</td><td>число строк</td></tr><tr data-mdline="706"><td><a class="pnum" id="p-301" href="#p-301">301</a><code class="k-f">transfers[].created_at</code></td><td>datetime</td><td>создан</td></tr><tr data-mdline="707"><td><a class="pnum" id="p-302" href="#p-302">302</a><code class="k-f">equipment[].transit_to_name</code></td><td>string | null</td><td>ИЗМЕНЕНО: название склада назначения либо «клиент»</td></tr><tr data-mdline="708"><td><a class="pnum" id="p-303" href="#p-303">303</a><code class="k-f">equipment[].active_transfer_direction</code></td><td>string | null</td><td>as-built: направление незавершённого документа единицы (null — документа нет); исполнителю «перемещение #N» — ссылка только у документов с клиентом</td></tr><tr data-mdline="709"><td><a class="pnum" id="p-304" href="#p-304">304</a><code class="k-f">transfers[].amount</code></td><td>number</td><td>as-built (часть 5): сумма документа</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="715"><td><a class="pnum" id="p-305" href="#p-305">305</a>404 <code>TASK_NOT_FOUND</code></td><td>нет заказа</td><td>«Заказ не найден»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' 'http://localhost:8080/api/v1/tasks/37/card'</code></pre>
+<pre><code>{
+  "task": { "id": 37, "has_in_transit": true },
+  "equipment": [ { "equipment_id": "0d9a4c1b-7e2f-4b63-9a51-2c8e5f7d3a90", "location_status": "in_transit", "warehouse_id": null, "warehouse_name": null, "active_transfer_id": 14, "transit_to_name": "клиент", "active_transfer_direction": "warehouse_to_client" } ],
+  "transfers": [ { "id": 14, "direction": "warehouse_to_client", "status": "in_transit", "warehouse_name": "Алматы", "items_count": 1, "created_at": "2026-10-07T06:20:00Z" }, { "id": 12, "direction": "client_to_warehouse", "status": "received", "warehouse_name": "Алматы", "items_count": 1, "created_at": "2026-10-06T19:30:00Z" } ]
+}</code></pre>
+<p>Ошибка (TASK_NOT_FOUND → 404):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' 'http://localhost:8080/api/v1/tasks/999999/card'</code></pre>
+<pre><code>{
+  "code": "TASK_NOT_FOUND",
+  "message": "Заказ не найден"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-012">DS-012</a>.</p>
+<h3 id="s-6-9">§6.9. Прочие изменения существующих endpoints (дельта)</h3>
+<p>Формат каждой строки: endpoint — что меняется — ошибка — DS.</p>
+<table><thead><tr><th>Endpoint</th><th>Изменение</th><th>Новая ошибка</th><th>DS</th></tr></thead><tbody><tr data-mdline="745"><td><a class="pnum" id="p-306" href="#p-306">306</a><code class="k-e">POST /api/v1/tasks/:id/equipment</code></td><td>параметр <code class="k-x">warehouse_id</code> удаляется (передан — игнорируется); местоположение единицы не меняется</td><td>—</td><td><a class="xref" href="#ds-045">DS-045</a></td></tr><tr data-mdline="746"><td><a class="pnum" id="p-307" href="#p-307">307</a><code class="k-e">DELETE /api/v1/tasks/:id</code></td><td>запрет, пока у заказа есть хоть один документ (в любом статусе); временное общее сообщение — до части 6</td><td>409 <code>CONFLICT</code> «У заказа есть перемещения — удалить нельзя»</td><td><a class="xref" href="#ds-012">DS-012</a></td></tr><tr data-mdline="747"><td><a class="pnum" id="p-308" href="#p-308">308</a><code class="k-e">PUT /api/v1/tasks/:id</code></td><td>as-built (D84): смена <code>client_id</code> запрещена, пока у заказа есть документ в любом статусе (<code>details.transfer_ids</code>)</td><td>409 <code>TASK_CLIENT_LOCKED_BY_TRANSFERS</code> «У заказа есть перемещения — сменить клиента нельзя»</td><td><a class="xref" href="#ds-012">DS-012</a></td></tr><tr data-mdline="748"><td><a class="pnum" id="p-309" href="#p-309">309</a><code class="k-e">GET /api/v1/stock</code> («Остатки»)</td><td>«в пути» = <code>qty_sent</code> товарных строк документов <code>in_transit</code> направлений <code>warehouse_to_warehouse</code> и <code>supplier_to_warehouse</code>, входящих в склад</td><td>—</td><td><a class="xref" href="#ds-047">DS-047</a></td></tr><tr data-mdline="749"><td><a class="pnum" id="p-310" href="#p-310">310</a><code class="k-e">GET /api/v1/tasks</code></td><td>фильтр <code class="k-f">warehouse_id</code>: единица «в пути» учитывается для склада назначения документа; единица в пути к клиенту ни под один склад не попадает</td><td>—</td><td><a class="xref" href="#ds-013">DS-013</a></td></tr><tr data-mdline="750"><td><a class="pnum" id="p-311" href="#p-311">311</a>SSR <code>/transfers</code> и пункт меню «Перемещения»</td><td>доступны исполнителю (снять <code>AdminOnly</code>)</td><td>—</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr></tbody></table>
+<p>Ошибка (CONFLICT → 409, удаление заказа с документами):</p>
+<pre><code>{
+  "code": "CONFLICT",
+  "message": "У заказа есть перемещения — удалить нельзя"
+}</code></pre>
+<h2 id="s-7">§7. UX/UI + API (сквозной флоу)</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 500" width="680" height="500" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="500" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="446.6" lengthAdjust="spacingAndGlyphs">Сценарий: приём в ремонт и возврат клиенту (по заказу #37)</text>
+<rect x="10" y="40" width="160" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="12" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="72.6" lengthAdjust="spacingAndGlyphs">Исполнитель</text>
+<path d="M90,70 L90,475" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="220" y="40" width="160" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="12" fill="#334155" text-anchor="middle" font-weight="bold" textLength="125.4" lengthAdjust="spacingAndGlyphs">Экран (§8.2 → §8.1)</text>
+<path d="M300,70 L300,475" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="460" y="40" width="160" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="12" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="52.8" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,475" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="219.5" lengthAdjust="spacingAndGlyphs">«Принять от клиента» (карточка заказа)</text>
+<path d="M300,125 L540,125" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="119" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="144.4" lengthAdjust="spacingAndGlyphs">GET /api/v1/tasks/37/card</text>
+<path d="M540,150 L300,150" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="144" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">200 {task, equipment, transfers}</text>
+<path d="M90,175 L300,175" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="169" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="132.8" lengthAdjust="spacingAndGlyphs">склад → «Принять сразу»</text>
+<path d="M300,200 L540,200" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="194" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="335.0" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers {client_to_warehouse, receive:true}</text>
+<path d="M540,225 L300,225" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="219" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">201 {id:12, status:"received"}</text>
+<path d="M300,250 L90,250" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="195.0" y="244" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="155.9" lengthAdjust="spacingAndGlyphs">единица: «на складе Алматы»</text>
+<path d="M90,275 L300,275" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="269" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="283.0" lengthAdjust="spacingAndGlyphs">ремонт выполнен → «Вернуть клиенту» → «Отправить»</text>
+<path d="M300,300 L540,300" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="294" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="317.6" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers {warehouse_to_client, send:true}</text>
+<path d="M540,325 L300,325" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="319" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">201 {id:14, status:"in_transit"}</text>
+<path d="M90,350 L300,350" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="344" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="150.2" lengthAdjust="spacingAndGlyphs">клиент получил → «Принять»</text>
+<path d="M300,375 L540,375" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="369" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="248.3" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/14/receive {version}</text>
+<path d="M540,400 L300,400" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="394" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="213.7" lengthAdjust="spacingAndGlyphs">200 {status:"received"} → «у клиента»</text>
+<path d="M300,425 L540,425" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="419" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="259.9" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers (единица не из заказа)</text>
+<path d="M540,450 L300,450" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="444" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="219.5" lengthAdjust="spacingAndGlyphs">400 items[0].equipment_id: not_in_task</text>
+<text x="340" y="490" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветка</text>
+</svg></figure></p>
+<p>Полнота покрытия (endpoint → экраны <a class="xref" href="#s-8">§8</a>):</p>
+<table><thead><tr><th>Endpoint</th><th>Экраны</th></tr></thead><tbody><tr data-mdline="766"><td><a class="pnum" id="p-312" href="#p-312">312</a><code class="k-e">GET /api/v1/transfers</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="767"><td><a class="pnum" id="p-313" href="#p-313">313</a><code class="k-e">POST /api/v1/transfers</code></td><td><a class="xref" href="#s-8-1">§8.1</a>, <a class="xref" href="#s-8-2">§8.2</a></td></tr><tr data-mdline="768"><td><a class="pnum" id="p-314" href="#p-314">314</a><code class="k-e">GET /api/v1/transfers/:id</code></td><td><a class="xref" href="#s-8-1">§8.1</a>, <a class="xref" href="#s-8-2">§8.2</a></td></tr><tr data-mdline="769"><td><a class="pnum" id="p-315" href="#p-315">315</a><code class="k-e">PUT /api/v1/transfers/:id</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="770"><td><a class="pnum" id="p-316" href="#p-316">316</a><code class="k-e">POST /api/v1/transfers/:id/send</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="771"><td><a class="pnum" id="p-317" href="#p-317">317</a><code class="k-e">POST /api/v1/transfers/:id/receive</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="772"><td><a class="pnum" id="p-318" href="#p-318">318</a><code class="k-e">POST /api/v1/transfers/:id/cancel</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="773"><td><a class="pnum" id="p-319" href="#p-319">319</a><code class="k-e">GET /api/v1/tasks/:id/card</code></td><td><a class="xref" href="#s-8-2">§8.2</a>; <a class="xref" href="#s-8-1">§8.1</a> (поле «Заказ» и список оборудования заказа)</td></tr><tr data-mdline="774"><td><a class="pnum" id="p-320" href="#p-320">320</a><code class="k-e">GET /api/v1/suppliers</code> (часть 1)</td><td><a class="xref" href="#s-8-1">§8.1</a> (select «Поставщик», только admin)</td></tr></tbody></table>
+<p>Непокрытых endpoints и UI-действий без endpoint нет.</p>
+<h2 id="s-8">§8. UI-иерархия</h2>
+<ul>
+<li data-mdline="779"><a class="pnum" id="p-321" href="#p-321">321</a>Работа → <strong>Перемещения</strong> (<code>/transfers</code>) → список + документ → модалки «Приёмка», «Отмена» — <a class="xref" href="#s-8-1">§8.1</a></li>
+<li data-mdline="780"><a class="pnum" id="p-322" href="#p-322">322</a>Доска → <strong>Карточка заказа</strong> → блок «Перемещения заказа» — <a class="xref" href="#s-8-2">§8.2</a></li>
+</ul>
+<p>UI-конвенции (<a class="xref" href="#ds-052">DS-052</a> — контекст, реализуется в <code>transfers-core</code>): ошибка под полем, тост в правом верхнем углу на 5 секунд, модальный <code>KT.uiDialog</code>, блокировка кнопки на время запроса. as-built: ошибки карточки заказа — ошибка в шапке карточки (<code>#task-error</code>) либо диалог <code>KT.uiAlert</code>, не тост; время — «ДД.ММ.ГГГГ ЧЧ:ММ» (D81).</p>
+<h3 id="s-8-1">§8.1. Экран/форма «Перемещения»</h3>
+<ul>
+<li data-mdline="785"><a class="pnum" id="p-323" href="#p-323">323</a>Маршрут: <code>/transfers</code>, <code>/transfers?id=N</code>, НОВОЕ <code>/transfers?new=1&amp;direction=…&amp;task_id=…</code> (новый документ из карточки заказа)</li>
+</ul>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="788"><a class="pnum" id="p-324" href="#p-324">324</a><strong>Путь:</strong> меню «Работа → Перемещения» (ИЗМЕНЕНО: пункт виден исполнителю); ссылка «#N» и кнопки «Принять от клиента» / «Вернуть клиенту» в карточке заказа (<a class="xref" href="#s-8-2">§8.2</a>)</li>
+<li data-mdline="789"><a class="pnum" id="p-325" href="#p-325">325</a><strong>URL:</strong> <code>/transfers</code>, параметры <code>id</code>, <code>new</code>, <code>direction</code>, <code>task_id</code></li>
+<li data-mdline="790"><a class="pnum" id="p-326" href="#p-326">326</a><strong>Роли:</strong> admin, executor · <strong>Устройство:</strong> десктоп; телефон — без горизонтальной прокрутки</li>
+<li data-mdline="791"><a class="pnum" id="p-327" href="#p-327">327</a><strong>При открытии:</strong> <code>GET <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/transfers?limit=50&amp;offset=0</code>; при <code>?id=N</code> — <code>GET <a class="xref" href="#s-6-3">§6.3</a></code> → <code>/api/v1/transfers/N</code>; при <code>?new=1&amp;task_id=37</code> — <code>GET <a class="xref" href="#s-6-8">§6.8</a></code> → <code>/api/v1/tasks/37/card</code> (название заказа, клиент, оборудование заказа)</li>
+<li data-mdline="792"><a class="pnum" id="p-328" href="#p-328">328</a><strong>200:</strong> список и документ либо форма нового документа · <strong>Пусто:</strong> «Перемещений нет» · <strong>4xx:</strong> 404 по <code>?id</code> — тост «Перемещение не найдено»; 404 по <code>task_id</code> — под полем «Заказ» — «Заказ не найден»</li>
+</ul>
+<p><strong>Что на странице (дельта, сверху вниз):</strong></p>
+<ol>
+<li data-mdline="795"><a class="pnum" id="p-329" href="#p-329">329</a>Кнопка «Новое перемещение» открывает меню выбора направления: admin — «Приём от клиента», «Возврат клиенту», «Склад → склад», «Приход от поставщика»; executor — первые два.</li>
+<li data-mdline="796"><a class="pnum" id="p-330" href="#p-330">330</a>Панель фильтров; комбинация — «И»; «Сбросить» справа:</li>
+</ol>
+<table><thead><tr><th>Фильтр</th><th>Контрол</th><th>Источник значений</th><th>API-параметр <a class="xref" href="#s-6-1">§6.1</a></th><th>Пример</th></tr></thead><tbody><tr data-mdline="800"><td><a class="pnum" id="p-331" href="#p-331">331</a>Статус</td><td>select</td><td>enum <a class="xref" href="#s-5">§5</a> (без изменений)</td><td><code>status</code></td><td><code>in_transit</code></td></tr><tr data-mdline="801"><td><a class="pnum" id="p-332" href="#p-332">332</a>Склад</td><td>select</td><td>SSR-список складов (без изменений)</td><td><code>warehouse_id</code></td><td>uuid</td></tr><tr data-mdline="802"><td><a class="pnum" id="p-333" href="#p-333">333</a>Направление</td><td>select</td><td>enum <code class="k-f">direction</code>; executor видит два значения</td><td><code>direction</code></td><td><code>warehouse_to_client</code></td></tr><tr data-mdline="803"><td><a class="pnum" id="p-334" href="#p-334">334</a>Поставщик</td><td>select (только admin)</td><td><code>GET /api/v1/suppliers?limit=500</code> — все, архивные с пометкой</td><td><code>supplier_id</code></td><td>uuid</td></tr><tr data-mdline="804"><td><a class="pnum" id="p-335" href="#p-335">335</a>Заказ</td><td>текстовый инпут, номер</td><td>ввод</td><td><code>task_id</code></td><td><code>37</code></td></tr><tr data-mdline="805"><td><a class="pnum" id="p-336" href="#p-336">336</a>Период с</td><td>date</td><td>ввод</td><td><code>created_from</code></td><td><code>2026-10-01</code></td></tr><tr data-mdline="806"><td><a class="pnum" id="p-337" href="#p-337">337</a>Период по</td><td>date</td><td>ввод</td><td><code>created_to</code></td><td><code>2026-10-07</code></td></tr></tbody></table>
+<ol>
+<li data-mdline="807"><a class="pnum" id="p-338" href="#p-338">338</a>Строка списка: добавлен бейдж направления; маршрут — «Клиент → Алматы», «Алматы → Клиент», «Алматы → Москва», «Поставщик → Алматы»; под маршрутом — клиент и «заказ #N» либо название поставщика.</li>
+<li data-mdline="808"><a class="pnum" id="p-339" href="#p-339">339</a>Шапка документа — поля по направлению, сверху вниз:</li>
+<ol>
+<li data-mdline="809"><a class="pnum" id="p-340" href="#p-340">340</a>Направление (<code>direction</code>) — текст, только чтение.</li>
+<li data-mdline="810"><a class="pnum" id="p-341" href="#p-341">341</a>Заказ (<code>task_id</code>) — только документы с клиентом: поле номера; под ним название заказа и клиент; после создания — только чтение, ссылка на карточку.</li>
+<li data-mdline="811"><a class="pnum" id="p-342" href="#p-342">342</a>Поставщик (<code>supplier_id</code>) — только «приход от поставщика»: select активных поставщиков.</li>
+<li data-mdline="812"><a class="pnum" id="p-343" href="#p-343">343</a>Склад отправления (<code>from_warehouse_id</code>) — «возврат клиенту», «склад → склад».</li>
+<li data-mdline="813"><a class="pnum" id="p-344" href="#p-344">344</a>Склад назначения (<code>to_warehouse_id</code>) — «приём от клиента», «склад → склад», «приход от поставщика».</li>
+<li data-mdline="814"><a class="pnum" id="p-345" href="#p-345">345</a>Примечание (<code>note</code>).</li>
+</ol>
+<li data-mdline="815"><a class="pnum" id="p-346" href="#p-346">346</a>Под таблицей строк: «+ Товар» — только «склад → склад» и «приход от поставщика»; «+ Оборудование» — для документов с клиентом это список оборудования заказа с бейджем местоположения (единицы не из источника неактивны), для «склад → склад» — поиск ядра; в «приходе от поставщика» кнопки нет.</li>
+<li data-mdline="816"><a class="pnum" id="p-347" href="#p-347">347</a>Кнопки действий: для «приёма от клиента» в «Заявке» добавлена «Принять сразу» (основная, рядом с «Отправить»).</li>
+<li data-mdline="817"><a class="pnum" id="p-348" href="#p-348">348</a>Колонка «Кол-во» в «приходе от поставщика» подписана «Заказано».</li>
+</ol>
+<p><strong>Интерактив (дельта к ядру; действия «Выбор документа», «Отменить» — без изменений):</strong></p>
+<ol>
+<li data-mdline="820"><a class="pnum" id="p-349" href="#p-349">349</a><strong>Смена фильтра</strong></li>
+<ul>
+<li data-mdline="821"><a class="pnum" id="p-350" href="#p-350">350</a><strong>Элемент:</strong> select / date / текстовый инпут в панели фильтров</li>
+<li data-mdline="822"><a class="pnum" id="p-351" href="#p-351">351</a><strong>UI:</strong> debounce 300 мс для номера заказа; список затеняется</li>
+<li data-mdline="823"><a class="pnum" id="p-352" href="#p-352">352</a><strong>Вызов:</strong> <code>GET <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/transfers?status=…&amp;warehouse_id=…&amp;direction=…&amp;supplier_id=…&amp;task_id=…&amp;created_from=…&amp;created_to=…&amp;limit=50&amp;offset=0</code></li>
+<li data-mdline="824"><a class="pnum" id="p-353" href="#p-353">353</a><strong>200:</strong> <code>{ items, total, limit, offset }</code> → список перерисован</li>
+<li data-mdline="825"><a class="pnum" id="p-354" href="#p-354">354</a><strong>400 (период):</strong> красный текст под полями периода — «Некорректный период»</li>
+<li data-mdline="826"><a class="pnum" id="p-355" href="#p-355">355</a><strong>400 (остальные фильтры):</strong> тост «Некорректное значение фильтра»</li>
+</ul>
+<li data-mdline="827"><a class="pnum" id="p-356" href="#p-356">356</a><strong>Ввод номера заказа (новый документ с клиентом)</strong></li>
+<ul>
+<li data-mdline="828"><a class="pnum" id="p-357" href="#p-357">357</a><strong>Элемент:</strong> текстовый инпут «Заказ» в шапке</li>
+<li data-mdline="829"><a class="pnum" id="p-358" href="#p-358">358</a><strong>UI:</strong> debounce 300 мс; до ответа «+ Оборудование» недоступна</li>
+<li data-mdline="830"><a class="pnum" id="p-359" href="#p-359">359</a><strong>Вызов:</strong> <code>GET <a class="xref" href="#s-6-8">§6.8</a></code> → <code>/api/v1/tasks/37/card</code></li>
+<li data-mdline="831"><a class="pnum" id="p-360" href="#p-360">360</a><strong>200:</strong> <code>{ task, equipment, transfers }</code> → под полем название заказа и клиент; «+ Оборудование» показывает единицы заказа</li>
+<li data-mdline="832"><a class="pnum" id="p-361" href="#p-361">361</a><strong>404:</strong> под полем — «Заказ не найден»</li>
+</ul>
+<li data-mdline="833"><a class="pnum" id="p-362" href="#p-362">362</a><strong>Выбор поставщика</strong></li>
+<ul>
+<li data-mdline="834"><a class="pnum" id="p-363" href="#p-363">363</a><strong>Элемент:</strong> select «Поставщик» в шапке (только admin)</li>
+<li data-mdline="835"><a class="pnum" id="p-364" href="#p-364">364</a><strong>UI:</strong> список загружается при открытии формы</li>
+<li data-mdline="836"><a class="pnum" id="p-365" href="#p-365">365</a><strong>Вызов:</strong> <code>GET</code> → <code>/api/v1/suppliers?is_active=true&amp;limit=500</code> (часть 1)</li>
+<li data-mdline="837"><a class="pnum" id="p-366" href="#p-366">366</a><strong>200:</strong> <code>{ items, total, limit, offset }</code> → опции select</li>
+<li data-mdline="838"><a class="pnum" id="p-367" href="#p-367">367</a><strong>403:</strong> не возникает — executor этого направления не создаёт</li>
+</ul>
+<li data-mdline="839"><a class="pnum" id="p-368" href="#p-368">368</a><strong>«Сохранить» / «Отправить»</strong></li>
+<ul>
+<li data-mdline="840"><a class="pnum" id="p-369" href="#p-369">369</a><strong>Элемент:</strong> кнопки внизу справа (как в ядре)</li>
+<li data-mdline="841"><a class="pnum" id="p-370" href="#p-370">370</a><strong>UI:</strong> кнопки заблокированы</li>
+<li data-mdline="842"><a class="pnum" id="p-371" href="#p-371">371</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/transfers</code>, body: <code>{ direction, from_warehouse_id, to_warehouse_id, task_id, supplier_id, note, items, send }</code>; <code>PUT <a class="xref" href="#s-6-4">§6.4</a></code> → <code>/api/v1/transfers/N</code>, body: <code>{ version, from_warehouse_id, to_warehouse_id, supplier_id, note, items }</code>; <code>POST <a class="xref" href="#s-6-5">§6.5</a></code> → <code>/api/v1/transfers/N/send</code>, body: <code>{ version }</code></li>
+<li data-mdline="843"><a class="pnum" id="p-372" href="#p-372">372</a><strong>200/201:</strong> <code>{ id, direction, status, version, … }</code> → тост «Сохранено» либо бейдж «В пути»</li>
+<li data-mdline="844"><a class="pnum" id="p-373" href="#p-373">373</a><strong>400 (task_id):</strong> под полем «Заказ» — «Укажите заказ»</li>
+<li data-mdline="845"><a class="pnum" id="p-374" href="#p-374">374</a><strong>400 (supplier_id: required / not_found):</strong> под select — «Укажите поставщика»</li>
+<li data-mdline="846"><a class="pnum" id="p-375" href="#p-375">375</a><strong>400 (supplier_id: archived):</strong> под select — «Поставщик в архиве»</li>
+<li data-mdline="847"><a class="pnum" id="p-376" href="#p-376">376</a><strong>400 (items[i].kind: not_allowed):</strong> в строке — «Этот тип строки недопустим для направления»</li>
+<li data-mdline="848"><a class="pnum" id="p-377" href="#p-377">377</a><strong>400 (items[i].equipment_id: not_in_task):</strong> в строке — «Оборудование не из этого заказа»</li>
+<li data-mdline="849"><a class="pnum" id="p-378" href="#p-378">378</a><strong>403:</strong> тост «Нет доступа»</li>
+<li data-mdline="850"><a class="pnum" id="p-379" href="#p-379">379</a><strong>409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE, приём):</strong> в строке единицы — «Оборудование уже не у клиента»</li>
+<li data-mdline="851"><a class="pnum" id="p-380" href="#p-380">380</a><strong>409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE, возврат):</strong> в строке единицы — «Оборудование находится не на складе отправления»</li>
+<li data-mdline="852"><a class="pnum" id="p-381" href="#p-381">381</a><strong>409 (версия, статус, EQUIPMENT_IN_TRANSFER):</strong> как в ядре</li>
+</ul>
+<li data-mdline="853"><a class="pnum" id="p-382" href="#p-382">382</a><strong>«Принять сразу» (приём от клиента)</strong></li>
+<ul>
+<li data-mdline="854"><a class="pnum" id="p-383" href="#p-383">383</a><strong>Элемент:</strong> кнопка основная, внизу справа, только новая заявка «приём от клиента»</li>
+<li data-mdline="855"><a class="pnum" id="p-384" href="#p-384">384</a><strong>UI:</strong> кнопки заблокированы</li>
+<li data-mdline="856"><a class="pnum" id="p-385" href="#p-385">385</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/transfers</code>, body: <code>{ direction: "client_to_warehouse", to_warehouse_id, task_id, note, items, receive: true }</code></li>
+<li data-mdline="857"><a class="pnum" id="p-386" href="#p-386">386</a><strong>201:</strong> <code>{ id, status: "received" }</code> → документ «Получено»; в карточке заказа единицы «на складе …»</li>
+<li data-mdline="858"><a class="pnum" id="p-387" href="#p-387">387</a><strong>400 (поля):</strong> как у «Сохранить»</li>
+<li data-mdline="859"><a class="pnum" id="p-388" href="#p-388">388</a><strong>409 (EQUIPMENT_IN_TRANSFER):</strong> в строке единицы — «уже в перемещении #N»</li>
+<li data-mdline="860"><a class="pnum" id="p-389" href="#p-389">389</a><strong>409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE):</strong> в строке единицы — «Оборудование уже не у клиента»</li>
+</ul>
+<li data-mdline="861"><a class="pnum" id="p-390" href="#p-390">390</a><strong>«Принять»</strong></li>
+<ul>
+<li data-mdline="862"><a class="pnum" id="p-391" href="#p-391">391</a><strong>Элемент:</strong> кнопка основная; «приход от поставщика» и «склад → склад» — модалка «Приёмка» с полем «Факт» по товарным строкам; документы с клиентом — <code>KT.uiDialog</code> без полей («Клиент получил оборудование?» / «Оборудование на складе?»)</li>
+<li data-mdline="863"><a class="pnum" id="p-392" href="#p-392">392</a><strong>UI:</strong> кнопка модалки заблокирована</li>
+<li data-mdline="864"><a class="pnum" id="p-393" href="#p-393">393</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-6">§6.6</a></code> → <code>/api/v1/transfers/N/receive</code>, body: <code>{ version, items: [{ id, qty_received }] }</code> (для документов с клиентом — <code>{ version }</code>)</li>
+<li data-mdline="865"><a class="pnum" id="p-394" href="#p-394">394</a><strong>200:</strong> <code>{ status: "received", items, … }</code> → бейдж «Получено»; в «приходе от поставщика» строка «заказано 10 / получено 12», расхождение в любую сторону подсвечено</li>
+<li data-mdline="866"><a class="pnum" id="p-395" href="#p-395">395</a><strong>400 (exceeds_sent, только склад → склад):</strong> под полем «Факт» — «Факт больше отправленного»</li>
+<li data-mdline="867"><a class="pnum" id="p-396" href="#p-396">396</a><strong>400 (negative / invalid):</strong> под полем «Факт» — «Факт не может быть отрицательным»</li>
+<li data-mdline="868"><a class="pnum" id="p-397" href="#p-397">397</a><strong>409 (версия, статус, STOCK_OVERFLOW):</strong> как в ядре</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> как в ядре; документ открыт исполнителем, а администратор его отменил — при следующем действии 409 по версии, документ перечитывается.</p>
+<h3 id="s-8-2">§8.2. Экран/форма «Карточка заказа»</h3>
+<ul>
+<li data-mdline="873"><a class="pnum" id="p-398" href="#p-398">398</a>Маршрут: карточка заказа на доске (существующая), дельта</li>
+</ul>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="876"><a class="pnum" id="p-399" href="#p-399">399</a><strong>Путь:</strong> доска → клик по заказу</li>
+<li data-mdline="877"><a class="pnum" id="p-400" href="#p-400">400</a><strong>URL:</strong> существующий URL карточки заказа</li>
+<li data-mdline="878"><a class="pnum" id="p-401" href="#p-401">401</a><strong>Роли:</strong> admin, executor · <strong>Устройство:</strong> десктоп; телефон — без горизонтальной прокрутки</li>
+<li data-mdline="879"><a class="pnum" id="p-402" href="#p-402">402</a><strong>При открытии:</strong> <code>GET <a class="xref" href="#s-6-8">§6.8</a></code> → <code>/api/v1/tasks/37/card</code></li>
+<li data-mdline="880"><a class="pnum" id="p-403" href="#p-403">403</a><strong>200:</strong> карточка с блоком «Перемещения заказа» · <strong>Пусто:</strong> в блоке — «Перемещений нет» · <strong>4xx:</strong> 404 — «Заказ не найден»</li>
+</ul>
+<p><strong>Что на странице (дельта, сверху вниз):</strong></p>
+<ol>
+<li data-mdline="883"><a class="pnum" id="p-404" href="#p-404">404</a>Блок «Оборудование»:</li>
+<ol>
+<li data-mdline="884"><a class="pnum" id="p-405" href="#p-405">405</a>Из формы добавления единицы убран select <code class="k-x">«Склад приёма»</code> и подпись под ним (<a class="xref" href="#ds-045">DS-045</a>).</li>
+<li data-mdline="885"><a class="pnum" id="p-406" href="#p-406">406</a>Бейдж местоположения получает значение «в пути → клиент».</li>
+<li data-mdline="886"><a class="pnum" id="p-407" href="#p-407">407</a>«перемещение #N» — теперь ссылка и для исполнителя.</li>
+</ol>
+<li data-mdline="887"><a class="pnum" id="p-408" href="#p-408">408</a>НОВЫЙ блок «Перемещения заказа» (под «Оборудованием»):</li>
+<ol>
+<li data-mdline="888"><a class="pnum" id="p-409" href="#p-409">409</a>Кнопки справа в заголовке блока: «Принять от клиента» (основная), «Вернуть клиенту» (второстепенная).</li>
+<li data-mdline="889"><a class="pnum" id="p-410" href="#p-410">410</a>Список документов: «#N» (ссылка), направление, склад, бейдж статуса, число строк, дата.</li>
+</ol>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="892"><a class="pnum" id="p-411" href="#p-411">411</a><strong>«Принять от клиента»</strong></li>
+<ul>
+<li data-mdline="893"><a class="pnum" id="p-412" href="#p-412">412</a><strong>Элемент:</strong> кнопка основная, в заголовке блока «Перемещения заказа»</li>
+<li data-mdline="894"><a class="pnum" id="p-413" href="#p-413">413</a><strong>UI:</strong> переход на <code>/transfers?new=1&amp;direction=client_to_warehouse&amp;task_id=37</code>; в форме предвыбраны единицы заказа со статусом «у клиента» и первый активный склад; кнопка неактивна с подсказкой «Нет оборудования у клиента», если таких единиц нет</li>
+<li data-mdline="895"><a class="pnum" id="p-414" href="#p-414">414</a><strong>Вызов:</strong> на экране <a class="xref" href="#s-8-1">§8.1</a> — <code>POST <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/transfers</code>, body: <code>{ direction: "client_to_warehouse", to_warehouse_id, task_id, items, receive: true }</code></li>
+<li data-mdline="896"><a class="pnum" id="p-415" href="#p-415">415</a><strong>201:</strong> <code>{ id, status: "received" }</code> → в карточке единицы «на складе …», документ в блоке</li>
+<li data-mdline="897"><a class="pnum" id="p-416" href="#p-416">416</a><strong>409 (EQUIPMENT_IN_TRANSFER):</strong> в форме, в строке единицы — «уже в перемещении #N»</li>
+<li data-mdline="898"><a class="pnum" id="p-417" href="#p-417">417</a><strong>409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE):</strong> в строке единицы — «Оборудование уже не у клиента»</li>
+</ul>
+<li data-mdline="899"><a class="pnum" id="p-418" href="#p-418">418</a><strong>«Вернуть клиенту»</strong></li>
+<ul>
+<li data-mdline="900"><a class="pnum" id="p-419" href="#p-419">419</a><strong>Элемент:</strong> кнопка второстепенная, в заголовке блока</li>
+<li data-mdline="901"><a class="pnum" id="p-420" href="#p-420">420</a><strong>UI:</strong> переход на <code>/transfers?new=1&amp;direction=warehouse_to_client&amp;task_id=37</code>; предвыбраны единицы заказа, числящиеся на складе; склад отправления — склад первой такой единицы (единицы с другого склада неактивны); кнопка неактивна с подсказкой «Нет оборудования на складе», если таких единиц нет</li>
+<li data-mdline="902"><a class="pnum" id="p-421" href="#p-421">421</a><strong>Вызов:</strong> на экране <a class="xref" href="#s-8-1">§8.1</a> — <code>POST <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/transfers</code>, body: <code>{ direction: "warehouse_to_client", from_warehouse_id, task_id, items, send: true }</code></li>
+<li data-mdline="903"><a class="pnum" id="p-422" href="#p-422">422</a><strong>201:</strong> <code>{ id, status: "in_transit" }</code> → в карточке единицы «в пути → клиент»</li>
+<li data-mdline="904"><a class="pnum" id="p-423" href="#p-423">423</a><strong>409 (TRANSFER_EQUIPMENT_NOT_AT_SOURCE):</strong> в строке единицы — «Оборудование находится не на складе отправления»</li>
+</ul>
+<li data-mdline="905"><a class="pnum" id="p-424" href="#p-424">424</a><strong>Ссылка «#N»</strong></li>
+<ul>
+<li data-mdline="906"><a class="pnum" id="p-425" href="#p-425">425</a><strong>Элемент:</strong> ссылка в строке документа и у единицы</li>
+<li data-mdline="907"><a class="pnum" id="p-426" href="#p-426">426</a><strong>UI:</strong> переход на <code>/transfers?id=N</code></li>
+<li data-mdline="908"><a class="pnum" id="p-427" href="#p-427">427</a><strong>Вызов:</strong> <code>GET <a class="xref" href="#s-6-3">§6.3</a></code> → <code>/api/v1/transfers/N</code></li>
+<li data-mdline="909"><a class="pnum" id="p-428" href="#p-428">428</a><strong>200:</strong> документ открыт на экране <a class="xref" href="#s-8-1">§8.1</a></li>
+<li data-mdline="910"><a class="pnum" id="p-429" href="#p-429">429</a><strong>404:</strong> тост «Перемещение не найдено» (в т.ч. исполнитель открыл документ «склад → склад»)</li>
+</ul>
+<li data-mdline="911"><a class="pnum" id="p-430" href="#p-430">430</a><strong>Удаление заказа (admin)</strong></li>
+<ul>
+<li data-mdline="912"><a class="pnum" id="p-431" href="#p-431">431</a><strong>Элемент:</strong> существующая кнопка карточки</li>
+<li data-mdline="913"><a class="pnum" id="p-432" href="#p-432">432</a><strong>UI:</strong> без изменений</li>
+<li data-mdline="914"><a class="pnum" id="p-433" href="#p-433">433</a><strong>Вызов:</strong> <code>DELETE</code> → <code>/api/v1/tasks/37</code> (<a class="xref" href="#s-6-9">§6.9</a>)</li>
+<li data-mdline="915"><a class="pnum" id="p-434" href="#p-434">434</a><strong>200:</strong> без изменений</li>
+<li data-mdline="916"><a class="pnum" id="p-435" href="#p-435">435</a><strong>409 (CONFLICT):</strong> тост «У заказа есть перемещения — удалить нельзя»</li>
+<li data-mdline="917"><a class="pnum" id="p-436" href="#p-436">436</a>as-built: отказ удаления показывается в шапке карточки заказа (<code>#task-error</code>), не тостом; с части 6 — код <code>TASK_HAS_TRANSFERS</code> со ссылками на документы</li>
+</ul>
+<li data-mdline="918"><a class="pnum" id="p-437" href="#p-437">437</a><strong>Смена клиента заказа (as-built, D84)</strong></li>
+<ul>
+<li data-mdline="919"><a class="pnum" id="p-438" href="#p-438">438</a><strong>Элемент:</strong> существующий выбор клиента в карточке</li>
+<li data-mdline="920"><a class="pnum" id="p-439" href="#p-439">439</a><strong>Вызов:</strong> <code>PUT</code> → <code>/api/v1/tasks/37</code> (<a class="xref" href="#s-6-9">§6.9</a>)</li>
+<li data-mdline="921"><a class="pnum" id="p-440" href="#p-440">440</a><strong>409 (TASK_CLIENT_LOCKED_BY_TRANSFERS):</strong> ошибка в шапке карточки со ссылками на документы, выбранный клиент возвращается к сохранённому</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> документ проведён другим пользователем, пока карточка открыта — блок и бейджи обновятся при следующем открытии карточки либо после любого действия в ней (re-fetch).</p>
+<h2 id="s-9">§9. Решения (DS-index)</h2>
+<table><thead><tr><th>DS</th><th>Формулировка</th><th>Источник</th><th>Статус</th></tr></thead><tbody><tr data-mdline="928"><td><a class="pnum" id="p-441" href="#p-441">441</a><a id="ds-002"></a><strong>DS-002</strong></td><td>Контрагент — точка маршрута; направления: клиент → склад, склад → клиент, склад → склад, поставщик → склад</td><td>мастер, батч 0</td><td>closed</td></tr><tr data-mdline="929"><td><a class="pnum" id="p-442" href="#p-442">442</a><a id="ds-004"></a><strong>DS-004</strong></td><td>Состав строк по направлениям: от клиента — только присланное клиентом; клиенту — его оборудование (+ товар — в части 5); между складами — оборудование и товары; от поставщика — товары</td><td>мастер, батч 0</td><td>closed</td></tr><tr data-mdline="930"><td><a class="pnum" id="p-443" href="#p-443">443</a><a id="ds-012"></a><strong>DS-012</strong></td><td>Для направлений с клиентом заказ обязателен; клиент документа выводится сервером из заказа; заказ с документами не удалить</td><td>мастер, батч 2</td><td>closed</td></tr><tr data-mdline="931"><td><a class="pnum" id="p-444" href="#p-444">444</a><a id="ds-013"></a><strong>DS-013</strong></td><td>Три шага «Заявка → В пути → Получено» для всех направлений; «Принять» у «склад → клиент» нажимает наш сотрудник; «клиент → склад» можно создать и принять одним действием</td><td>мастер, батч 2</td><td>closed</td></tr><tr data-mdline="932"><td><a class="pnum" id="p-445" href="#p-445">445</a><a id="ds-015"></a><strong>DS-015</strong></td><td>Приход от поставщика: приёмка по факту; недопоставка закрывает документ, довоз — новым документом; факт больше заказанного разрешён только для этого направления</td><td>мастер, батч 3</td><td>closed</td></tr><tr data-mdline="933"><td><a class="pnum" id="p-446" href="#p-446">446</a><a id="ds-016"></a><strong>DS-016</strong></td><td>В документе от поставщика цен нет; товары только из каталога</td><td>мастер, батч 3</td><td>closed</td></tr><tr data-mdline="934"><td><a class="pnum" id="p-447" href="#p-447">447</a><a id="ds-018"></a><strong>DS-018</strong></td><td>Исполнитель создаёт и проводит документы с клиентом и видит в списке только их; «склад → склад», «поставщик → склад» — только администратор</td><td>мастер, батч 4</td><td>closed</td></tr><tr data-mdline="935"><td><a class="pnum" id="p-448" href="#p-448">448</a><a id="ds-024"></a><strong>DS-024</strong></td><td>«Ждёт поставку» — отдельная задача; связь прихода от поставщика со строками товаров заказа не закладывается</td><td>мастер, батч 5</td><td>closed (вне объёма, реализации нет)</td></tr><tr data-mdline="936"><td><a class="pnum" id="p-449" href="#p-449">449</a><a id="ds-034"></a><strong>DS-034</strong></td><td>В списке перемещений фильтр «период» (дата создания, с — по); границы дня — по поясу пользователя, в SQL — в UTC</td><td>мастер, батч 6 (уточнение 3)</td><td>closed</td></tr><tr data-mdline="937"><td><a class="pnum" id="p-450" href="#p-450">450</a><a id="ds-035"></a><strong>DS-035</strong></td><td>Единица в документе с клиентом должна входить в оборудование заказа документа</td><td>мастер, inferred</td><td>closed</td></tr><tr data-mdline="938"><td><a class="pnum" id="p-451" href="#p-451">451</a><a id="ds-040"></a><strong>DS-040</strong></td><td>Новые причины движений остатка: <code>supplier_in</code> (пишется здесь), <code>client_out</code> (часть 5), <code>transfer_unreceive</code> (часть 6); CHECK расширяется здесь сразу тремя; от поставщика при отправке движений нет</td><td>мастер, inferred</td><td>closed</td></tr><tr data-mdline="939"><td><a class="pnum" id="p-452" href="#p-452">452</a><a id="ds-042"></a><strong>DS-042</strong></td><td>Документ чужого направления для исполнителя → 404; удаление документа — только администратор (endpoint удаления — часть 6)</td><td>мастер, батч 7</td><td>closed</td></tr><tr data-mdline="940"><td><a class="pnum" id="p-453" href="#p-453">453</a><a id="ds-045"></a><strong>DS-045</strong></td><td>При добавлении единицы в заказ склад не выбирается; единица остаётся там, где числится</td><td>мастер, inferred</td><td>closed</td></tr><tr data-mdline="941"><td><a class="pnum" id="p-454" href="#p-454">454</a><a id="ds-047"></a><strong>DS-047</strong></td><td>«В пути» на «Остатках» включает приход от поставщика в статусе «В пути»</td><td>мастер, inferred</td><td>closed</td></tr><tr data-mdline="942"><td><a class="pnum" id="p-455" href="#p-455">455</a><a id="ds-007"></a><strong>DS-007</strong></td><td>Справочник «Поставщики»</td><td>мастер, батч 1</td><td>closed — контекст, реализуется в <code>suppliers</code></td></tr><tr data-mdline="943"><td><a class="pnum" id="p-456" href="#p-456">456</a><a id="ds-011"></a><strong>DS-011</strong></td><td>Товар с ценой в документе «склад → клиент»</td><td>мастер, батч 2</td><td>closed — контекст, реализуется в <code>transfers-sales</code></td></tr><tr data-mdline="944"><td><a class="pnum" id="p-457" href="#p-457">457</a><a id="ds-017"></a><strong>DS-017</strong></td><td>«Отменить проведение»</td><td>мастер, батч 3</td><td>closed — контекст, реализуется в <code>transfers-revert</code></td></tr><tr data-mdline="945"><td><a class="pnum" id="p-458" href="#p-458">458</a><a id="ds-025"></a><strong>DS-025</strong></td><td>Удаление документа; сообщение с номерами при удалении заказа с документами</td><td>мастер, батч 5</td><td>closed — контекст, реализуется в <code>transfers-revert</code></td></tr><tr data-mdline="946"><td><a class="pnum" id="p-459" href="#p-459">459</a><a id="ds-050"></a><strong>DS-050</strong></td><td>Отменённые документы удаляются вместе с заказом</td><td>мастер, батч 7</td><td>closed — контекст, реализуется в <code>transfers-revert</code></td></tr><tr data-mdline="947"><td><a class="pnum" id="p-460" href="#p-460">460</a><a id="ds-027"></a><strong>DS-027</strong></td><td>Совместимость — MVP</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="948"><td><a class="pnum" id="p-461" href="#p-461">461</a><a id="ds-028"></a><strong>DS-028</strong></td><td>UI-scope: swagger:no, adaptive:min, themes:both</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="949"><td><a class="pnum" id="p-462" href="#p-462">462</a><a id="ds-031"></a><strong>DS-031</strong></td><td>Показ времени по поясу пользователя</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>user-timezone</code></td></tr><tr data-mdline="950"><td><a class="pnum" id="p-463" href="#p-463">463</a><a id="ds-048"></a><strong>DS-048</strong></td><td>Конкурентность документа: <code>version</code>, 409</td><td>мастер, as-is</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="951"><td><a class="pnum" id="p-464" href="#p-464">464</a><a id="ds-052"></a><strong>DS-052</strong></td><td>UI-конвенции</td><td>мастер, inferred</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr></tbody></table>
+<h2 id="s-10">§10. Открытые вопросы (status: open)</h2>
+<p>Открытых вопросов нет.</p>
+<h2 id="s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</h2>
+<p>UI-scope: swagger-сценариев нет; адаптив и темы — общие сценарии TS-045, TS-046 части <code>transfers-core</code> расширяются формой документа с клиентом и блоком «Перемещения заказа» (в составе TS-029).</p>
+<h3 id="h3-559">Unit / Integration (Go)</h3>
+<ul>
+<li data-mdline="960"><a class="pnum" id="p-465" href="#p-465">465</a><strong>TS-001.</strong> Валидатор создания документа: <code>direction</code> required/enum; набор <code>from_warehouse_id</code> / <code>to_warehouse_id</code> / <code>task_id</code> / <code>supplier_id</code> по каждому из четырёх направлений (лишнее поле → <code>not_allowed</code>, недостающее → <code>required</code>); <code>same_warehouse</code>; <code>direction</code> и <code>task_id</code> в <code>PUT</code> → <code>not_allowed</code> — <a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-012">DS-012</a></li>
+<ul>
+<li data-mdline="961"><a class="pnum" id="p-466" href="#p-466">466</a>негатив: <code>client_to_warehouse</code> без <code>task_id</code> → 400 <code>task_id: required</code></li>
+</ul>
+<li data-mdline="962"><a class="pnum" id="p-467" href="#p-467">467</a><strong>TS-002.</strong> Валидатор строк: матрица «направление × kind» (товар в <code>client_to_warehouse</code> и в <code>warehouse_to_client</code> → <code>not_allowed</code>; единица в <code>supplier_to_warehouse</code> → <code>not_allowed</code>) — <a class="xref" href="#ds-004">DS-004</a></li>
+<ul>
+<li data-mdline="963"><a class="pnum" id="p-468" href="#p-468">468</a>негатив: <code>items[0].kind: not_allowed</code></li>
+</ul>
+<li data-mdline="964"><a class="pnum" id="p-469" href="#p-469">469</a><strong>TS-004.</strong> Единица не из заказа документа → 400 <code>items[i].equipment_id: not_in_task</code>; единица другого клиента → 400 — <a class="xref" href="#ds-035">DS-035</a></li>
+<ul>
+<li data-mdline="965"><a class="pnum" id="p-470" href="#p-470">470</a>негатив: <code>client_id</code> в теле игнорируется, берётся из заказа (<a class="xref" href="#ds-012">DS-012</a>)</li>
+</ul>
+<li data-mdline="966"><a class="pnum" id="p-471" href="#p-471">471</a><strong>TS-007.</strong> Движения остатка (integration): приход от поставщика — при отправке движений нет, при приёмке <code>supplier_in</code> +факт на складе назначения, при отмене движений нет; документы с клиентом движений не создают; остаток <code>product_stock</code> сходится с суммой движений — <a class="xref" href="#ds-040">DS-040</a></li>
+<ul>
+<li data-mdline="967"><a class="pnum" id="p-472" href="#p-472">472</a>негатив: факт 0 — движение не пишется, документ «Получено»</li>
+<li data-mdline="968"><a class="pnum" id="p-473" href="#p-473">473</a>не входит в эту часть: <code>client_out</code> — <code>transfers-sales</code> (TS-030); <code>transfer_unreceive</code> — <code>transfers-revert</code> (TS-010)</li>
+</ul>
+<li data-mdline="969"><a class="pnum" id="p-474" href="#p-474">474</a><strong>TS-008.</strong> Приёмка: <code>warehouse_to_warehouse</code> факт &gt; отправленного → 400 <code>exceeds_sent</code>; <code>supplier_to_warehouse</code> факт &gt; заказанного → 200, остаток +факт; факт &lt; заказанного → остаток +факт; <code>items</code> у <code>warehouse_to_client</code> и <code>client_to_warehouse</code> → 400 <code>not_allowed</code>; <code>receive: true</code> вне <code>client_to_warehouse</code> → 400 — <a class="xref" href="#ds-015">DS-015</a>, <a class="xref" href="#ds-013">DS-013</a></li>
+<ul>
+<li data-mdline="970"><a class="pnum" id="p-475" href="#p-475">475</a>негатив: отрицательный факт → 400; двойной параллельный <code>receive</code> прихода → остаток вырос один раз</li>
+</ul>
+<li data-mdline="971"><a class="pnum" id="p-476" href="#p-476">476</a><strong>TS-015.</strong> Права: executor — <code>POST</code> <code>warehouse_to_warehouse</code> / <code>supplier_to_warehouse</code> → 403; <code>GET</code>, <code>PUT</code>, <code>send</code>, <code>receive</code>, <code>cancel</code> документа чужого направления → 404; список не содержит чужих направлений даже с фильтром <code>direction</code> — <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-042">DS-042</a></li>
+<ul>
+<li data-mdline="972"><a class="pnum" id="p-477" href="#p-477">477</a>негатив: executor создаёт и проводит <code>client_to_warehouse</code> → 201 / 200</li>
+<li data-mdline="973"><a class="pnum" id="p-478" href="#p-478">478</a>не входит в эту часть: <code>unreceive</code>, <code>DELETE</code> → 403 — <code>transfers-revert</code>; <code>/suppliers</code> → 403 — <code>suppliers</code> (TS-020)</li>
+</ul>
+<li data-mdline="974"><a class="pnum" id="p-479" href="#p-479">479</a><strong>TS-023.</strong> Фильтр «период», граница суток: документ создан <code>2026-10-06T19:30:00Z</code> (00:30 7 октября по Алматы, 22:30 6 октября по Москве). Пользователь с <code>Asia/Almaty</code>: <code>created_from=2026-10-07&amp;created_to=2026-10-07</code> — найден, <code>2026-10-06</code> — нет. Пользователь с <code>Europe/Moscow</code>: <code>2026-10-06</code> — найден, <code>2026-10-07</code> — нет — <a class="xref" href="#ds-034">DS-034</a></li>
+<ul>
+<li data-mdline="975"><a class="pnum" id="p-480" href="#p-480">480</a>негатив: <code>created_to</code> раньше <code>created_from</code> → 400; <code>2026-13-40</code> → 400</li>
+</ul>
+<li data-mdline="976"><a class="pnum" id="p-481" href="#p-481">481</a><strong>TS-025.</strong> «Остатки»: «в пути» включает <code>supplier_to_warehouse</code> в <code>in_transit</code> для склада назначения — <a class="xref" href="#ds-047">DS-047</a></li>
+<ul>
+<li data-mdline="977"><a class="pnum" id="p-482" href="#p-482">482</a>негатив: заявка от поставщика (<code>requested</code>) в «в пути» не входит</li>
+</ul>
+</ul>
+<p>Хвосты сценариев других частей, реализуемые здесь (без новых номеров):</p>
+<ul>
+<li data-mdline="980"><a class="pnum" id="p-483" href="#p-483">483</a>TS-006 (ядро): отправка <code>client_to_warehouse</code>, когда единица не «у клиента» → 409 <code>TRANSFER_EQUIPMENT_NOT_AT_SOURCE</code>.</li>
+<li data-mdline="981"><a class="pnum" id="p-484" href="#p-484">484</a>TS-027 (ядро): <code>POST /tasks/:id/equipment</code> с <code>warehouse_id</code> — поле игнорируется, единица остаётся «у клиента».</li>
+<li data-mdline="982"><a class="pnum" id="p-485" href="#p-485">485</a>TS-020 (<code>suppliers</code>): архивный поставщик в новом документе → 400 <code>supplier_id: archived</code>; в уже созданном остаётся.</li>
+<li data-mdline="983"><a class="pnum" id="p-486" href="#p-486">486</a>Удаление заказа с документом → 409 <code>CONFLICT</code>, заказ и документ на месте (<a class="xref" href="#ds-012">DS-012</a>).</li>
+</ul>
+<h3 id="h3-603">E2E (Playwright)</h3>
+<ul>
+<li data-mdline="986"><a class="pnum" id="p-487" href="#p-487">487</a><strong>TS-029.</strong> Приём в ремонт из карточки заказа — экран <a class="xref" href="#s-8-2">§8.2</a> → <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-012">DS-012</a>, <a class="xref" href="#ds-013">DS-013</a></li>
+<ul>
+<li data-mdline="987"><a class="pnum" id="p-488" href="#p-488">488</a>шаги: исполнитель → карточка заказа → «Принять от клиента» → склад → «Принять сразу»; проверка: документ «Получено» в блоке «Перемещения заказа», бейдж единицы «на складе Алматы»; затем «Вернуть клиенту» → «Отправить» → «Принять»: бейдж «у клиента»; блок и форма без горизонтальной прокрутки при 375×812, читаемы в обеих темах; негатив: повторное «Принять от клиента» той же единицы в незавершённом документе → «уже в перемещении #N»</li>
+</ul>
+<li data-mdline="988"><a class="pnum" id="p-489" href="#p-489">489</a><strong>TS-032.</strong> Приход от поставщика — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-015">DS-015</a></li>
+<ul>
+<li data-mdline="989"><a class="pnum" id="p-490" href="#p-490">490</a>шаги: admin → «Приход от поставщика» → поставщик, товар 10 → «Отправить» → «Принять», факт 12; проверка: «Получено», «заказано 10 / получено 12», остаток +12; негатив: кнопки «+ Оборудование» в этом направлении нет; архивного поставщика нет в select (хвост TS-035)</li>
+</ul>
+<li data-mdline="990"><a class="pnum" id="p-491" href="#p-491">491</a><strong>TS-034.</strong> Права исполнителя — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-018">DS-018</a></li>
+<ul>
+<li data-mdline="991"><a class="pnum" id="p-492" href="#p-492">492</a>шаги: executor → «Перемещения»; проверка: в меню «Новое перемещение» два направления, в списке только документы с клиентом, фильтра «Поставщик» нет; негатив: прямой URL <code>/transfers?id=&lt;склад→склад&gt;</code> → «Перемещение не найдено»</li>
+</ul>
+<li data-mdline="992"><a class="pnum" id="p-493" href="#p-493">493</a><strong>TS-039.</strong> Фильтры списка, включая «период» — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-034">DS-034</a></li>
+<ul>
+<li data-mdline="993"><a class="pnum" id="p-494" href="#p-494">494</a>шаги: статус + направление + период; проверка: список соответствует, «Сбросить» возвращает всё; негатив: «по» раньше «с» → «Некорректный период»</li>
+</ul>
+</ul>
+<p>Хвост TS-036 (ядро), реализуемый здесь: в форме добавления единицы в заказ нет select «Склад приёма».</p>
+<h3 id="h3-623">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</h3>
+<ul>
+<li data-mdline="998"><a class="pnum" id="p-495" href="#p-495">495</a>seed-demo (<code>internal/seeddemo/seeddemo.go</code>, владелец TS-F1 — <code>transfers-core</code>): дополнить в той же фазе, что миграция — два поставщика (один в архиве); документы трёх новых направлений: приём от клиента <code>received</code>, возврат клиенту <code>in_transit</code>, приход от поставщика <code>received</code> с расхождением и один <code>in_transit</code>; у существующих документов <code>direction = warehouse_to_warehouse</code>; единицы заказов в последней колонке доски — «у клиента» через проведённую пару «приём + возврат».</li>
+<li data-mdline="999"><a class="pnum" id="p-496" href="#p-496">496</a>e2e (<code>e2e/fixtures/board-types.ts</code>, владелец TS-F2 — <code>transfers-core</code>): wire-типы — <code>transfers[]</code> карточки, <code>direction</code>, <code>task_id</code>, <code>client_*</code>, <code>supplier_*</code> документа; хелпер <code>addTaskEquipment</code> без <code>warehouse_id</code>; payload'ы типизировать wire-типами из исходников (§TD-6.2).</li>
+<li data-mdline="1000"><a class="pnum" id="p-497" href="#p-497">497</a>Фикстура времени TS-F5 (владелец — <code>user-timezone</code>) переиспользуется для TS-023.</li>
+</ul>
+<h2 id="h2-629">§Impact — точки касания существующего кода</h2>
+<p>Источник: <code>impact_scan.py</code> мастера (213 находок) — строки, относящиеся к этой части, в состоянии после <code>transfers-core</code>; отдельный прогон не делался: пакет <code>internal/features/transfers</code> на момент написания спеки не существует.</p>
+<table><thead><tr><th>#</th><th>Класс</th><th>Что задеваем (file:line / объект)</th><th>Дельта фичи</th><th>Решение</th><th>DS</th></tr></thead><tbody><tr data-mdline="1007"><td><a class="pnum" id="p-498" href="#p-498">498</a>1</td><td>SHARED-DEP</td><td><code>internal/features/transfers/*</code> (после ядра; сейчас <code>internal/features/stocktransfers</code>)</td><td>направления, контрагенты, скоуп исполнителя, приёмка от поставщика, фильтры</td><td>править</td><td><a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-015">DS-015</a></td></tr><tr data-mdline="1008"><td><a class="pnum" id="p-499" href="#p-499">499</a>2</td><td>ENUMERATION</td><td><code>internal/features/transfers/routes.go</code> (сейчас <code>stocktransfers/routes.go:12,24</code> — <code>RequireAdmin</code> на группе API и SSR)</td><td>снять admin-guard с группы; права — в сервисе по направлению</td><td>править</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr><tr data-mdline="1009"><td><a class="pnum" id="p-500" href="#p-500">500</a>3</td><td>ENUMERATION</td><td><code>internal/ssr/menu.go:25</code></td><td>снять <code>AdminOnly</code> у «Перемещения»</td><td>править</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr><tr data-mdline="1010"><td><a class="pnum" id="p-501" href="#p-501">501</a>4</td><td>SHARED-DEP</td><td><code>internal/features/board/task_equipment_service.go</code>, <code>task_equipment_validate.go</code>, DTO добавления единицы</td><td>убрать <code>warehouse_id</code> и запись склада</td><td>править</td><td><a class="xref" href="#ds-045">DS-045</a></td></tr><tr data-mdline="1011"><td><a class="pnum" id="p-502" href="#p-502">502</a>5</td><td>SHARED-DEP</td><td><code>internal/features/board/card_repo.go</code>, <code>card_dto.go</code></td><td><code>transfers[]</code>, <code>transit_to_name</code> = «клиент»</td><td>править</td><td><a class="xref" href="#ds-012">DS-012</a></td></tr><tr data-mdline="1012"><td><a class="pnum" id="p-503" href="#p-503">503</a>6</td><td>SHARED-DEP</td><td><code>internal/features/board/tasks_service.go:332</code> (<code>Delete</code>)</td><td>409 при наличии документов заказа</td><td>править</td><td><a class="xref" href="#ds-012">DS-012</a></td></tr><tr data-mdline="1013"><td><a class="pnum" id="p-504" href="#p-504">504</a>7</td><td>SHARED-DEP</td><td><code>internal/features/board/stock_repo.go</code> (CTE «в пути»), <code>tasks_repo.go</code> (фильтр доски)</td><td>приход от поставщика в «в пути»; единица в пути к клиенту</td><td>править</td><td><a class="xref" href="#ds-047">DS-047</a>, <a class="xref" href="#ds-013">DS-013</a></td></tr><tr data-mdline="1014"><td><a class="pnum" id="p-505" href="#p-505">505</a>8</td><td>SHARED-DEP</td><td><code>internal/features/suppliers</code> (часть 1)</td><td>чтение поставщика, проверка <code>is_active</code></td><td>использовать</td><td><a class="xref" href="#ds-002">DS-002</a></td></tr><tr data-mdline="1015"><td><a class="pnum" id="p-506" href="#p-506">506</a>9</td><td>SHARED-DEP</td><td><code>users.timezone</code> (часть 2), <code>internal/server/middleware/auth.go</code> (<code>Viewer</code>)</td><td>пояс запрашивающего для фильтра «период»</td><td>использовать</td><td><a class="xref" href="#ds-034">DS-034</a></td></tr><tr data-mdline="1016"><td><a class="pnum" id="p-507" href="#p-507">507</a>10</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/transfers.js</code> (после ядра), шаблон страницы</td><td>меню направлений, поля шапки, фильтры, «Принять сразу»</td><td>править</td><td><a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-034">DS-034</a></td></tr><tr data-mdline="1017"><td><a class="pnum" id="p-508" href="#p-508">508</a>11</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/task-card.js</code></td><td>блок «Перемещения заказа», кнопки; убрать select «Склад приёма»</td><td>править</td><td><a class="xref" href="#ds-012">DS-012</a>, <a class="xref" href="#ds-045">DS-045</a></td></tr><tr data-mdline="1018"><td><a class="pnum" id="p-509" href="#p-509">509</a>12</td><td>FK</td><td><code>migrations/</code></td><td>новая миграция: колонки и CHECK маршрута <code class="k-t">transfers</code>, DROP CHECK <code>qty_received &lt;= qty_sent</code>, расширение <code>stock_movements_reason_check</code> (сейчас <code>migrations/0008_warehouses.up.sql:70-72</code>)</td><td>добавить</td><td><a class="xref" href="#ds-002">DS-002</a>, <a class="xref" href="#ds-015">DS-015</a>, <a class="xref" href="#ds-040">DS-040</a></td></tr><tr data-mdline="1019"><td><a class="pnum" id="p-510" href="#p-510">510</a>13</td><td>ENUMERATION</td><td><code>internal/seeddemo/seeddemo.go</code>, <code>e2e/fixtures/board-types.ts</code>, <code>e2e/fixtures/board.ts:8</code> (<code>addTaskEquipment</code>), <code>e2e/pages/OrderCardPage.ts</code>, <code>e2e/tests/order-card.spec.ts</code></td><td>сид, wire-типы, хелпер без <code>warehouse_id</code></td><td>править</td><td><a class="xref" href="#ds-045">DS-045</a></td></tr><tr data-mdline="1020"><td><a class="pnum" id="p-511" href="#p-511">511</a>14</td><td>CONFIG</td><td>env-ключи</td><td>не задеваются</td><td>—</td><td>—</td></tr><tr data-mdline="1021"><td><a class="pnum" id="p-512" href="#p-512">512</a>15</td><td>MONITORING</td><td>дашборды/алерты</td><td>не задеваются</td><td>—</td><td>—</td></tr></tbody></table>
+<p><strong>Вне каталога фичи:</strong> есть — internal/features/board, internal/features/transfers, internal/ssr/menu.go, internal/seeddemo, web/ssr/_shared/js, migrations, e2e</p>
+</body>
+</html>

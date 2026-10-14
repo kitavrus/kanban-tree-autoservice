@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fixture_sync_check.py --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae --base bb4a7825b9260e0ae6252367637a4536f4e20896
+(exit 0)
+
+fixture-sync: PASS (схемных изменений в diff нет)

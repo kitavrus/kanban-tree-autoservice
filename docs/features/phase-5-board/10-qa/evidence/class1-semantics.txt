@@ -1,0 +1,36 @@
+# Класс 1 — семантика DTO vs AC. Логин: admin/admin1234 (POST /api/v1/auth/login), sidorov/demo12345 (executor).
+
+$ curl -s -b admin.jar -X POST http://localhost:8080/api/v1/auth/login -H "X-Csrf-Token:$CSRF" -H "Origin: http://localhost:8080" -H "Content-Type: application/json" -d '{"login":"admin","password":"admin1234"}'
+{"id":"4305be73-7aac-4b88-9c01-38455ebf3fc8","login":"admin","name":"Admin","role":"admin"}
+HTTP:200
+
+$ curl -s -b exec.jar -X POST http://localhost:8080/api/v1/auth/login ... -d '{"login":"sidorov","password":"demo12345"}'
+{"id":"320b66ea-f29b-4987-93a9-8a708e9d2e93","login":"sidorov","name":"Сидоров Олег","role":"executor"}
+HTTP:200
+
+## AC-016 бейдж «Остатки» = risk_count (SSR shell.go NavBadges vs API)
+$ curl -s -b admin.jar http://localhost:8080/api/v1/stock/summary
+{"products_total":256,"low_count":17,"out_count":115,"will_low_count":0,"risk_count":132}
+
+$ curl -s -b admin.jar http://localhost:8080/ | grep -o '"Остатки"[^<]*<[^>]*>[0-9]*'
+<a href="/stock" class="app-nav-link">📊 Остатки <span class="badge rounded-pill text-bg-danger ms-auto" data-nav-badge="/stock" data-testid="nav-badge-stock" >132</span></a>
+Результат: бейдж=132, API risk_count=132 — совпадает. AC-016 OK.
+
+## AC-004/AC-005/AC-007 — см. evidence class4-stock-invariant.txt (полные транскрипты Reconcile/toggle/delete)
+
+## AC-010 — version conflict, данные не затёрты
+$ curl -s -X PUT .../tasks/674 -d '{"title":"qa-task-1-edited",...,"version":1}'   # текущая version=2
+{"code":"TASK_VERSION_CONFLICT","message":"Заказ уже изменён, обновите"}
+HTTP:409
+$ curl -s .../tasks/674   # заголовок не поменялся
+{"id":674,...,"title":"qa-task-1",...,"version":2,...}
+Результат: OK, AC-010 выполняется, поле title не затёрто.
+
+## AC-011 — оплата только admin
+$ curl -s -b exec.jar -X POST .../tasks -d '{"title":"qa-exec-paid-try",...,"is_paid":true}'
+{"code":"PAID_ADMIN_ONLY","message":"Оплату меняет только администратор"}
+HTTP:403
+$ curl -s -b exec.jar -X PUT .../tasks/674 -d '{...,"is_paid":true,"version":2}'   # текущее is_paid=false
+{"code":"PAID_ADMIN_ONLY","message":"Оплату меняет только администратор"}
+HTTP:403
+Результат: OK, AC-011 выполняется на POST и PUT.

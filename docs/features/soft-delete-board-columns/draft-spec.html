@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Spec: Мягкое удаление — колонки доски</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #24241f; --muted: #5f5e5a;
+  --border: #d3d1c7; --border-soft: #e4e2d9;
+  --surface: #f1efe8; --surface-soft: #fafaf7; --pre-bg: #f6f5f0;
+  --link: #185fa5; --open: #a32d2d;
+  --asis: #2e7d4f; --tobe: #b06000;
+  --kt: #dde9f8; --kf: #f6ecc8; --ki: #e8e6df; --ks: #dff0e2; --ke: #ece2f4; --kx: #f6dcda;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+    --border: #4c4c47; --border-soft: #3a3a36;
+    --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+    --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+  --border: #4c4c47; --border-soft: #3a3a36;
+  --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+  --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+}
+#themeBtn { position: fixed; top: 14px; right: 16px; z-index: 10;
+  width: 38px; height: 38px; border-radius: 50%; cursor: pointer; font-size: 17px;
+  background: var(--surface); color: var(--fg); border: 1px solid var(--border); }
+pre { position: relative; }
+.copyBtn { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 9px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; }
+.copyBtn:hover { color: var(--fg); border-color: var(--border); }
+a.pnum { color: var(--muted); font-size: .72em; display: inline-block; min-width: 2.2em;
+  vertical-align: baseline; opacity: .6; text-decoration: none; margin-right: .3em; }
+a.pnum:hover { opacity: 1; }
+li:has(> a.pnum:target) { background: var(--surface); border-radius: 4px; }
+tr:has(a.pnum:target) td { background: var(--surface) !important; }
+html { background: var(--bg); }
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+       color: var(--fg); background: var(--bg);
+       max-width: 920px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.55; }
+h1 { font-size: 1.7rem; border-bottom: 2px solid var(--border); padding-bottom: .4rem; }
+h2 { font-size: 1.3rem; margin-top: 2.2rem; border-bottom: 1px solid var(--border-soft); padding-bottom: .25rem; }
+h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+table { border-collapse: collapse; margin: .8rem 0; width: 100%; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+tr:nth-child(even) td { background: var(--surface-soft); }
+code { background: var(--surface); border-radius: 4px; padding: .1rem .35rem; font-size: .88em;
+       font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+pre { background: var(--pre-bg); border: 1px solid var(--border-soft); border-radius: 8px;
+      padding: .8rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid var(--border); margin: .8rem 0; padding: .2rem 1rem;
+             color: var(--muted); background: var(--surface-soft); }
+figure { margin: 1rem 0; text-align: center; }
+figure svg { max-width: 100%; height: auto; border-radius: 8px; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: .15rem 0; }
+nav.toc { background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 8px;
+          padding: .8rem 1.2rem; font-size: .92rem; }
+nav.toc ul { margin: .3rem 0; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc > ul > li { font-weight: 600; margin: .3rem 0; break-inside: avoid; }
+nav.toc ul ul { font-weight: 400; font-size: .9em; margin: .1rem 0 .25rem; }
+nav.toc ul ul li { margin: .05rem 0; }
+@media (min-width: 700px) { nav.toc > ul { column-count: 2; column-gap: 2.5rem; } }
+a { color: var(--link); }
+a.xref { text-decoration: none; border-bottom: 1px dotted var(--link); }
+a.xref:hover { border-bottom-style: solid; }
+h1, h2, h3, a[id^="ds-"] { scroll-margin-top: 14px; }
+tr:has(a:target) td { background: var(--surface) !important; }
+h2:target, h3:target { background: var(--surface-soft); }
+.badge-open { color: var(--open); font-weight: 600; }
+.badge-asis, .badge-tobe { font-weight: 600; font-size: .85em; padding: 0 .45em; border-radius: .7em; border: 1px solid currentColor; white-space: nowrap; }
+.badge-asis { color: var(--asis); }
+.badge-tobe { color: var(--tobe); }
+code.k-t { background: var(--kt); font-weight: 700; }
+code.k-f { background: var(--kf); }
+code.k-i { background: var(--ki); font-style: italic; }
+code.k-s { background: var(--ks); font-weight: 600; }
+code.k-e { background: var(--ke); }
+code.k-x { background: var(--kx); text-decoration: line-through; }
+.klegend { font-size: .85em; color: var(--muted); }
+@media print { body { max-width: none; } }
+</style>
+</head>
+<body>
+<button id="themeBtn" title="Тема: авто / тёмная / светлая">◐</button>
+<script>
+const r=document.documentElement,k='draft-spec-theme';
+const apply=v=>{v?r.setAttribute('data-theme',v):r.removeAttribute('data-theme')};
+apply(localStorage.getItem(k)||'');
+document.getElementById('themeBtn').onclick=()=>{
+  const cur=r.getAttribute('data-theme')||'';
+  const next=cur===''?'dark':cur==='dark'?'light':'';
+  next?localStorage.setItem(k,next):localStorage.removeItem(k);apply(next);
+};
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('pre').forEach(p=>{
+    const b=document.createElement('button');b.className='copyBtn';b.textContent='копировать';
+    b.onclick=()=>{navigator.clipboard.writeText(p.querySelector('code').innerText)
+      .then(()=>{b.textContent='✓ скопировано';setTimeout(()=>b.textContent='копировать',1500);});};
+    p.appendChild(b);
+  });
+});
+</script>
+<h1 id="h1-0">Draft Spec: Мягкое удаление — колонки доски</h1>
+<nav class="toc"><strong>Содержание</strong><ul><li><a href="#s-1">§1. Суть задачи</a></li><li><a href="#s-2">§2. Интеграции и master-data</a></li><li><a href="#s-3">§3. Нефункциональные требования</a></li><li><a href="#s-4">§4. Данные</a><ul><li><a href="#s-4-1">§4.1. columns (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</a></li><li><a href="#s-4-2">§4.2. tasks (общая таблица, чужая — фича использует, не владеет)</a></li></ul></li><li><a href="#s-5">§5. Статусная модель</a></li><li><a href="#s-6">§6. API</a><ul><li><a href="#s-6-1">§6.1. DELETE /api/v1/columns/:id</a></li><li><a href="#s-6-2">§6.2. POST /api/v1/columns/:id/restore</a></li><li><a href="#s-6-3">§6.3. Прочие изменения существующих endpoints (дельта)</a></li></ul></li><li><a href="#s-7">§7. UX/UI + API (сквозной флоу)</a></li><li><a href="#s-8">§8. UI-иерархия</a><ul><li><a href="#s-8-1">§8.1. Экран/форма «Доска — настройка колонки»</a></li><li><a href="#s-8-2">§8.2. Экран/форма «Удалённые», вкладки «Колонки» и «Заказы»</a></li></ul></li><li><a href="#s-9">§9. Решения (DS-index)</a></li><li><a href="#s-10">§10. Открытые вопросы (status: open)</a></li><li><a href="#s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</a><ul><li><a href="#h3-316">Unit / Integration (Go)</a></li><li><a href="#h3-339">E2E (Playwright)</a></li><li><a href="#h3-346">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</a></li></ul></li><li><a href="#h2-351">§Impact — точки касания существующего кода</a></li></ul></nav>
+<p class="klegend">Обозначения: <code class="k-t">таблица</code> <code class="k-f">поле</code> <code class="k-i">индекс</code> <code class="k-s">статус</code> <code class="k-e">endpoint</code> <code class="k-x">удаляется</code></p>
+<p><strong>Tier:</strong> S · <strong>Совместимость:</strong> MVP · <strong>Режим:</strong> new</p>
+<p><strong>Дата:</strong> 2026-10-08 | <strong>Статус:</strong> draft → final (после подтверждения пользователя) | <strong>Tier:</strong> S <strong>Совместимость:</strong> MVP (<a class="xref" href="#ds-022">DS-022</a>) — рабочей версии с живыми пользователями нет: таблицы и адреса меняем свободно, без переходного периода и отката; данные на базе сохраняются — все существующие колонки после миграции считаются действующими <strong>UI-scope:</strong> swagger:no | adaptive:min | themes:both (<a class="xref" href="#ds-023">DS-023</a>) <strong>Источник:</strong> мастер-спека <code>docs/features/soft-delete/draft-spec.md</code> (<a class="xref" href="#s-4-3">§4.3</a>, <a class="xref" href="#s-6-5">§6.5</a>, <a class="xref" href="#s-6-6">§6.6</a>, <a class="xref" href="#s-6-26">§6.26</a>, <a class="xref" href="#s-8-5">§8.5</a>) + её журнал <code>docs/features/soft-delete/draft-spec-decisions.md</code> + as-is факты кода (<code>internal/features/board/columns_service.go</code>, <code>columns_repo.go</code>, <code>columns_dto.go</code>, <code>migrations/0005_board.up.sql</code>) <strong>Часть 3 из 6 мастер-спеки <code>soft-delete</code>; зависит от: 1 (<code>soft-delete-core</code>).</strong> Номера DS и TS — мастер-идентификаторы, не перенумерованы. Номера разделов — свои: <a class="xref" href="#s-6-1">§6.1</a> = мастер <a class="xref" href="#s-6-5">§6.5</a>, <a class="xref" href="#s-6-2">§6.2</a> = мастер <a class="xref" href="#s-6-6">§6.6</a>, <a class="xref" href="#s-6-3">§6.3</a> = строки мастера <a class="xref" href="#s-6-26">§6.26</a> про колонки; <a class="xref" href="#s-8-1">§8.1</a> = часть мастера <a class="xref" href="#s-8-5">§8.5</a> про колонки.</p>
+<blockquote><p>После мержа этой части: колонка доски удаляется с причиной и восстанавливается из вкладки «Колонки» раздела «Удалённые»; удалённые заказы больше не удерживают колонку от удаления; заказ, чья колонка удалена, при восстановлении встаёт в первую нефинальную колонку с предупреждением. Переходное правило части 1 (<a class="xref" href="#ds-035">DS-035</a>) для колонок перестаёт действовать.</p></blockquote>
+<h2 id="s-1">§1. Суть задачи</h2>
+<p>Удаление колонки доски становится восстановимым. Для администратора.</p>
+<p><strong>Бизнес (что делает пользователь/процесс):</strong></p>
+<ol>
+<li data-mdline="17"><a class="pnum" id="p-1" href="#p-1">1</a>Администратор удаляет пустую колонку с причиной (<a class="xref" href="#s-8-1">§8.1</a>) и возвращает её из «Удалённых» (<a class="xref" href="#s-8-2">§8.2</a>) — <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-020">DS-020</a>.</li>
+<li data-mdline="18"><a class="pnum" id="p-2" href="#p-2">2</a>Администратор восстанавливает заказ, колонку которого удалили: заказ появляется в первой нефинальной колонке, система сообщает об этом (<a class="xref" href="#s-8-2">§8.2</a>) — <a class="xref" href="#ds-016">DS-016</a>.</li>
+</ol>
+<p><strong>Логика (правила системы):</strong></p>
+<ol>
+<li data-mdline="21"><a class="pnum" id="p-3" href="#p-3">3</a>Удаляется только колонка без действующих заказов; удалённые заказы колонку не удерживают — <a class="xref" href="#ds-019">DS-019</a>.</li>
+<li data-mdline="22"><a class="pnum" id="p-4" href="#p-4">4</a>На доске всегда остаётся хотя бы одна действующая нефинальная колонка — <a class="xref" href="#ds-019">DS-019</a>.</li>
+<li data-mdline="23"><a class="pnum" id="p-5" href="#p-5">5</a>После удаления позиции оставшихся колонок идут подряд 1..N; восстановленная колонка встаёт в конец доски — <a class="xref" href="#ds-019">DS-019</a>.</li>
+<li data-mdline="24"><a class="pnum" id="p-6" href="#p-6">6</a>Заказ удалённой колонки при восстановлении ставится в конец первой нефинальной действующей колонки; товар списывается по правилу НОВОЙ колонки — <a class="xref" href="#ds-016">DS-016</a>, <a class="xref" href="#ds-039">DS-039</a>.</li>
+<li data-mdline="25"><a class="pnum" id="p-7" href="#p-7">7</a>Удалённая колонка не существует для обычных адресов: её нет в списке, в неё нельзя создать или перенести заказ, её нельзя править — <a class="xref" href="#ds-026">DS-026</a>.</li>
+<li data-mdline="26"><a class="pnum" id="p-8" href="#p-8">8</a>Время: <code class="k-f">deleted_at</code> — UTC (<code>timestamptz</code>), показ и фильтр — по поясу пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ» — <a class="xref" href="#ds-025">DS-025</a> (краткий дубль <a class="xref" href="#s-3">§3</a>).</li>
+<li data-mdline="27"><a class="pnum" id="p-9" href="#p-9">9</a>Конкурентный доступ: удаляем и восстанавливаем колонку → под блокировкой всех колонок, условие по <code class="k-f">deleted_at</code>; переносим заказ в колонку → блокировка строки колонки с проверкой «не удалена» — <a class="xref" href="#ds-024">DS-024</a> (краткий дубль <a class="xref" href="#s-3">§3</a>).</li>
+</ol>
+<p><strong>Техника (API/данные/интеграции):</strong></p>
+<ol>
+<li data-mdline="30"><a class="pnum" id="p-10" href="#p-10">10</a>Данные: три новые колонки в <code class="k-t">columns</code>, CHECK и частичный индекс; <code class="k-t">tasks</code> не меняется (<a class="xref" href="#s-4">§4</a>).</li>
+<li data-mdline="31"><a class="pnum" id="p-11" href="#p-11">11</a>API: <code class="k-e">DELETE /api/v1/columns/:id</code> меняет поведение, формат запроса и ответ (<a class="xref" href="#s-6-1">§6.1</a>); новый <code class="k-e">POST /api/v1/columns/:id/restore</code> (<a class="xref" href="#s-6-2">§6.2</a>); дельта адресов колонок и заказов, вид <code class="k-s">columns</code> в <code class="k-e">GET /api/v1/deleted</code> и в служебной уборке (<a class="xref" href="#s-6-3">§6.3</a>).</li>
+<li data-mdline="32"><a class="pnum" id="p-12" href="#p-12">12</a>Пакеты: <code>internal/features/board</code> (колонки, восстановление заказа), <code>internal/features/softdelete</code> (вид <code class="k-s">columns</code>).</li>
+<li data-mdline="33"><a class="pnum" id="p-13" href="#p-13">13</a>Внешних систем нет.</li>
+</ol>
+<p><strong>UI (графическая часть):</strong></p>
+<ol>
+<li data-mdline="36"><a class="pnum" id="p-14" href="#p-14">14</a>Доска, настройка колонки: «Удалить» открывает общее окно с причиной (<a class="xref" href="#s-8-1">§8.1</a>).</li>
+<li data-mdline="37"><a class="pnum" id="p-15" href="#p-15">15</a>«Удалённые»: новая вкладка «Колонки»; предупреждение о замене колонки при восстановлении заказа (<a class="xref" href="#s-8-2">§8.2</a>).</li>
+</ol>
+<p>Out-of-scope:</p>
+<ol>
+<li data-mdline="40"><a class="pnum" id="p-16" href="#p-16">16</a>Перенос заказов из удаляемой колонки в другую автоматически — не делаем: непустая колонка не удаляется (as-is правило, <a class="xref" href="#ds-019">DS-019</a>).</li>
+<li data-mdline="41"><a class="pnum" id="p-17" href="#p-17">17</a>Восстановление заказа вместе с его удалённой колонкой одним действием — не делаем: пользователь выбрал «восстанавливать всегда с предупреждением» (решение пользователя, <a class="xref" href="#ds-016">DS-016</a>).</li>
+<li data-mdline="42"><a class="pnum" id="p-18" href="#p-18">18</a>Окончательное удаление — не делаем (решение пользователя, <a class="xref" href="#ds-012">DS-012</a>).</li>
+</ol>
+<h2 id="s-2">§2. Интеграции и master-data</h2>
+<p>Потоки: не применимо — внешних систем нет.</p>
+<p>Справочники (master-data):</p>
+<table><thead><tr><th>Справочник</th><th>Источник правды</th><th>Синхронизация</th><th>Где используется</th></tr></thead><tbody><tr data-mdline="51"><td><a class="pnum" id="p-19" href="#p-19">19</a><code class="k-t">users</code></td><td>эта же база (пакет <code>users</code>)</td><td>нет</td><td><code class="k-f">deleted_by</code> в <code class="k-t">columns</code> (<a class="xref" href="#s-4-1">§4.1</a>); колонка «Кто удалил» раздела «Удалённые» — <a class="xref" href="#ds-030">DS-030</a></td></tr></tbody></table>
+<h2 id="s-3">§3. Нефункциональные требования</h2>
+<p><strong>Конкурентность (по операциям):</strong></p>
+<ol>
+<li data-mdline="56"><a class="pnum" id="p-20" href="#p-20">20</a><strong>Удаление колонки:</strong></li>
+<ul>
+<li data-mdline="57"><a class="pnum" id="p-21" href="#p-21">21</a>под блокировкой всех колонок (as-is <code>ColumnRepo.LockAll</code>, <code>FOR UPDATE</code>): проверки «нет действующих заказов» и «не последняя нефинальная» и сам UPDATE — в одной транзакции; колонка уже удалена → 404 <code>COLUMN_NOT_FOUND</code> — <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-024">DS-024</a></li>
+</ul>
+<li data-mdline="58"><a class="pnum" id="p-22" href="#p-22">22</a><strong>Создание заказа в колонке и перенос заказа в колонку одновременно с её удалением:</strong></li>
+<ul>
+<li data-mdline="59"><a class="pnum" id="p-23" href="#p-23">23</a>перенос и создание читают колонку <code>FOR SHARE</code> (as-is <code>tasks_repo.go:708</code>) с условием <code>deleted_at IS NULL</code>; удаление ждёт эту блокировку и затем видит действующий заказ → 409 <code>COLUMN_NOT_EMPTY</code>; удаление выиграло → перенос получает 404 <code>COLUMN_NOT_FOUND</code> — <a class="xref" href="#ds-019">DS-019</a></li>
+</ul>
+<li data-mdline="60"><a class="pnum" id="p-24" href="#p-24">24</a><strong>Восстановление колонки:</strong></li>
+<ul>
+<li data-mdline="61"><a class="pnum" id="p-25" href="#p-25">25</a>под блокировкой всех колонок; UPDATE с условием <code>deleted_at IS NOT NULL</code>; позиция = максимум среди действующих + 1; не удалена → 409 <code>NOT_DELETED</code> — <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-024">DS-024</a></li>
+</ul>
+<li data-mdline="62"><a class="pnum" id="p-26" href="#p-26">26</a><strong>Восстановление заказа удалённой колонки:</strong></li>
+<ul>
+<li data-mdline="63"><a class="pnum" id="p-27" href="#p-27">27</a>под блокировкой заказа (часть 1); новая колонка читается <code>FOR SHARE</code> — её параллельное удаление ждёт и получает 409 <code>COLUMN_NOT_EMPTY</code> — <a class="xref" href="#ds-016">DS-016</a></li>
+</ul>
+<li data-mdline="64"><a class="pnum" id="p-28" href="#p-28">28</a><strong>Правка и перестановка колонок (<code class="k-e">POST /api/v1/columns</code>, <code class="k-e">PUT /api/v1/columns/:id</code>):</strong></li>
+<ul>
+<li data-mdline="65"><a class="pnum" id="p-29" href="#p-29">29</a>перенумерация позиций (as-is <code>Renumber</code>, <code>closeGaps</code>) — только среди действующих колонок; удалённые хранят прежнюю позицию без смысла — <a class="xref" href="#ds-019">DS-019</a></li>
+</ul>
+</ol>
+<p><strong>Аудит:</strong></p>
+<ul>
+<li data-mdline="68"><a class="pnum" id="p-30" href="#p-30">30</a>на колонке хранится последнее удаление: <code class="k-f">deleted_by</code>, <code class="k-f">deleted_at</code>, <code class="k-f">delete_reason</code>; при восстановлении очищаются — <a class="xref" href="#ds-030">DS-030</a></li>
+<li data-mdline="69"><a class="pnum" id="p-31" href="#p-31">31</a>факт удаления и восстановления — в журнал приложения (<code>slog</code>, info); причина в журнал не пишется</li>
+</ul>
+<p><strong>Время/таймзоны:</strong></p>
+<ul>
+<li data-mdline="72"><a class="pnum" id="p-32" href="#p-32">32</a>хранение: <code class="k-f">deleted_at</code> — <code>timestamptz</code>, UTC, <code>now()</code> — <a class="xref" href="#ds-025">DS-025</a></li>
+<li data-mdline="73"><a class="pnum" id="p-33" href="#p-33">33</a>фильтр периода и показ в разделе «Удалённые» — по поясу пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ» (механика части 1)</li>
+</ul>
+<p><strong>Метрики/таймстемпы:</strong></p>
+<ul>
+<li data-mdline="76"><a class="pnum" id="p-34" href="#p-34">34</a>новый таймстемп — <code class="k-f">deleted_at</code>; счётчик вкладки — <code class="k-f">counts.columns</code> (часть 1)</li>
+</ul>
+<p><strong>Offline / деградация / восстановление:</strong></p>
+<ul>
+<li data-mdline="79"><a class="pnum" id="p-35" href="#p-35">35</a>одиночные запросы; при потере связи — тост ошибки, повтор безопасен (см. «Идемпотентность» в <a class="xref" href="#s-6">§6</a>)</li>
+</ul>
+<p><strong>Объёмы и производительность:</strong></p>
+<ul>
+<li data-mdline="82"><a class="pnum" id="p-36" href="#p-36">36</a>колонок единицы-десятки; частичный индекс <code class="k-i">columns_deleted_at_idx</code> — для единообразия списка «Удалённые»</li>
+</ul>
+<p><strong>Логирование и чувствительные данные:</strong></p>
+<ul>
+<li data-mdline="85"><a class="pnum" id="p-37" href="#p-37">37</a>причина удаления в журнал не пишется; раздел «Удалённые» — только администратору — <a class="xref" href="#ds-003">DS-003</a></li>
+</ul>
+<p><strong>Формат ошибок:</strong></p>
+<ul>
+<li data-mdline="88"><a class="pnum" id="p-38" href="#p-38">38</a><code>pkg/errorspkg</code>: <code>{code, message, details}</code>; 400 → <code>details.fields[]</code>; отказ в доступе — 403 «Нет доступа»</li>
+</ul>
+<p><strong>Abuse cases (инсайдерские риски — вход для adversarial E2E TD-4):</strong></p>
+<ol>
+<li data-mdline="91"><a class="pnum" id="p-39" href="#p-39">39</a>Исполнитель вызывает <code>DELETE /api/v1/columns/:id</code> или <code>POST /api/v1/columns/:id/restore</code> → 403 «Нет доступа» — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="92"><a class="pnum" id="p-40" href="#p-40">40</a>Идентификатор удалённой колонки подставляется в <code>column_id</code> при создании или переносе заказа → 404 <code>COLUMN_NOT_FOUND</code> — <a class="xref" href="#ds-026">DS-026</a>.</li>
+<li data-mdline="93"><a class="pnum" id="p-41" href="#p-41">41</a>Удаление последней нефинальной колонки параллельными запросами к двум колонкам → ровно одно проходит, второе — 409 <code>LAST_NON_FINAL_COLUMN</code> — <a class="xref" href="#ds-019">DS-019</a>.</li>
+<li data-mdline="94"><a class="pnum" id="p-42" href="#p-42">42</a>Причина из пробелов или длиннее 500 символов → 400 — <a class="xref" href="#ds-020">DS-020</a>.</li>
+</ol>
+<p><strong>Применённые zap-дефолты</strong> (zap-list — стандарты проекта из CLAUDE.md, применяются автоматически, без вопросов; в <a class="xref" href="#s-9">§9</a> — источник <code>zap</code>):</p>
+<ul>
+<li data-mdline="97"><a class="pnum" id="p-43" href="#p-43">43</a>коды ответов: 404 / 403 / 409 (zap)</li>
+<li data-mdline="98"><a class="pnum" id="p-44" href="#p-44">44</a>обработка синхронная (zap)</li>
+<li data-mdline="99"><a class="pnum" id="p-45" href="#p-45">45</a>миграции вручную (<code>make migrate-up</code>) (zap)</li>
+</ul>
+<h2 id="s-4">§4. Данные</h2>
+<p>Легенда колонки «Обяз.»: <code>да</code> — клиент обязан передать при создании/правке; <code>нет</code> — опционально; <code>авто</code> — заполняет система (PK, дефолты, таймстемпы, значения из URL/сессии); <code>условно</code> — зависит от правила, оно указано в Описании. NULL — DDL-факт, Обяз. — семантика заполнения.</p>
+<h3 id="s-4-1">§4.1. <code class="k-t">columns</code> (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</h3>
+<p>Колонка доски. Создана в <code>migrations/0005_board.up.sql</code>, позднейшие миграции её не меняли. Часть 3 добавляет три поля удаления; строки без пометки «новое» — существующие поля без изменений.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="109"><td><a class="pnum" id="p-46" href="#p-46">46</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="110"><td><a class="pnum" id="p-47" href="#p-47">47</a><code class="k-f">name</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>название; не пусто после обрезки пробелов, не длиннее 60 символов; уникальности нет (as-is)</td><td><a class="xref" href="#ds-011">DS-011</a></td></tr><tr data-mdline="111"><td><a class="pnum" id="p-48" href="#p-48">48</a><code class="k-f">color</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>цвет, шаблон <code>^#[0-9A-Fa-f]{6}$</code> (as-is)</td><td><a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="112"><td><a class="pnum" id="p-49" href="#p-49">49</a><code class="k-f">is_final</code></td><td>boolean</td><td>нет</td><td>false</td><td>нет</td><td>финальная колонка: в неё нельзя с незавершёнными услугами (as-is)</td><td><a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-039">DS-039</a></td></tr><tr data-mdline="113"><td><a class="pnum" id="p-50" href="#p-50">50</a><code class="k-f">consumes_stock</code></td><td>boolean</td><td>нет</td><td>false</td><td>нет</td><td>заказы колонки списывают товар со склада (as-is)</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="114"><td><a class="pnum" id="p-51" href="#p-51">51</a><code class="k-f">position</code></td><td>int</td><td>нет</td><td>—</td><td>нет</td><td>порядок на доске, не меньше 1; у действующих колонок — подряд 1..N (as-is <code>closeGaps</code>); не передан при создании — в конец; у удалённой колонки хранит прежнее значение и не используется</td><td><a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="115"><td><a class="pnum" id="p-52" href="#p-52">52</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент создания (as-is)</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="116"><td><a class="pnum" id="p-53" href="#p-53">53</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент изменения (as-is); обновляется при удалении и восстановлении</td><td><a class="xref" href="#ds-024">DS-024</a></td></tr><tr data-mdline="117"><td><a class="pnum" id="p-54" href="#p-54">54</a><strong><code class="k-f">deleted_at</code></strong> (новое)</td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>момент удаления, UTC, <code>now()</code>; NULL — колонка действует</td><td><a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="118"><td><a class="pnum" id="p-55" href="#p-55">55</a><strong><code class="k-f">deleted_by</code></strong> (новое)</td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; кто удалил — из сессии; NULL у действующей</td><td><a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="119"><td><a class="pnum" id="p-56" href="#p-56">56</a><strong><code class="k-f">delete_reason</code></strong> (новое)</td><td>text</td><td>да</td><td>—</td><td>условно</td><td>причина удаления: обязательна в запросе удаления, 1–500 символов после обрезки крайних пробелов; NULL у действующей</td><td><a class="xref" href="#ds-020">DS-020</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="122"><a class="pnum" id="p-57" href="#p-57">57</a>PK: <code class="k-f">id</code> (as-is)</li>
+<li data-mdline="123"><a class="pnum" id="p-58" href="#p-58">58</a>UNIQUE: нет (as-is)</li>
+<li data-mdline="124"><a class="pnum" id="p-59" href="#p-59">59</a>Индексы (as-is): <code class="k-i">columns_position_idx</code> (<code>position</code>, <code>id</code>) — порядок колонок доски</li>
+<li data-mdline="125"><a class="pnum" id="p-60" href="#p-60">60</a>Индексы (новое): <code class="k-i">columns_deleted_at_idx</code> (<code>deleted_at DESC</code>, <code>id</code>) <code>WHERE deleted_at IS NOT NULL</code> — вкладка «Колонки» раздела «Удалённые»</li>
+<li data-mdline="126"><a class="pnum" id="p-61" href="#p-61">61</a>CHECK (as-is): название, цвет, <code>position &gt;= 1</code></li>
+<li data-mdline="127"><a class="pnum" id="p-62" href="#p-62">62</a>CHECK (новое) <code class="k-i">columns_deleted_chk</code>: три поля удаления либо все NULL, либо все заполнены; <code>char_length(btrim(delete_reason))</code> от 1 до 500 — <a class="xref" href="#ds-030">DS-030</a>, <a class="xref" href="#ds-020">DS-020</a></li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="130"><a class="pnum" id="p-63" href="#p-63">63</a>1→N <code class="k-t">tasks.column_id</code> — RESTRICT (as-is) — на удалённую колонку могут ссылаться только удалённые заказы (<a class="xref" href="#ds-019">DS-019</a>)</li>
+<li data-mdline="131"><a class="pnum" id="p-64" href="#p-64">64</a>N→1 <code class="k-t">users</code> (<code class="k-f">deleted_by</code>) — RESTRICT (новое)</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="134"><a class="pnum" id="p-65" href="#p-65">65</a>Создание: как сейчас; позиция считается среди действующих колонок — <a class="xref" href="#ds-019">DS-019</a></li>
+<li data-mdline="135"><a class="pnum" id="p-66" href="#p-66">66</a>Изменение: как сейчас для действующей; удалённая → 404 <code>COLUMN_NOT_FOUND</code>; перенумерация позиций — только среди действующих — <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-019">DS-019</a></li>
+<li data-mdline="136"><a class="pnum" id="p-67" href="#p-67">67</a>Удаление: только admin, причина обязательна; одна транзакция под блокировкой всех колонок: есть действующие заказы → 409 <code>COLUMN_NOT_EMPTY</code>; последняя действующая нефинальная → 409 <code>LAST_NON_FINAL_COLUMN</code>; запись трёх полей; уплотнение позиций действующих колонок — <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-020">DS-020</a></li>
+<li data-mdline="137"><a class="pnum" id="p-68" href="#p-68">68</a>Восстановление: только admin; одна транзакция под блокировкой всех колонок: очистка трёх полей, <code class="k-f">position</code> = максимум среди действующих + 1; признаки <code class="k-f">is_final</code>, <code class="k-f">consumes_stock</code>, <code class="k-f">name</code>, <code class="k-f">color</code> — прежние; удалённые заказы этой колонки остаются удалёнными — <a class="xref" href="#ds-019">DS-019</a></li>
+<li data-mdline="138"><a class="pnum" id="p-69" href="#p-69">69</a>Физическое удаление: только служебная уборка автотестов (<a class="xref" href="#s-6-3">§6.3</a>) — <a class="xref" href="#ds-027">DS-027</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="141"><a class="pnum" id="p-70" href="#p-70">70</a>на доске есть действующая нефинальная колонка → проверка под <code>LockAll</code> среди колонок с <code>deleted_at IS NULL</code> → <a class="xref" href="#ds-019">DS-019</a></li>
+<li data-mdline="142"><a class="pnum" id="p-71" href="#p-71">71</a>действующий заказ не стоит в удалённой колонке → запрет удаления колонки с действующими заказами + чтение колонки <code>FOR SHARE</code> с условием <code>deleted_at IS NULL</code> при создании и переносе заказа + подмена колонки при восстановлении заказа → <a class="xref" href="#ds-016">DS-016</a>, <a class="xref" href="#ds-019">DS-019</a></li>
+<li data-mdline="143"><a class="pnum" id="p-72" href="#p-72">72</a>позиции действующих колонок идут подряд 1..N → <code>closeGaps</code> и <code>Renumber</code> только по действующим → <a class="xref" href="#ds-019">DS-019</a></li>
+</ul>
+<h3 id="s-4-2">§4.2. <code class="k-t">tasks</code> (общая таблица, чужая — фича использует, не владеет)</h3>
+<p>Заказ. Часть 3 таблицу не меняет: читает <code class="k-f">column_id</code> и <code class="k-f">deleted_at</code> для проверки «колонка пуста» и пишет <code class="k-f">column_id</code>, <code class="k-f">position</code> при восстановлении заказа удалённой колонки. DDL: <code>migrations/0005_board.up.sql</code> + миграция части 1.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="150"><td><a class="pnum" id="p-73" href="#p-73">73</a><code class="k-f">id</code></td><td>bigserial</td><td>нет</td><td>авто-номер</td><td>авто</td><td>PK, номер заказа #N</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="151"><td><a class="pnum" id="p-74" href="#p-74">74</a><code class="k-f">column_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>да</td><td>FK → <code class="k-t">columns(id)</code> <code>ON DELETE RESTRICT</code>; у действующего заказа — всегда действующая колонка; при восстановлении заказа удалённой колонки заменяется на первую нефинальную действующую</td><td><a class="xref" href="#ds-016">DS-016</a>, <a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="152"><td><a class="pnum" id="p-75" href="#p-75">75</a><code class="k-f">client_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>да</td><td>FK → <code class="k-t">clients(id)</code> <code>ON DELETE RESTRICT</code></td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="153"><td><a class="pnum" id="p-76" href="#p-76">76</a><code class="k-f">title</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>название, до 200 символов</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="154"><td><a class="pnum" id="p-77" href="#p-77">77</a><code class="k-f">description_html</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>описание</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="155"><td><a class="pnum" id="p-78" href="#p-78">78</a><code class="k-f">assignee_id</code></td><td>uuid</td><td>да</td><td>—</td><td>нет</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE SET NULL</code></td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="156"><td><a class="pnum" id="p-79" href="#p-79">79</a><code class="k-f">due_date</code></td><td>date</td><td>да</td><td>—</td><td>нет</td><td>срок</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="157"><td><a class="pnum" id="p-80" href="#p-80">80</a><code class="k-f">is_paid</code></td><td>boolean</td><td>нет</td><td>false</td><td>нет</td><td>оплачен</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="158"><td><a class="pnum" id="p-81" href="#p-81">81</a><code class="k-f">paid_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>момент оплаты</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="159"><td><a class="pnum" id="p-82" href="#p-82">82</a><code class="k-f">position</code></td><td>numeric</td><td>нет</td><td>—</td><td>авто</td><td>дробная позиция в колонке; при подмене колонки — в конец новой колонки</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="160"><td><a class="pnum" id="p-83" href="#p-83">83</a><code class="k-f">created_by</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code></td><td><a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="161"><td><a class="pnum" id="p-84" href="#p-84">84</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент создания</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="162"><td><a class="pnum" id="p-85" href="#p-85">85</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент изменения</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="163"><td><a class="pnum" id="p-86" href="#p-86">86</a><code class="k-f">version</code></td><td>bigint</td><td>нет</td><td>1</td><td>авто</td><td>версия заказа</td><td><a class="xref" href="#ds-024">DS-024</a></td></tr><tr data-mdline="164"><td><a class="pnum" id="p-87" href="#p-87">87</a><code class="k-f">deleted_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>момент удаления заказа (часть 1); заказ с NOT NULL не считается при проверке «колонка пуста» и в <code class="k-f">tasks_count</code></td><td><a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="165"><td><a class="pnum" id="p-88" href="#p-88">88</a><code class="k-f">deleted_by</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; кто удалил заказ (часть 1)</td><td><a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="166"><td><a class="pnum" id="p-89" href="#p-89">89</a><code class="k-f">delete_reason</code></td><td>text</td><td>да</td><td>—</td><td>условно</td><td>причина удаления заказа (часть 1)</td><td><a class="xref" href="#ds-020">DS-020</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="169"><a class="pnum" id="p-90" href="#p-90">90</a>PK: <code class="k-f">id</code></li>
+<li data-mdline="170"><a class="pnum" id="p-91" href="#p-91">91</a>UNIQUE: нет</li>
+<li data-mdline="171"><a class="pnum" id="p-92" href="#p-92">92</a>Индексы: без изменений; проверка «колонка пуста» использует <code class="k-i">tasks_column_position_idx</code> (<code>column_id</code>, <code>position</code>, <code>id</code>)</li>
+</ul>
+<p>Используется в модулях (used by):</p>
+<table><thead><tr><th>Модуль</th><th>Ключ-дискриминатор (если есть)</th><th>Роль (writer/reader)</th><th>Что делает</th><th>Путь</th></tr></thead><tbody><tr data-mdline="177"><td><a class="pnum" id="p-93" href="#p-93">93</a><code>board</code></td><td>—</td><td>writer</td><td>заказы; в части 3 — подмена колонки при восстановлении, подсчёт заказов колонки</td><td><code>internal/features/board/tasks_service.go</code>, <code>columns_repo.go</code></td></tr><tr data-mdline="178"><td><a class="pnum" id="p-94" href="#p-94">94</a><code>transfers</code></td><td>—</td><td>reader</td><td>название заказа и признак «заказ удалён» в документе</td><td><code>internal/features/transfers/repo.go</code></td></tr><tr data-mdline="179"><td><a class="pnum" id="p-95" href="#p-95">95</a><code>executorpayouts</code></td><td>—</td><td>reader</td><td>услуги заказов в отчёте «Выплаты»</td><td><code>internal/features/executorpayouts/repo.go</code></td></tr><tr data-mdline="180"><td><a class="pnum" id="p-96" href="#p-96">96</a><code>clients</code></td><td>—</td><td>reader</td><td>история оборудования, проверка заказов клиента</td><td><code>internal/features/clients/history.go</code>, <code>repo.go</code></td></tr><tr data-mdline="181"><td><a class="pnum" id="p-97" href="#p-97">97</a><code>users</code></td><td>—</td><td>reader</td><td>счётчик «Активных заказов» (соединяет <code class="k-t">tasks</code> с <code class="k-t">columns</code>)</td><td><code>internal/features/users/repo.go:47</code></td></tr><tr data-mdline="182"><td><a class="pnum" id="p-98" href="#p-98">98</a><code>softdelete</code></td><td>—</td><td>reader</td><td>вкладка «Заказы» раздела «Удалённые»</td><td><code>internal/features/softdelete</code></td></tr></tbody></table>
+<h2 id="s-5">§5. Статусная модель</h2>
+<p>У колонки два состояния — диаграмма не рисуется (общая — в мастере, <code>docs/features/soft-delete/draft-spec-status.svg</code>).</p>
+<p>Состояния: <code class="k-s">active</code> — колонка действует (<code>deleted_at IS NULL</code>); <code class="k-s">deleted</code> — колонка удалена (<code>deleted_at IS NOT NULL</code>). Терминальных состояний нет — <a class="xref" href="#ds-012">DS-012</a>.</p>
+<table><thead><tr><th>Из</th><th>В</th><th>Триггер</th><th>Кто</th><th>Guard / конкурентный исход</th><th>Side effects</th></tr></thead><tbody><tr data-mdline="191"><td><a class="pnum" id="p-99" href="#p-99">99</a><code class="k-s">active</code></td><td><code class="k-s">deleted</code></td><td>«Удалить» + причина</td><td>admin</td><td>под блокировкой всех колонок: нет действующих заказов (иначе 409 <code>COLUMN_NOT_EMPTY</code>), не последняя нефинальная (иначе 409 <code>LAST_NON_FINAL_COLUMN</code>), <code>deleted_at IS NULL</code> (иначе 404)</td><td>позиции остальных колонок уплотнены</td></tr><tr data-mdline="192"><td><a class="pnum" id="p-100" href="#p-100">100</a><code class="k-s">deleted</code></td><td><code class="k-s">active</code></td><td>«Восстановить»</td><td>admin</td><td>под блокировкой всех колонок, <code>deleted_at IS NOT NULL</code>; повтор → 409 <code>NOT_DELETED</code></td><td>колонка — в конец доски</td></tr></tbody></table>
+<p>Что можно в <code class="k-s">deleted</code>: только «Восстановить» и просмотр в разделе «Удалённые»; правка, создание и перенос заказов в неё → 404 — <a class="xref" href="#ds-026">DS-026</a>.</p>
+<h2 id="s-6">§6. API</h2>
+<blockquote><p>Режим B «API + фронтенд». Базовый URL стенда: <code>http://localhost:8080</code>. Авторизация — сессионная cookie <code>sid</code> (плейсхолдер <code>&lt;SID&gt;</code>). Копируй curl в терминал или в Postman: Import → Raw text. Тело ошибки — формат <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; при 400 — <code>details.fields[]</code> с <code>name</code> и <code>message</code>. Все ключи — snake_case, URL — kebab-case (CLAUDE.md §API-1). Текст отказа в доступе единый — «Нет доступа».</p></blockquote>
+<h3 id="s-6-1">§6.1. <code class="k-e">DELETE /api/v1/columns/:id</code></h3>
+<ul>
+<li data-mdline="200"><a class="pnum" id="p-101" href="#p-101">101</a>Назначение: мягко удалить запись «колонка доски» — она уходит в раздел «Удалённые» (существующий адрес, раньше удалял безвозвратно). Часть 3 <code>soft-delete-board-columns</code>.</li>
+<li data-mdline="201"><a class="pnum" id="p-102" href="#p-102">102</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой, до поиска записи — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="202"><a class="pnum" id="p-103" href="#p-103">103</a>Идемпотентность/повтор: повтор удаления уже удалённой записи → 404 (удалённая запись для обычных адресов не существует, <a class="xref" href="#ds-026">DS-026</a>); двойное применение невозможно — UPDATE с условием <code>deleted_at IS NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="203"><a class="pnum" id="p-104" href="#p-104">104</a>Side effects: одна транзакция под блокировкой всех колонок (as-is <code>ColumnRepo.LockAll</code>) — три поля удаления <code class="k-t">columns</code>; позиции оставшихся действующих колонок уплотняются до 1..N (as-is <code>closeGaps</code>, только среди действующих); склад не затрагивается.</li>
+<li data-mdline="204"><a class="pnum" id="p-105" href="#p-105">105</a>as-is: адрес отвечал 204 без тела и не принимал тело запроса; теперь — тело <code>{reason}</code> и ответ 200 с телом (<a class="xref" href="#ds-028">DS-028</a>).</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="210"><td><a class="pnum" id="p-106" href="#p-106">106</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая действующая запись; иное → 404</td></tr><tr data-mdline="211"><td><a class="pnum" id="p-107" href="#p-107">107</a><code class="k-f">reason</code></td><td>body</td><td>string</td><td>да</td><td>1–500 символов после обрезки крайних пробелов; пусто → 400 <code>required</code>; длиннее → 400 <code>too_long</code>; недопустимые символы (NUL) → 400 <code>invalid_text</code></td></tr></tbody></table>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="217"><td><a class="pnum" id="p-108" href="#p-108">108</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор удалённой записи</td></tr><tr data-mdline="218"><td><a class="pnum" id="p-109" href="#p-109">109</a><code class="k-f">deleted_at</code></td><td>string (RFC 3339, UTC)</td><td>момент удаления</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="224"><td><a class="pnum" id="p-110" href="#p-110">110</a>400 <code>VALIDATION</code></td><td><code>reason: required</code></td><td>«Укажите причину удаления»</td></tr><tr data-mdline="225"><td><a class="pnum" id="p-111" href="#p-111">111</a>400 <code>VALIDATION</code></td><td><code>reason: too_long</code></td><td>«Причина — не длиннее 500 символов»</td></tr><tr data-mdline="226"><td><a class="pnum" id="p-112" href="#p-112">112</a>400 <code>VALIDATION</code></td><td><code>reason: invalid_text</code></td><td>«Недопустимые символы в причине»</td></tr><tr data-mdline="227"><td><a class="pnum" id="p-113" href="#p-113">113</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="228"><td><a class="pnum" id="p-114" href="#p-114">114</a>404 <code>COLUMN_NOT_FOUND</code></td><td>записи нет либо она уже удалена</td><td>«Колонка не найдена»</td></tr><tr data-mdline="229"><td><a class="pnum" id="p-115" href="#p-115">115</a>409 <code>COLUMN_NOT_EMPTY</code></td><td>в колонке есть действующие заказы</td><td>«В колонке есть заказы»</td></tr><tr data-mdline="230"><td><a class="pnum" id="p-116" href="#p-116">116</a>409 <code>LAST_NON_FINAL_COLUMN</code></td><td>последняя действующая нефинальная колонка</td><td>«Нужна хотя бы одна нефинальная колонка»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/columns/0b6f3c1e-5a52-4d0e-9c53-6f1f0f6f2a11' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке"}'</code></pre>
+<pre><code>{ "id": "0b6f3c1e-5a52-4d0e-9c53-6f1f0f6f2a11", "deleted_at": "2026-10-08T09:15:42Z" }</code></pre>
+<p>Ошибка (COLUMN_NOT_EMPTY → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/columns/0b6f3c1e-5a52-4d0e-9c53-6f1f0f6f2a11' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке"}'</code></pre>
+<pre><code>{
+  "code": "COLUMN_NOT_EMPTY",
+  "message": "В колонке есть заказы"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>, <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-028">DS-028</a>.</p>
+<h3 id="s-6-2">§6.2. <code class="k-e">POST /api/v1/columns/:id/restore</code></h3>
+<ul>
+<li data-mdline="254"><a class="pnum" id="p-117" href="#p-117">117</a>Назначение: восстановить удалённую запись «колонка доски» из раздела «Удалённые» (новый адрес). Часть 3 <code>soft-delete-board-columns</code>.</li>
+<li data-mdline="255"><a class="pnum" id="p-118" href="#p-118">118</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="256"><a class="pnum" id="p-119" href="#p-119">119</a>Идемпотентность/повтор: повтор восстановления действующей записи → 409 <code>NOT_DELETED</code>; двойное применение невозможно — UPDATE с условием <code>deleted_at IS NOT NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="257"><a class="pnum" id="p-120" href="#p-120">120</a>Side effects: одна транзакция — очистка трёх полей удаления, <code class="k-f">position</code> = максимум среди действующих + 1.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="263"><td><a class="pnum" id="p-121" href="#p-121">121</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая запись (удалённая); иное → 404</td></tr></tbody></table>
+<p>Тела запроса нет.</p>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="271"><td><a class="pnum" id="p-122" href="#p-122">122</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор восстановленной колонки</td></tr><tr data-mdline="272"><td><a class="pnum" id="p-123" href="#p-123">123</a><code class="k-f">position</code></td><td>integer</td><td>новая позиция колонки — последняя на доске</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="278"><td><a class="pnum" id="p-124" href="#p-124">124</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="279"><td><a class="pnum" id="p-125" href="#p-125">125</a>404 <code>COLUMN_NOT_FOUND</code></td><td>записи нет</td><td>«Колонка не найдена»</td></tr><tr data-mdline="280"><td><a class="pnum" id="p-126" href="#p-126">126</a>409 <code>NOT_DELETED</code></td><td>запись не удалена (уже восстановлена)</td><td>«Запись уже восстановлена»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/columns/0b6f3c1e-5a52-4d0e-9c53-6f1f0f6f2a11/restore'</code></pre>
+<pre><code>{ "id": "0b6f3c1e-5a52-4d0e-9c53-6f1f0f6f2a11", "position": 6 }</code></pre>
+<p>Ошибка (NOT_DELETED → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/columns/0b6f3c1e-5a52-4d0e-9c53-6f1f0f6f2a11/restore'</code></pre>
+<pre><code>{
+  "code": "NOT_DELETED",
+  "message": "Запись уже восстановлена"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>.</p>
+<h3 id="s-6-3">§6.3. Прочие изменения существующих endpoints (дельта)</h3>
+<p>Существующие поля <code>ColumnResponse</code> (<code class="k-f">id</code>, <code class="k-f">name</code>, <code class="k-f">color</code>, <code class="k-f">is_final</code>, <code class="k-f">consumes_stock</code>, <code class="k-f">position</code>, <code class="k-f">tasks_count</code>) не переименовываются и не дополняются; меняется только смысл <code class="k-f">tasks_count</code>.</p>
+<table><thead><tr><th>Endpoint</th><th>Что меняется</th><th>Ответ</th><th>DS</th></tr></thead><tbody><tr data-mdline="306"><td><a class="pnum" id="p-127" href="#p-127">127</a><code class="k-e">GET /api/v1/columns</code></td><td>удалённые колонки не возвращаются и не входят в <code class="k-f">total</code>; <code class="k-f">tasks_count</code> — число действующих заказов (условие по заказам введено частью 1)</td><td>—</td><td><a class="xref" href="#ds-026">DS-026</a></td></tr><tr data-mdline="307"><td><a class="pnum" id="p-128" href="#p-128">128</a><code class="k-e">POST /api/v1/columns</code></td><td>позиция новой колонки и перенумерация — среди действующих</td><td>—</td><td><a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="308"><td><a class="pnum" id="p-129" href="#p-129">129</a><code class="k-e">PUT /api/v1/columns/:id</code></td><td>удалённая колонка — 404; перенумерация — среди действующих; проверки <code>is_final</code> и пересчёт склада — по действующим заказам колонки</td><td>404 <code>COLUMN_NOT_FOUND</code></td><td><a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="309"><td><a class="pnum" id="p-130" href="#p-130">130</a><code class="k-e">POST /api/v1/tasks</code>, <code class="k-e">PUT /api/v1/tasks/:id</code>, <code class="k-e">POST /api/v1/tasks/:id/move</code> (создание и перенос заказа)</td><td><code class="k-f">column_id</code> удалённой колонки → 404 <code>COLUMN_NOT_FOUND</code>; идентификатор колонки, которой никогда не было, — как сейчас: 400 <code>VALIDATION</code> (<code>column_id: not_found</code>)</td><td>404 <code>COLUMN_NOT_FOUND</code>; 400 <code>VALIDATION</code> (as-is)</td><td><a class="xref" href="#ds-026">DS-026</a></td></tr><tr data-mdline="310"><td><a class="pnum" id="p-131" href="#p-131">131</a><code class="k-e">GET /api/v1/tasks</code></td><td>фильтр <code class="k-f">column_id</code> с удалённой колонкой — пустой список (действующих заказов в ней нет)</td><td>—</td><td><a class="xref" href="#ds-026">DS-026</a></td></tr><tr data-mdline="311"><td><a class="pnum" id="p-132" href="#p-132">132</a><code class="k-e">POST /api/v1/tasks/:id/restore</code> (часть 1 <a class="xref" href="#s-6-2">§6.2</a>)</td><td>колонка заказа удалена → <code class="k-f">column_id</code> = первая нефинальная действующая колонка по <code class="k-f">position</code>, заказ в её конце; в <code class="k-f">notices</code> — <code class="k-s">column_replaced</code> с текстом «Колонка заказа удалена — заказ поставлен в колонку «{название}»»; списание товара — по правилу новой колонки</td><td>—</td><td><a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="312"><td><a class="pnum" id="p-133" href="#p-133">133</a><code class="k-e">DELETE /api/v1/columns/:id</code></td><td>переходное правило части 1 снято: удалённые заказы колонку не удерживают</td><td>—</td><td><a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-035">DS-035</a></td></tr><tr data-mdline="313"><td><a class="pnum" id="p-134" href="#p-134">134</a><code class="k-e">GET /api/v1/deleted</code> (часть 1 <a class="xref" href="#s-6-3">§6.3</a>)</td><td>вид <code class="k-s">columns</code> начинает отдавать строки: <code class="k-f">title</code> — название колонки, <code class="k-f">subtitle</code> — «финальная» либо пустая строка, <code class="k-f">is_archived</code> = false, <code class="k-f">deleted_with</code> = null</td><td>—</td><td><a class="xref" href="#ds-011">DS-011</a></td></tr><tr data-mdline="314"><td><a class="pnum" id="p-135" href="#p-135">135</a><code class="k-e">GET /api/v1/deleted/summary</code> (часть 1 <a class="xref" href="#s-6-4">§6.4</a>)</td><td><code class="k-f">counts.columns</code> — число удалённых колонок</td><td>—</td><td><a class="xref" href="#ds-011">DS-011</a></td></tr><tr data-mdline="315"><td><a class="pnum" id="p-136" href="#p-136">136</a><code class="k-e">DELETE /api/v1/test/purge/:kind/:id</code> (часть 1 <a class="xref" href="#s-6-5">§6.5</a>)</td><td>новый вид <code class="k-s">columns</code>: физически удаляет колонку (действующую или удалённую), на которую не ссылается ни один заказ</td><td>409 <code>COLUMN_NOT_EMPTY</code>, если на колонку ссылаются заказы, включая удалённые</td><td><a class="xref" href="#ds-027">DS-027</a></td></tr></tbody></table>
+<p>Пример: восстановление заказа удалённой колонки.</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/tasks/128/restore'</code></pre>
+<pre><code>{
+  "id": 128,
+  "warnings": [],
+  "notices": [
+    { "code": "column_replaced", "message": "Колонка заказа удалена — заказ поставлен в колонку «Новые»" }
+  ]
+}</code></pre>
+<p>Ошибка (COLUMN_NOT_FOUND → 404, перенос заказа в удалённую колонку):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X PUT 'http://localhost:8080/api/v1/tasks/131' \
+  -H 'Content-Type: application/json' \
+  -d '{"column_id":"0b6f3c1e-5a52-4d0e-9c53-6f1f0f6f2a11","version":4}'</code></pre>
+<pre><code>{
+  "code": "COLUMN_NOT_FOUND",
+  "message": "Колонка не найдена"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-016">DS-016</a>, <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-027">DS-027</a>.</p>
+<h2 id="s-7">§7. UX/UI + API (сквозной флоу)</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 656" width="680" height="656" font-family="Helvetica Neue, Arial, sans-serif">
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<rect width="680" height="656" fill="#ffffff"/>
+<text x="340" y="24" font-size="15" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="386.4" lengthAdjust="spacingAndGlyphs">Сценарий: удалить и восстановить колонку доски</text>
+<rect x="15" y="40" width="150" height="30" rx="6" fill="#e0f2fe" stroke="#0369a1"/>
+<text x="90" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="87.4" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<line x1="90" y1="70" x2="90" y2="616" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="265" y="40" width="150" height="30" rx="6" fill="#ede9fe" stroke="#6d28d9"/>
+<text x="340" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="67.2" lengthAdjust="spacingAndGlyphs">Экран (§8)</text>
+<line x1="340" y1="70" x2="340" y2="616" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="515" y="40" width="150" height="30" rx="6" fill="#dcfce7" stroke="#15803d"/>
+<text x="590" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="53.8" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<line x1="590" y1="70" x2="590" y2="616" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<line x1="90" y1="100" x2="340" y2="100" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="94" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="252.0" lengthAdjust="spacingAndGlyphs">«Удалить» в настройке колонки (§8.1), причина</text>
+<line x1="340" y1="128" x2="590" y2="128" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="122" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="240.8" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/columns/{id} {reason} (§6.1)</text>
+<text x="465.0" y="141" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="186.2" lengthAdjust="spacingAndGlyphs">позиции остальных колонок уплотнены</text>
+<line x1="590" y1="168" x2="340" y2="168" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="162" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">200 {id, deleted_at}</text>
+<line x1="340" y1="196" x2="90" y2="196" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="215.0" y="190" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="128.8" lengthAdjust="spacingAndGlyphs">колонка исчезла с доски</text>
+<rect x="20" y="206" width="640" height="78" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-dasharray="5 4"/>
+<text x="28" y="220" font-size="10" fill="#7f1d1d" text-anchor="start" font-weight="bold" textLength="229.6" lengthAdjust="spacingAndGlyphs">ошибка: в колонке есть действующие заказы</text>
+<line x1="340" y1="242" x2="590" y2="242" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#r)"/>
+<text x="465.0" y="236" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="201.6" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/columns/{id} {reason}</text>
+<line x1="590" y1="270" x2="340" y2="270" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#r)"/>
+<text x="465.0" y="264" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">409 COLUMN_NOT_EMPTY</text>
+<line x1="90" y1="312" x2="340" y2="312" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="306" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="212.8" lengthAdjust="spacingAndGlyphs">«Удалённые» → вкладка «Колонки» (§8.2)</text>
+<line x1="340" y1="340" x2="590" y2="340" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="334" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="218.4" lengthAdjust="spacingAndGlyphs">GET /api/v1/deleted?kind=columns (§6.3)</text>
+<line x1="590" y1="368" x2="340" y2="368" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="362" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">200 {items, total, limit, offset}</text>
+<line x1="90" y1="396" x2="340" y2="396" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="390" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="78.4" lengthAdjust="spacingAndGlyphs">«Восстановить»</text>
+<line x1="340" y1="424" x2="590" y2="424" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="418" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="224.0" lengthAdjust="spacingAndGlyphs">POST /api/v1/columns/{id}/restore (§6.2)</text>
+<text x="465.0" y="437" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="149.0" lengthAdjust="spacingAndGlyphs">колонка встаёт в конец доски</text>
+<line x1="590" y1="464" x2="340" y2="464" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="458" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="100.8" lengthAdjust="spacingAndGlyphs">200 {id, position}</text>
+<line x1="90" y1="502" x2="340" y2="502" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="496" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="252.0" lengthAdjust="spacingAndGlyphs">«Восстановить» заказ удалённой колонки (§8.2)</text>
+<line x1="340" y1="530" x2="590" y2="530" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="524" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="207.2" lengthAdjust="spacingAndGlyphs">POST /api/v1/tasks/128/restore (§6.3)</text>
+<text x="465.0" y="543" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="191.5" lengthAdjust="spacingAndGlyphs">заказ — в первую нефинальную колонку</text>
+<line x1="590" y1="570" x2="340" y2="570" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="564" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="179.2" lengthAdjust="spacingAndGlyphs">200 … notices: [column_replaced]</text>
+<line x1="340" y1="598" x2="90" y2="598" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="215.0" y="592" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="212.8" lengthAdjust="spacingAndGlyphs">жёлтый блок: «Колонка заказа удалена…»</text>
+<text x="20" y="644" font-size="10" fill="#334155" text-anchor="start" font-weight="normal" textLength="408.8" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос, пунктир — ответ, красная рамка — ветка ошибки.</text>
+</svg></figure></p>
+<p>Полнота покрытия: каждый адрес <a class="xref" href="#s-6">§6</a> встречается на экране <a class="xref" href="#s-8">§8</a>, каждое действие экрана имеет адрес.</p>
+<table><thead><tr><th>Endpoint</th><th>Экраны</th></tr></thead><tbody><tr data-mdline="351"><td><a class="pnum" id="p-137" href="#p-137">137</a><a class="xref" href="#s-6-1">§6.1</a> <code class="k-e">DELETE /api/v1/columns/:id</code></td><td><a class="xref" href="#s-8-1">§8.1</a> (через общее окно «Удаление» части 1)</td></tr><tr data-mdline="352"><td><a class="pnum" id="p-138" href="#p-138">138</a><a class="xref" href="#s-6-2">§6.2</a> <code class="k-e">POST /api/v1/columns/:id/restore</code></td><td><a class="xref" href="#s-8-2">§8.2</a></td></tr><tr data-mdline="353"><td><a class="pnum" id="p-139" href="#p-139">139</a><a class="xref" href="#s-6-3">§6.3</a> <code class="k-e">GET /api/v1/columns</code>, создание и перенос заказов</td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="354"><td><a class="pnum" id="p-140" href="#p-140">140</a><a class="xref" href="#s-6-3">§6.3</a> <code class="k-e">POST /api/v1/tasks/:id/restore</code>, <code class="k-e">GET /api/v1/deleted</code>, <code class="k-e">GET /api/v1/deleted/summary</code></td><td><a class="xref" href="#s-8-2">§8.2</a></td></tr><tr data-mdline="355"><td><a class="pnum" id="p-141" href="#p-141">141</a><a class="xref" href="#s-6-3">§6.3</a> <code class="k-e">DELETE /api/v1/test/purge/:kind/:id</code></td><td>экранов нет — только автотесты (<a class="xref" href="#ds-027">DS-027</a>)</td></tr></tbody></table>
+<h2 id="s-8">§8. UI-иерархия</h2>
+<ul>
+<li data-mdline="358"><a class="pnum" id="p-142" href="#p-142">142</a>Доска → настройка колонки → «Удалить» с причиной — <a class="xref" href="#s-8-1">§8.1</a></li>
+<li data-mdline="359"><a class="pnum" id="p-143" href="#p-143">143</a>Администрирование → <strong>Удалённые</strong> (<code>/deleted</code>) → вкладка «Колонки» → «Восстановить»; вкладка «Заказы» → предупреждение о замене колонки — <a class="xref" href="#s-8-2">§8.2</a></li>
+</ul>
+<p>UI-конвенции (<a class="xref" href="#ds-033">DS-033</a>): как в части 1 — ошибка поля под полем (<code>is-invalid</code>), тост в правом верхнем углу на 5 секунд, причина — общее окно «Удаление» (<code>KT.uiDialog</code>), на время запроса кнопка заблокирована; предупреждения восстановления — жёлтый блок над таблицей раздела «Удалённые». Даты — в поясе пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ». Адаптив — минимальный (<a class="xref" href="#ds-023">DS-023</a>).</p>
+<h3 id="s-8-1">§8.1. Экран/форма «Доска — настройка колонки»</h3>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="366"><a class="pnum" id="p-144" href="#p-144">144</a><strong>Путь:</strong> главная страница (доска) → настройка колонки (as-is расположение и вид управления колонками)</li>
+<li data-mdline="367"><a class="pnum" id="p-145" href="#p-145">145</a><strong>URL:</strong> <code>/</code> (as-is)</li>
+<li data-mdline="368"><a class="pnum" id="p-146" href="#p-146">146</a><strong>Роли:</strong> admin (управление колонками у исполнителя недоступно, as-is) · <strong>Устройство:</strong> десктоп, телефон</li>
+<li data-mdline="369"><a class="pnum" id="p-147" href="#p-147">147</a><strong>При открытии:</strong> <code>GET /api/v1/columns</code> (as-is, <a class="xref" href="#s-6-3">§6.3</a>)</li>
+<li data-mdline="370"><a class="pnum" id="p-148" href="#p-148">148</a><strong>200:</strong> доска без удалённых колонок · <strong>Пусто:</strong> as-is · <strong>4xx:</strong> as-is</li>
+</ul>
+<p><strong>Что на странице (сверху вниз) — только изменения:</strong></p>
+<ol>
+<li data-mdline="373"><a class="pnum" id="p-149" href="#p-149">149</a>Кнопка «Удалить» в настройке колонки (as-is расположение) — вместо нынешнего подтверждения открывает общее окно «Удаление» с причиной (часть 1 <a class="xref" href="#s-8-2">§8.2</a>); пояснение в окне — «Колонку можно восстановить в разделе «Удалённые»».</li>
+<li data-mdline="374"><a class="pnum" id="p-150" href="#p-150">150</a>Счётчик заказов в заголовке колонки (<code class="k-f">tasks_count</code>) — только действующие заказы.</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="377"><a class="pnum" id="p-151" href="#p-151">151</a><strong>Удалить колонку</strong></li>
+<ul>
+<li data-mdline="378"><a class="pnum" id="p-152" href="#p-152">152</a><strong>Элемент:</strong> кнопка (второстепенная, красный текст) в настройке колонки; только admin</li>
+<li data-mdline="379"><a class="pnum" id="p-153" href="#p-153">153</a><strong>UI:</strong> открывается общее окно «Удаление»; на время запроса кнопка окна заблокирована</li>
+<li data-mdline="380"><a class="pnum" id="p-154" href="#p-154">154</a><strong>Вызов:</strong> <code>DELETE <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/columns/{id}</code>, body: <code>{ reason }</code></li>
+<li data-mdline="381"><a class="pnum" id="p-155" href="#p-155">155</a><strong>200:</strong> <code>{ id, deleted_at }</code> → окно закрывается, колонка исчезает с доски, остальные колонки смыкаются; тост «Удалено. Восстановить можно в разделе «Удалённые»»</li>
+<li data-mdline="382"><a class="pnum" id="p-156" href="#p-156">156</a><strong>4xx (409 COLUMN_NOT_EMPTY):</strong> красным блоком над кнопками окна «В колонке есть заказы», окно остаётся</li>
+<li data-mdline="383"><a class="pnum" id="p-157" href="#p-157">157</a><strong>4xx (409 LAST_NON_FINAL_COLUMN):</strong> в окне «Нужна хотя бы одна нефинальная колонка»</li>
+<li data-mdline="384"><a class="pnum" id="p-158" href="#p-158">158</a><strong>4xx (400 reason required):</strong> под полем «Причина» — «Укажите причину удаления»</li>
+<li data-mdline="385"><a class="pnum" id="p-159" href="#p-159">159</a><strong>4xx (400 reason too_long):</strong> под полем — «Причина — не длиннее 500 символов»</li>
+<li data-mdline="386"><a class="pnum" id="p-160" href="#p-160">160</a><strong>4xx (400 reason invalid_text):</strong> под полем — «Недопустимые символы в причине»</li>
+<li data-mdline="387"><a class="pnum" id="p-161" href="#p-161">161</a><strong>4xx (404 COLUMN_NOT_FOUND):</strong> окно закрывается, тост «Колонка не найдена», колонка исчезает с доски</li>
+<li data-mdline="388"><a class="pnum" id="p-162" href="#p-162">162</a><strong>4xx (403):</strong> тост «Нет доступа»</li>
+</ul>
+<li data-mdline="389"><a class="pnum" id="p-163" href="#p-163">163</a><strong>Перенести заказ в колонку, удалённую другим администратором, пока доска открыта</strong></li>
+<ul>
+<li data-mdline="390"><a class="pnum" id="p-164" href="#p-164">164</a><strong>Элемент:</strong> перетаскивание карточки заказа (as-is)</li>
+<li data-mdline="391"><a class="pnum" id="p-165" href="#p-165">165</a><strong>UI:</strong> as-is</li>
+<li data-mdline="392"><a class="pnum" id="p-166" href="#p-166">166</a><strong>Вызов:</strong> as-is <code>POST /api/v1/tasks/{id}/move</code> либо <code>PUT /api/v1/tasks/{id}</code> с <code>column_id</code> (<a class="xref" href="#s-6-3">§6.3</a>)</li>
+<li data-mdline="393"><a class="pnum" id="p-167" href="#p-167">167</a><strong>200:</strong> —</li>
+<li data-mdline="394"><a class="pnum" id="p-168" href="#p-168">168</a><strong>4xx (404 COLUMN_NOT_FOUND):</strong> тост «Колонка не найдена», карточка возвращается на место; после перезагрузки доски колонки нет</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> колонку удалили, пока доска открыта у другого пользователя, — колонка остаётся на его экране до перезагрузки (автообновления нет, as-is); любое действие с ней вернёт 404.</p>
+<h3 id="s-8-2">§8.2. Экран/форма «Удалённые», вкладки «Колонки» и «Заказы»</h3>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="401"><a class="pnum" id="p-169" href="#p-169">169</a><strong>Путь:</strong> меню «Администрирование → Удалённые» → вкладка «Колонки» (добавляется этой частью; экран, фильтры, пагинация — часть 1 <a class="xref" href="#s-8-1">§8.1</a>)</li>
+<li data-mdline="402"><a class="pnum" id="p-170" href="#p-170">170</a><strong>URL:</strong> <code>/deleted?kind=columns</code></li>
+<li data-mdline="403"><a class="pnum" id="p-171" href="#p-171">171</a><strong>Роли:</strong> admin · <strong>Устройство:</strong> десктоп, телефон</li>
+<li data-mdline="404"><a class="pnum" id="p-172" href="#p-172">172</a><strong>При открытии:</strong> <code>GET /api/v1/deleted/summary</code>, <code>GET /api/v1/deleted?kind=columns&amp;limit=50&amp;offset=0</code> (<a class="xref" href="#s-6-3">§6.3</a>)</li>
+<li data-mdline="405"><a class="pnum" id="p-173" href="#p-173">173</a><strong>200:</strong> таблица удалённых колонок · <strong>Пусто:</strong> «Удалённых записей нет» · <strong>4xx:</strong> тост с текстом ошибки</li>
+</ul>
+<p><strong>Что на странице (сверху вниз) — только изменения:</strong></p>
+<ol>
+<li data-mdline="408"><a class="pnum" id="p-174" href="#p-174">174</a>Вкладка «Колонки» (<code class="k-s">columns</code>) со счётчиком — последняя в ряду вкладок.</li>
+<li data-mdline="409"><a class="pnum" id="p-175" href="#p-175">175</a>Таблица вкладки «Колонки», колонки слева направо:</li>
+<ul>
+<li data-mdline="410"><a class="pnum" id="p-176" href="#p-176">176</a>«Что удалено» — название колонки; под ним мелким шрифтом «финальная», если колонка финальная</li>
+<li data-mdline="411"><a class="pnum" id="p-177" href="#p-177">177</a>«Причина» (<code class="k-f">delete_reason</code>)</li>
+<li data-mdline="412"><a class="pnum" id="p-178" href="#p-178">178</a>«Кто удалил» (<code class="k-f">deleted_by.name</code>)</li>
+<li data-mdline="413"><a class="pnum" id="p-179" href="#p-179">179</a>«Когда» (<code class="k-f">deleted_at</code>, «ДД.ММ.ГГГГ ЧЧ:ММ»)</li>
+<li data-mdline="414"><a class="pnum" id="p-180" href="#p-180">180</a>кнопка «Восстановить» (второстепенная, в строке справа)</li>
+</ul>
+<li data-mdline="415"><a class="pnum" id="p-181" href="#p-181">181</a>Вкладка «Заказы»: в жёлтом блоке предупреждений после восстановления заказа — новая строка «Колонка заказа удалена — заказ поставлен в колонку «{название}»».</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="418"><a class="pnum" id="p-182" href="#p-182">182</a><strong>Восстановить колонку</strong></li>
+<ul>
+<li data-mdline="419"><a class="pnum" id="p-183" href="#p-183">183</a><strong>Элемент:</strong> кнопка (второстепенная) в строке таблицы справа</li>
+<li data-mdline="420"><a class="pnum" id="p-184" href="#p-184">184</a><strong>UI:</strong> подтверждение <code>KT.uiDialog</code> «Восстановить «{название}»?»; на время запроса кнопка заблокирована</li>
+<li data-mdline="421"><a class="pnum" id="p-185" href="#p-185">185</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/columns/{id}/restore</code></li>
+<li data-mdline="422"><a class="pnum" id="p-186" href="#p-186">186</a><strong>200:</strong> <code>{ id, position }</code> → строка исчезает, счётчик вкладки уменьшается; тост «Восстановлено. Колонка — в конце доски»</li>
+<li data-mdline="423"><a class="pnum" id="p-187" href="#p-187">187</a><strong>4xx (409 NOT_DELETED):</strong> тост «Запись уже восстановлена», строка исчезает</li>
+<li data-mdline="424"><a class="pnum" id="p-188" href="#p-188">188</a><strong>4xx (404 COLUMN_NOT_FOUND):</strong> тост «Колонка не найдена», строка исчезает</li>
+<li data-mdline="425"><a class="pnum" id="p-189" href="#p-189">189</a><strong>4xx (403):</strong> тост «Нет доступа»</li>
+</ul>
+<li data-mdline="426"><a class="pnum" id="p-190" href="#p-190">190</a><strong>Восстановить заказ удалённой колонки (вкладка «Заказы»)</strong></li>
+<ul>
+<li data-mdline="427"><a class="pnum" id="p-191" href="#p-191">191</a><strong>Элемент:</strong> кнопка «Восстановить» в строке заказа (часть 1 <a class="xref" href="#s-8-1">§8.1</a>)</li>
+<li data-mdline="428"><a class="pnum" id="p-192" href="#p-192">192</a><strong>UI:</strong> как в части 1</li>
+<li data-mdline="429"><a class="pnum" id="p-193" href="#p-193">193</a><strong>Вызов:</strong> <code>POST /api/v1/tasks/{id}/restore</code> (часть 1 <a class="xref" href="#s-6-2">§6.2</a>; изменение — <a class="xref" href="#s-6-3">§6.3</a>)</li>
+<li data-mdline="430"><a class="pnum" id="p-194" href="#p-194">194</a><strong>200:</strong> <code>{ id, warnings, notices }</code> → при <code class="k-f">notices</code> с <code>column_replaced</code> — строка в жёлтом блоке «Колонка заказа удалена — заказ поставлен в колонку «Новые»» и ссылка «Открыть заказ #128»</li>
+<li data-mdline="431"><a class="pnum" id="p-195" href="#p-195">195</a><strong>4xx (409 NOT_DELETED):</strong> тост «Запись уже восстановлена»</li>
+<li data-mdline="432"><a class="pnum" id="p-196" href="#p-196">196</a><strong>4xx (404 TASK_NOT_FOUND):</strong> тост «Заказ не найден»</li>
+<li data-mdline="433"><a class="pnum" id="p-197" href="#p-197">197</a><strong>4xx (403):</strong> тост «Нет доступа»</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> как в части 1 <a class="xref" href="#s-8-1">§8.1</a> — потеря связи, перезагрузка из адресной строки, параллельное восстановление другим администратором.</p>
+<h2 id="s-9">§9. Решения (DS-index)</h2>
+<p>Строки — дословно из мастера, номера не меняются; включены только решения, действующие в части 3.</p>
+<table><thead><tr><th>DS</th><th>Формулировка</th><th>Источник</th><th>Статус</th></tr></thead><tbody><tr data-mdline="442"><td><a class="pnum" id="p-198" href="#p-198">198</a><a id="ds-003"></a><strong>DS-003</strong></td><td>Удаляет и восстанавливает только администратор; раздел «Удалённые» и его API — только администратор; остальным — 403 «Нет доступа»</td><td>батч 1 (В-2)</td><td>closed</td></tr><tr data-mdline="443"><td><a class="pnum" id="p-199" href="#p-199">199</a><a id="ds-011"></a><strong>DS-011</strong></td><td>Один раздел «Удалённые» с вкладками по видам записей; в строке — что удалено, причина, кто, когда и кнопка «Восстановить»; фильтры — поиск, период, кто удалил</td><td>батч 2 (В-8), батч 4 (В-15); фильтры — inferred</td><td>closed</td></tr><tr data-mdline="444"><td><a class="pnum" id="p-200" href="#p-200">200</a><a id="ds-012"></a><strong>DS-012</strong></td><td>Удалённое хранится бессрочно; окончательного удаления и автоматической очистки нет</td><td>батч 3 (В-9)</td><td>closed</td></tr><tr data-mdline="445"><td><a class="pnum" id="p-201" href="#p-201">201</a><a id="ds-016"></a><strong>DS-016</strong></td><td>Заказ восстанавливается всегда: колонка удалена — встаёт в конец первой нефинальной действующей колонки; клиент или оборудование в удалённых — остаются с пометкой; обо всём — предупреждение</td><td>батч 3 (В-11); «нефинальной» — inferred (в финальную колонку нельзя с незавершёнными услугами)</td><td>closed</td></tr><tr data-mdline="446"><td><a class="pnum" id="p-202" href="#p-202">202</a><a id="ds-019"></a><strong>DS-019</strong></td><td>Колонка доски удаляется мягко, только без действующих заказов и не последняя нефинальная; удалённые заказы колонку не удерживают; восстановленная колонка встаёт в конец доски</td><td>батч 4 (В-14); условия и место восстановления — inferred из кода (<code>internal/features/board/columns_service.go</code>)</td><td>closed</td></tr><tr data-mdline="447"><td><a class="pnum" id="p-203" href="#p-203">203</a><a id="ds-020"></a><strong>DS-020</strong></td><td>Причина удаления обязательна для любого вида записи: 1–500 символов после обрезки пробелов; без неё удалить нельзя</td><td>батч 4 (В-15); границы длины — inferred</td><td>closed</td></tr><tr data-mdline="448"><td><a class="pnum" id="p-204" href="#p-204">204</a><a id="ds-022"></a><strong>DS-022</strong></td><td>Совместимость — MVP: рабочей версии нет, меняем свободно, без переходного периода; данные на базе сохраняются, существующие записи — действующие</td><td>батч 5 (В-17)</td><td>closed</td></tr><tr data-mdline="449"><td><a class="pnum" id="p-205" href="#p-205">205</a><a id="ds-023"></a><strong>DS-023</strong></td><td>UI-scope: Swagger не ведём; адаптив минимальный; темы в автотестах — обе</td><td>батч 5 (В-18, В-19, В-20)</td><td>closed</td></tr><tr data-mdline="450"><td><a class="pnum" id="p-206" href="#p-206">206</a><a id="ds-024"></a><strong>DS-024</strong></td><td>Конкурентность: удаление и восстановление — атомарный UPDATE с условием по <code class="k-f">deleted_at</code>; повтор удаления — 404, повтор восстановления — 409 <code>NOT_DELETED</code>; заказ — под блокировкой строки; документ — по <code class="k-f">version</code></td><td>inferred</td><td>closed</td></tr><tr data-mdline="451"><td><a class="pnum" id="p-207" href="#p-207">207</a><a id="ds-025"></a><strong>DS-025</strong></td><td>Время удаления хранится в UTC, показывается и фильтруется по часовому поясу пользователя, формат «ДД.ММ.ГГГГ ЧЧ:ММ»</td><td>черновик (правила проекта), <code>docs/features/user-timezone</code></td><td>closed</td></tr><tr data-mdline="452"><td><a class="pnum" id="p-208" href="#p-208">208</a><a id="ds-026"></a><strong>DS-026</strong></td><td>Удалённая запись для всех обычных адресов не существует: чтение по идентификатору и любая мутация — 404 своего вида; доступны только восстановление и раздел «Удалённые»</td><td>inferred из В-7</td><td>closed</td></tr><tr data-mdline="453"><td><a class="pnum" id="p-209" href="#p-209">209</a><a id="ds-027"></a><strong>DS-027</strong></td><td>Уборка тестовых данных автотестами — служебный адрес физического удаления, включается переменной окружения <code>TEST_PURGE_ENABLED=true</code>, по умолчанию выключен</td><td>inferred, согласовано оркестратором (батч 4)</td><td>closed</td></tr><tr data-mdline="454"><td><a class="pnum" id="p-210" href="#p-210">210</a><a id="ds-028"></a><strong>DS-028</strong></td><td>Единый API: удаление — <code>DELETE /api/v1/{ресурс}/:id</code> с JSON-телом <code>{reason}</code> (у документа — и <code>version</code>, перенесён из query); восстановление — <code>POST /api/v1/{ресурс}/:id/restore</code>; список — <code>GET /api/v1/deleted</code> в конверте <code>{items, total, limit, offset}</code></td><td>inferred, CLAUDE.md §API-1</td><td>closed</td></tr><tr data-mdline="455"><td><a class="pnum" id="p-211" href="#p-211">211</a><a id="ds-030"></a><strong>DS-030</strong></td><td>Аудит: на записи хранится последнее удаление — кто, когда, почему; при восстановлении отметка стирается; история повторных удалений не ведётся; факты удаления и восстановления — в журнал приложения</td><td>inferred из В-15, zap</td><td>closed</td></tr><tr data-mdline="456"><td><a class="pnum" id="p-212" href="#p-212">212</a><a id="ds-031"></a><strong>DS-031</strong></td><td>Задача Tier L реализуется шестью частями S/M по порядку: <code>soft-delete-core</code>, <code>soft-delete-transfers</code>, <code>soft-delete-board-columns</code>, <code>soft-delete-clients</code>, <code>soft-delete-catalog</code>, <code>soft-delete-warehouses-suppliers</code>; спека части разворачивает полные таблицы полей своих таблиц</td><td>оркестратор (бриф), inferred</td><td>closed</td></tr><tr data-mdline="457"><td><a class="pnum" id="p-213" href="#p-213">213</a><a id="ds-033"></a><strong>DS-033</strong></td><td>UI-конвенции: ошибка поля — под полем; тосты — правый верхний угол, 5 секунд; причина и подтверждения — <code>KT.uiDialog</code>; пометка «удалён» — серый бейдж; предупреждения восстановления — жёлтый блок над таблицей</td><td>inferred, transfers <a class="xref" href="#ds-052">DS-052</a></td><td>closed</td></tr><tr data-mdline="458"><td><a class="pnum" id="p-214" href="#p-214">214</a><a id="ds-035"></a><strong>DS-035</strong></td><td>Переходное правило части 1 (до частей 3 и 4): мягко удалённый заказ по-прежнему удерживает своего клиента, единицы оборудования и колонку от безвозвратного удаления — действующие отказы <code>CLIENT_HAS_TASKS</code>, <code>EQUIPMENT_USED_IN_TASKS</code>, <code>COLUMN_NOT_EMPTY</code> срабатывают и по удалённым заказам</td><td>inferred — следствие разбивки <a class="xref" href="#ds-031">DS-031</a></td><td>closed</td></tr><tr data-mdline="459"><td><a class="pnum" id="p-215" href="#p-215">215</a><a id="ds-039"></a><strong>DS-039</strong></td><td>Заказ с незавершёнными услугами, чья колонка за время удаления стала финальной, при восстановлении ставится в конец первой нефинальной действующей колонки с предупреждением <code>column_replaced</code> — в финальной колонке не бывает заказов с незавершёнными услугами. Дополняет <a class="xref" href="#ds-016">DS-016</a></td><td>inferred из кода (<code>SUBTASKS_NOT_DONE</code>, <code>internal/features/board/columns_service.go</code>)</td><td>closed</td></tr></tbody></table>
+<h2 id="s-10">§10. Открытые вопросы (status: open)</h2>
+<p>Открытых вопросов нет</p>
+<h2 id="s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</h2>
+<p>Оси UI-scope (<a class="xref" href="#ds-023">DS-023</a>): Swagger-сценариев нет; адаптив и темы раздела «Удалённые» и окна удаления покрыты TS-046, TS-047 части 1 (новая вкладка проверяется в них же). Номера TS — мастер-идентификаторы; включены только сценарии части 3. В TS-012 и TS-033 в этой части проверяются таблица <code class="k-t">columns</code> и адреса <a class="xref" href="#s-6-1">§6.1</a>, <a class="xref" href="#s-6-2">§6.2</a>. Сценарий TS-049 части 1 в части про колонку (<code>COLUMN_NOT_EMPTY</code> при одном удалённом заказе) с этой частью перестаёт действовать и заменяется TS-019.</p>
+<h3 id="h3-316">Unit / Integration (Go)</h3>
+<ul>
+<li data-mdline="468"><a class="pnum" id="p-216" href="#p-216">216</a><strong>TS-012.</strong> Миграция: после применения все существующие строки 11 таблиц имеют <code>deleted_at IS NULL</code>; CHECK «три поля вместе» отклоняет частичное заполнение (части 1–6, каждая — свои таблицы) — <a class="xref" href="#ds-022">DS-022</a>, <a class="xref" href="#ds-030">DS-030</a></li>
+<ul>
+<li data-mdline="469"><a class="pnum" id="p-217" href="#p-217">217</a>негатив: UPDATE только <code>deleted_at</code> без <code>deleted_by</code> → ошибка CHECK</li>
+</ul>
+<li data-mdline="470"><a class="pnum" id="p-218" href="#p-218">218</a><strong>TS-019.</strong> Колонка: удаление пустой → 200; с действующими заказами → 409 <code>COLUMN_NOT_EMPTY</code>; только с удалёнными заказами → 200; последняя нефинальная → 409 <code>LAST_NON_FINAL_COLUMN</code> (часть 3) — <a class="xref" href="#ds-019">DS-019</a></li>
+<ul>
+<li data-mdline="471"><a class="pnum" id="p-219" href="#p-219">219</a>негатив: перенос заказа в удалённую колонку → 404 <code>COLUMN_NOT_FOUND</code></li>
+</ul>
+<li data-mdline="472"><a class="pnum" id="p-220" href="#p-220">220</a><strong>TS-020.</strong> Восстановление заказа с удалённой колонкой: заказ в конце первой нефинальной действующей колонки, <code class="k-f">notices</code> содержит <code>column_replaced</code> (часть 3) — <a class="xref" href="#ds-016">DS-016</a></li>
+<ul>
+<li data-mdline="473"><a class="pnum" id="p-221" href="#p-221">221</a>негатив: колонка заказа сама не восстановлена</li>
+</ul>
+<li data-mdline="474"><a class="pnum" id="p-222" href="#p-222">222</a><strong>TS-021.</strong> Восстановление колонки: <code class="k-f">position</code> = максимум среди действующих + 1 (часть 3) — <a class="xref" href="#ds-019">DS-019</a></li>
+<ul>
+<li data-mdline="475"><a class="pnum" id="p-223" href="#p-223">223</a>негатив: повтор → 409 <code>NOT_DELETED</code></li>
+</ul>
+<li data-mdline="476"><a class="pnum" id="p-224" href="#p-224">224</a><strong>TS-033.</strong> Права на всех 22 адресах удаления и восстановления: executor → 403 «Нет доступа» до поиска записи, включая несуществующий идентификатор (части 1–6) — <a class="xref" href="#ds-003">DS-003</a></li>
+<ul>
+<li data-mdline="477"><a class="pnum" id="p-225" href="#p-225">225</a>негатив: без сессии → 401</li>
+</ul>
+</ul>
+<h3 id="h3-339">E2E (Playwright)</h3>
+<ul>
+<li data-mdline="480"><a class="pnum" id="p-226" href="#p-226">226</a><strong>TS-042.</strong> Колонка доски — экраны <a class="xref" href="#s-8-1">§8.1</a>, <a class="xref" href="#s-8-2">§8.2</a> — <a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-016">DS-016</a> (часть 3)</li>
+<ul>
+<li data-mdline="481"><a class="pnum" id="p-227" href="#p-227">227</a>шаги: удалить пустую колонку с причиной → восстановить; проверка: колонка в конце доски; негатив: колонка с заказом — «В колонке есть заказы»</li>
+</ul>
+</ul>
+<h3 id="h3-346">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</h3>
+<ul>
+<li data-mdline="484"><a class="pnum" id="p-228" href="#p-228">228</a><strong>TS-F3.</strong> <code>e2e/fixtures/auth.ts</code>: новые помощники <code>softDelete(kind, id, reason)</code>, <code>restore(kind, id)</code>, <code>listDeleted(kind, filters)</code>; payload'ы типизировать wire-типами (§TD-6.2; сырые ключи невидимы гейтам) — <a class="xref" href="#ds-028">DS-028</a></li>
+<li data-mdline="485"><a class="pnum" id="p-229" href="#p-229">229</a><strong>TS-F8.</strong> <code>e2e/fixtures/auth.ts</code>: <code>deleteColumn</code> (строка 635) передаёт <code>{reason}</code> и ждёт 200 с телом вместо 204; уборка созданных колонок в <code>e2e/fixtures/test.ts</code> (<code>_boardCleanup</code>) идёт служебным адресом <code>DELETE /api/v1/test/purge/columns/:id</code>; обновить в части 3 — <a class="xref" href="#ds-027">DS-027</a></li>
+</ul>
+<h2 id="h2-351">§Impact — точки касания существующего кода</h2>
+<p>Источник: <code>python3 ~/.claude/tools/impact_scan.py</code> (sample <code>internal/features/board</code>; термы <code>columns</code>, <code>column_id</code>, <code>COLUMN_NOT_EMPTY</code>, <code>LAST_NON_FINAL_COLUMN</code>, <code>deleteColumn</code>, <code>/api/v1/columns</code>) + чтение запросов к <code>columns</code> в репозитории (fff) + решения мастера.</p>
+<table><thead><tr><th>#</th><th>Класс</th><th>Что задеваем (file:line / объект)</th><th>Дельта фичи</th><th>Решение</th><th>DS</th></tr></thead><tbody><tr data-mdline="492"><td><a class="pnum" id="p-230" href="#p-230">230</a>1</td><td>SHARED-DEP</td><td><code>internal/features/board/columns_service.go:209</code> (<code>ColumnService.Delete</code>), <code>columns_handler.go:84</code> (ответ 204), <code>routes.go:29</code></td><td>мягкое удаление с причиной; ответ 200 <code>{id, deleted_at}</code> вместо 204; новый <code>Restore</code> и маршрут <code>POST /:id/restore</code></td><td>править</td><td><a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-028">DS-028</a></td></tr><tr data-mdline="493"><td><a class="pnum" id="p-231" href="#p-231">231</a>2</td><td>SHARED-DEP</td><td><code>internal/features/board/columns_repo.go:34</code> (<code>List</code>), <code>:62</code> (<code>LockAll</code>), <code>:116</code> (<code>Renumber</code>), <code>:130</code> (<code>closeGaps</code>), <code>:139</code> (<code>HasTasks</code>), <code>:194</code> (<code>Delete</code>)</td><td>условие <code>deleted_at IS NULL</code> в списке, счётчике <code>total</code>, перенумерации; <code>HasTasks</code> — только действующие заказы; <code>Delete</code> → UPDATE; блокировка при восстановлении — все колонки</td><td>править</td><td><a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-026">DS-026</a></td></tr><tr data-mdline="494"><td><a class="pnum" id="p-232" href="#p-232">232</a>3</td><td>SHARED-DEP</td><td><code>internal/features/board/tasks_repo.go:708</code> (чтение колонки <code>FOR SHARE</code> при создании и переносе), <code>card_repo.go:411</code></td><td>условие <code>deleted_at IS NULL</code> → <code>COLUMN_NOT_FOUND</code></td><td>править</td><td><a class="xref" href="#ds-026">DS-026</a></td></tr><tr data-mdline="495"><td><a class="pnum" id="p-233" href="#p-233">233</a>4</td><td>SHARED-DEP</td><td><code>internal/features/board/tasks_service.go</code> (<code>Restore</code> части 1)</td><td>подмена удалённой колонки: первая нефинальная действующая, позиция в конец, <code>notices</code> <code>column_replaced</code>; общий код с <a class="xref" href="#ds-039">DS-039</a> части 1</td><td>править</td><td><a class="xref" href="#ds-016">DS-016</a>, <a class="xref" href="#ds-039">DS-039</a></td></tr><tr data-mdline="496"><td><a class="pnum" id="p-234" href="#p-234">234</a>5</td><td>SHARED-DEP</td><td><code>internal/features/board/tasks_repo.go:898</code>, <code>:940</code>, <code>:959</code>, <code>stock_repo.go:95</code>, <code>internal/features/users/repo.go:47</code> (соединения <code>tasks</code> с <code>columns</code>)</td><td>без изменений: действующий заказ всегда в действующей колонке</td><td>не трогать</td><td><a class="xref" href="#ds-019">DS-019</a></td></tr><tr data-mdline="497"><td><a class="pnum" id="p-235" href="#p-235">235</a>6</td><td>SHARED-DEP</td><td><code>internal/features/softdelete</code> (часть 1)</td><td>вид <code>columns</code> в списке, счётчиках и служебной уборке</td><td>править</td><td><a class="xref" href="#ds-011">DS-011</a>, <a class="xref" href="#ds-027">DS-027</a></td></tr><tr data-mdline="498"><td><a class="pnum" id="p-236" href="#p-236">236</a>7</td><td>FK</td><td><code>migrations/0005_board.up.sql:5</code>–<code>:15</code> (<code>columns</code>), <code>:27</code> (<code>tasks.column_id</code> RESTRICT)</td><td>новая миграция: три поля, CHECK <code>columns_deleted_chk</code>, FK <code>deleted_by</code>, индекс <code>columns_deleted_at_idx</code>; внешний ключ заказов не меняется</td><td>добавить</td><td><a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-022">DS-022</a></td></tr><tr data-mdline="499"><td><a class="pnum" id="p-237" href="#p-237">237</a>8</td><td>FRONTEND</td><td><code>web/ssr/board/templates/pages</code> и скрипт доски (настройка колонок); <code>web/ssr/softdelete</code> (часть 1)</td><td>«Удалить» через общее окно с причиной; вкладка «Колонки»; строка предупреждения о замене колонки</td><td>править</td><td><a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-016">DS-016</a></td></tr><tr data-mdline="500"><td><a class="pnum" id="p-238" href="#p-238">238</a>9</td><td>ENUMERATION</td><td><code>e2e/fixtures/auth.ts:635</code> (<code>deleteColumn</code>), <code>e2e/fixtures/test.ts:120</code> (<code>_boardCleanup</code>), <code>e2e/tests/board.spec.ts</code>, <code>board-guards.spec.ts</code></td><td>тело запроса и ответ 200; уборка колонок служебным адресом; ожидания по удалению колонки</td><td>править</td><td><a class="xref" href="#ds-027">DS-027</a>, <a class="xref" href="#ds-020">DS-020</a></td></tr><tr data-mdline="501"><td><a class="pnum" id="p-239" href="#p-239">239</a>10</td><td>SHARED-DEP</td><td>Go live-тесты <code>internal/features/board/board_http_live_test.go</code> (удаление колонки: 204, «строки нет»)</td><td>ожидания: 200 с телом, строка помечена</td><td>править</td><td><a class="xref" href="#ds-019">DS-019</a>, <a class="xref" href="#ds-028">DS-028</a></td></tr><tr data-mdline="502"><td><a class="pnum" id="p-240" href="#p-240">240</a>11</td><td>CONFIG</td><td>env-ключи</td><td>не задеваются</td><td>—</td><td>—</td></tr><tr data-mdline="503"><td><a class="pnum" id="p-241" href="#p-241">241</a>12</td><td>MONITORING</td><td>дашборды, nginx</td><td>не задеваются</td><td>—</td><td>—</td></tr></tbody></table>
+<p><strong>Вне каталога фичи:</strong> есть — internal/features/board, internal/features/softdelete, migrations, web/ssr/board, web/ssr/softdelete, e2e</p>
+</body>
+</html>

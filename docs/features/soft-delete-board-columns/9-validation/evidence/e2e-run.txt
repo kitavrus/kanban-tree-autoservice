@@ -1,0 +1,1 @@
+[2026-10-08 15:10:14] status=passed failedTests=0 counters=219 passed (7.1m) src=e2e/test-results/.last-run.json cmd="npx playwright test --project=chromium --headed --workers=1 --retries=1 --reporter=list"

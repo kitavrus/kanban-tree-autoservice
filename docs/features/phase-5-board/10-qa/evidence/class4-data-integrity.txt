@@ -1,0 +1,42 @@
+# Класс 4 — data integrity (touches.db=true, миграция 0005). Проверка на dev-БД kanban_tree_dev_pg (docker exec).
+
+## Миграция 0005 — схема совпадает с design-sql.md
+$ docker exec kanban_tree_dev_pg psql -U admin -d app -c "\d stock_movements"
+task_id | bigint | (nullable)
+Foreign-key constraints:
+    "stock_movements_product_id_fkey" FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT
+    "stock_movements_task_id_fkey" FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
+    "stock_movements_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT
+Check constraints:
+    "stock_movements_qty_delta_check" CHECK (qty_delta <> 0)
+    "stock_movements_reason_check" CHECK (reason IN task_consume/task_return/manual)
+Совпадает с design-sql.md "Stock Movements Migration". OK.
+
+## Стек операций на своём товаре (qa-product-phase5, id=11111111-...-103, стартовый stock=10)
+1. move в consumes-колонку (demand=2) -> stock 10->8; task_stock(674)=2; stock_movements +(-2, task_consume)
+2. toggle consumes_stock false -> stock 8->10 (возврат); stock_movements +(+2, task_return)
+3. toggle consumes_stock true  -> stock 10->8 (повторное списание); stock_movements +(-2, task_consume)
+4. DELETE task 674 -> Reconcile(target=false) -> stock 8->10; stock_movements +(+2, task_return)
+
+$ SELECT (SELECT stock FROM products WHERE id='...103') = 10 + COALESCE((SELECT sum(qty_delta) FROM stock_movements WHERE product_id='...103'),0);
+ t
+Результат: инвариант «остаток = стартовый(10) + Σ stock_movements.qty_delta» держится после каждого шага (4 движения: -2,+2,-2,+2, итог stock=10). PRD §3 требование выполнено.
+
+## FK SET NULL при удалении заказа
+$ DELETE FROM tasks (через API DELETE /tasks/674)
+$ SELECT task_id, qty_delta, reason FROM stock_movements WHERE product_id='...103' ORDER BY created_at;
+ task_id | qty_delta |    reason
+---------+-----------+--------------
+         |    -2.000 | task_consume
+         |     2.000 | task_return
+         |    -2.000 | task_consume
+         |     2.000 | task_return
+(4 rows)   -- все task_id стали NULL после удаления заказа (ON DELETE SET NULL сработал)
+
+## Cascade delete задачи
+$ SELECT * FROM task_stock WHERE task_id=674;   -> 0 rows
+$ SELECT * FROM subtasks WHERE task_id=674;     -> 0 rows
+(subtasks/subtask_products/task_stock/task_equipment каскадно удалены через ON DELETE CASCADE tasks(id))
+
+## Общая проверка счётчиков БД (после миграции 0005, на общем dev-стенде с историей E2E-прогонов)
+columns: 76 строк, tasks: 640 строк (затем 641/640 после qa-фикстур), products: 286 строк — миграция не потеряла и не задвоила существующие строки (baseline as-is не тронут).

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "fff": {
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/fff-mcp",
+      "args": []
+    }
+  }
+}

@@ -1,0 +1,671 @@
+# Draft Spec: Мягкое удаление — документы перемещения и заказы с документами
+
+**Tier:** M · **Совместимость:** MVP · **Режим:** new
+
+**Дата:** 2026-10-08 | **Статус:** draft → final (после подтверждения пользователя) | **Tier:** M
+**Совместимость:** MVP (DS-022) — рабочей версии с живыми пользователями нет: таблицы и адреса меняем свободно, без переходного периода и отката; данные на базе сохраняются — все существующие документы после миграции считаются действующими
+**UI-scope:** swagger:no | adaptive:min | themes:both (DS-023)
+**Источник:** мастер-спека `docs/features/soft-delete/draft-spec.md` (§4.2, §6.3, §6.4, §6.26, §8.4) + её журнал `docs/features/soft-delete/draft-spec-decisions.md` + as-is факты кода (`internal/features/transfers`, `internal/features/board/tasks_service.go`, `migrations/0009`, `0014`–`0017`)
+**Часть 2 из 6 мастер-спеки `soft-delete`; зависит от: 1 (`soft-delete-core`).** Номера DS и TS — мастер-идентификаторы, не перенумерованы. Номера разделов — свои: §6.1 = мастер §6.3, §6.2 = мастер §6.4, §6.3 = строки мастера §6.26 про документы; §8.1 = мастер §8.4.
+
+> После мержа этой части: документ перемещения в статусах «Заявка» и «Отменён» удаляется с причиной и восстанавливается из вкладки «Перемещения» раздела «Удалённые»; заказ удаляется с любыми документами — отказ «Сначала отмените перемещения» снят; документы удалённого заказа видны в «Перемещениях» с пометкой «заказ удалён» и доводятся до конца, новые по такому заказу не создаются. Переходное правило части 1 (DS-034) перестаёт действовать.
+
+## §1. Суть задачи
+Удаление документа «Перемещение» становится восстановимым, а заказ с документами — удаляемым. Для администратора; исполнитель видит пометку «заказ удалён» у документов своих направлений.
+
+**Бизнес (что делает пользователь/процесс):**
+1. Администратор удаляет заявку или отменённый документ с причиной (§8.1) и возвращает его из «Удалённых» (§8.2) — DS-018, DS-020.
+2. Администратор удаляет заказ, у которого есть документы в любом статусе (окно и кнопка — часть 1) — DS-006.
+3. Любой пользователь со своим доступом к «Перемещениям» видит у документа удалённого заказа бейдж «заказ удалён» и доводит документ до конца: отправить, принять, отменить, откатить (§8.1) — DS-007.
+
+**Логика (правила системы):**
+1. Удаляется только документ, не влияющий на учёт: «Заявка» или «Отменён»; проведённый сначала откатывают и отменяют — DS-018.
+2. При удалении заявки её единицы оборудования освобождаются; при восстановлении — занимаются снова; единица уже занята другим незавершённым документом → отказ — DS-018.
+3. Остатки и местоположение оборудования не меняются ни при удалении, ни при восстановлении документа или заказа — DS-008.
+4. Новый документ по удалённому заказу не создаётся; существующие работают как обычно — DS-007.
+5. Удалённый документ не существует для обычных адресов (404), не входит в список, в блок перемещений карточки заказа, в итог заказа, в «в пути» на остатках, в историю оборудования — DS-026, DS-010.
+6. Удалённый документ не мешает сменить клиента заказа; если клиента сменили, такой документ восстановить нельзя — DS-040.
+7. Время: `f:deleted_at` — UTC (`timestamptz`), показ и фильтр — по поясу пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ» — DS-025 (краткий дубль §3).
+8. Конкурентный доступ: удаляем документ → оптимистичная блокировка по `f:version` + условие «ещё не удалён»; восстанавливаем → условие «удалён», единицы — под блокировкой строк оборудования; создаём документ по заказу → под блокировкой заказа с проверкой «заказ не удалён» — DS-024 (краткий дубль §3).
+
+**Техника (API/данные/интеграции):**
+1. Данные: три новые колонки в `t:transfers`, CHECK и частичный индекс; `t:transfer_items`, `t:equipment`, `t:tasks` не меняются (§4).
+2. API: `e:DELETE /api/v1/transfers/:id` меняет поведение и формат запроса (§6.1); новый `e:POST /api/v1/transfers/:id/restore` (§6.2); дельта существующих адресов документов и заказов, вид `s:transfers` в `e:GET /api/v1/deleted` и в служебной уборке (§6.3).
+3. Пакеты: `internal/features/transfers` (удаление, восстановление, чтение), `internal/features/board` (снятие отказа при удалении заказа; читатели документов), `internal/features/clients` (история оборудования), `internal/features/softdelete` (вид `s:transfers`).
+4. Внешних систем нет.
+
+**UI (графическая часть):**
+1. «Перемещения»: кнопка «Удалить» открывает общее окно с причиной; бейдж «заказ удалён» в списке и в документе (§8.1).
+2. «Удалённые»: новая вкладка «Перемещения» (§8.2).
+3. Окно удаления заказа (часть 1): отказ «Сначала отмените перемещения» больше не приходит (§8.3).
+
+Out-of-scope:
+1. Бейджи «удалён» у клиента, поставщика, склада, товара и единицы оборудования внутри документа — части 4, 5, 6 (DS-014); отказ восстановления заявки с удалёнными записями в составе (409 `TRANSFER_HAS_DELETED_REFS` в таблице ошибок §6.2) начинает срабатывать с этими частями — до них удалённых единиц, товаров, складов и поставщиков не бывает (DS-045).
+2. Удаление проведённого документа («В пути», «Получено») — запрещено, как и сейчас (решение пользователя, DS-018).
+3. Окончательное удаление — не делаем (решение пользователя, DS-012); физическая уборка — только служебная, для автотестов (DS-038).
+
+## §2. Интеграции и master-data
+Потоки: не применимо — внешних систем нет.
+
+Справочники (master-data):
+
+| Справочник | Источник правды | Синхронизация | Где используется |
+|---|---|---|---|
+| `t:users` | эта же база (пакет `users`) | нет | `f:deleted_by` в `t:transfers` (§4.1); колонка «Кто удалил» раздела «Удалённые» — DS-030 |
+| `t:tasks` | эта же база (пакет `board`) | нет | признак «заказ удалён» у документа (§4.4, §6.3) — DS-007 |
+
+## §3. Нефункциональные требования
+
+**Конкурентность (по операциям):**
+1. **Удаление документа:**
+   - оптимистичная блокировка: UPDATE с условиями `version = :version`, `deleted_at IS NULL`, `status IN ('requested','cancelled')`; не совпала версия → 409 `TRANSFER_VERSION_CONFLICT`; статус не тот → 409 `TRANSFER_STATUS_CONFLICT`; уже удалён → 404 `TRANSFER_NOT_FOUND` — DS-018, DS-024
+   - у заявки освобождение единиц (`t:equipment.active_transfer_id` = NULL) — в той же транзакции, под блокировкой строк `t:equipment` (`FOR NO KEY UPDATE`, as-is порядок «документ → `t:equipment`», `docs/plan.md` D75)
+2. **Восстановление документа:**
+   - UPDATE с условием `deleted_at IS NOT NULL`; не удалён → 409 `NOT_DELETED`
+   - у заявки: строки `t:equipment` её единиц блокируются по возрастанию `f:id`; единица с `active_transfer_id IS NOT NULL` → 409 `EQUIPMENT_IN_TRANSFER`, транзакция откатывается, документ остаётся удалённым — DS-018
+   - два администратора восстанавливают две заявки с общей единицей одновременно: первая — 200, вторая — 409 `EQUIPMENT_IN_TRANSFER`
+   - восстановление документа одновременно со сменой клиента заказа: восстановление держит на заказе `FOR KEY SHARE`, смена клиента — `FOR UPDATE` (as-is `LockTask`): смена выиграла → 409 `TRANSFER_CLIENT_MISMATCH`; восстановление выиграло → смена видит действующий документ и получает 409 `TASK_CLIENT_LOCKED_BY_TRANSFERS` — DS-040
+3. **Создание документа по заказу одновременно с удалением заказа:**
+   - создание держит на заказе `FOR KEY SHARE` (as-is `checkRefs`) и читает под ней `deleted_at`: заказ удалён → 409 `TASK_DELETED`; удаление заказа (`FOR UPDATE`) ждёт создание — документ остаётся у удалённого заказа (допустимо, DS-006); взаимной блокировки нет: порядок «заказ → `t:equipment`» общий — DS-007
+4. **Удаление заказа с документами:**
+   - строки `t:transfers` не читаются и не блокируются — проверка документов при удалении заказа убрана целиком — DS-006
+5. **Правка, отправка, приём, отмена, откат удалённого документа:**
+   - условие `deleted_at IS NULL` в чтении документа под блокировкой → 404 `TRANSFER_NOT_FOUND` — DS-026
+
+**Аудит:**
+- на документе хранится последнее удаление: `f:deleted_by`, `f:deleted_at`, `f:delete_reason`; при восстановлении очищаются — DS-030
+- факт удаления и восстановления — в журнал приложения (`slog`, info: номер документа, статус, пользователь, действие; as-is запись «transfer deleted» сохраняется); причина в журнал не пишется
+
+**Время/таймзоны:**
+- хранение: `f:deleted_at` — `timestamptz`, UTC, `now()` — DS-025
+- фильтр периода и показ в разделе «Удалённые» — по поясу пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ» (механика части 1)
+- порядок — `f:deleted_at` по убыванию, затем `f:id`
+
+**Метрики/таймстемпы:**
+- новый таймстемп — `f:deleted_at`; счётчик вкладки — `f:counts.transfers` в `e:GET /api/v1/deleted/summary` (часть 1)
+
+**Offline / деградация / восстановление:**
+- одиночные запросы; при потере связи — тост ошибки, повтор безопасен (см. «Идемпотентность» в §6)
+
+**Объёмы и производительность:**
+- условие `deleted_at IS NULL` добавляется в запросы списка и чтения документов; существующие индексы `t:transfers` остаются рабочими; список удалённых — частичный индекс `i:transfers_deleted_at_idx`
+
+**Логирование и чувствительные данные:**
+- причина удаления в журнал не пишется; раздел «Удалённые» — только администратору — DS-003
+
+**Формат ошибок:**
+- `pkg/errorspkg`: `{code, message, details}`; 400 → `details.fields[]`; отказ в доступе — 403 «Нет доступа»
+
+**Abuse cases (инсайдерские риски — вход для adversarial E2E TD-4):**
+1. Исполнитель вызывает `DELETE /api/v1/transfers/:id` или `POST /api/v1/transfers/:id/restore` → 403 «Нет доступа» до поиска документа, включая документ своего направления и несуществующий — DS-003.
+2. Удалённый документ открывается по прямой ссылке `/transfers?id=N` → «Перемещение не найдено» — DS-026.
+3. Номер удалённого заказа подставляется в `task_id` нового документа в обход выпадающего списка → 409 `TASK_DELETED` — DS-007.
+4. Удаление документа «в пути» подстановкой старой `version` → 409, остатки не меняются — DS-018.
+5. Причина из пробелов или длиннее 500 символов → 400 — DS-020.
+
+**Применённые zap-дефолты** (zap-list — стандарты проекта из CLAUDE.md, применяются автоматически, без вопросов; в §9 — источник `zap`):
+- коды ответов: 404 / 403 / 409 (zap)
+- обработка синхронная (zap)
+- миграции вручную (`make migrate-up`) (zap)
+
+## §4. Данные
+Легенда колонки «Обяз.»: `да` — клиент обязан передать при создании/правке; `нет` — опционально; `авто` — заполняет система (PK, дефолты, таймстемпы, значения из URL/сессии); `условно` — зависит от правила, оно указано в Описании. NULL — DDL-факт, Обяз. — семантика заполнения.
+
+### §4.1. `t:transfers` (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)
+Документ «Перемещение». Создана как `stock_transfers` (`migrations/0009_stock_transfers.up.sql`), переименована и расширена (`0014`–`0017`). Часть 2 добавляет три колонки удаления; строки без пометки «новое» — существующие колонки без изменений.
+
+| Поле | Тип | NULL | Default | Обяз. | Описание | DS |
+|---|---|---|---|---|---|---|
+| `f:id` | bigserial | нет | авто-номер | авто | PK, сквозной номер #N (as-is) | DS-012 |
+| `f:direction` | text | нет | — | да | направление: `s:client_to_warehouse`, `s:warehouse_to_client`, `s:warehouse_to_warehouse`, `s:supplier_to_warehouse`; после создания не меняется (as-is) | DS-007 |
+| `f:from_warehouse_id` | uuid | да | — | условно | FK → `t:warehouses(id)` `ON DELETE RESTRICT`; обязателен для `s:warehouse_to_client`, `s:warehouse_to_warehouse`, иначе NULL (as-is) | DS-008 |
+| `f:to_warehouse_id` | uuid | да | — | условно | FK → `t:warehouses(id)` `ON DELETE RESTRICT`; обязателен для `s:client_to_warehouse`, `s:warehouse_to_warehouse`, `s:supplier_to_warehouse`, иначе NULL (as-is) | DS-008 |
+| `f:task_id` | bigint | да | — | условно | FK → `t:tasks(id)` `ON DELETE RESTRICT`; обязателен для `s:client_to_warehouse`, `s:warehouse_to_client`, иначе NULL (as-is); заказ может быть мягко удалён — документ остаётся действующим | DS-006, DS-007 |
+| `f:client_id` | uuid | да | — | авто | FK → `t:clients(id)` `ON DELETE RESTRICT`; сервер выводит из заказа, снимок на момент создания (as-is); при восстановлении документа сверяется с текущим клиентом заказа | DS-040 |
+| `f:supplier_id` | uuid | да | — | условно | FK → `t:suppliers(id)` `ON DELETE RESTRICT`; обязателен для `s:supplier_to_warehouse`, иначе NULL (as-is) | DS-007 |
+| `f:status` | text | нет | `requested` | авто | статус: `s:requested`, `s:in_transit`, `s:received`, `s:cancelled` (as-is); удаление допустимо только в `s:requested` и `s:cancelled`; при удалении и восстановлении не меняется | DS-018 |
+| `f:note` | text | нет | `''` | нет | примечание, 0–1000 символов (as-is) | DS-018 |
+| `f:created_by` | uuid | нет | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT`, из сессии (as-is) | DS-030 |
+| `f:sent_by` | uuid | да | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT` (as-is) | DS-030 |
+| `f:sent_at` | timestamptz | да | — | авто | момент отправки (as-is) | DS-025 |
+| `f:received_by` | uuid | да | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT` (as-is) | DS-030 |
+| `f:received_at` | timestamptz | да | — | авто | момент приёмки (as-is) | DS-025 |
+| `f:cancelled_by` | uuid | да | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT` (as-is) | DS-030 |
+| `f:cancelled_at` | timestamptz | да | — | авто | момент отмены (as-is) | DS-025 |
+| `f:unreceived_by` | uuid | да | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT`; кто последним отменил проведение (as-is) | DS-030 |
+| `f:unreceived_at` | timestamptz | да | — | авто | когда последний раз отменено проведение (as-is) | DS-025 |
+| `f:unreceive_reason` | text | нет | `''` | условно | причина последней отмены проведения, до 500 символов; обязательна в `e:POST /api/v1/transfers/:id/unreceive` (as-is) | DS-020 |
+| `f:created_at` | timestamptz | нет | `now()` | авто | момент создания (as-is) | DS-025 |
+| `f:updated_at` | timestamptz | нет | `now()` | авто | момент изменения (as-is); обновляется при удалении и восстановлении | DS-024 |
+| `f:version` | int | нет | `1` | авто | оптимистичная блокировка, +1 на каждую мутацию (as-is), включая удаление и восстановление | DS-024 |
+| **`f:deleted_at`** (новое) | timestamptz | да | — | авто | момент удаления, UTC, `now()`; NULL — документ действует | DS-018, DS-025 |
+| **`f:deleted_by`** (новое) | uuid | да | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT`; кто удалил — из сессии; NULL у действующего | DS-003, DS-030 |
+| **`f:delete_reason`** (новое) | text | да | — | условно | причина удаления: обязательна в запросе удаления, 1–500 символов после обрезки крайних пробелов; NULL у действующего | DS-020 |
+
+Ключи и индексы:
+- PK: `f:id` (as-is)
+- UNIQUE: нет (as-is)
+- Индексы (as-is): `i:transfers_status_idx` (`status`); `i:transfers_direction_idx` (`direction`); `i:transfers_from_warehouse_id_idx` (`from_warehouse_id`); `i:transfers_to_warehouse_id_idx` (`to_warehouse_id`); `i:transfers_task_id_idx` (`task_id`); `i:transfers_client_id_idx` (`client_id`); `i:transfers_supplier_id_idx` (`supplier_id`); `i:transfers_created_at_idx` (`created_at`)
+- Индексы (новое): `i:transfers_deleted_at_idx` (`deleted_at DESC`, `id`) `WHERE deleted_at IS NOT NULL` — вкладка «Перемещения» раздела «Удалённые»
+- CHECK (as-is): `i:transfers_route_check` (состав полей по направлению), `i:transfers_unreceive_reason_check`
+- CHECK (новое) `i:transfers_deleted_chk`: три поля удаления либо все NULL, либо все заполнены; `char_length(btrim(delete_reason))` от 1 до 500; удалён может быть только документ в `s:requested` или `s:cancelled` (`deleted_at IS NULL OR status IN ('requested','cancelled')`) — DS-018, DS-030
+
+Связи (одна связь = одна строка):
+- 1→N `t:transfer_items` — CASCADE (as-is) — при мягком удалении строки остаются
+- N→1 `t:tasks` — RESTRICT (as-is) — ссылка на мягко удалённый заказ допустима (DS-006)
+- N→1 `t:clients`, `t:suppliers`, `t:warehouses` — RESTRICT (as-is)
+- N→1 `t:users` (`f:deleted_by`) — RESTRICT (новое)
+- 1→N `t:stock_movements.transfer_id` — SET NULL (as-is) — при мягком удалении ссылка сохраняется
+- 1→N `t:equipment.active_transfer_id` — SET NULL (as-is) — при удалении заявки обнуляется явно, при восстановлении выставляется снова (DS-018)
+
+Поведение при действиях (одно действие = одна строка):
+- Создание: как сейчас; дополнительно заказ документа не должен быть удалён — иначе 409 `TASK_DELETED` — DS-007
+- Изменение (правка заявки, отправка, приём, отмена, откат): как сейчас, в том числе у документа удалённого заказа; `f:task_id` заявки неизменяем (as-is: попытка сменить → 400 `VALIDATION`, `task_id: not_allowed`), поэтому перевести заявку на удалённый заказ нельзя и отдельной проверки не нужно; удалённый документ → 404 `TRANSFER_NOT_FOUND` — DS-007, DS-026
+- Удаление: только admin, причина и `f:version` обязательны; только `s:requested` и `s:cancelled`; одна транзакция: запись трёх полей; у заявки — `t:equipment.active_transfer_id` = NULL у её единиц; `t:transfer_items`, `t:stock_movements`, остатки и местоположение не трогаются — DS-018, DS-008
+- Восстановление: только admin; одна транзакция: у документа с заказом — заказ блокируется `FOR KEY SHARE`, `f:client_id` документа не совпадает с клиентом заказа → 409 `TRANSFER_CLIENT_MISMATCH` (DS-040); у заявки с заказом — каждая её единица должна входить в оборудование заказа (`t:task_equipment`), иначе 409 `TRANSFER_EQUIPMENT_NOT_IN_TASK` (DS-043); очистка трёх полей; у заявки — `t:equipment.active_transfer_id` = номер документа у её единиц, занятая единица → 409 `EQUIPMENT_IN_TRANSFER`; у отменённого — только очистка — DS-018
+- Физическое удаление: только служебная уборка автотестов (§6.3) — DS-038
+
+Инварианты (правило → чем держится → DS):
+- удалённый документ не влияет на учёт → CHECK `i:transfers_deleted_chk` (статус) + условие статуса в UPDATE удаления → DS-018
+- единица оборудования — не более чем в одном незавершённом действующем документе → освобождение при удалении заявки и проверка занятости при восстановлении под блокировкой строк `t:equipment` → DS-018
+- удалённый документ не виден читателям → условие `transfers.deleted_at IS NULL` в каждом запросе чтения документов (перечень — §Impact) → DS-026
+
+### §4.2. `t:transfer_items` (существующая таблица, не меняется — фича использует, созданием не владеет)
+Строки документа. Часть 2 таблицу не меняет: при мягком удалении документа строки остаются и возвращаются вместе с ним. DDL: `migrations/0009_stock_transfers.up.sql`, `0014`, `0015`, `0016`.
+
+| Поле | Тип | NULL | Default | Обяз. | Описание | DS |
+|---|---|---|---|---|---|---|
+| `f:id` | uuid | нет | `gen_random_uuid()` | авто | PK | DS-018 |
+| `f:transfer_id` | bigint | нет | — | авто | FK → `t:transfers(id)` `ON DELETE CASCADE`, из URL | DS-018 |
+| `f:position` | int | нет | — | авто | порядок строки, с 1 | DS-018 |
+| `f:kind` | text | нет | — | да | тип строки: `s:product`, `s:equipment` | DS-018 |
+| `f:product_id` | uuid | да | — | условно | FK → `t:products(id)` `ON DELETE RESTRICT`; обязателен при `s:product`, иначе NULL | DS-008 |
+| `f:equipment_id` | uuid | да | — | условно | FK → `t:equipment(id)` `ON DELETE RESTRICT`; обязателен при `s:equipment`, иначе NULL; по этим строкам определяются единицы заявки при удалении и восстановлении | DS-018 |
+| `f:qty_sent` | numeric(12,3) | да | — | условно | количество к отправке, больше 0; обязательно при `s:product`, при `s:equipment` — NULL | DS-008 |
+| `f:qty_received` | numeric(12,3) | да | — | условно | факт приёмки, не меньше 0; заполняется при приёмке товарной строки | DS-008 |
+| `f:price` | numeric(12,2) | да | — | условно | цена продажи за единицу, не меньше 0; только товарные строки `s:warehouse_to_client` | DS-008 |
+
+Ключи и индексы:
+- PK: `f:id`
+- UNIQUE: (`transfer_id`, `product_id`); `i:transfer_items_transfer_id_equipment_id_key` (`transfer_id`, `equipment_id`)
+- Индексы (as-is): `i:transfer_items_product_id_idx` (`product_id`); `i:transfer_items_equipment_id_idx` (`equipment_id`)
+- CHECK (as-is): `i:transfer_items_kind_check`, `i:transfer_items_qty_received_check`, `i:transfer_items_price_check`
+
+Связи (одна связь = одна строка):
+- N→1 `t:transfers` — CASCADE (as-is) — при мягком удалении документа каскад не срабатывает
+- N→1 `t:products` — RESTRICT (as-is)
+- N→1 `t:equipment` — RESTRICT (as-is)
+
+Используется в модулях (used by):
+
+| Модуль | Ключ-дискриминатор (если есть) | Роль (writer/reader) | Что делает | Путь |
+|---|---|---|---|---|
+| `transfers` | `f:kind` = `s:product` / `s:equipment` | writer | создание и замена строк, приёмка, откат | `internal/features/transfers/repo.go` |
+| `board` | `f:kind` = `s:product` | reader | «в пути» на остатках, итог заказа | `internal/features/board/stock_repo.go`, `tasks_repo.go` |
+| `clients` | `f:kind` = `s:equipment` | reader | история единицы, запрет удаления единицы с документами | `internal/features/clients/history.go`, `repo.go` |
+
+### §4.3. `t:equipment` (общая таблица, чужая — фича использует, не владеет)
+Единица оборудования клиента. Часть 2 таблицу не меняет: пишет только `f:active_transfer_id` при удалении и восстановлении заявки. DDL: `migrations/0003_clients_equipment.up.sql`, `migrations/0014_transfers_core.up.sql`.
+
+| Поле | Тип | NULL | Default | Обяз. | Описание | DS |
+|---|---|---|---|---|---|---|
+| `f:id` | uuid | нет | `gen_random_uuid()` | авто | PK | DS-018 |
+| `f:client_id` | uuid | нет | — | да | FK → `t:clients(id)` `ON DELETE CASCADE` | DS-018 |
+| `f:type_id` | uuid | нет | — | да | FK → `t:equipment_types(id)` `ON DELETE RESTRICT` | DS-018 |
+| `f:brand` | text | нет | `''` | нет | марка | DS-018 |
+| `f:model` | text | нет | — | да | модель, непустая | DS-018 |
+| `f:sku` | text | нет | `''` | нет | артикул — строка | DS-018 |
+| `f:serial` | text | нет | `''` | нет | серийный номер — строка | DS-018 |
+| `f:specs` | jsonb | нет | `'[]'` | нет | характеристики, массив | DS-018 |
+| `f:note` | text | нет | `''` | нет | примечание | DS-018 |
+| `f:created_at` | timestamptz | нет | `now()` | авто | момент создания | DS-025 |
+| `f:updated_at` | timestamptz | нет | `now()` | авто | момент изменения | DS-025 |
+| `f:location_status` | text | нет | `'at_client'` | авто | местоположение: `s:at_client`, `s:at_warehouse`, `s:in_transit` (полный набор — CHECK `i:equipment_location_status_check`); меняется только проведением документа, удалением и восстановлением документа НЕ меняется | DS-008 |
+| `f:warehouse_id` | uuid | да | — | авто | FK → `t:warehouses(id)` `ON DELETE RESTRICT`; склад единицы при `s:at_warehouse`; удалением и восстановлением документа НЕ меняется | DS-008 |
+| `f:active_transfer_id` | bigint | да | — | авто | FK → `t:transfers(id)` `ON DELETE SET NULL`; незавершённый документ, занявший единицу; удаление заявки → NULL, восстановление заявки → номер документа | DS-018 |
+
+Ключи и индексы:
+- PK: `f:id`
+- UNIQUE: нет
+- Индексы (as-is): `i:equipment_warehouse_id_idx` (`warehouse_id`); `i:equipment_active_transfer_id_idx` (`active_transfer_id`) — поиск единиц документа при удалении заявки
+
+Используется в модулях (used by):
+
+| Модуль | Ключ-дискриминатор (если есть) | Роль (writer/reader) | Что делает | Путь |
+|---|---|---|---|---|
+| `clients` | — | writer | создание, правка, удаление единиц, история | `internal/features/clients` |
+| `transfers` | `f:location_status` | writer | занятие и освобождение единиц, смена местоположения проведением документа; в части 2 — `f:active_transfer_id` при удалении и восстановлении заявки | `internal/features/transfers/repo.go` |
+| `board` | — | reader | оборудование заказа, бейдж местоположения, фильтр доски по складу | `internal/features/board/card_repo.go`, `tasks_repo.go` |
+| `warehouses` | `f:location_status` = `s:at_warehouse` | reader | запрет архивирования склада с оборудованием | `internal/features/warehouses` |
+
+### §4.4. `t:tasks` (общая таблица, чужая — фича использует, не владеет)
+Заказ. Часть 2 таблицу не меняет: читает `f:deleted_at` (колонка части 1) для пометки «заказ удалён» и запрета новых документов. DDL: `migrations/0005_board.up.sql` + миграция части 1.
+
+| Поле | Тип | NULL | Default | Обяз. | Описание | DS |
+|---|---|---|---|---|---|---|
+| `f:id` | bigserial | нет | авто-номер | авто | PK, номер заказа #N; на него ссылается `t:transfers.task_id` | DS-006 |
+| `f:column_id` | uuid | нет | — | да | FK → `t:columns(id)` `ON DELETE RESTRICT` | DS-006 |
+| `f:client_id` | uuid | нет | — | да | FK → `t:clients(id)` `ON DELETE RESTRICT`; из него выводится `t:transfers.client_id`; смена запрещена при действующих документах заказа, удалённые документы смене не мешают | DS-040 |
+| `f:title` | text | нет | — | да | название, до 200 символов; отдаётся в документе как `f:task_title` | DS-007 |
+| `f:description_html` | text | нет | `''` | нет | описание | DS-006 |
+| `f:assignee_id` | uuid | да | — | нет | FK → `t:users(id)` `ON DELETE SET NULL` | DS-006 |
+| `f:due_date` | date | да | — | нет | срок | DS-006 |
+| `f:is_paid` | boolean | нет | false | нет | оплачен | DS-006 |
+| `f:paid_at` | timestamptz | да | — | авто | момент оплаты | DS-025 |
+| `f:position` | numeric | нет | — | авто | позиция в колонке | DS-006 |
+| `f:created_by` | uuid | нет | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT` | DS-030 |
+| `f:created_at` | timestamptz | нет | `now()` | авто | момент создания | DS-025 |
+| `f:updated_at` | timestamptz | нет | `now()` | авто | момент изменения | DS-025 |
+| `f:version` | bigint | нет | 1 | авто | версия заказа | DS-024 |
+| `f:deleted_at` | timestamptz | да | — | авто | момент удаления заказа (часть 1); NOT NULL → у его документов `f:task_is_deleted` = true, новые документы → 409 `TASK_DELETED` | DS-007 |
+| `f:deleted_by` | uuid | да | — | авто | FK → `t:users(id)` `ON DELETE RESTRICT`; кто удалил заказ (часть 1) | DS-030 |
+| `f:delete_reason` | text | да | — | условно | причина удаления заказа (часть 1) | DS-020 |
+
+Ключи и индексы:
+- PK: `f:id`
+- UNIQUE: нет
+- Индексы: без изменений (перечень — спека части 1 §4.1)
+
+Используется в модулях (used by):
+
+| Модуль | Ключ-дискриминатор (если есть) | Роль (writer/reader) | Что делает | Путь |
+|---|---|---|---|---|
+| `board` | — | writer | создание, правка, перенос, удаление и восстановление заказа | `internal/features/board` |
+| `transfers` | — | reader | название заказа и признак «заказ удалён» в документе; клиент заказа при создании документа (`checkRefs`, `FOR KEY SHARE`) | `internal/features/transfers/repo.go:185`, `:1157` |
+| `executorpayouts` | — | reader | услуги заказов в отчёте «Выплаты» | `internal/features/executorpayouts/repo.go` |
+| `clients` | — | reader | история оборудования, проверка заказов клиента | `internal/features/clients/history.go`, `repo.go` |
+| `users` | — | reader | счётчик «Активных заказов» | `internal/features/users/repo.go` |
+| `softdelete` | — | reader | вкладка «Заказы» раздела «Удалённые» | `internal/features/softdelete` |
+
+## §5. Статусная модель
+Собственные статусы документа (`s:requested`, `s:in_transit`, `s:received`, `s:cancelled`) и переходы между ними не меняются — их диаграмма в `docs/features/transfers/draft-spec-status.svg`. Часть 2 добавляет независимый признак «удалён» с двумя состояниями (диаграмма с двумя состояниями не рисуется; общая — в мастере, `docs/features/soft-delete/draft-spec-status.svg`).
+
+Состояния: `s:active` — документ действует (`deleted_at IS NULL`); `s:deleted` — документ удалён (`deleted_at IS NOT NULL`). Терминальных состояний нет — DS-012.
+
+| Из | В | Триггер | Кто | Guard / конкурентный исход | Side effects |
+|---|---|---|---|---|---|
+| `s:active` + `s:requested` | `s:deleted` | «Удалить» + причина | admin | `version` совпадает, `deleted_at IS NULL`, статус `s:requested`; иначе 409 / 404 | единицы заявки освобождены |
+| `s:active` + `s:cancelled` | `s:deleted` | «Удалить» + причина | admin | то же, статус `s:cancelled` | — |
+| `s:active` + `s:in_transit` | — (запрещено) | «Удалить» | admin | 409 `TRANSFER_STATUS_CONFLICT` «Перемещение в пути — сначала отмените его» | — |
+| `s:active` + `s:received` | — (запрещено) | «Удалить» | admin | 409 `TRANSFER_STATUS_CONFLICT` «Перемещение получено — сначала отмените проведение, затем отмените» | — |
+| `s:deleted` (была `s:requested`) | `s:active` + `s:requested` | «Восстановить» | admin | `deleted_at IS NOT NULL`; клиент документа совпадает с клиентом заказа, иначе 409 `TRANSFER_CLIENT_MISMATCH`; единицы заявки входят в оборудование заказа, иначе 409 `TRANSFER_EQUIPMENT_NOT_IN_TASK`; все единицы свободны, иначе 409 `EQUIPMENT_IN_TRANSFER`; повтор → 409 `NOT_DELETED` | единицы заявки заняты снова |
+| `s:deleted` (была `s:cancelled`) | `s:active` + `s:cancelled` | «Восстановить» | admin | `deleted_at IS NOT NULL`; клиент документа совпадает с клиентом заказа, иначе 409 `TRANSFER_CLIENT_MISMATCH`; повтор → 409 `NOT_DELETED` | — |
+
+Что можно в `s:deleted`: только «Восстановить» и просмотр в разделе «Удалённые»; правка, отправка, приём, отмена, откат → 404 — DS-026.
+
+## §6. API
+> Режим B «API + фронтенд». Базовый URL стенда: `http://localhost:8080`. Авторизация — сессионная cookie `sid` (плейсхолдер `<SID>`). Копируй curl в терминал или в Postman: Import → Raw text. Тело ошибки — формат `pkg/errorspkg`: `{code, message, details}`; при 400 — `details.fields[]` с `name` и `message`. Все ключи — snake_case, URL — kebab-case (CLAUDE.md §API-1). Текст отказа в доступе единый — «Нет доступа».
+> as-is: `e:DELETE /api/v1/transfers/:id` принимает `version` в query (`?version=N`) и не принимает тело; часть 2 переносит `version` в JSON-тело рядом с `reason` — так же, как у `e:POST /api/v1/transfers/:id/unreceive` (`{version, reason}`) — DS-028.
+
+### §6.1. `e:DELETE /api/v1/transfers/:id`
+- Назначение: мягко удалить запись «документ перемещения» — она уходит в раздел «Удалённые» (существующий адрес, раньше удалял безвозвратно). Часть 2 `soft-delete-transfers`.
+- Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой, до поиска записи, включая документ с клиентом и несуществующий (as-is `Service.Delete`) — DS-003.
+- Идемпотентность/повтор: повтор удаления уже удалённой записи → 404 (удалённая запись для обычных адресов не существует, DS-026); двойное применение невозможно — UPDATE с условием `deleted_at IS NULL` (DS-024).
+- Side effects: одна транзакция — три поля удаления `t:transfers`, у заявки `t:equipment.active_transfer_id` = NULL; `t:transfer_items` и `t:stock_movements` не трогаются.
+
+Request:
+
+| Параметр | Где | Тип | Обязателен | Валидация |
+|---|---|---|---|---|
+| `f:id` | path | integer | да | существующая действующая запись; иное → 404 |
+| `f:reason` | body | string | да | 1–500 символов после обрезки крайних пробелов; пусто → 400 `required`; длиннее → 400 `too_long`; недопустимые символы (NUL) → 400 `invalid_text` |
+| `f:version` | body | integer | да | ≥ 1; отсутствует → 400 `required`; не число → 400 `invalid` (раньше передавался в query — перенесён в тело, DS-028) |
+
+Response 200:
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `f:id` | integer | идентификатор удалённой записи |
+| `f:deleted_at` | string (RFC 3339, UTC) | момент удаления |
+
+Ошибки:
+
+| Код | Условие | Сообщение пользователю |
+|---|---|---|
+| 400 `VALIDATION` | `reason: required` | «Укажите причину удаления» |
+| 400 `VALIDATION` | `reason: too_long` | «Причина — не длиннее 500 символов» |
+| 400 `VALIDATION` | `reason: invalid_text` | «Недопустимые символы в причине» |
+| 403 `FORBIDDEN` | executor | «Нет доступа» |
+| 404 `TRANSFER_NOT_FOUND` | записи нет либо она уже удалена | «Перемещение не найдено» |
+| 400 `VALIDATION` | `version: required` / `invalid` | «Обновите страницу» |
+| 409 `TRANSFER_VERSION_CONFLICT` | версия устарела | «Перемещение уже изменено, обновите» |
+| 409 `TRANSFER_STATUS_CONFLICT` | статус `s:in_transit` | «Перемещение в пути — сначала отмените его» |
+| 409 `TRANSFER_STATUS_CONFLICT` | статус `s:received` | «Перемещение получено — сначала отмените проведение, затем отмените» |
+
+Успех:
+```bash
+curl -s -b 'sid=<SID>' -X DELETE 'http://localhost:8080/api/v1/transfers/15' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке","version":2}'
+```
+```json
+{ "id": 15, "deleted_at": "2026-10-08T09:15:42Z" }
+```
+Ошибка (VALIDATION → 400):
+```bash
+curl -s -b 'sid=<SID>' -X DELETE 'http://localhost:8080/api/v1/transfers/15' \
+  -H 'Content-Type: application/json' -d '{"reason":"  "}'
+```
+```json
+{
+  "code": "VALIDATION",
+  "message": "validation failed",
+  "details": { "fields": [ { "name": "reason", "message": "required" } ] }
+}
+```
+DS: DS-018, DS-020, DS-003, DS-024, DS-026, DS-028.
+
+### §6.2. `e:POST /api/v1/transfers/:id/restore`
+- Назначение: восстановить удалённую запись «документ перемещения» из раздела «Удалённые» (новый адрес). Часть 2 `soft-delete-transfers`.
+- Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой — DS-003.
+- Идемпотентность/повтор: повтор восстановления действующей записи → 409 `NOT_DELETED`; двойное применение невозможно — UPDATE с условием `deleted_at IS NOT NULL` (DS-024).
+- Side effects: одна транзакция — очистка трёх полей удаления; у заявки под блокировкой строк `t:equipment` — `f:active_transfer_id` = номер документа.
+
+Request:
+
+| Параметр | Где | Тип | Обязателен | Валидация |
+|---|---|---|---|---|
+| `f:id` | path | integer | да | существующая запись (удалённая); иное → 404 |
+
+Тела запроса нет; `f:version` не передаётся — восстановление защищено условием `deleted_at IS NOT NULL`. `f:version` документа при удалении и восстановлении увеличивается на 1.
+
+Response 200:
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `f:id` | integer | идентификатор восстановленной записи |
+
+Ошибки:
+
+| Код | Условие | Сообщение пользователю |
+|---|---|---|
+| 403 `FORBIDDEN` | executor | «Нет доступа» |
+| 404 `TRANSFER_NOT_FOUND` | записи нет | «Перемещение не найдено» |
+| 409 `NOT_DELETED` | запись не удалена (уже восстановлена) | «Запись уже восстановлена» |
+| 409 `EQUIPMENT_IN_TRANSFER` | восстанавливается заявка, а её единица уже стоит в другом незавершённом документе | «Оборудование уже в перемещении #N» |
+| 409 `TRANSFER_CLIENT_MISMATCH` | клиент заказа сменился после удаления документа: клиент документа не совпадает с клиентом заказа | «Клиент заказа изменён — восстановить перемещение нельзя» |
+| 409 `TRANSFER_EQUIPMENT_NOT_IN_TASK` | восстанавливается заявка с заказом, а её единица за время удаления убрана из оборудования заказа (`details.equipment_id`); отменённые документы и документы без заказа не проверяются | «Оборудование убрано из заказа — восстановить перемещение нельзя» |
+| 409 `TRANSFER_HAS_DELETED_REFS` | восстанавливается заявка, а её единица оборудования, товар, склад или поставщик в удалённых (`details.kind`, `details.id`); отменённые документы не проверяются; проверка каждого вида появляется с его частью (4, 5, 6) | «В перемещении есть удалённые записи — сначала восстановите их» |
+
+Успех:
+```bash
+curl -s -b 'sid=<SID>' -X POST 'http://localhost:8080/api/v1/transfers/15/restore'
+```
+```json
+{ "id": 15 }
+```
+Ошибка (EQUIPMENT_IN_TRANSFER → 409):
+```bash
+curl -s -b 'sid=<SID>' -X POST 'http://localhost:8080/api/v1/transfers/15/restore'
+```
+```json
+{
+  "code": "EQUIPMENT_IN_TRANSFER",
+  "message": "Оборудование уже в перемещении #14"
+}
+```
+DS: DS-018, DS-020, DS-003, DS-024.
+
+### §6.3. Прочие изменения существующих endpoints (дельта)
+Существующие поля ответов не переименовываются. Новое поле одно — `f:task_is_deleted`; оно добавляется в оба существующих DTO документа рядом с `f:task_id`: в `TransferResponse` (где уже есть `f:task_id`, `f:task_title`) и в `TransferSummary` (где есть `f:task_id`, а `f:task_title` нет).
+
+| Endpoint | Что меняется | Ответ | DS |
+|---|---|---|---|
+| `e:GET /api/v1/transfers` | удалённые документы не возвращаются; в элементе списка — новое поле `f:task_is_deleted` (boolean; false, если заказа нет) | — | DS-026, DS-007 |
+| `e:GET /api/v1/transfers/:id` | удалённый документ — 404; новое поле `f:task_is_deleted` (boolean); `f:task_title` удалённого заказа отдаётся как обычно | 404 `TRANSFER_NOT_FOUND` | DS-026, DS-007 |
+| `e:POST /api/v1/transfers` | `f:task_id` удалённого заказа | 409 `TASK_DELETED` «Заказ удалён — сначала восстановите его» | DS-007 |
+| `e:PUT /api/v1/transfers/:id` | правка заявки удалённого заказа — как обычно; `f:task_id` заявки неизменяем (as-is 400 `VALIDATION`, `task_id: not_allowed`), поэтому 409 `TASK_DELETED` здесь не возникает — он возможен только при создании документа; удалённый документ — 404 | 404 `TRANSFER_NOT_FOUND` | DS-007, DS-026 |
+| `e:POST /api/v1/transfers/:id/send`, `e:POST /api/v1/transfers/:id/receive`, `e:POST /api/v1/transfers/:id/cancel`, `e:POST /api/v1/transfers/:id/unreceive` | у документа удалённого заказа — как обычно; удалённый документ — 404 | 404 `TRANSFER_NOT_FOUND` | DS-007, DS-026 |
+| `e:DELETE /api/v1/tasks/:id` (часть 1 §6.1) | отказ `x:TASK_HAS_TRANSFERS` снят: заказ удаляется с документами в любом статусе; документы не читаются и не меняются | строка ошибки 409 `TASK_HAS_TRANSFERS` исчезает | DS-006 |
+| `e:PUT /api/v1/tasks/:id` | смена клиента заказа: мягко удалённые документы заказа смене не мешают — проверка считает только действующие документы, в `details.transfer_ids` только их номера | 409 `TASK_CLIENT_LOCKED_BY_TRANSFERS` (as-is код и текст) — только при действующих документах | DS-040 |
+| `e:GET /api/v1/tasks/:id/card`, `e:GET /api/v1/tasks` | блок перемещений заказа и итог заказа считаются без удалённых документов | — | DS-026 |
+| `e:GET /api/v1/stock`, `e:GET /api/v1/stock/summary` | «в пути» считается без удалённых документов (удаляются только «Заявка» и «Отменён», на «в пути» они не влияли — условие добавляется для единообразия) | — | DS-026 |
+| `e:GET /api/v1/equipment/:id/history` | удалённые документы в истории единицы не показываются | — | DS-026 |
+| `e:GET /api/v1/deleted` (часть 1 §6.3) | вид `s:transfers` начинает отдавать строки: `f:title` — «Перемещение #15», `f:subtitle` — направление и статус («Склад → склад · Заявка»), `f:is_archived` = false, `f:deleted_with` = null | — | DS-011 |
+| `e:GET /api/v1/deleted/summary` (часть 1 §6.4) | `f:counts.transfers` — число удалённых документов | — | DS-011 |
+| `e:DELETE /api/v1/test/purge/:kind/:id` (часть 1 §6.5) | новый вид `s:transfers`: физически удаляет документ в `s:requested` или `s:cancelled`, действующий или мягко удалённый (строки — каскадом, единицы заявки освобождаются); вид `s:tasks` дополнительно удаляет мягко удалённые документы заказа | 409 `TRANSFER_STATUS_CONFLICT` для `s:in_transit`, `s:received` | DS-038 |
+
+Пример нового поля в документе удалённого заказа:
+```bash
+curl -s -b 'sid=<SID>' 'http://localhost:8080/api/v1/transfers/14'
+```
+```json
+{
+  "id": 14,
+  "direction": "client_to_warehouse",
+  "task_id": 128,
+  "task_title": "Ремонт кофемашины",
+  "task_is_deleted": true,
+  "status": "in_transit",
+  "version": 3
+}
+```
+(ответ сокращён — остальные поля `TransferResponse` без изменений)
+
+Ошибка (TASK_DELETED → 409):
+```bash
+curl -s -b 'sid=<SID>' -X POST 'http://localhost:8080/api/v1/transfers' \
+  -H 'Content-Type: application/json' \
+  -d '{"direction":"client_to_warehouse","to_warehouse_id":"1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d","task_id":128,"items":[{"kind":"equipment","equipment_id":"a3c1e7b2-9d44-4f6a-b0c8-2e5d7f1a6b33"}]}'
+```
+```json
+{
+  "code": "TASK_DELETED",
+  "message": "Заказ удалён — сначала восстановите его"
+}
+```
+DS: DS-006, DS-007, DS-026, DS-040, DS-038.
+
+## §7. UX/UI + API (сквозной флоу)
+![Сценарий «Удалить и восстановить документ; заказ с документами»](draft-spec-flow.svg)
+
+Полнота покрытия: каждый адрес §6 встречается на экране §8, каждое действие экрана имеет адрес.
+
+| Endpoint | Экраны |
+|---|---|
+| §6.1 `e:DELETE /api/v1/transfers/:id` | §8.1 (через общее окно «Удаление» части 1) |
+| §6.2 `e:POST /api/v1/transfers/:id/restore` | §8.2 |
+| §6.3 `e:GET /api/v1/transfers`, `e:GET /api/v1/transfers/:id`, `e:POST /api/v1/transfers`, действия документа | §8.1 |
+| §6.3 `e:DELETE /api/v1/tasks/:id` | §8.3 |
+| §6.3 `e:GET /api/v1/deleted`, `e:GET /api/v1/deleted/summary` | §8.2 |
+| §6.3 `e:DELETE /api/v1/test/purge/:kind/:id` | экранов нет — только автотесты (DS-038) |
+
+## §8. UI-иерархия
+- Работа → **Перемещения** (`/transfers`) → «Удалить» с причиной; бейдж «заказ удалён» — §8.1
+- Администрирование → **Удалённые** (`/deleted`) → вкладка «Перемещения» → «Восстановить» — §8.2
+- Доска → **Карточка заказа** → «Удалить заказ» (заказ с документами) — §8.3
+
+UI-конвенции (DS-033): как в части 1 — ошибка поля под полем (`is-invalid`), тост в правом верхнем углу на 5 секунд, причина — общее окно «Удаление» (`KT.uiDialog`), на время запроса кнопка заблокирована. Бейдж «заказ удалён» — серый бейдж Bootstrap (`badge text-bg-secondary`) справа от номера заказа. Даты — в поясе пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ». Адаптив — минимальный (DS-023).
+
+### §8.1. Экран/форма «Перемещения»
+
+**Как попадаем:**
+- **Путь:** меню «Работа → Перемещения»
+- **URL:** `/transfers?id={номер}` (as-is)
+- **Роли:** admin, executor (as-is скоуп) · **Устройство:** десктоп, телефон
+- **При открытии:** `GET /api/v1/transfers`, `GET /api/v1/transfers/:id` (as-is, §6.3)
+- **200:** список без удалённых документов · **Пусто:** as-is · **4xx:** прямая ссылка на удалённый документ — «Перемещение не найдено»
+
+**Что на странице (сверху вниз) — только изменения:**
+1. Список документов: у документа удалённого заказа рядом с номером заказа — бейдж «заказ удалён» (`f:task_is_deleted`); номер заказа — текст без ссылки.
+2. Документ (правая часть): в шапке рядом с заказом — бейдж «заказ удалён», номер заказа — текст без ссылки (бейджи «удалён» у клиента, поставщика, склада, товара и единицы — части 4–6).
+3. Кнопка «Удалить» у документа в статусах «Заявка» и «Отменён» (admin, as-is расположение) — открывает общее окно «Удаление» с причиной (часть 1 `soft-delete-core` §8.2).
+4. Форма нового документа: в выборе заказа удалённых заказов нет.
+
+**Интерактив:**
+1. **Удалить документ**
+   - **Элемент:** кнопка (второстепенная, красный текст) в шапке документа справа; только admin; только «Заявка» и «Отменён»
+   - **UI:** открывается общее окно «Удаление» с причиной (часть 1 §8.2); пояснение в окне — «Документ можно восстановить в разделе «Удалённые»»
+   - **Вызов:** `DELETE §6.1` → `/api/v1/transfers/{id}`, body: `{ reason, version }`
+   - **200:** `{ id, deleted_at }` → документ исчезает из списка; тост «Удалено. Восстановить можно в разделе «Удалённые»»
+   - **4xx (409 TRANSFER_STATUS_CONFLICT, в пути):** в окне «Перемещение в пути — сначала отмените его»
+   - **4xx (409 TRANSFER_STATUS_CONFLICT, получено):** в окне «Перемещение получено — сначала отмените проведение, затем отмените»
+   - **4xx (409 TRANSFER_VERSION_CONFLICT):** в окне «Перемещение уже изменено, обновите»
+   - **4xx (400 reason):** под полем «Причина»
+   - **4xx (404):** тост «Перемещение не найдено»
+   - **4xx (403):** тост «Нет доступа»
+2. **Отправить, принять, отменить, откатить документ удалённого заказа**
+   - **Элемент:** as-is кнопки документа
+   - **UI:** as-is
+   - **Вызов:** as-is `POST /api/v1/transfers/{id}/send`, `/receive`, `/cancel`, `/unreceive`
+   - **200:** as-is — документ доводится до конца, остатки и местоположение меняются как обычно
+   - **4xx:** as-is ошибки этих действий
+3. **Создать документ по удалённому заказу (заказ удалили, пока форма открыта)**
+   - **Элемент:** кнопка «Сохранить» формы нового документа
+   - **UI:** as-is
+   - **Вызов:** `POST /api/v1/transfers` (as-is), body с `task_id` удалённого заказа
+   - **200:** —
+   - **4xx (409 TASK_DELETED):** тост «Заказ удалён — сначала восстановите его», форма остаётся
+
+**Состояния:** заказ восстановили — бейдж «заказ удалён» исчезает при следующей загрузке списка; документы при этом не меняются.
+
+### §8.2. Экран/форма «Удалённые», вкладка «Перемещения»
+
+**Как попадаем:**
+- **Путь:** меню «Администрирование → Удалённые» → вкладка «Перемещения» (вкладка добавляется этой частью; экран, фильтры, пагинация — часть 1 §8.1)
+- **URL:** `/deleted?kind=transfers`
+- **Роли:** admin · **Устройство:** десктоп, телефон
+- **При открытии:** `GET /api/v1/deleted/summary`, `GET /api/v1/deleted?kind=transfers&limit=50&offset=0` (§6.3)
+- **200:** таблица удалённых документов · **Пусто:** «Удалённых записей нет» · **4xx:** тост с текстом ошибки
+
+**Что на странице (сверху вниз) — только изменения:**
+1. Вкладка «Перемещения» (`s:transfers`) со счётчиком — вторая после «Заказы».
+2. Таблица вкладки, колонки слева направо:
+   - «Что удалено» — «Перемещение #15», под ним мелким шрифтом направление и статус («Склад → склад · Заявка»)
+   - «Причина» (`f:delete_reason`)
+   - «Кто удалил» (`f:deleted_by.name`)
+   - «Когда» (`f:deleted_at`, «ДД.ММ.ГГГГ ЧЧ:ММ»)
+   - кнопка «Восстановить» (второстепенная, в строке справа)
+
+**Интерактив:**
+1. **Восстановить документ**
+   - **Элемент:** кнопка (второстепенная) в строке таблицы справа
+   - **UI:** подтверждение `KT.uiDialog` «Восстановить «Перемещение #15»?»; на время запроса кнопка заблокирована
+   - **Вызов:** `POST §6.2` → `/api/v1/transfers/{id}/restore`
+   - **200:** `{ id }` → строка исчезает, счётчик вкладки уменьшается; тост «Восстановлено»
+   - **4xx (409 EQUIPMENT_IN_TRANSFER):** тост «Оборудование уже в перемещении #N», строка остаётся
+   - **4xx (409 TRANSFER_CLIENT_MISMATCH):** тост «Клиент заказа изменён — восстановить перемещение нельзя», строка остаётся
+   - **4xx (409 TRANSFER_EQUIPMENT_NOT_IN_TASK):** тост «Оборудование убрано из заказа — восстановить перемещение нельзя», строка остаётся
+   - **4xx (409 NOT_DELETED):** тост «Запись уже восстановлена», строка исчезает
+   - **4xx (404 TRANSFER_NOT_FOUND):** тост «Перемещение не найдено», строка исчезает
+   - **4xx (403):** тост «Нет доступа»
+
+**Состояния:** как в части 1 §8.1 — потеря связи, перезагрузка из адресной строки, параллельное восстановление другим администратором.
+
+### §8.3. Экран/форма «Карточка заказа» (удаление заказа с документами)
+
+**Как попадаем:**
+- **Путь:** доска → карточка заказа → «Удалить заказ» (кнопка и окно — часть 1 §8.3, §8.2)
+- **URL:** `/?task={номер}` (as-is)
+- **Роли:** admin · **Устройство:** десктоп, телефон
+- **При открытии:** запросов нет (карточка уже открыта)
+- **200:** — · **Пусто:** — · **4xx:** —
+
+**Что на странице (сверху вниз) — только изменения:**
+1. Окно «Удаление» заказа: если у заказа есть документы перемещения, под пояснением появляется вторая строка — «Перемещения заказа останутся в разделе «Перемещения» с пометкой «заказ удалён»» (число документов берётся из уже загруженного блока перемещений карточки).
+
+**Интерактив:**
+1. **Удалить заказ с документами**
+   - **Элемент:** кнопка «Удалить» (основная, красная) окна «Удаление», внизу справа
+   - **UI:** кнопка заблокирована на время запроса
+   - **Вызов:** `DELETE /api/v1/tasks/{id}`, body: `{ reason }` (часть 1 §6.1; изменение — §6.3)
+   - **200:** `{ id, deleted_at, warnings }` → карточка закрывается, заказ исчезает с доски; документы заказа — в «Перемещениях» с бейджем «заказ удалён»
+   - **4xx (400 reason):** под полем «Причина»
+   - **4xx (404 TASK_NOT_FOUND):** тост «Заказ не найден»
+   - **4xx (403):** тост «Нет доступа»
+
+**Состояния:** отказа «Сначала отмените перемещения» больше нет — ветка обработки 409 `TASK_HAS_TRANSFERS` в окне удаляется.
+
+## §9. Решения (DS-index)
+Строки — дословно из мастера, номера не меняются; включены только решения, действующие в части 2.
+
+| DS | Формулировка | Источник | Статус |
+|---|---|---|---|
+| DS-003 | Удаляет и восстанавливает только администратор; раздел «Удалённые» и его API — только администратор; остальным — 403 «Нет доступа» | батч 1 (В-2) | closed |
+| DS-006 | Заказ удаляется с любыми документами перемещения; отказ `TASK_HAS_TRANSFERS` снят; отменённые документы вместе с заказом больше не удаляются. Заменяет в части удаления заказа transfers DS-025, DS-050 и `docs/plan.md` D75, D78 | батч 1 (В-4) | closed |
+| DS-007 | Документы удалённого заказа видны в «Перемещениях» с пометкой «заказ удалён» и доводятся до конца: принять, откатить, отменить; также отправить и править заявку; создать новый документ по удалённому заказу нельзя — 409 `TASK_DELETED` | батч 2 (В-6); «отправить и править заявку» — inferred | closed |
+| DS-008 | Остатки и местоположение оборудования по документам перемещения не меняются ни при удалении, ни при восстановлении заказа, документа, клиента, единицы | батч 1 (В-4), батч 2 (В-6), transfers DS-025 | closed |
+| DS-010 | Удалённый заказ не виден нигде, кроме раздела «Удалённые» и пометки у своих документов: доска, поиск, карточка, печать, «Остатки», «Выплаты», история оборудования, итоги | батч 2 (В-7) | closed |
+| DS-011 | Один раздел «Удалённые» с вкладками по видам записей; в строке — что удалено, причина, кто, когда и кнопка «Восстановить»; фильтры — поиск, период, кто удалил | батч 2 (В-8), батч 4 (В-15); фильтры — inferred | closed |
+| DS-012 | Удалённое хранится бессрочно; окончательного удаления и автоматической очистки нет | батч 3 (В-9) | closed |
+| DS-018 | Документ перемещения удаляется только в «Заявка» и «Отменён» (теперь мягко); проведённый сначала откатывают и отменяют; восстановление заявки снова занимает её единицы, единица занята другим незавершённым документом — 409 `EQUIPMENT_IN_TRANSFER` | transfers DS-025 (закрыто пользователем); поведение восстановления заявки — inferred | closed |
+| DS-020 | Причина удаления обязательна для любого вида записи: 1–500 символов после обрезки пробелов; без неё удалить нельзя | батч 4 (В-15); границы длины — inferred | closed |
+| DS-022 | Совместимость — MVP: рабочей версии нет, меняем свободно, без переходного периода; данные на базе сохраняются, существующие записи — действующие | батч 5 (В-17) | closed |
+| DS-023 | UI-scope: Swagger не ведём; адаптив минимальный; темы в автотестах — обе | батч 5 (В-18, В-19, В-20) | closed |
+| DS-024 | Конкурентность: удаление и восстановление — атомарный UPDATE с условием по `f:deleted_at`; повтор удаления — 404, повтор восстановления — 409 `NOT_DELETED`; заказ — под блокировкой строки; документ — по `f:version` | inferred | closed |
+| DS-025 | Время удаления хранится в UTC, показывается и фильтруется по часовому поясу пользователя, формат «ДД.ММ.ГГГГ ЧЧ:ММ» | черновик (правила проекта), `docs/features/user-timezone` | closed |
+| DS-026 | Удалённая запись для всех обычных адресов не существует: чтение по идентификатору и любая мутация — 404 своего вида; доступны только восстановление и раздел «Удалённые» | inferred из В-7 | closed |
+| DS-027 | Уборка тестовых данных автотестами — служебный адрес физического удаления, включается переменной окружения `TEST_PURGE_ENABLED=true`, по умолчанию выключен | inferred, согласовано оркестратором (батч 4) | closed |
+| DS-028 | Единый API: удаление — `DELETE /api/v1/{ресурс}/:id` с JSON-телом `{reason}` (у документа — и `version`, перенесён из query); восстановление — `POST /api/v1/{ресурс}/:id/restore`; список — `GET /api/v1/deleted` в конверте `{items, total, limit, offset}` | inferred, CLAUDE.md §API-1 | closed |
+| DS-030 | Аудит: на записи хранится последнее удаление — кто, когда, почему; при восстановлении отметка стирается; история повторных удалений не ведётся; факты удаления и восстановления — в журнал приложения | inferred из В-15, zap | closed |
+| DS-031 | Задача Tier L реализуется шестью частями S/M по порядку: `soft-delete-core`, `soft-delete-transfers`, `soft-delete-board-columns`, `soft-delete-clients`, `soft-delete-catalog`, `soft-delete-warehouses-suppliers`; спека части разворачивает полные таблицы полей своих таблиц | оркестратор (бриф), inferred | closed |
+| DS-033 | UI-конвенции: ошибка поля — под полем; тосты — правый верхний угол, 5 секунд; причина и подтверждения — `KT.uiDialog`; пометка «удалён» — серый бейдж; предупреждения восстановления — жёлтый блок над таблицей | inferred, transfers DS-052 | closed |
+| DS-034 | Переходное правило части 1 (до части 2): заказ с документом в «Заявка», «В пути», «Получено» по-прежнему не удаляется (409 `TASK_HAS_TRANSFERS`); отменённые документы с части 1 вместе с заказом не удаляются и остаются у удалённого заказа. Часть 2 снимает отказ (DS-006) | inferred — следствие разбивки DS-031 и DS-006 | closed |
+| DS-036 | Служебная уборка заказа повторяет действующее безвозвратное удаление заказа: неотменённые документы — отказ, отменённые удаляются вместе с заказом; документы автотест убирает сам, как сейчас; работает для действующего и для удалённого заказа. Уточняет DS-027 | inferred | closed |
+| DS-038 | Служебная уборка получает вид `transfers`: физически удаляет документ в «Заявка» или «Отменён», действующий или мягко удалённый; уборка заказа удаляет также его мягко удалённые документы. Дополняет DS-027, DS-036 | inferred | closed |
+| DS-040 | Заменяет DS-037. Мягко удалённые документы перемещения не мешают сменить клиента заказа: запрет смены клиента (`TASK_CLIENT_LOCKED_BY_TRANSFERS`, `docs/plan.md` D84) считает только действующие документы. Если клиента заказа сменили, удалённый документ с прежним клиентом восстановить нельзя — 409 `TRANSFER_CLIENT_MISMATCH` «Клиент заказа изменён — восстановить перемещение нельзя» | батч 6 (В-21); код и текст ошибки — inferred | closed |
+| DS-043 | Восстановление удалённой заявки перемещения отклоняется, если её единица за время удаления убрана из оборудования заказа: 409 `TRANSFER_EQUIPMENT_NOT_IN_TASK` «Оборудование убрано из заказа — восстановить перемещение нельзя», `details.equipment_id`. Отменённые документы и документы без заказа не проверяются. По аналогии с DS-018 и DS-040 | оркестратор по ревью части 2, inferred (пользователь уведомлён, не возражал) | closed |
+
+## §10. Открытые вопросы (status: open)
+Открытых вопросов нет
+
+## §11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)
+Оси UI-scope (DS-023): Swagger-сценариев нет; адаптив и темы раздела «Удалённые» и окна удаления покрыты TS-046, TS-047 части 1 — новая вкладка проверяется в них же расширением (отдельных сценариев нет). Номера TS — мастер-идентификаторы; включены только сценарии части 2. В TS-012 и TS-033 в этой части проверяются таблица `t:transfers` и адреса §6.1, §6.2. Сценарий TS-048 части 1 (отказ `TASK_HAS_TRANSFERS`) с этой частью теряет негатив-ветку и заменяется TS-014. TS-056 добавлен по ревью реализации части 2 и уже реализован тестом.
+
+### Unit / Integration (Go)
+- **TS-012.** Миграция: после применения все существующие строки 11 таблиц имеют `deleted_at IS NULL`; CHECK «три поля вместе» отклоняет частичное заполнение (части 1–6, каждая — свои таблицы) — DS-022, DS-030
+  - негатив: UPDATE только `deleted_at` без `deleted_by` → ошибка CHECK
+- **TS-014.** Удаление заказа с документами в `requested`, `in_transit`, `received`, `cancelled`: 200, документы не изменились, остатки и местоположение оборудования по документам не изменились (часть 2) — DS-006, DS-008
+  - негатив: ответа 409 `TASK_HAS_TRANSFERS` больше нет
+- **TS-015.** Документ удалённого заказа: `send`, `receive`, `unreceive`, `cancel`, `PUT` → как у обычного; в ответе `f:task_is_deleted` = true (часть 2) — DS-007
+  - негатив: `POST /api/v1/transfers` с `task_id` удалённого заказа → 409 `TASK_DELETED`
+- **TS-016.** Удаление документа: `requested` и `cancelled` → 200, строки на месте, у заявки `equipment.active_transfer_id` = NULL; `in_transit` и `received` → 409 со своим сообщением (часть 2) — DS-018
+  - негатив: без `version` в теле → 400 `required`; устаревшая `version` → 409 `TRANSFER_VERSION_CONFLICT`
+- **TS-017.** Восстановление заявки: единицы снова заняты документом; единица в другом незавершённом документе → 409 `EQUIPMENT_IN_TRANSFER`, документ остаётся удалённым (часть 2) — DS-018
+  - негатив: остатки и местоположение не изменились
+- **TS-018.** Гонка «создание документа ↔ удаление заказа»: исход детерминирован — либо 409 `TASK_DELETED`, либо документ создан у удалённого заказа; взаимной блокировки нет (часть 2) — DS-007, DS-024
+  - негатив: частично созданного документа нет
+- **TS-033.** Права на всех 22 адресах удаления и восстановления: executor → 403 «Нет доступа» до поиска записи, включая несуществующий идентификатор (части 1–6) — DS-003
+  - негатив: без сессии → 401
+- **TS-050.** Смена клиента заказа при мягко удалённом документе: `PUT /api/v1/tasks/:id` с другим `client_id` → 200, клиент сменён; последующее восстановление этого документа → 409 `TRANSFER_CLIENT_MISMATCH`, документ остаётся удалённым; без смены клиента документ восстанавливается (часть 2) — DS-040
+  - негатив: при действующем документе смена клиента по-прежнему → 409 `TASK_CLIENT_LOCKED_BY_TRANSFERS`
+- **TS-051.** Служебная уборка документов: `DELETE /api/v1/test/purge/transfers/:id` физически удаляет заявку и отменённый документ, в том числе мягко удалённые; документ «в пути» → 409; уборка заказа с мягко удалённым документом проходит, строки документа в базе нет (часть 2) — DS-038
+  - негатив: без `TEST_PURGE_ENABLED=true` → 404
+- **TS-056.** Восстановление заявки, единица которой убрана из заказа: заявка с заказом удалена → единицу убирают из оборудования заказа → `POST /api/v1/transfers/:id/restore` → 409 `TRANSFER_EQUIPMENT_NOT_IN_TASK` с `details.equipment_id`, документ остаётся удалённым; реализован тестом `TestTS017_RestoreRequest_UnitRemovedFromTask` (часть 2) — DS-043
+  - негатив: отменённый документ с такой единицей и документ без заказа восстанавливаются — 200
+
+### E2E (Playwright)
+- **TS-040.** Заказ с документами — экран §8.1 — DS-006, DS-007 (часть 2)
+  - шаги: заказ с документом «в пути» → удалить заказ → «Перемещения»; проверка: документ в списке с бейджем «заказ удалён», «Принять» работает; негатив: в форме нового документа удалённого заказа нет в выборе
+- **TS-041.** Удалить и восстановить документ — экраны §8.1, §8.2 — DS-018 (часть 2)
+  - шаги: заявка → «Удалить» с причиной → «Удалённые» → «Перемещения» → «Восстановить»; проверка: документ снова в списке со своими строками; негатив: у документа «в пути» в окне удаления — «Перемещение в пути — сначала отмените его»
+
+### Фикстуры и сиды (АКЦЕНТ — хронический пропуск)
+- **TS-F3.** `e2e/fixtures/auth.ts`: новые помощники `softDelete(kind, id, reason)`, `restore(kind, id)`, `listDeleted(kind, filters)`; payload'ы типизировать wire-типами (§TD-6.2; сырые ключи невидимы гейтам) — DS-028
+- **TS-F4.** Существующие спеки с проверками безвозвратного удаления и отказов по ссылкам (`e2e/tests/board.spec.ts`, `board-guards.spec.ts`, `clients.spec.ts`, `equipment.spec.ts`, `catalog.spec.ts`, `equipment-types.spec.ts`, `transfers.spec.ts`, `transfers-revert.spec.ts`, `transfers-partners.spec.ts`, `polish.spec.ts`): ожидания меняются — обязательная причина, отсутствие 409 по ссылкам; каждая часть обновляет свои спеки — DS-006, DS-014, DS-020
+- **TS-F6.** Go live-тесты удаления (`internal/features/board/board_http_live_test.go`, `internal/features/transfers/transfers_partners_http_live_test.go`, `internal/features/clients`, `internal/features/catalog`): запросы DELETE получают тело с причиной; проверки «строки нет в базе» заменяются на «строка помечена удалённой» — DS-020, DS-028
+- **TS-F7.** `e2e/fixtures/auth.ts`: `deleteTransfer` (строка 518) передаёт `{reason, version}` в теле вместо `?version=`; `removeTransferForCleanup` и `purgeTask` после приведения документа к «Отменён» убирают его служебным адресом `DELETE /api/v1/test/purge/transfers/:id` — иначе тестовые документы копятся в «Удалённых» и удерживают заказ от физической уборки; обновить в части 2, в той же фазе, что миграция — DS-038
+
+## §Impact — точки касания существующего кода
+Источник: `python3 ~/.claude/tools/impact_scan.py` (sample `internal/features/transfers`; термы `transfers`, `transfer_items`, `active_transfer_id`, `TASK_HAS_TRANSFERS`, `deleteTransfer`, `/api/v1/transfers`) + чтение запросов к `transfers` в пакетах `board` и `clients` (fff) + решения мастера.
+
+| # | Класс | Что задеваем (file:line / объект) | Дельта фичи | Решение | DS |
+|---|---|---|---|---|---|
+| 1 | SHARED-DEP | `internal/features/transfers/handler.go:141`, `service.go:343` (`Service.Delete`), `repo.go:684` (`Repo.Delete`), `dto.go` (`TransferDeleteResponse`), `routes.go:24` | мягкое удаление; `version` из query в тело, новое поле `reason`; ответ получает `deleted_at`; новый `Restore` и маршрут `POST /:id/restore` | править | DS-018, DS-028 |
+| 2 | SHARED-DEP | `internal/features/transfers/repo.go:120` (`List`), `:165` (`Get`), `:296` (`Head`), запросы блокировки документа в `Update`, `Send`, `Receive`, `Cancel`, `Unreceive` | условие `deleted_at IS NULL`; `task_is_deleted` в выборке (`LEFT JOIN tasks` на `:185`) | править | DS-026, DS-007 |
+| 3 | SHARED-DEP | `internal/features/transfers/repo.go:1157` (`checkRefs`) | чтение `deleted_at` заказа под `FOR KEY SHARE`; удалён → `TASK_DELETED` | править | DS-007 |
+| 4 | SHARED-DEP | `internal/features/transfers/dto.go` (`TransferResponse`, `TransferSummary`) | новое поле `task_is_deleted` рядом с `task_id` | править | DS-007 |
+| 5 | ENUMERATION | `internal/features/transfers/errors.go`, `internal/features/board/errors.go` | новые коды `TASK_DELETED`, `TRANSFER_CLIENT_MISMATCH`, `TRANSFER_EQUIPMENT_NOT_IN_TASK` (409); `NOT_DELETED` — из части 1; `TASK_HAS_TRANSFERS` перестаёт возвращаться при удалении заказа (остаётся в служебной уборке) | править | DS-006, DS-007 |
+| 6 | SHARED-DEP | `internal/features/board/tasks_service.go:411`, `:422` (`deleteTaskTransfers`), вызов в `TaskService.Delete` | проверка и удаление документов при удалении заказа убираются; функция остаётся только для служебной уборки | править | DS-006, DS-036 |
+| 7 | SHARED-DEP | `internal/features/board/tasks_service.go:380` (`clientLockedByTransfers`) | условие `deleted_at IS NULL`: считает только действующие документы; при восстановлении документа — сверка клиента документа с клиентом заказа (`TRANSFER_CLIENT_MISMATCH`) | править | DS-040 |
+| 8 | SHARED-DEP | `internal/features/board` — читатели документов: блок перемещений карточки (`card_repo.go`), итог заказа (`tasks_repo.go`), «в пути» на остатках (`stock_repo.go`), соединение `equipment.active_transfer_id` → `transfers` | условие `transfers.deleted_at IS NULL` | править | DS-026 |
+| 9 | SHARED-DEP | `internal/features/clients/history.go` (события истории по документам) | удалённые документы исключаются | править | DS-026 |
+| 10 | SHARED-DEP | `internal/features/softdelete` (часть 1) | вид `transfers` в списке и счётчиках; вид `transfers` в служебной уборке; уборка заказа удаляет его мягко удалённые документы | править | DS-011, DS-038 |
+| 11 | FK | `migrations/0009_stock_transfers.up.sql`, `0014_transfers_core.up.sql:53` (`equipment.active_transfer_id` SET NULL), `0015_transfers_partners.up.sql:101` (`task_id` RESTRICT) | новая миграция: три колонки, CHECK `transfers_deleted_chk`, FK `deleted_by`, индекс `transfers_deleted_at_idx`; существующие ключи не меняются | добавить | DS-018, DS-022 |
+| 12 | FRONTEND | `web/ssr/transfers/templates/pages`, скрипт экрана «Перемещения»; `web/ssr/softdelete` (часть 1); `web/ssr/board` (окно удаления заказа) | «Удалить» через общее окно с причиной; бейдж «заказ удалён»; вкладка «Перемещения»; вторая строка пояснения и удаление ветки 409 | править | DS-007, DS-020 |
+| 13 | ENUMERATION | `e2e/fixtures/auth.ts:518` (`deleteTransfer`), `removeTransferForCleanup`, `:590` (`purgeTask`); `e2e/tests/transfers.spec.ts`, `transfers-revert.spec.ts`, `transfers-partners.spec.ts` | тело запроса удаления; уборка через служебный адрес; ожидания по снятому отказу | править | DS-038, DS-006 |
+| 14 | SHARED-DEP | Go live-тесты `internal/features/transfers/*_http_live_test.go`, `internal/features/board/order_card_revert_http_live_test.go` (проверки «отменённый документ удалён с заказом», «документов заказа нет») | ожидания меняются: документы остаются | править | DS-006, DS-018 |
+| 15 | SHARED-DEP | `docs/plan.md` (D75, D78, D84), `docs/features/transfers/draft-spec.md` (DS-025, DS-050) | запись нового решения в `docs/plan.md` при реализации | добавить запись | DS-006 |
+| 16 | CONFIG | env-ключи | не задеваются (`TEST_PURGE_ENABLED` — часть 1) | — | — |
+| 17 | MONITORING | дашборды, nginx | не задеваются | — | — |
+
+**Вне каталога фичи:** есть — internal/features/transfers, internal/features/board, internal/features/clients, internal/features/softdelete, migrations, web/ssr/transfers, web/ssr/softdelete, web/ssr/board, e2e, docs/plan.md

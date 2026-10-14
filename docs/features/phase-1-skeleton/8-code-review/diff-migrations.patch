@@ -1,0 +1,28 @@
+diff --git a/migrations/0001_init.down.sql b/migrations/0001_init.down.sql
+new file mode 100644
+index 0000000..cc1f647
+--- /dev/null
++++ b/migrations/0001_init.down.sql
+@@ -0,0 +1 @@
++DROP TABLE users;
+diff --git a/migrations/0001_init.up.sql b/migrations/0001_init.up.sql
+new file mode 100644
+index 0000000..08c6e72
+--- /dev/null
++++ b/migrations/0001_init.up.sql
+@@ -0,0 +1,15 @@
++-- users — базовая таблица auth-каркаса (kanban-tree).
++-- version — оптимистичная блокировка (§FE-1.1: version в body, не If-Match).
++-- gen_random_uuid() требует pgcrypto — создаём ДО таблицы, иначе DEFAULT не резолвится.
++CREATE EXTENSION IF NOT EXISTS pgcrypto;
++
++CREATE TABLE users (
++    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++    login         text NOT NULL UNIQUE,
++    password_hash text NOT NULL,
++    name          text NOT NULL DEFAULT '',
++    is_active     boolean NOT NULL DEFAULT true,
++    version       bigint NOT NULL DEFAULT 1,
++    created_at    timestamptz NOT NULL DEFAULT now(),
++    updated_at    timestamptz NOT NULL DEFAULT now()
++);

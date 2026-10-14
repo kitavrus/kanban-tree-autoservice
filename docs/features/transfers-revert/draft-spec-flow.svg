@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 470" width="680" height="470" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="470" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="n" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b45309"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="408.1" lengthAdjust="spacingAndGlyphs">Сценарий: исправление ошибочно проведённого документа</text>
+<rect x="10" y="40" width="160" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="12" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="85.8" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<path d="M90,70 L90,445" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="220" y="40" width="160" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="12" fill="#334155" text-anchor="middle" font-weight="bold" textLength="118.8" lengthAdjust="spacingAndGlyphs">Экран (§8.1, §8.2)</text>
+<path d="M300,70 L300,445" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="460" y="40" width="160" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="12" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="52.8" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,445" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="179.0" lengthAdjust="spacingAndGlyphs">«Отменить проведение» → причина</text>
+<path d="M300,125 L540,125" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="119" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="306.1" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/17/unreceive {version, reason}</text>
+<path d="M540,150 L300,150" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="144" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="202.1" lengthAdjust="spacingAndGlyphs">200 {status:"in_transit", warnings}</text>
+<path d="M300,175 L90,175" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="195.0" y="169" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="236.8" lengthAdjust="spacingAndGlyphs">«В пути», строка «Проведение отменено: …»</text>
+<path d="M90,200 L300,200" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="194" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="109.7" lengthAdjust="spacingAndGlyphs">«Отменить отправку»</text>
+<path d="M300,225 L540,225" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="219" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="242.6" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/17/cancel {version}</text>
+<path d="M540,250 L300,250" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="244" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="138.6" lengthAdjust="spacingAndGlyphs">200 {status:"cancelled"}</text>
+<path d="M90,275 L300,275" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="269" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="52.0" lengthAdjust="spacingAndGlyphs">«Удалить»</text>
+<path d="M300,300 L540,300" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="294" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="213.7" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/transfers/17?version=6</text>
+<path d="M540,325 L300,325" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="319" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="63.5" lengthAdjust="spacingAndGlyphs">200 {id:17}</text>
+<path d="M300,350 L540,350" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="344" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="311.9" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/12/unreceive (единицу увёз #14)</text>
+<path d="M540,375 L300,375" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="369" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="271.4" lengthAdjust="spacingAndGlyphs">409 TRANSFER_UNRECEIVE_BLOCKED {transfer_id:14}</text>
+<path d="M300,400 L540,400" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="394" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="300.3" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/tasks/37 (есть проведённые документы)</text>
+<path d="M540,425 L300,425" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="419" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="259.9" lengthAdjust="spacingAndGlyphs">409 TASK_HAS_TRANSFERS {transfer_ids:[12,14]}</text>
+<text x="340" y="460" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветки</text>
+</svg>

@@ -1,0 +1,4874 @@
+diff --git a/internal/features/catalog/amount.go b/internal/features/catalog/amount.go
+new file mode 100644
+index 0000000..f52a833
+--- /dev/null
++++ b/internal/features/catalog/amount.go
+@@ -0,0 +1,41 @@
++package catalog
++
++import "errors"
++
++// Amount — денежная/количественная величина NUMERIC. В Go хранится строкой (без потери
++// точности — float64 не годится для точных денежных сумм), на wire — JSON-числом без
++// кавычек (CLAUDE.md §Уроки проекта: «NUMERIC в Go — строкой/decimal без потери точности,
++// JSON — число»). Пустая строка на входе/выходе трактуется как "0".
++type Amount string
++
++// errAmountNotNumber — присланное значение не JSON-число (строка/объект/массив).
++var errAmountNotNumber = errors.New("catalog: amount must be a JSON number")
++
++func (a Amount) MarshalJSON() ([]byte, error) {
++	s := string(a)
++	if s == "" {
++		s = "0"
++	}
++	return []byte(s), nil
++}
++
++func (a *Amount) UnmarshalJSON(b []byte) error {
++	s := string(b)
++	if s == "null" {
++		*a = ""
++		return nil
++	}
++	if len(s) == 0 || s[0] == '"' || s[0] == '{' || s[0] == '[' {
++		return errAmountNotNumber
++	}
++	*a = Amount(s)
++	return nil
++}
++
++// String — как хранится (для передачи в SQL как text-параметр с явным ::numeric cast).
++func (a Amount) String() string {
++	if a == "" {
++		return "0"
++	}
++	return string(a)
++}
+diff --git a/internal/features/catalog/amount_validate.go b/internal/features/catalog/amount_validate.go
+new file mode 100644
+index 0000000..a29c56e
+--- /dev/null
++++ b/internal/features/catalog/amount_validate.go
+@@ -0,0 +1,78 @@
++package catalog
++
++import (
++	"errors"
++	"net/http"
++	"strings"
++
++	"github.com/jackc/pgx/v5/pgconn"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// Коды ошибок диапазона/точности NUMERIC-полей (code review Блокер 1 — TD-4 «границы →
++// 400, не 500»; msgInvalid/msgRequired/msgTooLong/msgInvalidText — categories_validate.go).
++const (
++	msgInvalidFormat = "invalid_format" // не число вовсе: мусор, экспонента, NaN/Inf
++	msgTooPrecise    = "too_precise"    // больше знаков после запятой, чем допускает scale колонки
++	msgTooLarge      = "too_large"      // целая часть длиннее, чем допускает precision-scale колонки
++)
++
++// amountScale — предел целой/дробной части для конкретной NUMERIC(precision,scale)
++// колонки (migrations/0004_catalog.up.sql). IntDigits = precision - scale — сколько цифр
++// допустимо ДО точки, иначе PG вернёт 22003 numeric_value_out_of_range на INSERT/UPDATE.
++type amountScale struct {
++	IntDigits  int
++	FracDigits int
++}
++
++var (
++	priceScale = amountScale{IntDigits: 10, FracDigits: 2} // NUMERIC(12,2): products.price, services.price
++	qtyScale   = amountScale{IntDigits: 9, FracDigits: 3}  // NUMERIC(12,3): products.stock/min_stock, service_products.qty
++)
++
++// validateAmount — decimalRe уже отсекает всё, что не «-?(0|[1-9]\d*)(\.\d+)?» (экспонента,
++// NaN/Inf, произвольный мусор — invalid_format). Дальше — величина целой части (иначе PG
++// молча не округляет, а падает 22003 — без этой проверки на входе получили бы 500) и
++// точность дробной части (PG НЕ отклоняет лишние знаки — он их МОЛЧА обрезает при записи;
++// без этой проверки цена 1.239 стала бы 1.24 без единого сообщения пользователю).
++// Пустая строка — валидно.
++func validateAmount(val string, scale amountScale, allowNegative bool) string {
++	if !decimalRe.MatchString(val) {
++		return msgInvalidFormat
++	}
++	digits := val
++	if strings.HasPrefix(val, "-") {
++		if !allowNegative {
++			return msgInvalid
++		}
++		digits = val[1:]
++	}
++	intPart, fracPart, _ := strings.Cut(digits, ".")
++	if len(fracPart) > scale.FracDigits {
++		return msgTooPrecise
++	}
++	if len(intPart) > scale.IntDigits {
++		return msgTooLarge
++	}
++	return ""
++}
++
++// errAmountOutOfRange/ErrAmountOutOfRange — страховка от 500 на PG 22003, которую
++// validateAmount() обязан предотвращать на входе для всех известных полей; остаётся
++// защитным дном на непредвиденный путь (не привязан к конкретному полю формы — репозиторий
++// на уровне RETURNING не знает, какая именно колонка переполнилась).
++var (
++	errAmountOutOfRange = errors.New("catalog: amount out of range")
++	ErrAmountOutOfRange = errorspkg.New("AMOUNT_OUT_OF_RANGE", http.StatusBadRequest, "Введённое число слишком велико для этого поля")
++)
++
++// mapAmountOverflow — 22003 numeric_value_out_of_range → errAmountOutOfRange (repo
++// sentinel, без HTTP — это знает только service-слой), иначе err как есть.
++func mapAmountOverflow(err error) error {
++	var pgErr *pgconn.PgError
++	if errors.As(err, &pgErr) && pgErr.Code == "22003" {
++		return errAmountOutOfRange
++	}
++	return err
++}
+diff --git a/internal/features/catalog/catalog.go b/internal/features/catalog/catalog.go
+new file mode 100644
+index 0000000..18e604e
+--- /dev/null
++++ b/internal/features/catalog/catalog.go
+@@ -0,0 +1,32 @@
++// Package catalog — фаза 4: категории и товары каталога (услуги/комплект — подфаза B).
++package catalog
++
++import (
++	"context"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++// Root — шаблоны экрана «Каталог» (товары/категории/заглушка услуг) относительно корня модуля.
++const Root = "web/ssr/catalog/templates"
++
++// TabCounts — счётчики трёх вкладок каталога (Услуги/Товары/Типы оборудования): считаются
++// по активным записям (архивные не в счёт, как в панели категорий equipmenttypes).
++type TabCounts struct {
++	Services int
++	Products int
++	Types    int
++}
++
++// LoadTabCounts — общая полоса вкладок нужна и экрану типов оборудования (фаза 3),
++// поэтому счётчики считаются одним запросом без зависимости от пакета equipmenttypes
++// (нет обратного импорта catalog → equipmenttypes).
++func LoadTabCounts(ctx context.Context, pool *pgxpool.Pool) (TabCounts, error) {
++	var t TabCounts
++	err := pool.QueryRow(ctx, `SELECT
++		(SELECT count(*) FROM services WHERE is_active),
++		(SELECT count(*) FROM products WHERE is_active),
++		(SELECT count(*) FROM equipment_types WHERE is_active)`).
++		Scan(&t.Services, &t.Products, &t.Types)
++	return t, err
++}
+diff --git a/internal/features/catalog/catalog_http_live_test.go b/internal/features/catalog/catalog_http_live_test.go
+new file mode 100644
+index 0000000..f5e4642
+--- /dev/null
++++ b/internal/features/catalog/catalog_http_live_test.go
+@@ -0,0 +1,471 @@
++//go:build integration
++
++package catalog_test
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/url"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// CatalogLiveSuite (§TD-8): категории и товары каталога — CRUD, D16 (409 дубль имени),
++// D26 (409 IN_USE + архив), stock_movements manual при ручной правке остатка, права
++// (D19), IDOR/битый uuid, мусор → 400, CSRF.
++type CatalogLiveSuite struct {
++	testutil.LiveSuite
++	admin *testutil.Browser
++}
++
++func TestCatalogLiveSuite(t *testing.T) {
++	suite.Run(t, &CatalogLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *CatalogLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("catalog4-admin", "password1", "Каталог4 Админ", "admin", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("catalog4-admin", "password1")
++}
++
++type categoryDTO struct {
++	ID        string `json:"id"`
++	Kind      string `json:"kind"`
++	Name      string `json:"name"`
++	IsActive  bool   `json:"is_active"`
++	ItemCount int    `json:"item_count"`
++}
++
++// amount — тестовый двойник catalog.Amount: на wire — JSON-число без кавычек
++// (CLAUDE.md §Уроки: «NUMERIC в Go — строкой, JSON — число»), здесь достаточно
++// json.Number, чтобы не тянуть внутренний тип пакета.
++type amount = json.Number
++
++type productDTO struct {
++	ID         string `json:"id"`
++	CategoryID string `json:"category_id"`
++	Name       string `json:"name"`
++	SKU        string `json:"sku"`
++	Unit       string `json:"unit"`
++	Price      amount `json:"price"`
++	IsActive   bool   `json:"is_active"`
++	Stock      amount `json:"stock"`
++	MinStock   amount `json:"min_stock"`
++	Box        string `json:"box"`
++	Place      string `json:"place"`
++}
++
++type apiErr struct {
++	Code    string `json:"code"`
++	Details *struct {
++		Fields []struct{ Name, Message string } `json:"fields"`
++	} `json:"details"`
++}
++
++func (s *CatalogLiveSuite) errOf(body []byte) apiErr {
++	var e apiErr
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	return e
++}
++
++func (s *CatalogLiveSuite) fields(body []byte) map[string]string {
++	e := s.errOf(body)
++	s.Require().NotNil(e.Details, string(body))
++	m := map[string]string{}
++	for _, f := range e.Details.Fields {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func (s *CatalogLiveSuite) newCategory(b *testutil.Browser, kind, name string) categoryDTO {
++	st, raw := b.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": kind, "name": name})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var c categoryDTO
++	s.Require().NoError(json.Unmarshal(raw, &c))
++	return c
++}
++
++func productBody(categoryID string, patch map[string]any) map[string]any {
++	m := map[string]any{
++		"category_id": categoryID, "name": "Фильтр масляный", "sku": "F-001", "unit": "шт",
++		"price": 199.9, "stock": 5, "min_stock": 2, "box": "К-07", "place": "Стеллаж A",
++	}
++	for k, v := range patch {
++		m[k] = v
++	}
++	return m
++}
++
++func (s *CatalogLiveSuite) newProduct(b *testutil.Browser, categoryID string, patch map[string]any) productDTO {
++	st, raw := b.Do(http.MethodPost, "/api/v1/products", productBody(categoryID, patch))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var p productDTO
++	s.Require().NoError(json.Unmarshal(raw, &p))
++	return p
++}
++
++func productPutBody(p productDTO, patch map[string]any) map[string]any {
++	m := map[string]any{
++		"category_id": p.CategoryID, "name": p.Name, "sku": p.SKU, "unit": p.Unit,
++		"price": p.Price, "stock": p.Stock, "min_stock": p.MinStock, "box": p.Box, "place": p.Place, "is_active": p.IsActive,
++	}
++	for k, v := range patch {
++		m[k] = v
++	}
++	return m
++}
++
++// ---- happy path: категории + товары CRUD ----
++
++func (s *CatalogLiveSuite) TestCategoryProductCreateGetList() {
++	cat := s.newCategory(s.admin, "product", "  Расходники  ")
++	s.Equal("Расходники", cat.Name)
++	s.True(cat.IsActive)
++	s.Equal(0, cat.ItemCount)
++
++	p := s.newProduct(s.admin, cat.ID, nil)
++	s.Equal("Фильтр масляный", p.Name)
++	s.Equal("199.90", p.Price.String())
++	s.True(p.IsActive)
++
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/products/"+p.ID, nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(raw), `"sku":"F-001"`)
++
++	// category_id сужает поиск — БД общая на весь suite, другие тесты тоже заводят товары
++	// с дефолтным именем "Фильтр масляный" (productBody).
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?category_id="+cat.ID+"&q=фильтр", nil)
++	s.Equal(http.StatusOK, st)
++	var list struct {
++		Items  []productDTO `json:"items"`
++		Total  int          `json:"total"`
++		Limit  int          `json:"limit"`
++		Offset int          `json:"offset"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(1, list.Total)
++	s.Equal(50, list.Limit, "лимит по умолчанию для списка товаров — 50 (task.md §API)")
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+cat.ID, nil)
++	s.Equal(http.StatusOK, st)
++	var got categoryDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.Equal(1, got.ItemCount, "категория теперь используется одним товаром")
++}
++
++// ---- D16: дубль имени категории без учёта регистра/пробелов → 409 ----
++
++func (s *CatalogLiveSuite) TestCategory_DuplicateName409() {
++	s.newCategory(s.admin, "product", "Крепёж")
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "product", "name": "  КРЕПЁЖ  "})
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("CATEGORY_NAME_TAKEN", s.errOf(raw).Code)
++
++	// разные виды (kind) с тем же именем — не конфликт.
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": "service", "name": "Крепёж"})
++	s.Equal(http.StatusCreated, st, string(raw))
++}
++
++// ---- рename конфликтует с существующей категорией того же вида ----
++
++func (s *CatalogLiveSuite) TestCategory_RenameConflict() {
++	a := s.newCategory(s.admin, "product", "Электрика")
++	b := s.newCategory(s.admin, "product", "Сантехника")
++	st, raw := s.admin.Do(http.MethodPut, "/api/v1/catalog-categories/"+b.ID, map[string]any{"name": "электрика"})
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("CATEGORY_NAME_TAKEN", s.errOf(raw).Code)
++
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/catalog-categories/"+a.ID, map[string]any{"name": "Электрика 2"})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++}
++
++// ---- D26: категория, используемая товаром — 409 CATEGORY_IN_USE; свободная удаляется;
++// архив/восстановление ----
++
++func (s *CatalogLiveSuite) TestCategory_InUse409_ArchiveRestore_FreeDeletes() {
++	used := s.newCategory(s.admin, "product", "Используемая")
++	s.newProduct(s.admin, used.ID, nil)
++
++	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/catalog-categories/"+used.ID, nil)
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("CATEGORY_IN_USE", s.errOf(raw).Code)
++
++	st, raw = s.admin.Do(http.MethodPost, "/catalog/categories/"+used.ID+"/archive", url.Values{"kind": {"product"}})
++	_ = raw
++	s.Equal(http.StatusSeeOther, st)
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+used.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	var got categoryDTO
++	s.Require().NoError(json.Unmarshal(raw, &got))
++	s.False(got.IsActive)
++
++	free := s.newCategory(s.admin, "product", "Свободная")
++	st, _ = s.admin.Do(http.MethodDelete, "/api/v1/catalog-categories/"+free.ID, nil)
++	s.Equal(http.StatusNoContent, st)
++}
++
++// ---- D26: товар, используемый в комплекте услуги — 409 PRODUCT_IN_USE + архив; свободный
++// удаляется. Комплект (service_products) заводится подфазой B — здесь имитируем строку
++// напрямую в БД, чтобы проверить именно RESTRICT-поведение товара. ----
++
++func (s *CatalogLiveSuite) TestProduct_InUse409_ArchiveRestore_FreeDeletes() {
++	cat := s.newCategory(s.admin, "product", "Для комплекта")
++	used := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "USED-1"})
++
++	svcCat := s.newCategory(s.admin, "service", "Услуги для теста")
++	var serviceID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`INSERT INTO services (category_id, name) VALUES ($1::uuid, 'Тестовая услуга') RETURNING id`, svcCat.ID).Scan(&serviceID))
++	_, err := s.Pool.Exec(s.T().Context(),
++		`INSERT INTO service_products (service_id, product_id, qty) VALUES ($1::uuid, $2::uuid, 1)`, serviceID, used.ID)
++	s.Require().NoError(err)
++
++	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/products/"+used.ID, nil)
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("PRODUCT_IN_USE", s.errOf(raw).Code)
++
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+used.ID, productPutBody(used, map[string]any{"is_active": false}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	free := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "FREE-1"})
++	st, _ = s.admin.Do(http.MethodDelete, "/api/v1/products/"+free.ID, nil)
++	s.Equal(http.StatusNoContent, st)
++}
++
++// ---- stock_movements manual: delta = новое-старое, автор = текущий пользователь;
++// delta=0 → записи нет. ----
++
++func (s *CatalogLiveSuite) TestProduct_Update_StockMovementManual() {
++	cat := s.newCategory(s.admin, "product", "Учёт остатка")
++	p := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "STK-1", "stock": 10})
++
++	var adminID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(), `SELECT id FROM users WHERE login = 'catalog4-admin'`).Scan(&adminID))
++
++	// изменение остатка 10 → 7: delta -3.
++	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, productPutBody(p, map[string]any{"stock": 7}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	var cnt int
++	var delta string
++	var userID string
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`SELECT count(*) FROM stock_movements WHERE product_id = $1::uuid`, p.ID).Scan(&cnt))
++	s.Equal(1, cnt)
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`SELECT qty_delta::text, user_id, reason FROM stock_movements WHERE product_id = $1::uuid`, p.ID).Scan(&delta, &userID, new(string)))
++	s.Equal("-3.000", delta)
++	s.Equal(adminID, userID)
++
++	// повторное сохранение с тем же значением остатка (delta=0) — новой записи нет.
++	var updated productDTO
++	s.Require().NoError(json.Unmarshal(raw, &updated))
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, productPutBody(updated, nil))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
++		`SELECT count(*) FROM stock_movements WHERE product_id = $1::uuid`, p.ID).Scan(&cnt))
++	s.Equal(1, cnt, "delta=0 — новой записи stock_movements нет")
++}
++
++// ---- мусор в теле/параметрах → 400, не 500 ----
++
++func (s *CatalogLiveSuite) TestValidation_GarbageNot500() {
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"kind": "invalid", "name": "required"}, s.fields(raw))
++
++	cat := s.newCategory(s.admin, "product", "Валидация")
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", map[string]any{"category_id": cat.ID})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["name"])
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, map[string]any{"price": -5}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["price"])
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, map[string]any{"unit": "тонна"}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["unit"])
++
++	for _, body := range []string{`{`, `null`, `"str"`, `{"price":"5"}`} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", body)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
++	}
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/products?limit=-5&offset=-1&category_id=not-a-uuid", nil)
++	s.Equal(http.StatusOK, st, string(raw))
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, map[string]any{"name": "Тип\u0000"}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_text", s.fields(raw)["name"])
++}
++
++// ---- code review Блокер 1: границы NUMERIC(12,2)/(12,3) → 400 по своему полю, не 500 ----
++
++func (s *CatalogLiveSuite) TestProduct_NumericBoundaries400() {
++	cat := s.newCategory(s.admin, "product", "Границы NUMERIC")
++
++	for _, tc := range []struct {
++		name    string
++		patch   map[string]any
++		field   string
++		message string
++	}{
++		{"цена 12345678901 — переполнение целой части", map[string]any{"price": 12345678901}, "price", "too_large"},
++		{"цена 1.239 — лишняя точность", map[string]any{"price": 1.239}, "price", "too_precise"},
++		{"цена -1 — отрицательная", map[string]any{"price": -1}, "price", "invalid"},
++		{"min_stock 0.0001 — лишняя точность", map[string]any{"min_stock": 0.0001}, "min_stock", "too_precise"},
++		{"min_stock 1000000000 — переполнение", map[string]any{"min_stock": 1000000000}, "min_stock", "too_large"},
++		{"stock 0.0004 — лишняя точность", map[string]any{"stock": 0.0004}, "stock", "too_precise"},
++	} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", productBody(cat.ID, tc.patch))
++		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
++		s.NotEqual(http.StatusInternalServerError, st, "%s → 500 недопустим", tc.name)
++		s.Equal(tc.message, s.fields(raw)[tc.field], "%s → %s", tc.name, raw)
++	}
++
++	// экспонента — литерал JSON-числа (не строка: map[string]any{"price":"1e10"} после
++	// json.Marshal превратился бы в JSON-строку "1e10", которую Amount.UnmarshalJSON
++	// отклоняет ДО валидатора как «не число вовсе» generic 400 без fields — сырое тело
++	// нужно, чтобы литерал "1e10"/"1e5" дошёл до decimalRe как есть.
++	for _, tc := range []struct {
++		name  string
++		field string
++		body  string
++	}{
++		{"цена 1e10 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e10,"stock":0,"min_stock":0,"box":"","place":""}`},
++		{"цена 1e5 — экспонента", "price", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":1e5,"stock":0,"min_stock":0,"box":"","place":""}`},
++		{"stock 1e10 — экспонента", "stock", `{"category_id":%q,"name":"Тип","sku":"","unit":"","price":0,"stock":1e10,"min_stock":0,"box":"","place":""}`},
++	} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", fmt.Sprintf(tc.body, cat.ID))
++		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
++		s.NotEqual(http.StatusInternalServerError, st, "%s → 500 недопустим", tc.name)
++		s.Equal("invalid_format", s.fields(raw)[tc.field], "%s → %s", tc.name, raw)
++	}
++}
++
++// ---- переполнение ДЕЛЬТЫ stock_movements (оба конца валидны по отдельности, разность —
++// нет): старое -600000000, новое 600000000 → delta 1.2e9 не влезает в NUMERIC(12,3)
++// (9 целых цифр) → 400 по полю "stock", не 500. ----
++
++func (s *CatalogLiveSuite) TestProduct_StockDeltaOverflow400() {
++	cat := s.newCategory(s.admin, "product", "Переполнение дельты остатка")
++	p := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "DELTA-1", "stock": -600000000})
++
++	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, productPutBody(p, map[string]any{"stock": 600000000}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.NotEqual(http.StatusInternalServerError, st)
++	s.Equal("too_large", s.fields(raw)["stock"])
++}
++
++// ---- IDOR/битый uuid → 404 ----
++
++func (s *CatalogLiveSuite) TestBadOrMissingID_404() {
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000", "1'; DROP TABLE products;--"} {
++		esc := url.PathEscape(id)
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/products/"+esc, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, raw = s.admin.Do(http.MethodGet, "/api/v1/catalog-categories/"+esc, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, raw = s.admin.Do(http.MethodDelete, "/api/v1/products/"+esc, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++	}
++}
++
++// ---- невалидная категория (не существует / не тот kind) → 400, не 500/404 ----
++
++func (s *CatalogLiveSuite) TestProduct_InvalidCategory400() {
++	svcCat := s.newCategory(s.admin, "service", "Услуги, не товары")
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", productBody(svcCat.ID, nil))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["category_id"])
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/products", productBody("00000000-0000-0000-0000-000000000000", nil))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["category_id"])
++}
++
++// ---- D19: исполнитель читает только активные, мутации 403; аноним 401 ----
++
++func (s *CatalogLiveSuite) TestAuthz_ExecutorReadOnlyActive_MutationsForbidden_AnonUnauthorized() {
++	cat := s.newCategory(s.admin, "product", "Права")
++	active := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "ACT-1"})
++	archived := s.newProduct(s.admin, cat.ID, map[string]any{"sku": "ARC-1"})
++	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+archived.ID, productPutBody(archived, map[string]any{"is_active": false}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	s.SeedUser("catalog4-exec", "password1", "Каталог4 Исп", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("catalog4-exec", "password1")
++
++	st, raw = exec.Do(http.MethodGet, "/api/v1/products?include_archived=true", nil)
++	s.Equal(http.StatusOK, st, "чтение активных товаров разрешено исполнителю")
++	s.NotContains(string(raw), "ARC-1", "исполнитель не видит архив даже с include_archived=true (D19)")
++	s.Contains(string(raw), "ACT-1")
++
++	for _, c := range []struct{ method, path string }{
++		{http.MethodPost, "/api/v1/products"},
++		{http.MethodPut, "/api/v1/products/" + active.ID},
++		{http.MethodDelete, "/api/v1/products/" + active.ID},
++		{http.MethodPost, "/api/v1/catalog-categories"},
++		{http.MethodDelete, "/api/v1/catalog-categories/" + cat.ID},
++	} {
++		st, raw := exec.Do(c.method, c.path, map[string]any{"name": "x"})
++		s.Equal(http.StatusForbidden, st, "%s %s", c.method, c.path)
++		s.Equal("FORBIDDEN", s.errOf(raw).Code)
++	}
++
++	st, page := exec.Do(http.MethodGet, "/catalog/products", nil)
++	s.Equal(http.StatusForbidden, st)
++	s.Contains(string(page), "Нет доступа")
++
++	anon := s.NewBrowser()
++	st, _ = anon.Do(http.MethodGet, "/api/v1/products", nil)
++	s.Equal(http.StatusUnauthorized, st)
++	st, _ = anon.Do(http.MethodGet, "/catalog/products", nil)
++	s.Equal(http.StatusFound, st, "аноним — редирект на /login")
++}
++
++// ---- CSRF: мутация без корректного токена → 403 ----
++
++func (s *CatalogLiveSuite) TestCSRF_MissingToken403() {
++	cat := s.newCategory(s.admin, "product", "CSRF")
++	resp := s.admin.Request(http.MethodPost, "/api/v1/products", productBody(cat.ID, nil), map[string]string{"X-Csrf-Token": ""})
++	defer resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode)
++}
++
++// ---- SSR: /catalog → 303 /catalog/services; вкладки; создание товара через форму ----
++
++func (s *CatalogLiveSuite) TestSSR_RootRedirect_ProductFormFlow() {
++	resp := s.admin.Request(http.MethodGet, "/catalog", nil, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/catalog/services", resp.Header.Get("Location"))
++
++	// подфаза B заменила заглушку реальным списком услуг — другие тесты сьюты могли уже
++	// завести услугу (TestProduct_InUse409_ArchiveRestore_FreeDeletes пишет строку в БД
++	// напрямую), поэтому проверяем что-то присутствующее в обоих состояниях, а не
++	// services-empty безусловно.
++	st, page := s.admin.Do(http.MethodGet, "/catalog/services", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="catalog-tabs"`)
++	s.Contains(string(page), `data-testid="services-filters"`)
++
++	st, page = s.admin.Do(http.MethodGet, "/catalog/products", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="catalog-tab-products"`)
++
++	cat := s.newCategory(s.admin, "product", "SSR категория")
++	form := url.Values{"category_id": {cat.ID}, "name": {"SSR Товар"}, "sku": {"SSR-1"}, "unit": {"шт"}, "price": {"10"}, "stock": {"1"}, "min_stock": {"0"}}
++	resp = s.admin.Request(http.MethodPost, "/catalog/products", form, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/catalog/products?flash=created", resp.Header.Get("Location"))
++}
+diff --git a/internal/features/catalog/categories_dto.go b/internal/features/catalog/categories_dto.go
+new file mode 100644
+index 0000000..142c39c
+--- /dev/null
++++ b/internal/features/catalog/categories_dto.go
+@@ -0,0 +1,36 @@
++package catalog
++
++import "time"
++
++// Wire-типы категорий — JSON snake_case (§API-1); конверт списка {items,total,limit,offset}.
++
++// CategoryResponse — категория каталога. ItemCount — число товаров/услуг этого вида
++// в категории (панель слева).
++type CategoryResponse struct {
++	ID        string    `json:"id"`
++	Kind      string    `json:"kind"`
++	Name      string    `json:"name"`
++	IsActive  bool      `json:"is_active"`
++	ItemCount int       `json:"item_count"`
++	CreatedAt time.Time `json:"created_at"`
++	UpdatedAt time.Time `json:"updated_at"`
++}
++
++type CategoryListResponse struct {
++	Items  []CategoryResponse `json:"items"`
++	Total  int                `json:"total"`
++	Limit  int                `json:"limit"`
++	Offset int                `json:"offset"`
++}
++
++// CategoryCreateRequest — POST /api/v1/catalog-categories. is_active по умолчанию — true.
++type CategoryCreateRequest struct {
++	Kind string `json:"kind"`
++	Name string `json:"name"`
++}
++
++// CategoryUpdateRequest — PUT /api/v1/catalog-categories/:id: только переименование
++// (kind неизменяем, is_active — отдельные маршруты архива/восстановления).
++type CategoryUpdateRequest struct {
++	Name string `json:"name"`
++}
+diff --git a/internal/features/catalog/categories_handler.go b/internal/features/catalog/categories_handler.go
+new file mode 100644
+index 0000000..37692c5
+--- /dev/null
++++ b/internal/features/catalog/categories_handler.go
+@@ -0,0 +1,79 @@
++package catalog
++
++import (
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// CategoryHandler — JSON API /api/v1/catalog-categories (чтение — RequireAPI, мутации —
++// +admin, гарды вешает routes.go).
++type CategoryHandler struct {
++	svc *CategoryService
++}
++
++func NewCategoryHandler(svc *CategoryService) *CategoryHandler { return &CategoryHandler{svc: svc} }
++
++// List — GET /api/v1/catalog-categories?kind=&include_archived=&limit=&offset=.
++func (h *CategoryHandler) List(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	includeArchived, _ := strconv.ParseBool(c.Query("include_archived"))
++	isAdmin := false
++	if p := middleware.CurrentPrincipal(c); p != nil {
++		isAdmin = p.IsAdmin()
++	}
++	resp, err := h.svc.List(c.Context(), CategoryListQuery{
++		Kind: c.Query("kind"), IncludeArchived: includeArchived, Limit: limit, Offset: offset,
++	}, isAdmin)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Get — GET /api/v1/catalog-categories/:id.
++func (h *CategoryHandler) Get(c fiber.Ctx) error {
++	resp, err := h.svc.Get(c.Context(), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Create — POST /api/v1/catalog-categories (admin).
++func (h *CategoryHandler) Create(c fiber.Ctx) error {
++	var req CategoryCreateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Create(c.Context(), CategoryInput{Kind: req.Kind, Name: req.Name})
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// Update — PUT /api/v1/catalog-categories/:id (admin; переименование).
++func (h *CategoryHandler) Update(c fiber.Ctx) error {
++	var req CategoryUpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Rename(c.Context(), c.Params("id"), req.Name)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Delete — DELETE /api/v1/catalog-categories/:id (admin); используемая → 409 CATEGORY_IN_USE.
++func (h *CategoryHandler) Delete(c fiber.Ctx) error {
++	if err := h.svc.Delete(c.Context(), c.Params("id")); err != nil {
++		return err
++	}
++	return c.SendStatus(fiber.StatusNoContent)
++}
+diff --git a/internal/features/catalog/categories_repo.go b/internal/features/catalog/categories_repo.go
+new file mode 100644
+index 0000000..ae1b341
+--- /dev/null
++++ b/internal/features/catalog/categories_repo.go
+@@ -0,0 +1,187 @@
++package catalog
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++// Category — repo-модель категории каталога.
++type Category struct {
++	ID        string
++	Kind      string
++	Name      string
++	IsActive  bool
++	ItemCount int
++	CreatedAt time.Time
++	UpdatedAt time.Time
++}
++
++type CategoryRepo struct {
++	pool *pgxpool.Pool
++}
++
++func NewCategoryRepo(pool *pgxpool.Pool) *CategoryRepo { return &CategoryRepo{pool: pool} }
++
++var (
++	ErrCategoryNotFound  = pgx.ErrNoRows
++	errCategoryNameTaken = errors.New("catalog: category name taken")
++	errCategoryInUse     = errors.New("catalog: category in use")
++)
++
++type CategoryListParams struct {
++	Kind            string // "" — оба вида
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++// List — kind пуст → оба вида (используется редко, экраны фильтруют по конкретному
++// виду); item_count считается по kind СТРОКИ (учитывая, что список может быть смешанным,
++// считаем через CASE).
++func (r *CategoryRepo) List(ctx context.Context, p CategoryListParams) ([]Category, int, error) {
++	var conds []string
++	var args []any
++	add := func(cond string, val any) {
++		args = append(args, val)
++		conds = append(conds, fmt.Sprintf(cond, len(args)))
++	}
++	if p.Kind != "" {
++		add("c.kind = $%d", p.Kind)
++	}
++	if !p.IncludeArchived {
++		conds = append(conds, "c.is_active")
++	}
++	where := ""
++	if len(conds) > 0 {
++		where = " WHERE " + strings.Join(conds, " AND ")
++	}
++
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM catalog_categories c`+where, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++	countExpr := `(CASE c.kind WHEN 'product' THEN (SELECT count(*) FROM products p WHERE p.category_id = c.id)
++		ELSE (SELECT count(*) FROM services s WHERE s.category_id = c.id) END)`
++	q := `SELECT c.id, c.kind, c.name, c.is_active, c.created_at, c.updated_at, ` + countExpr +
++		` FROM catalog_categories c` + where +
++		fmt.Sprintf(" ORDER BY lower(c.name), c.id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
++	rows, err := r.pool.Query(ctx, q, append(args, p.Limit, p.Offset)...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++	out := []Category{}
++	for rows.Next() {
++		var c Category
++		if err := rows.Scan(&c.ID, &c.Kind, &c.Name, &c.IsActive, &c.CreatedAt, &c.UpdatedAt, &c.ItemCount); err != nil {
++			return nil, 0, err
++		}
++		out = append(out, c)
++	}
++	return out, total, rows.Err()
++}
++
++// Get — id уже провалидирован как uuid сервисом.
++func (r *CategoryRepo) Get(ctx context.Context, id string) (*Category, error) {
++	var c Category
++	err := r.pool.QueryRow(ctx,
++		`SELECT id, kind, name, is_active, created_at, updated_at,
++			(CASE kind WHEN 'product' THEN (SELECT count(*) FROM products p WHERE p.category_id = catalog_categories.id)
++			ELSE (SELECT count(*) FROM services s WHERE s.category_id = catalog_categories.id) END)
++		 FROM catalog_categories WHERE id = $1::uuid`, id).
++		Scan(&c.ID, &c.Kind, &c.Name, &c.IsActive, &c.CreatedAt, &c.UpdatedAt, &c.ItemCount)
++	if err != nil {
++		return nil, err
++	}
++	return &c, nil
++}
++
++// Create — INSERT; 23505 (catalog_categories_kind_name_lower_uq) → errCategoryNameTaken.
++func (r *CategoryRepo) Create(ctx context.Context, kind, name string) (*Category, error) {
++	var c Category
++	c.Kind = kind
++	err := r.pool.QueryRow(ctx,
++		`INSERT INTO catalog_categories (kind, name) VALUES ($1, $2)
++		 RETURNING id, name, is_active, created_at, updated_at`,
++		kind, name).Scan(&c.ID, &c.Name, &c.IsActive, &c.CreatedAt, &c.UpdatedAt)
++	if err != nil {
++		return nil, mapUniqueViolation(err, errCategoryNameTaken)
++	}
++	c.ItemCount = 0
++	return &c, nil
++}
++
++// Rename — UPDATE name; ErrNoRows → ErrCategoryNotFound, 23505 → errCategoryNameTaken.
++func (r *CategoryRepo) Rename(ctx context.Context, id, name string) (*Category, error) {
++	var c Category
++	err := r.pool.QueryRow(ctx,
++		`UPDATE catalog_categories SET name = $2, updated_at = now() WHERE id = $1::uuid
++		 RETURNING id, kind, name, is_active, created_at, updated_at`,
++		id, name).Scan(&c.ID, &c.Kind, &c.Name, &c.IsActive, &c.CreatedAt, &c.UpdatedAt)
++	if err != nil {
++		return nil, mapUniqueViolation(err, errCategoryNameTaken)
++	}
++	cnt, err := r.itemCount(ctx, c.Kind, id)
++	if err != nil {
++		return nil, err
++	}
++	c.ItemCount = cnt
++	return &c, nil
++}
++
++// SetActive — SSR архив/восстановление.
++func (r *CategoryRepo) SetActive(ctx context.Context, id string, active bool) error {
++	tag, err := r.pool.Exec(ctx, `UPDATE catalog_categories SET is_active = $2, updated_at = now() WHERE id = $1::uuid`, id, active)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrCategoryNotFound
++	}
++	return nil
++}
++
++// Delete — RowsAffected 0 → ErrCategoryNotFound; FK-нарушение (RESTRICT из products/services)
++// → errCategoryInUse. Postgres на явный ON DELETE RESTRICT отдаёт 23001, а не 23503.
++func (r *CategoryRepo) Delete(ctx context.Context, id string) error {
++	tag, err := r.pool.Exec(ctx, `DELETE FROM catalog_categories WHERE id = $1::uuid`, id)
++	if err != nil {
++		var pgErr *pgconn.PgError
++		if errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "23001") {
++			return errCategoryInUse
++		}
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrCategoryNotFound
++	}
++	return nil
++}
++
++func (r *CategoryRepo) itemCount(ctx context.Context, kind, id string) (int, error) {
++	var n int
++	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM `+tableOf(kind)+` WHERE category_id = $1::uuid`, id).Scan(&n)
++	return n, err
++}
++
++func tableOf(kind string) string {
++	if kind == KindProduct {
++		return "products"
++	}
++	return "services"
++}
++
++// mapUniqueViolation — 23505 → target; прочие ошибки (в т.ч. pgx.ErrNoRows) — как есть.
++func mapUniqueViolation(err error, target error) error {
++	var pgErr *pgconn.PgError
++	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
++		return target
++	}
++	return err
++}
+diff --git a/internal/features/catalog/categories_service.go b/internal/features/catalog/categories_service.go
+new file mode 100644
+index 0000000..d2e5dbf
+--- /dev/null
++++ b/internal/features/catalog/categories_service.go
+@@ -0,0 +1,153 @@
++package catalog
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++var (
++	ErrCategoryNotFoundErr = errorspkg.New("CATEGORY_NOT_FOUND", http.StatusNotFound, "Категория не найдена")
++	ErrCategoryNameTaken   = errorspkg.New("CATEGORY_NAME_TAKEN", http.StatusConflict, "Такая категория уже есть")
++	ErrCategoryInUse       = errorspkg.New("CATEGORY_IN_USE", http.StatusConflict,
++		"Категория используется — удалить нельзя, отправьте её в архив")
++)
++
++// defaultLimit/maxLimit — 500: списки каталога используются как lookup (комбобоксы,
++// фильтры) — как у equipmenttypes.
++const (
++	defaultLimit = 500
++	maxLimit     = 500
++)
++
++type CategoryService struct {
++	repo *CategoryRepo
++}
++
++func NewCategoryService(pool *pgxpool.Pool) *CategoryService {
++	return &CategoryService{repo: NewCategoryRepo(pool)}
++}
++
++type CategoryListQuery struct {
++	Kind            string
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++// List — !isAdmin форсирует IncludeArchived=false (как equipmenttypes ADR-004).
++func (s *CategoryService) List(ctx context.Context, q CategoryListQuery, isAdmin bool) (*CategoryListResponse, error) {
++	limit, offset := q.Limit, q.Offset
++	if limit <= 0 {
++		limit = defaultLimit
++	}
++	limit = min(limit, maxLimit)
++	offset = max(offset, 0)
++	includeArchived := q.IncludeArchived && isAdmin
++
++	kind := strings.TrimSpace(q.Kind)
++	if kind != KindService && kind != KindProduct {
++		kind = ""
++	}
++	items, total, err := s.repo.List(ctx, CategoryListParams{Kind: kind, IncludeArchived: includeArchived, Limit: limit, Offset: offset})
++	if err != nil {
++		return nil, err
++	}
++	resp := &CategoryListResponse{Items: make([]CategoryResponse, len(items)), Total: total, Limit: limit, Offset: offset}
++	for i, c := range items {
++		resp.Items[i] = toCategoryResponse(c)
++	}
++	return resp, nil
++}
++
++func (s *CategoryService) Get(ctx context.Context, id string) (*CategoryResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrCategoryNotFoundErr
++	}
++	c, err := s.repo.Get(ctx, id)
++	if errors.Is(err, ErrCategoryNotFound) {
++		return nil, ErrCategoryNotFoundErr
++	}
++	if err != nil {
++		return nil, err
++	}
++	resp := toCategoryResponse(*c)
++	return &resp, nil
++}
++
++func (s *CategoryService) Create(ctx context.Context, in CategoryInput) (*CategoryResponse, error) {
++	in = in.normalize()
++	if f := in.validateCreate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	c, err := s.repo.Create(ctx, in.Kind, in.Name)
++	if errors.Is(err, errCategoryNameTaken) {
++		return nil, ErrCategoryNameTaken
++	}
++	if err != nil {
++		return nil, err
++	}
++	resp := toCategoryResponse(*c)
++	return &resp, nil
++}
++
++// Rename — единственная мутация карточки категории (kind неизменяем).
++func (s *CategoryService) Rename(ctx context.Context, id, name string) (*CategoryResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrCategoryNotFoundErr
++	}
++	name = strings.TrimSpace(name)
++	if f := validateCategoryName(name); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	c, err := s.repo.Rename(ctx, id, name)
++	switch {
++	case errors.Is(err, ErrCategoryNotFound):
++		return nil, ErrCategoryNotFoundErr
++	case errors.Is(err, errCategoryNameTaken):
++		return nil, ErrCategoryNameTaken
++	case err != nil:
++		return nil, err
++	}
++	resp := toCategoryResponse(*c)
++	return &resp, nil
++}
++
++func (s *CategoryService) SetActive(ctx context.Context, id string, active bool) error {
++	if uuid.Validate(id) != nil {
++		return ErrCategoryNotFoundErr
++	}
++	if err := s.repo.SetActive(ctx, id, active); errors.Is(err, ErrCategoryNotFound) {
++		return ErrCategoryNotFoundErr
++	} else if err != nil {
++		return err
++	}
++	return nil
++}
++
++func (s *CategoryService) Delete(ctx context.Context, id string) error {
++	if uuid.Validate(id) != nil {
++		return ErrCategoryNotFoundErr
++	}
++	err := s.repo.Delete(ctx, id)
++	switch {
++	case errors.Is(err, ErrCategoryNotFound):
++		return ErrCategoryNotFoundErr
++	case errors.Is(err, errCategoryInUse):
++		return ErrCategoryInUse
++	default:
++		return err
++	}
++}
++
++func toCategoryResponse(c Category) CategoryResponse {
++	return CategoryResponse{
++		ID: c.ID, Kind: c.Kind, Name: c.Name, IsActive: c.IsActive,
++		ItemCount: c.ItemCount, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
++	}
++}
+diff --git a/internal/features/catalog/categories_validate.go b/internal/features/catalog/categories_validate.go
+new file mode 100644
+index 0000000..8d340ca
+--- /dev/null
++++ b/internal/features/catalog/categories_validate.go
+@@ -0,0 +1,65 @@
++package catalog
++
++import (
++	"strings"
++	"unicode/utf8"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Коды ошибок полей (details.fields[].message) — SSR переводит их в текст.
++const (
++	msgRequired    = "required"
++	msgTooLong     = "too_long"
++	msgInvalid     = "invalid"
++	msgInvalidText = "invalid_text"
++)
++
++// KindService/KindProduct — виды категорий каталога (D16).
++const (
++	KindService = "service"
++	KindProduct = "product"
++)
++
++const categoryNameMax = 100
++
++// CategoryInput — нормализованные поля категории.
++type CategoryInput struct {
++	Kind string
++	Name string
++}
++
++func (in CategoryInput) normalize() CategoryInput {
++	in.Kind = strings.TrimSpace(in.Kind)
++	in.Name = strings.TrimSpace(in.Name)
++	return in
++}
++
++// validateCreate — kind + name.
++func (in CategoryInput) validateCreate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	if in.Kind != KindService && in.Kind != KindProduct {
++		add("kind", msgInvalid)
++	}
++	f = append(f, validateCategoryName(in.Name)...)
++	return f
++}
++
++// validateRename — только name (PUT/rename).
++func validateCategoryName(name string) []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(fld, msg string) { f = append(f, errorspkg.Field{Name: fld, Message: msg}) }
++	switch n := utf8.RuneCountInString(name); {
++	case n == 0:
++		add("name", msgRequired)
++	case n > categoryNameMax:
++		add("name", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(name) {
++		add("name", msgInvalidText)
++	}
++	return f
++}
+diff --git a/internal/features/catalog/categories_validate_test.go b/internal/features/catalog/categories_validate_test.go
+new file mode 100644
+index 0000000..0941852
+--- /dev/null
++++ b/internal/features/catalog/categories_validate_test.go
+@@ -0,0 +1,59 @@
++package catalog
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++func fieldsOf(fs []errorspkg.Field) map[string]string {
++	m := map[string]string{}
++	for _, f := range fs {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++func TestCategoryInput_Normalize(t *testing.T) {
++	in := CategoryInput{Kind: "  product  ", Name: "  Фильтры  "}.normalize()
++	assert.Equal(t, "product", in.Kind)
++	assert.Equal(t, "Фильтры", in.Name)
++}
++
++func TestCategoryInput_ValidateCreate(t *testing.T) {
++	cases := []struct {
++		name  string
++		in    CategoryInput
++		field string
++		msg   string
++	}{
++		{"валидный product", CategoryInput{Kind: KindProduct, Name: "Расходники"}, "", ""},
++		{"валидный service", CategoryInput{Kind: KindService, Name: "Ремонт"}, "", ""},
++		{"kind пуст", CategoryInput{Kind: "", Name: "X"}, "kind", msgInvalid},
++		{"kind мусор", CategoryInput{Kind: "junk", Name: "X"}, "kind", msgInvalid},
++		{"имя пусто", CategoryInput{Kind: KindProduct, Name: ""}, "name", msgRequired},
++		{"имя из пробелов", CategoryInput{Kind: KindProduct, Name: "   "}, "name", msgRequired},
++		{"имя 100 — граница", CategoryInput{Kind: KindProduct, Name: strings.Repeat("я", 100)}, "", ""},
++		{"имя 101", CategoryInput{Kind: KindProduct, Name: strings.Repeat("я", 101)}, "name", msgTooLong},
++		{"NUL-байт", CategoryInput{Kind: KindProduct, Name: "X\u0000"}, "name", msgInvalidText},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got := fieldsOf(tc.in.normalize().validateCreate())
++			if tc.field == "" {
++				assert.Empty(t, got)
++				return
++			}
++			assert.Equal(t, tc.msg, got[tc.field])
++		})
++	}
++}
++
++func TestValidateCategoryName(t *testing.T) {
++	assert.Empty(t, fieldsOf(validateCategoryName("Название")))
++	assert.Equal(t, map[string]string{"name": msgRequired}, fieldsOf(validateCategoryName("")))
++	assert.Equal(t, map[string]string{"name": msgTooLong}, fieldsOf(validateCategoryName(strings.Repeat("a", 101))))
++}
+diff --git a/internal/features/catalog/products_dto.go b/internal/features/catalog/products_dto.go
+new file mode 100644
+index 0000000..f6b7c8d
+--- /dev/null
++++ b/internal/features/catalog/products_dto.go
+@@ -0,0 +1,58 @@
++package catalog
++
++import "time"
++
++// Wire-типы товаров — JSON snake_case (§API-1); NUMERIC-поля — Amount (число на wire,
++// строка внутри, без потери точности).
++
++type ProductResponse struct {
++	ID         string    `json:"id"`
++	CategoryID string    `json:"category_id"`
++	Name       string    `json:"name"`
++	SKU        string    `json:"sku"`
++	Unit       string    `json:"unit"`
++	Price      Amount    `json:"price"`
++	IsActive   bool      `json:"is_active"`
++	Stock      Amount    `json:"stock"`
++	MinStock   Amount    `json:"min_stock"`
++	Box        string    `json:"box"`
++	Place      string    `json:"place"`
++	CreatedAt  time.Time `json:"created_at"`
++	UpdatedAt  time.Time `json:"updated_at"`
++}
++
++type ProductListResponse struct {
++	Items  []ProductResponse `json:"items"`
++	Total  int               `json:"total"`
++	Limit  int               `json:"limit"`
++	Offset int               `json:"offset"`
++}
++
++// ProductCreateRequest — POST /api/v1/products. is_active по умолчанию — true.
++type ProductCreateRequest struct {
++	CategoryID string `json:"category_id"`
++	Name       string `json:"name"`
++	SKU        string `json:"sku"`
++	Unit       string `json:"unit"`
++	Price      Amount `json:"price"`
++	Stock      Amount `json:"stock"`
++	MinStock   Amount `json:"min_stock"`
++	Box        string `json:"box"`
++	Place      string `json:"place"`
++}
++
++// ProductUpdateRequest — PUT /api/v1/products/:id: полная замена карточки товара.
++// is_active обязателен (как equipmenttypes.TypeUpdateRequest) — архив/восстановление
++// доступны и напрямую через PUT, и отдельными SSR-маршрутами.
++type ProductUpdateRequest struct {
++	CategoryID string `json:"category_id"`
++	Name       string `json:"name"`
++	SKU        string `json:"sku"`
++	Unit       string `json:"unit"`
++	Price      Amount `json:"price"`
++	Stock      Amount `json:"stock"`
++	MinStock   Amount `json:"min_stock"`
++	Box        string `json:"box"`
++	Place      string `json:"place"`
++	IsActive   *bool  `json:"is_active"`
++}
+diff --git a/internal/features/catalog/products_handler.go b/internal/features/catalog/products_handler.go
+new file mode 100644
+index 0000000..492019b
+--- /dev/null
++++ b/internal/features/catalog/products_handler.go
+@@ -0,0 +1,99 @@
++package catalog
++
++import (
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// ProductHandler — JSON API /api/v1/products (чтение — RequireAPI, мутации — +admin).
++type ProductHandler struct {
++	svc *ProductService
++}
++
++func NewProductHandler(svc *ProductService) *ProductHandler { return &ProductHandler{svc: svc} }
++
++// List — GET /api/v1/products?category_id=&q=&include_archived=&limit=&offset=.
++func (h *ProductHandler) List(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	includeArchived, _ := strconv.ParseBool(c.Query("include_archived"))
++	isAdmin := false
++	if p := middleware.CurrentPrincipal(c); p != nil {
++		isAdmin = p.IsAdmin()
++	}
++	resp, err := h.svc.List(c.Context(), ProductListQuery{
++		CategoryID: c.Query("category_id"), Q: c.Query("q"), IncludeArchived: includeArchived, Limit: limit, Offset: offset,
++	}, isAdmin)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Get — GET /api/v1/products/:id.
++func (h *ProductHandler) Get(c fiber.Ctx) error {
++	resp, err := h.svc.Get(c.Context(), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++func inputFromCreate(req ProductCreateRequest) ProductInput {
++	return ProductInput{
++		CategoryID: req.CategoryID, Name: req.Name, SKU: req.SKU, Unit: req.Unit,
++		Price: req.Price.String(), Stock: req.Stock.String(), MinStock: req.MinStock.String(),
++		Box: req.Box, Place: req.Place,
++	}
++}
++
++// Create — POST /api/v1/products (admin). is_active по умолчанию — true; остаток при
++// создании в stock_movements не пишется (нет «старого» значения для дельты).
++func (h *ProductHandler) Create(c fiber.Ctx) error {
++	var req ProductCreateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	resp, err := h.svc.Create(c.Context(), inputFromCreate(req))
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// Update — PUT /api/v1/products/:id (admin; полная карточка, is_active обязателен).
++func (h *ProductHandler) Update(c fiber.Ctx) error {
++	var req ProductUpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	if req.IsActive == nil {
++		return errorspkg.Validation(errorspkg.Field{Name: "is_active", Message: msgRequired})
++	}
++	userID := ""
++	if p := middleware.CurrentPrincipal(c); p != nil {
++		userID = p.ID
++	}
++	in := ProductInput{
++		CategoryID: req.CategoryID, Name: req.Name, SKU: req.SKU, Unit: req.Unit,
++		Price: req.Price.String(), Stock: req.Stock.String(), MinStock: req.MinStock.String(),
++		Box: req.Box, Place: req.Place, IsActive: *req.IsActive,
++	}
++	resp, err := h.svc.Update(c.Context(), c.Params("id"), userID, in)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Delete — DELETE /api/v1/products/:id (admin); используемый в комплекте → 409 PRODUCT_IN_USE.
++func (h *ProductHandler) Delete(c fiber.Ctx) error {
++	if err := h.svc.Delete(c.Context(), c.Params("id")); err != nil {
++		return err
++	}
++	return c.SendStatus(fiber.StatusNoContent)
++}
+diff --git a/internal/features/catalog/products_repo.go b/internal/features/catalog/products_repo.go
+new file mode 100644
+index 0000000..eec18d7
+--- /dev/null
++++ b/internal/features/catalog/products_repo.go
+@@ -0,0 +1,239 @@
++package catalog
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Product — repo-модель товара. Numeric-поля читаются как text (`::text` в SELECT) —
++// без потери точности и без зависимости от decimal-библиотеки.
++type Product struct {
++	ID         string
++	CategoryID string
++	Name       string
++	SKU        string
++	Unit       string
++	Price      string
++	IsActive   bool
++	Stock      string
++	MinStock   string
++	Box        string
++	Place      string
++	CreatedAt  time.Time
++	UpdatedAt  time.Time
++}
++
++type ProductRepo struct {
++	pool *pgxpool.Pool
++}
++
++func NewProductRepo(pool *pgxpool.Pool) *ProductRepo { return &ProductRepo{pool: pool} }
++
++var (
++	ErrProductNotFound        = pgx.ErrNoRows
++	errProductInUse           = errors.New("catalog: product in use")
++	errProductCategoryInvalid = errors.New("catalog: product category invalid")
++	// errStockDeltaOutOfRange — переполнение qty_delta (см. Update ниже): PG 22003 на
++	// вставку в stock_movements, не на карточку товара — маппится отдельно от
++	// mapProductWriteErr (та ветка — про поля самой карточки).
++	errStockDeltaOutOfRange = errors.New("catalog: stock delta out of range")
++)
++
++const productColumns = `id, category_id, name, sku, unit, price::text, is_active, stock::text, min_stock::text, box, place, created_at, updated_at`
++
++func scanProduct(row pgx.Row) (*Product, error) {
++	var p Product
++	if err := row.Scan(&p.ID, &p.CategoryID, &p.Name, &p.SKU, &p.Unit, &p.Price, &p.IsActive,
++		&p.Stock, &p.MinStock, &p.Box, &p.Place, &p.CreatedAt, &p.UpdatedAt); err != nil {
++		return nil, err
++	}
++	return &p, nil
++}
++
++type ProductListParams struct {
++	CategoryID      string
++	Q               string
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++// List — q ищет по name/sku/box/place (ILIKE); карточка неактивной категории всё
++// равно отдаёт товары (фильтр по товару, не по категории).
++func (r *ProductRepo) List(ctx context.Context, p ProductListParams) ([]Product, int, error) {
++	var conds []string
++	var args []any
++	add := func(cond string, val any) {
++		args = append(args, val)
++		conds = append(conds, fmt.Sprintf(cond, len(args)))
++	}
++	if p.CategoryID != "" {
++		add("category_id = $%d::uuid", p.CategoryID)
++	}
++	if !p.IncludeArchived {
++		conds = append(conds, "is_active")
++	}
++	if p.Q != "" {
++		like := "%" + sqlutil.EscapeLike(p.Q) + "%"
++		args = append(args, like)
++		n := len(args)
++		conds = append(conds, fmt.Sprintf("(name ILIKE $%d OR sku ILIKE $%d OR box ILIKE $%d OR place ILIKE $%d)", n, n, n, n))
++	}
++	where := ""
++	if len(conds) > 0 {
++		where = " WHERE " + strings.Join(conds, " AND ")
++	}
++
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM products`+where, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++	q := `SELECT ` + productColumns + ` FROM products` + where +
++		fmt.Sprintf(" ORDER BY lower(name), id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
++	rows, err := r.pool.Query(ctx, q, append(args, p.Limit, p.Offset)...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++	out := []Product{}
++	for rows.Next() {
++		pr, err := scanProduct(rows)
++		if err != nil {
++			return nil, 0, err
++		}
++		out = append(out, *pr)
++	}
++	return out, total, rows.Err()
++}
++
++func (r *ProductRepo) Get(ctx context.Context, id string) (*Product, error) {
++	return scanProduct(r.pool.QueryRow(ctx, `SELECT `+productColumns+` FROM products WHERE id = $1::uuid`, id))
++}
++
++// Create — категория обязана существовать и иметь kind='product' — проверяется одним
++// INSERT ... SELECT ... WHERE EXISTS: 0 строк без иной ошибки → errProductCategoryInvalid.
++func (r *ProductRepo) Create(ctx context.Context, in ProductInput) (*Product, error) {
++	row := r.pool.QueryRow(ctx, `
++		INSERT INTO products (category_id, name, sku, unit, price, stock, min_stock, box, place)
++		SELECT $1::uuid, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8, $9
++		WHERE EXISTS (SELECT 1 FROM catalog_categories WHERE id = $1::uuid AND kind = 'product')
++		RETURNING `+productColumns,
++		in.CategoryID, in.Name, in.SKU, in.Unit, in.Price, in.Stock, in.MinStock, in.Box, in.Place)
++	p, err := scanProduct(row)
++	if err != nil {
++		return nil, mapProductWriteErr(err, true)
++	}
++	return p, nil
++}
++
++// Update — полная замена карточки в одной транзакции: проверка категории, UPDATE,
++// и — если stock изменился — запись stock_movements(reason=manual, delta=новое-старое,
++// user) той же транзакцией (task.md: «delta=0 → записи нет»). Дельта считается в SQL
++// (NUMERIC - NUMERIC) — без конвертации через float64, без потери точности.
++func (r *ProductRepo) Update(ctx context.Context, id, userID string, in ProductInput) (*Product, error) {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
++	if err != nil {
++		return nil, err
++	}
++	defer tx.Rollback(ctx) //nolint:errcheck
++
++	var exists bool
++	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM catalog_categories WHERE id = $1::uuid AND kind = 'product')`,
++		in.CategoryID).Scan(&exists); err != nil {
++		return nil, err
++	}
++	if !exists {
++		return nil, errProductCategoryInvalid
++	}
++
++	// oldStock — значение ДО записи, под блокировкой строки (FOR UPDATE): дельта
++	// считается относительно него, а не относительно уже применённого нового значения.
++	var oldStock string
++	if err := tx.QueryRow(ctx, `SELECT stock::text FROM products WHERE id = $1::uuid FOR UPDATE`, id).Scan(&oldStock); err != nil {
++		return nil, mapProductWriteErr(err, false)
++	}
++
++	row := tx.QueryRow(ctx, `
++		UPDATE products SET category_id = $2::uuid, name = $3, sku = $4, unit = $5, price = $6::numeric,
++			stock = $7::numeric, min_stock = $8::numeric, box = $9, place = $10, is_active = $11, updated_at = now()
++		WHERE id = $1::uuid
++		RETURNING `+productColumns,
++		id, in.CategoryID, in.Name, in.SKU, in.Unit, in.Price, in.Stock, in.MinStock, in.Box, in.Place, in.IsActive)
++	p, err := scanProduct(row)
++	if err != nil {
++		return nil, mapProductWriteErr(err, false)
++	}
++
++	// delta = новое-старое: оба конца уже провалидированы validateAmount(qtyScale), но
++	// РАЗНОСТЬ двух валидных значений у противоположных границ (напр. -999999999.999 →
++	// 999999999.999) сама может выйти за IntDigits колонки — 22003 здесь не «не должно
++	// случиться», а реальный, хоть и редкий, кейс (code review Блокер 1) → 400 на поле
++	// "stock", не 500.
++	if _, err := tx.Exec(ctx, `
++		INSERT INTO stock_movements (product_id, qty_delta, reason, user_id)
++		SELECT $1::uuid, $2::numeric - $3::numeric, 'manual', $4::uuid
++		WHERE ($2::numeric - $3::numeric) <> 0`,
++		id, in.Stock, oldStock, userID); err != nil {
++		var pgErr *pgconn.PgError
++		if errors.As(err, &pgErr) && pgErr.Code == "22003" {
++			return nil, errStockDeltaOutOfRange
++		}
++		return nil, err
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return nil, err
++	}
++	return p, nil
++}
++
++func (r *ProductRepo) SetActive(ctx context.Context, id string, active bool) error {
++	tag, err := r.pool.Exec(ctx, `UPDATE products SET is_active = $2, updated_at = now() WHERE id = $1::uuid`, id, active)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrProductNotFound
++	}
++	return nil
++}
++
++// Delete — FK-нарушение (service_products RESTRICT) → errProductInUse.
++func (r *ProductRepo) Delete(ctx context.Context, id string) error {
++	tag, err := r.pool.Exec(ctx, `DELETE FROM products WHERE id = $1::uuid`, id)
++	if err != nil {
++		var pgErr *pgconn.PgError
++		if errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "23001") {
++			return errProductInUse
++		}
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrProductNotFound
++	}
++	return nil
++}
++
++// mapProductWriteErr — 0 строк RETURNING: Create — категория невалидна (INSERT ...
++// WHERE EXISTS), Update — id не найден (категория уже проверена раньше отдельным
++// запросом, поэтому здесь всегда ErrProductNotFound). validateAmount() в валидаторе уже
++// не пускает price/stock/min_stock за пределы NUMERIC(12,2)/(12,3) до этой точки — 22003
++// здесь возможен только на непредвиденном пути; раньше он молча маппился на
++// errProductCategoryInvalid (400 по ЧУЖОМУ полю category_id, code review Блокер 1) —
++// теперь mapAmountOverflow не привязывает его к конкретному полю формы.
++func mapProductWriteErr(err error, isCreate bool) error {
++	if errors.Is(err, pgx.ErrNoRows) {
++		if isCreate {
++			return errProductCategoryInvalid
++		}
++		return ErrProductNotFound
++	}
++	return mapAmountOverflow(err)
++}
+diff --git a/internal/features/catalog/products_service.go b/internal/features/catalog/products_service.go
+new file mode 100644
+index 0000000..1d717cd
+--- /dev/null
++++ b/internal/features/catalog/products_service.go
+@@ -0,0 +1,171 @@
++package catalog
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++var (
++	ErrProductNotFoundErr = errorspkg.New("PRODUCT_NOT_FOUND", http.StatusNotFound, "Товар не найден")
++	ErrProductInUse       = errorspkg.New("PRODUCT_IN_USE", http.StatusConflict,
++		"Товар используется в комплекте услуги — удалить нельзя, отправьте его в архив")
++	// errProductCategoryInvalid из репозитория маппится в 400 (поле category_id) —
++	// отдельного AppError-кода не заводим, категория — обычная валидация формы.
++)
++
++type ProductService struct {
++	repo *ProductRepo
++}
++
++func NewProductService(pool *pgxpool.Pool) *ProductService {
++	return &ProductService{repo: NewProductRepo(pool)}
++}
++
++type ProductListQuery struct {
++	CategoryID      string
++	Q               string
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++const productLookupDefaultLimit = 50 // API §Лимиты task.md: default 50 / max 500
++
++// List — !isAdmin форсирует IncludeArchived=false (исполнитель видит только активные —
++// D19).
++func (s *ProductService) List(ctx context.Context, q ProductListQuery, isAdmin bool) (*ProductListResponse, error) {
++	limit, offset := q.Limit, q.Offset
++	if limit <= 0 {
++		limit = productLookupDefaultLimit
++	}
++	limit = min(limit, maxLimit)
++	offset = max(offset, 0)
++	includeArchived := q.IncludeArchived && isAdmin
++
++	categoryID := q.CategoryID
++	if categoryID != "" && uuid.Validate(categoryID) != nil {
++		categoryID = "" // мусор в category_id — как без фильтра, не 500/404
++	}
++	query := strings.TrimSpace(q.Q)
++	if sqlutil.HasInvalidText(query) {
++		query = ""
++	}
++	items, total, err := s.repo.List(ctx, ProductListParams{
++		CategoryID: categoryID, Q: query, IncludeArchived: includeArchived, Limit: limit, Offset: offset,
++	})
++	if err != nil {
++		return nil, err
++	}
++	resp := &ProductListResponse{Items: make([]ProductResponse, len(items)), Total: total, Limit: limit, Offset: offset}
++	for i, p := range items {
++		resp.Items[i] = toProductResponse(p)
++	}
++	return resp, nil
++}
++
++// Get — D19 «активные записи» относится к List (для исполнителя IncludeArchived
++// форсится в false); Get по конкретному id архив НЕ фильтрует ни для админа, ни для
++// исполнителя — as-is решение, зафиксировано по прецеденту equipmenttypes.Service.Get
++// (code review LOW#5, не блокер: осмысленный сценарий — открыть карточку архивной
++// записи по прямой ссылке из другого места экрана, а не «спрятать» её вовсе).
++func (s *ProductService) Get(ctx context.Context, id string) (*ProductResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrProductNotFoundErr
++	}
++	p, err := s.repo.Get(ctx, id)
++	if errors.Is(err, ErrProductNotFound) {
++		return nil, ErrProductNotFoundErr
++	}
++	if err != nil {
++		return nil, err
++	}
++	resp := toProductResponse(*p)
++	return &resp, nil
++}
++
++func (s *ProductService) Create(ctx context.Context, in ProductInput) (*ProductResponse, error) {
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	p, err := s.repo.Create(ctx, in)
++	switch {
++	case errors.Is(err, errProductCategoryInvalid):
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgInvalid})
++	case errors.Is(err, errAmountOutOfRange):
++		return nil, ErrAmountOutOfRange
++	case err != nil:
++		return nil, err
++	}
++	resp := toProductResponse(*p)
++	return &resp, nil
++}
++
++// Update — userID пишется в stock_movements при ручном изменении остатка (в той же
++// транзакции, что и UPDATE карточки — репозиторий).
++func (s *ProductService) Update(ctx context.Context, id, userID string, in ProductInput) (*ProductResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrProductNotFoundErr
++	}
++	in = in.normalize()
++	if f := in.validate(); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	p, err := s.repo.Update(ctx, id, userID, in)
++	switch {
++	case errors.Is(err, ErrProductNotFound):
++		return nil, ErrProductNotFoundErr
++	case errors.Is(err, errProductCategoryInvalid):
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgInvalid})
++	case errors.Is(err, errStockDeltaOutOfRange):
++		return nil, errorspkg.Validation(errorspkg.Field{Name: "stock", Message: msgTooLarge})
++	case errors.Is(err, errAmountOutOfRange):
++		return nil, ErrAmountOutOfRange
++	case err != nil:
++		return nil, err
++	}
++	resp := toProductResponse(*p)
++	return &resp, nil
++}
++
++func (s *ProductService) SetActive(ctx context.Context, id string, active bool) error {
++	if uuid.Validate(id) != nil {
++		return ErrProductNotFoundErr
++	}
++	if err := s.repo.SetActive(ctx, id, active); errors.Is(err, ErrProductNotFound) {
++		return ErrProductNotFoundErr
++	} else if err != nil {
++		return err
++	}
++	return nil
++}
++
++func (s *ProductService) Delete(ctx context.Context, id string) error {
++	if uuid.Validate(id) != nil {
++		return ErrProductNotFoundErr
++	}
++	err := s.repo.Delete(ctx, id)
++	switch {
++	case errors.Is(err, ErrProductNotFound):
++		return ErrProductNotFoundErr
++	case errors.Is(err, errProductInUse):
++		return ErrProductInUse
++	default:
++		return err
++	}
++}
++
++func toProductResponse(p Product) ProductResponse {
++	return ProductResponse{
++		ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
++		Price: Amount(p.Price), IsActive: p.IsActive, Stock: Amount(p.Stock), MinStock: Amount(p.MinStock),
++		Box: p.Box, Place: p.Place, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
++	}
++}
+diff --git a/internal/features/catalog/products_validate.go b/internal/features/catalog/products_validate.go
+new file mode 100644
+index 0000000..462c436
+--- /dev/null
++++ b/internal/features/catalog/products_validate.go
+@@ -0,0 +1,129 @@
++package catalog
++
++import (
++	"regexp"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/google/uuid"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Units — единицы измерения товара (прототип, UNITS). Пустая строка — «не указана».
++var Units = []string{"шт", "л", "м", "кг", "компл", "час"}
++
++func isValidUnit(u string) bool {
++	if u == "" {
++		return true
++	}
++	for _, v := range Units {
++		if v == u {
++			return true
++		}
++	}
++	return false
++}
++
++// decimalRe — целое/десятичное число, опциональный минус (для остатка), без ведущих
++// нулей (кроме самого "0"), без экспоненты — исключает мусор вида "1e400"/"NaN"/"Inf".
++var decimalRe = regexp.MustCompile(`^-?(0|[1-9]\d*)(\.\d+)?$`)
++
++const (
++	productNameMax = 200
++	skuMax         = 100
++	boxPlaceMax    = 100
++)
++
++// ProductInput — нормализованные поля товара (общие для API и SSR-формы).
++type ProductInput struct {
++	CategoryID string
++	Name       string
++	SKU        string
++	Unit       string
++	Price      string
++	Stock      string
++	MinStock   string
++	Box        string
++	Place      string
++	IsActive   bool
++}
++
++func normStr(s string) string { return strings.TrimSpace(s) }
++
++func normAmount(s string) string {
++	s = strings.TrimSpace(s)
++	if s == "" {
++		return "0"
++	}
++	return s
++}
++
++func (in ProductInput) normalize() ProductInput {
++	in.CategoryID = normStr(in.CategoryID)
++	in.Name = normStr(in.Name)
++	in.SKU = normStr(in.SKU)
++	in.Unit = normStr(in.Unit)
++	in.Box = normStr(in.Box)
++	in.Place = normStr(in.Place)
++	in.Price = normAmount(in.Price)
++	in.Stock = normAmount(in.Stock)
++	in.MinStock = normAmount(in.MinStock)
++	return in
++}
++
++// validate — ошибки полей после normalize(). allowNegativeStock — остаток товара может
++// быть отрицательным (D44/task.md «может быть < 0»), цена и минимум остатка — нет.
++func (in ProductInput) validate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	if in.CategoryID == "" {
++		add("category_id", msgRequired)
++	} else if uuid.Validate(in.CategoryID) != nil {
++		add("category_id", msgInvalid)
++	}
++
++	switch n := utf8.RuneCountInString(in.Name); {
++	case n == 0:
++		add("name", msgRequired)
++	case n > productNameMax:
++		add("name", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Name) {
++		add("name", msgInvalidText)
++	}
++
++	if utf8.RuneCountInString(in.SKU) > skuMax {
++		add("sku", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.SKU) {
++		add("sku", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.Box) > boxPlaceMax {
++		add("box", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Box) {
++		add("box", msgInvalidText)
++	}
++	if utf8.RuneCountInString(in.Place) > boxPlaceMax {
++		add("place", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Place) {
++		add("place", msgInvalidText)
++	}
++	if !isValidUnit(in.Unit) {
++		add("unit", msgInvalid)
++	}
++
++	addAmount := func(field, val string, scale amountScale, allowNegative bool) {
++		if code := validateAmount(val, scale, allowNegative); code != "" {
++			add(field, code)
++		}
++	}
++	addAmount("price", in.Price, priceScale, false)
++	addAmount("stock", in.Stock, qtyScale, true)
++	addAmount("min_stock", in.MinStock, qtyScale, false)
++	return f
++}
+diff --git a/internal/features/catalog/products_validate_test.go b/internal/features/catalog/products_validate_test.go
+new file mode 100644
+index 0000000..db05c12
+--- /dev/null
++++ b/internal/features/catalog/products_validate_test.go
+@@ -0,0 +1,132 @@
++package catalog
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/assert"
++)
++
++func validProductInput() ProductInput {
++	return ProductInput{
++		CategoryID: uuid.Must(uuid.NewV7()).String(), Name: "Фильтр масляный", SKU: "F-001",
++		Unit: "шт", Price: "199.90", Stock: "5", MinStock: "2", Box: "К-07", Place: "Стеллаж A",
++	}
++}
++
++func TestProductInput_Normalize(t *testing.T) {
++	in := ProductInput{
++		CategoryID: "  id  ", Name: "  Фильтр  ", SKU: " F1 ", Unit: " шт ",
++		Price: "  ", Stock: " 5 ", MinStock: "", Box: " К1 ", Place: " Полка ",
++	}.normalize()
++	assert.Equal(t, "id", in.CategoryID)
++	assert.Equal(t, "Фильтр", in.Name)
++	assert.Equal(t, "F1", in.SKU)
++	assert.Equal(t, "шт", in.Unit)
++	assert.Equal(t, "0", in.Price, "пустая цена нормализуется в 0")
++	assert.Equal(t, "5", in.Stock)
++	assert.Equal(t, "0", in.MinStock)
++	assert.Equal(t, "К1", in.Box)
++	assert.Equal(t, "Полка", in.Place)
++}
++
++func TestProductInput_Validate_HappyPath(t *testing.T) {
++	assert.Empty(t, fieldsOf(validProductInput().normalize().validate()))
++}
++
++func TestProductInput_Validate_CategoryID(t *testing.T) {
++	in := validProductInput()
++	in.CategoryID = ""
++	assert.Equal(t, map[string]string{"category_id": msgRequired}, fieldsOf(in.normalize().validate()))
++
++	in = validProductInput()
++	in.CategoryID = "not-a-uuid"
++	assert.Equal(t, map[string]string{"category_id": msgInvalid}, fieldsOf(in.normalize().validate()))
++}
++
++func TestProductInput_Validate_Name(t *testing.T) {
++	in := validProductInput()
++	in.Name = ""
++	assert.Equal(t, map[string]string{"name": msgRequired}, fieldsOf(in.normalize().validate()))
++
++	in = validProductInput()
++	in.Name = strings.Repeat("я", 200)
++	assert.Empty(t, fieldsOf(in.normalize().validate()), "200 рун — граница")
++
++	in = validProductInput()
++	in.Name = strings.Repeat("я", 201)
++	assert.Equal(t, map[string]string{"name": msgTooLong}, fieldsOf(in.normalize().validate()))
++
++	in = validProductInput()
++	in.Name = "Товар\u0000"
++	assert.Equal(t, map[string]string{"name": msgInvalidText}, fieldsOf(in.normalize().validate()))
++}
++
++func TestProductInput_Validate_Unit(t *testing.T) {
++	in := validProductInput()
++	in.Unit = ""
++	assert.Empty(t, fieldsOf(in.normalize().validate()), "пустая единица допустима")
++
++	in = validProductInput()
++	in.Unit = "тонна"
++	assert.Equal(t, map[string]string{"unit": msgInvalid}, fieldsOf(in.normalize().validate()))
++
++	for _, u := range Units {
++		in := validProductInput()
++		in.Unit = u
++		assert.Empty(t, fieldsOf(in.normalize().validate()), "единица %q из списка — ок", u)
++	}
++}
++
++func TestProductInput_Validate_Amounts(t *testing.T) {
++	cases := []struct {
++		name  string
++		mut   func(*ProductInput)
++		field string
++		code  string
++	}{
++		{"цена отрицательная", func(in *ProductInput) { in.Price = "-1" }, "price", msgInvalid},
++		{"цена мусор", func(in *ProductInput) { in.Price = "abc" }, "price", msgInvalidFormat},
++		{"цена экспонента — отклоняется", func(in *ProductInput) { in.Price = "1e5" }, "price", msgInvalidFormat},
++		{"цена NaN — отклоняется", func(in *ProductInput) { in.Price = "NaN" }, "price", msgInvalidFormat},
++		{"минимум отрицательный", func(in *ProductInput) { in.MinStock = "-0.5" }, "min_stock", msgInvalid},
++		{"остаток мусор", func(in *ProductInput) { in.Stock = "12.34.56" }, "stock", msgInvalidFormat},
++		// code review Блокер 1 — границы NUMERIC(12,2)/(12,3): переполнение и лишняя
++		// точность → 400 по СВОЕМУ полю, не молчаливое округление/500.
++		{"цена переполнение 1e10 форматом", func(in *ProductInput) { in.Price = "1e10" }, "price", msgInvalidFormat},
++		{"цена переполнение целой части", func(in *ProductInput) { in.Price = "12345678901" }, "price", msgTooLarge},
++		{"цена лишняя точность", func(in *ProductInput) { in.Price = "1.239" }, "price", msgTooPrecise},
++		{"остаток лишняя точность", func(in *ProductInput) { in.Stock = "0.0004" }, "stock", msgTooPrecise},
++		{"остаток переполнение целой части", func(in *ProductInput) { in.Stock = "1000000000" }, "stock", msgTooLarge},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			in := validProductInput()
++			tc.mut(&in)
++			got := fieldsOf(in.normalize().validate())
++			assert.Equal(t, tc.code, got[tc.field], "%v", got)
++		})
++	}
++}
++
++// D44/task.md: остаток товара может быть отрицательным (долг) — не ошибка.
++func TestProductInput_Validate_NegativeStockAllowed(t *testing.T) {
++	in := validProductInput()
++	in.Stock = "-3.5"
++	assert.Empty(t, fieldsOf(in.normalize().validate()))
++}
++
++func TestProductInput_Validate_SkuBoxPlaceTooLong(t *testing.T) {
++	in := validProductInput()
++	in.SKU = strings.Repeat("a", 101)
++	assert.Equal(t, map[string]string{"sku": msgTooLong}, fieldsOf(in.normalize().validate()))
++
++	in = validProductInput()
++	in.Box = strings.Repeat("a", 101)
++	assert.Equal(t, map[string]string{"box": msgTooLong}, fieldsOf(in.normalize().validate()))
++
++	in = validProductInput()
++	in.Place = strings.Repeat("a", 101)
++	assert.Equal(t, map[string]string{"place": msgTooLong}, fieldsOf(in.normalize().validate()))
++}
+diff --git a/internal/features/catalog/routes.go b/internal/features/catalog/routes.go
+new file mode 100644
+index 0000000..6f222c0
+--- /dev/null
++++ b/internal/features/catalog/routes.go
+@@ -0,0 +1,72 @@
++package catalog
++
++import (
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++)
++
++// Register — JSON API /api/v1/catalog-categories, /api/v1/products (D19: !isAdmin —
++// только чтение активных записей, мутации — admin) + SSR-экраны /catalog/products,
++// /catalog/services (заглушка), управление категориями. /catalog — 303 на /catalog/services
++// (task.md: «/catalog → 303 /catalog/services»). При s == nil SSR-группы не регистрируются
++// (используется в тестах, где рендерер не нужен).
++func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, catH *CategoryHandler, prodH *ProductHandler, svcH *ServiceHandler, s *SSR) {
++	admin := middleware.RequireAdmin(nil)
++
++	cg := api.Group("/catalog-categories", a.RequireAPI())
++	cg.Get("", catH.List)
++	cg.Post("", admin, catH.Create)
++	cg.Get("/:id", catH.Get)
++	cg.Put("/:id", admin, catH.Update)
++	cg.Delete("/:id", admin, catH.Delete)
++
++	pg := api.Group("/products", a.RequireAPI())
++	pg.Get("", prodH.List)
++	pg.Post("", admin, prodH.Create)
++	pg.Get("/:id", prodH.Get)
++	pg.Put("/:id", admin, prodH.Update)
++	pg.Delete("/:id", admin, prodH.Delete)
++
++	sg := api.Group("/services", a.RequireAPI())
++	sg.Get("", svcH.List)
++	sg.Post("", admin, svcH.Create)
++	sg.Get("/:id", svcH.Get)
++	sg.Put("/:id", admin, svcH.Update)
++	sg.Delete("/:id", admin, svcH.Delete)
++
++	if s == nil {
++		return
++	}
++	ssrAdmin := middleware.RequireAdmin(s.status.Forbidden)
++	app.Get("/catalog", a.RequireSSR(), ssrAdmin, func(c fiber.Ctx) error {
++		return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/services")
++	})
++
++	svc := app.Group("/catalog/services", a.RequireSSR(), ssrAdmin)
++	svc.Get("", s.servicesList)
++	svc.Get("/new", s.serviceFormNew)
++	svc.Post("", s.serviceCreate)
++	svc.Get("/:id", s.serviceFormEdit)
++	svc.Post("/:id", s.serviceUpdate)
++	svc.Post("/:id/archive", s.serviceArchive)
++	svc.Post("/:id/restore", s.serviceRestore)
++	svc.Post("/:id/delete", s.serviceRemove)
++
++	prod := app.Group("/catalog/products", a.RequireSSR(), ssrAdmin)
++	prod.Get("", s.productsList)
++	prod.Get("/new", s.productFormNew)
++	prod.Post("", s.productCreate)
++	prod.Get("/:id", s.productFormEdit)
++	prod.Post("/:id", s.productUpdate)
++	prod.Post("/:id/archive", s.productArchive)
++	prod.Post("/:id/restore", s.productRestore)
++	prod.Post("/:id/delete", s.productRemove)
++
++	cats := app.Group("/catalog/categories", a.RequireSSR(), ssrAdmin)
++	cats.Post("", s.cat.create)
++	cats.Post("/:id/rename", s.cat.rename)
++	cats.Post("/:id/archive", s.cat.archive)
++	cats.Post("/:id/restore", s.cat.restore)
++	cats.Post("/:id/delete", s.cat.remove)
++}
+diff --git a/internal/features/catalog/services_dto.go b/internal/features/catalog/services_dto.go
+new file mode 100644
+index 0000000..a8cb1f8
+--- /dev/null
++++ b/internal/features/catalog/services_dto.go
+@@ -0,0 +1,60 @@
++package catalog
++
++import "time"
++
++// Wire-типы услуг — JSON snake_case (§API-1); Price *Amount — nil/JSON null = «по факту»
++// (task.md: «цена работы, пусто = "по факту"»).
++
++// ServiceProductResponse — строка комплекта услуги с денормализованными полями товара
++// (название/ед./цена — re-fetch-after-write, чтобы клиент не делал доп. запросы).
++type ServiceProductResponse struct {
++	ProductID string `json:"product_id"`
++	Name      string `json:"name"`
++	Unit      string `json:"unit"`
++	Price     Amount `json:"price"`
++	Qty       Amount `json:"qty"`
++}
++
++type ServiceResponse struct {
++	ID         string                   `json:"id"`
++	CategoryID string                   `json:"category_id"`
++	Name       string                   `json:"name"`
++	Price      *Amount                  `json:"price"`
++	IsActive   bool                     `json:"is_active"`
++	Products   []ServiceProductResponse `json:"products"`
++	CreatedAt  time.Time                `json:"created_at"`
++	UpdatedAt  time.Time                `json:"updated_at"`
++}
++
++type ServiceListResponse struct {
++	Items  []ServiceResponse `json:"items"`
++	Total  int               `json:"total"`
++	Limit  int               `json:"limit"`
++	Offset int               `json:"offset"`
++}
++
++// ServiceProductRequest — строка комплекта в теле POST/PUT (D10: дубли product_id
++// объединяются суммой qty на сервере, порядок и дедуп — ServiceInput.normalize()).
++type ServiceProductRequest struct {
++	ProductID string `json:"product_id"`
++	Qty       Amount `json:"qty"`
++}
++
++// ServiceCreateRequest — POST /api/v1/services. Price отсутствует/null — «по факту»;
++// is_active по умолчанию — true; пустой Products — допустим (task.md).
++type ServiceCreateRequest struct {
++	CategoryID string                  `json:"category_id"`
++	Name       string                  `json:"name"`
++	Price      *Amount                 `json:"price"`
++	Products   []ServiceProductRequest `json:"products"`
++}
++
++// ServiceUpdateRequest — PUT /api/v1/services/:id: полная замена карточки и комплекта
++// (is_active обязателен, как ProductUpdateRequest).
++type ServiceUpdateRequest struct {
++	CategoryID string                  `json:"category_id"`
++	Name       string                  `json:"name"`
++	Price      *Amount                 `json:"price"`
++	Products   []ServiceProductRequest `json:"products"`
++	IsActive   *bool                   `json:"is_active"`
++}
+diff --git a/internal/features/catalog/services_handler.go b/internal/features/catalog/services_handler.go
+new file mode 100644
+index 0000000..0787fc9
+--- /dev/null
++++ b/internal/features/catalog/services_handler.go
+@@ -0,0 +1,99 @@
++package catalog
++
++import (
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// ServiceHandler — JSON API /api/v1/services (чтение — RequireAPI, мутации — +admin).
++type ServiceHandler struct {
++	svc *ServiceService
++}
++
++func NewServiceHandler(svc *ServiceService) *ServiceHandler { return &ServiceHandler{svc: svc} }
++
++// List — GET /api/v1/services?category_id=&q=&include_archived=&limit=&offset=.
++func (h *ServiceHandler) List(c fiber.Ctx) error {
++	limit, _ := strconv.Atoi(c.Query("limit"))
++	offset, _ := strconv.Atoi(c.Query("offset"))
++	includeArchived, _ := strconv.ParseBool(c.Query("include_archived"))
++	isAdmin := false
++	if p := middleware.CurrentPrincipal(c); p != nil {
++		isAdmin = p.IsAdmin()
++	}
++	resp, err := h.svc.List(c.Context(), ServiceListQuery{
++		CategoryID: c.Query("category_id"), Q: c.Query("q"), IncludeArchived: includeArchived, Limit: limit, Offset: offset,
++	}, isAdmin)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Get — GET /api/v1/services/:id.
++func (h *ServiceHandler) Get(c fiber.Ctx) error {
++	resp, err := h.svc.Get(c.Context(), c.Params("id"))
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++func productsFromRequest(items []ServiceProductRequest) []ServiceProductInput {
++	out := make([]ServiceProductInput, len(items))
++	for i, it := range items {
++		out[i] = ServiceProductInput{ProductID: it.ProductID, Qty: it.Qty.String()}
++	}
++	return out
++}
++
++// Create — POST /api/v1/services (admin). is_active по умолчанию — true.
++func (h *ServiceHandler) Create(c fiber.Ctx) error {
++	var req ServiceCreateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	in := ServiceInput{CategoryID: req.CategoryID, Name: req.Name, Products: productsFromRequest(req.Products)}
++	if req.Price != nil {
++		in.HasPrice, in.Price = true, req.Price.String()
++	}
++	resp, err := h.svc.Create(c.Context(), in)
++	if err != nil {
++		return err
++	}
++	return c.Status(fiber.StatusCreated).JSON(resp)
++}
++
++// Update — PUT /api/v1/services/:id (admin; полная карточка+комплект, is_active обязателен).
++func (h *ServiceHandler) Update(c fiber.Ctx) error {
++	var req ServiceUpdateRequest
++	if err := c.Bind().Body(&req); err != nil {
++		return errorspkg.BadRequest("Некорректное тело запроса")
++	}
++	if req.IsActive == nil {
++		return errorspkg.Validation(errorspkg.Field{Name: "is_active", Message: msgRequired})
++	}
++	in := ServiceInput{
++		CategoryID: req.CategoryID, Name: req.Name, Products: productsFromRequest(req.Products), IsActive: *req.IsActive,
++	}
++	if req.Price != nil {
++		in.HasPrice, in.Price = true, req.Price.String()
++	}
++	resp, err := h.svc.Update(c.Context(), c.Params("id"), in)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
++// Delete — DELETE /api/v1/services/:id (admin).
++func (h *ServiceHandler) Delete(c fiber.Ctx) error {
++	if err := h.svc.Delete(c.Context(), c.Params("id")); err != nil {
++		return err
++	}
++	return c.SendStatus(fiber.StatusNoContent)
++}
+diff --git a/internal/features/catalog/services_http_live_test.go b/internal/features/catalog/services_http_live_test.go
+new file mode 100644
+index 0000000..e5ddf13
+--- /dev/null
++++ b/internal/features/catalog/services_http_live_test.go
+@@ -0,0 +1,474 @@
++//go:build integration
++
++package catalog_test
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/url"
++	"testing"
++
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// ServicesLiveSuite (§TD-8, подфаза B task.md): CRUD услуг, комплект (дубли/qty≤0/
++// архивный товар → 400), удаление товара из комплекта (PRODUCT_IN_USE) сквозным путём
++// через API услуг, «по факту», права (D19), IDOR, мусор → 400, CSRF, SSR.
++type ServicesLiveSuite struct {
++	testutil.LiveSuite
++	admin *testutil.Browser
++}
++
++func TestServicesLiveSuite(t *testing.T) {
++	suite.Run(t, &ServicesLiveSuite{LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server"}})
++}
++
++func (s *ServicesLiveSuite) SetupSuite() {
++	s.LiveSuite.SetupSuite()
++	s.SeedUser("catalog4b-admin", "password1", "Каталог4Б Админ", "admin", true)
++	s.admin = s.NewBrowser()
++	s.admin.Login("catalog4b-admin", "password1")
++}
++
++type svcProductDTO struct {
++	ProductID string `json:"product_id"`
++	Name      string `json:"name"`
++	Unit      string `json:"unit"`
++	Price     amount `json:"price"`
++	Qty       amount `json:"qty"`
++}
++
++type serviceDTO struct {
++	ID         string          `json:"id"`
++	CategoryID string          `json:"category_id"`
++	Name       string          `json:"name"`
++	Price      *amount         `json:"price"`
++	IsActive   bool            `json:"is_active"`
++	Products   []svcProductDTO `json:"products"`
++}
++
++// errOf/fields — копии хелперов CatalogLiveSuite (тот же пакет catalog_test, но другой
++// приёмник suite — методы не наследуются между независимыми типами suite.Suite).
++func (s *ServicesLiveSuite) errOf(body []byte) apiErr {
++	var e apiErr
++	s.Require().NoError(json.Unmarshal(body, &e), string(body))
++	return e
++}
++
++func (s *ServicesLiveSuite) fields(body []byte) map[string]string {
++	e := s.errOf(body)
++	s.Require().NotNil(e.Details, string(body))
++	m := map[string]string{}
++	for _, f := range e.Details.Fields {
++		m[f.Name] = f.Message
++	}
++	return m
++}
++
++// newCategory — копия хелпера CatalogLiveSuite (тот же пакет catalog_test, но другой
++// приёмник suite — методы не наследуются между независимыми типами suite.Suite).
++func (s *ServicesLiveSuite) newCategory(kind, name string) categoryDTO {
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/catalog-categories", map[string]any{"kind": kind, "name": name})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var c categoryDTO
++	s.Require().NoError(json.Unmarshal(raw, &c))
++	return c
++}
++
++func (s *ServicesLiveSuite) newProductB(categoryID string, patch map[string]any) productDTO {
++	m := map[string]any{"category_id": categoryID, "name": "Товар комплекта", "sku": "CMP-1", "unit": "шт", "price": 100, "stock": 10, "min_stock": 0}
++	for k, v := range patch {
++		m[k] = v
++	}
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/products", m)
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var p productDTO
++	s.Require().NoError(json.Unmarshal(raw, &p))
++	return p
++}
++
++func serviceBody(categoryID string, patch map[string]any) map[string]any {
++	m := map[string]any{"category_id": categoryID, "name": "Замена двигателя", "price": 1500}
++	for k, v := range patch {
++		m[k] = v
++	}
++	return m
++}
++
++func (s *ServicesLiveSuite) newService(categoryID string, patch map[string]any) serviceDTO {
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(categoryID, patch))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var sv serviceDTO
++	s.Require().NoError(json.Unmarshal(raw, &sv))
++	return sv
++}
++
++// ---- happy path: категория+услуга+комплект CRUD, re-fetch-after-write ----
++
++func (s *ServicesLiveSuite) TestServiceCreateGetList_WithProducts() {
++	cat := s.newCategory("service", "Ремонт двигателей")
++	prodCat := s.newCategory("product", "Запчасти для услуг")
++	p1 := s.newProductB(prodCat.ID, map[string]any{"sku": "P-1", "name": "Прокладка"})
++	p2 := s.newProductB(prodCat.ID, map[string]any{"sku": "P-2", "name": "Масло"})
++
++	sv := s.newService(cat.ID, map[string]any{
++		"products": []map[string]any{{"product_id": p1.ID, "qty": 2}, {"product_id": p2.ID, "qty": 1.5}},
++	})
++	s.Equal("Замена двигателя", sv.Name)
++	s.Require().NotNil(sv.Price)
++	s.Equal("1500.00", sv.Price.String())
++	s.Require().Len(sv.Products, 2)
++	s.Equal(p1.ID, sv.Products[0].ProductID)
++	s.Equal("Прокладка", sv.Products[0].Name)
++	s.Equal("2.000", sv.Products[0].Qty.String())
++	s.Equal(p2.ID, sv.Products[1].ProductID)
++	s.Equal("1.500", sv.Products[1].Qty.String())
++
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/services/"+sv.ID, nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(raw), "Прокладка")
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/services?category_id="+cat.ID, nil)
++	s.Equal(http.StatusOK, st)
++	var list struct {
++		Items  []serviceDTO `json:"items"`
++		Total  int          `json:"total"`
++		Limit  int          `json:"limit"`
++		Offset int          `json:"offset"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(1, list.Total)
++	s.Equal(50, list.Limit, "лимит по умолчанию — 50 (task.md §API)")
++}
++
++// ---- «по факту» — price отсутствует/null → null в ответе ----
++
++func (s *ServicesLiveSuite) TestService_PriceByFact_NullBothWays() {
++	cat := s.newCategory("service", "Диагностика")
++
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", map[string]any{"category_id": cat.ID, "name": "Диагностика"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	var sv serviceDTO
++	s.Require().NoError(json.Unmarshal(raw, &sv))
++	s.Nil(sv.Price, "price отсутствует в теле — «по факту»")
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{"name": "Диагностика 2", "price": nil}))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Require().NoError(json.Unmarshal(raw, &sv))
++	s.Nil(sv.Price, "price:null — «по факту»")
++}
++
++// ---- D10: дубли товара в комплекте объединяются суммой qty ----
++
++func (s *ServicesLiveSuite) TestService_DuplicateProducts_QtySummed() {
++	cat := s.newCategory("service", "Комплект с дублями")
++	prodCat := s.newCategory("product", "Товары для дублей")
++	p := s.newProductB(prodCat.ID, map[string]any{"sku": "DUP-1"})
++
++	sv := s.newService(cat.ID, map[string]any{
++		"products": []map[string]any{{"product_id": p.ID, "qty": 1}, {"product_id": p.ID, "qty": 2.5}},
++	})
++	s.Require().Len(sv.Products, 1, "дубли объединены в одну строку")
++	s.Equal("3.500", sv.Products[0].Qty.String())
++}
++
++// ---- qty ≤ 0 → 400; архивный/несуществующий товар → 400 по полю строки ----
++
++func (s *ServicesLiveSuite) TestService_Validation_QtyAndProductRow() {
++	cat := s.newCategory("service", "Валидация комплекта")
++	prodCat := s.newCategory("product", "Валидация товаров")
++	p := s.newProductB(prodCat.ID, map[string]any{"sku": "VAL-1"})
++
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{
++		"products": []map[string]any{{"product_id": p.ID, "qty": 0}},
++	}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["products[0].qty"])
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{
++		"products": []map[string]any{{"product_id": p.ID, "qty": -1}},
++	}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["products[0].qty"])
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{
++		"products": []map[string]any{{"product_id": "00000000-0000-0000-0000-000000000000", "qty": 1}},
++	}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["products[0].product_id"], "несуществующий товар")
++
++	// архивируем товар — ссылка на него в новом комплекте тоже 400.
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+p.ID, map[string]any{
++		"category_id": prodCat.ID, "name": "Валидация", "sku": "VAL-1", "unit": "", "price": 0, "stock": 0, "min_stock": 0, "box": "", "place": "", "is_active": false,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{
++		"products": []map[string]any{{"product_id": p.ID, "qty": 1}},
++	}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["products[0].product_id"], "архивный товар")
++}
++
++// ---- code review Медиум#2: товар, УЖЕ бывший в комплекте услуги, архивированный (ровно
++// поток CT-005: PRODUCT_IN_USE → архив вместо удаления) — пересохранение услуги с ЭТОЙ ЖЕ
++// строкой должно проходить; НОВАЯ строка с архивным товаром (которого раньше не было в
++// комплекте) — 400. task.md: «архивный товар не предлагается ПРИ ДОБАВЛЕНИИ», не при
++// пересохранении уже существующей. ----
++
++func (s *ServicesLiveSuite) TestService_Update_ArchivedProductInComplect_Grandfathered() {
++	svcCat := s.newCategory("service", "Грандфазер архивного товара")
++	prodCat := s.newCategory("product", "Товары грандфазера")
++	used := s.newProductB(prodCat.ID, map[string]any{"sku": "GF-USED"})
++	other := s.newProductB(prodCat.ID, map[string]any{"sku": "GF-OTHER"})
++
++	sv := s.newService(svcCat.ID, map[string]any{
++		"products": []map[string]any{{"product_id": used.ID, "qty": 1}},
++	})
++
++	// used уходит в архив (ровно тот же поток, что CT-005: удалить нельзя — PRODUCT_IN_USE
++	// — архивируем вместо удаления).
++	st, raw := s.admin.Do(http.MethodPut, "/api/v1/products/"+used.ID, map[string]any{
++		"category_id": prodCat.ID, "name": "Товар в комплекте", "sku": "GF-USED", "unit": "", "price": 100, "stock": 0, "min_stock": 0, "box": "", "place": "", "is_active": false,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	// пересохранение услуги с ТЕМ ЖЕ комплектом (used всё ещё там) — должно пройти, а не
++	// упасть 400 на любое сохранение услуги.
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/services/"+sv.ID, map[string]any{
++		"category_id": svcCat.ID, "name": "Переименованная услуга", "price": 1500, "is_active": true,
++		"products": []map[string]any{{"product_id": used.ID, "qty": 2}},
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw), "уже существующая строка с архивным товаром — не блокер сохранения")
++	var updated serviceDTO
++	s.Require().NoError(json.Unmarshal(raw, &updated))
++	s.Equal("2.000", updated.Products[0].Qty.String(), "qty у грандфазер-строки можно менять")
++
++	// НОВАЯ строка с ДРУГИМ архивным товаром — 400 (его раньше не было в комплекте).
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+other.ID, map[string]any{
++		"category_id": prodCat.ID, "name": "Другой товар", "sku": "GF-OTHER", "unit": "", "price": 50, "stock": 0, "min_stock": 0, "box": "", "place": "", "is_active": false,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/services/"+sv.ID, map[string]any{
++		"category_id": svcCat.ID, "name": "Переименованная услуга", "price": 1500, "is_active": true,
++		"products": []map[string]any{{"product_id": used.ID, "qty": 2}, {"product_id": other.ID, "qty": 1}},
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["products[1].product_id"], "новая строка с архивным товаром — 400")
++}
++
++// ---- code review Блокер 1: границы NUMERIC(12,2)/(12,3) для услуг → 400 по своему полю,
++// не 500. ----
++
++func (s *ServicesLiveSuite) TestService_NumericBoundaries400() {
++	cat := s.newCategory("service", "Границы NUMERIC услуг")
++	prodCat := s.newCategory("product", "Товары для границ")
++	p := s.newProductB(prodCat.ID, map[string]any{"sku": "BOUND-1"})
++
++	for _, tc := range []struct {
++		name    string
++		patch   map[string]any
++		field   string
++		message string
++	}{
++		{"цена 12345678901 — переполнение целой части", map[string]any{"price": 12345678901}, "price", "too_large"},
++		{"цена 1.239 — лишняя точность", map[string]any{"price": 1.239}, "price", "too_precise"},
++		{"цена -1 — отрицательная", map[string]any{"price": -1}, "price", "invalid"},
++	} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, tc.patch))
++		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
++		s.NotEqual(http.StatusInternalServerError, st, "%s → 500 недопустим", tc.name)
++		s.Equal(tc.message, s.fields(raw)[tc.field], "%s → %s", tc.name, raw)
++	}
++
++	for _, tc := range []struct {
++		name    string
++		qty     any
++		message string
++	}{
++		{"qty 0.0001 — лишняя точность", 0.0001, "too_precise"},
++		{"qty 1000000000 — переполнение", 1000000000, "too_large"},
++	} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{
++			"products": []map[string]any{{"product_id": p.ID, "qty": tc.qty}},
++		}))
++		s.Equal(http.StatusBadRequest, st, "%s → %s", tc.name, raw)
++		s.NotEqual(http.StatusInternalServerError, st, "%s → 500 недопустим", tc.name)
++		s.Equal(tc.message, s.fields(raw)["products[0].qty"], "%s → %s", tc.name, raw)
++	}
++
++	// экспонента — литерал JSON-числа сырым телом (map[string]any{"price":"1e5"}
++	// после json.Marshal стал бы JSON-строкой, которую Amount.UnmarshalJSON отклоняет ДО
++	// валидатора — generic 400 без fields).
++	for _, body := range []string{
++		fmt.Sprintf(`{"category_id":%q,"name":"Услуга","price":1e5}`, cat.ID),
++		fmt.Sprintf(`{"category_id":%q,"name":"Услуга","price":1e10}`, cat.ID),
++	} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", body)
++		s.Equal(http.StatusBadRequest, st, string(raw))
++		s.NotEqual(http.StatusInternalServerError, st)
++		s.Equal("invalid_format", s.fields(raw)["price"], string(raw))
++	}
++}
++
++// ---- невалидная категория (не существует / не тот kind) → 400 ----
++
++func (s *ServicesLiveSuite) TestService_InvalidCategory400() {
++	prodCat := s.newCategory("product", "Товары, не услуги")
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(prodCat.ID, nil))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid", s.fields(raw)["category_id"])
++}
++
++// ---- удаление товара из комплекта услуги — 409 PRODUCT_IN_USE сквозным путём через API
++// услуг (task.md: «сквозной тест через API услуг»); архивирование вместо удаления работает,
++// свободный товар удаляется. ----
++
++func (s *ServicesLiveSuite) TestService_ProductInComplect_DeleteConflict_ArchiveWorks() {
++	cat := s.newCategory("service", "Комплект и удаление")
++	prodCat := s.newCategory("product", "Товары для удаления")
++	used := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-USED"})
++	free := s.newProductB(prodCat.ID, map[string]any{"sku": "DEL-FREE"})
++
++	s.newService(cat.ID, map[string]any{"products": []map[string]any{{"product_id": used.ID, "qty": 1}}})
++
++	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/products/"+used.ID, nil)
++	s.Equal(http.StatusConflict, st, string(raw))
++	s.Equal("PRODUCT_IN_USE", s.errOf(raw).Code)
++
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/products/"+used.ID, map[string]any{
++		"category_id": prodCat.ID, "name": "Товар в комплекте", "sku": "DEL-USED", "unit": "", "price": 100, "stock": 10, "min_stock": 0, "box": "", "place": "", "is_active": false,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw), "архивирование вместо удаления — работает")
++
++	st, _ = s.admin.Do(http.MethodDelete, "/api/v1/products/"+free.ID, nil)
++	s.Equal(http.StatusNoContent, st, "неиспользуемый товар удаляется")
++}
++
++// ---- удаление/архив услуги, is_active обязателен на PUT ----
++
++func (s *ServicesLiveSuite) TestService_Update_ArchiveRestore_Delete() {
++	cat := s.newCategory("service", "Жизненный цикл услуги")
++	sv := s.newService(cat.ID, nil)
++
++	st, raw := s.admin.Do(http.MethodPut, "/api/v1/services/"+sv.ID, map[string]any{
++		"category_id": cat.ID, "name": sv.Name, "price": 1500,
++	})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["is_active"])
++
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/services/"+sv.ID, map[string]any{
++		"category_id": cat.ID, "name": sv.Name, "price": 1500, "is_active": false,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var updated serviceDTO
++	s.Require().NoError(json.Unmarshal(raw, &updated))
++	s.False(updated.IsActive)
++
++	st, _ = s.admin.Do(http.MethodDelete, "/api/v1/services/"+sv.ID, nil)
++	s.Equal(http.StatusNoContent, st)
++
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/services/"+sv.ID, nil)
++	s.Equal(http.StatusNotFound, st, string(raw))
++}
++
++// ---- IDOR/битый uuid → 404 ----
++
++func (s *ServicesLiveSuite) TestBadOrMissingServiceID_404() {
++	for _, id := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/services/"+id, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++		st, raw = s.admin.Do(http.MethodDelete, "/api/v1/services/"+id, nil)
++		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
++	}
++}
++
++// ---- мусор в теле → 400, не 500 ----
++
++func (s *ServicesLiveSuite) TestService_Validation_GarbageNot500() {
++	cat := s.newCategory("service", "Мусор в запросе")
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", map[string]any{"category_id": cat.ID})
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["name"])
++
++	for _, body := range []string{`{`, `null`, `"str"`} {
++		st, raw := s.admin.Do(http.MethodPost, "/api/v1/services", body)
++		s.Equal(http.StatusBadRequest, st, "%s → %s", body, raw)
++	}
++
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, map[string]any{"name": "Услуга\u0000"}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_text", s.fields(raw)["name"])
++}
++
++// ---- D19: исполнитель читает только активные, мутации 403; аноним 401 ----
++
++func (s *ServicesLiveSuite) TestAuthz_ExecutorReadOnlyActive_MutationsForbidden() {
++	cat := s.newCategory("service", "Права услуг")
++	active := s.newService(cat.ID, map[string]any{"name": "Активная услуга"})
++	archived := s.newService(cat.ID, map[string]any{"name": "Архивная услуга"})
++	st, raw := s.admin.Do(http.MethodPut, "/api/v1/services/"+archived.ID, map[string]any{
++		"category_id": cat.ID, "name": archived.Name, "price": 1500, "is_active": false,
++	})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
++	s.SeedUser("catalog4b-exec", "password1", "Каталог4Б Исп", "executor", true)
++	exec := s.NewBrowser()
++	exec.Login("catalog4b-exec", "password1")
++
++	st, raw = exec.Do(http.MethodGet, "/api/v1/services?include_archived=true", nil)
++	s.Equal(http.StatusOK, st)
++	s.NotContains(string(raw), "Архивная услуга", "исполнитель не видит архив даже с include_archived=true (D19)")
++	s.Contains(string(raw), "Активная услуга")
++
++	for _, c := range []struct{ method, path string }{
++		{http.MethodPost, "/api/v1/services"},
++		{http.MethodPut, "/api/v1/services/" + active.ID},
++		{http.MethodDelete, "/api/v1/services/" + active.ID},
++	} {
++		st, raw := exec.Do(c.method, c.path, map[string]any{"name": "x"})
++		s.Equal(http.StatusForbidden, st, "%s %s", c.method, c.path)
++		s.Equal("FORBIDDEN", s.errOf(raw).Code)
++	}
++
++	anon := s.NewBrowser()
++	st, _ = anon.Do(http.MethodGet, "/api/v1/services", nil)
++	s.Equal(http.StatusUnauthorized, st)
++}
++
++// ---- CSRF: мутация без корректного токена → 403 ----
++
++func (s *ServicesLiveSuite) TestCSRF_MissingToken403() {
++	cat := s.newCategory("service", "CSRF услуг")
++	resp := s.admin.Request(http.MethodPost, "/api/v1/services", serviceBody(cat.ID, nil), map[string]string{"X-Csrf-Token": ""})
++	defer resp.Body.Close()
++	s.Equal(http.StatusForbidden, resp.StatusCode)
++}
++
++// ---- SSR: список услуг, форма создания с комплектом (row-list product_id[]/qty[]) ----
++
++func (s *ServicesLiveSuite) TestSSR_ServicesListAndFormFlow() {
++	st, page := s.admin.Do(http.MethodGet, "/catalog/services", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="services-table"`)
++
++	cat := s.newCategory("service", "SSR категория услуг")
++	prodCat := s.newCategory("product", "SSR товары комплекта")
++	p := s.newProductB(prodCat.ID, map[string]any{"sku": "SSR-P1", "name": "SSR товар"})
++
++	form := url.Values{
++		"category_id": {cat.ID}, "name": {"SSR Услуга"}, "price": {"500"},
++		"product_id": {p.ID}, "qty": {"3"},
++	}
++	resp := s.admin.Request(http.MethodPost, "/catalog/services", form, nil)
++	resp.Body.Close()
++	s.Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("/catalog/services?flash=service_created", resp.Header.Get("Location"))
++
++	st, page = s.admin.Do(http.MethodGet, "/catalog/services", nil)
++	s.Equal(http.StatusOK, st)
++	s.Contains(string(page), "SSR Услуга")
++	s.Contains(string(page), "SSR товар")
++}
+diff --git a/internal/features/catalog/services_repo.go b/internal/features/catalog/services_repo.go
+new file mode 100644
+index 0000000..72ee7a5
+--- /dev/null
++++ b/internal/features/catalog/services_repo.go
+@@ -0,0 +1,374 @@
++package catalog
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++// Service — repo-модель услуги (без комплекта — грузится отдельно ServiceProductRow,
++// re-fetch-after-write). Price == nil — «по факту» (NULL в БД).
++type Service struct {
++	ID         string
++	CategoryID string
++	Name       string
++	Price      *string
++	IsActive   bool
++	CreatedAt  time.Time
++	UpdatedAt  time.Time
++}
++
++// ServiceProductRow — строка комплекта с денормализованными полями товара (JOIN products).
++type ServiceProductRow struct {
++	ProductID string
++	Name      string
++	Unit      string
++	Price     string
++	Qty       string
++}
++
++type ServiceRepo struct {
++	pool *pgxpool.Pool
++}
++
++func NewServiceRepo(pool *pgxpool.Pool) *ServiceRepo { return &ServiceRepo{pool: pool} }
++
++var (
++	ErrServiceNotFound        = pgx.ErrNoRows
++	errServiceCategoryInvalid = errors.New("catalog: service category invalid")
++)
++
++// errServiceProductInvalid — строка комплекта ссылается на несуществующий/архивный товар
++// (task.md: «архивный/несуществующий товар → 400 по полю строки»).
++type errServiceProductInvalid struct{ Index int }
++
++func (e *errServiceProductInvalid) Error() string {
++	return fmt.Sprintf("catalog: service product invalid at index %d", e.Index)
++}
++
++const serviceColumns = `id, category_id, name, price::text, is_active, created_at, updated_at`
++
++func scanService(row pgx.Row) (*Service, error) {
++	var s Service
++	if err := row.Scan(&s.ID, &s.CategoryID, &s.Name, &s.Price, &s.IsActive, &s.CreatedAt, &s.UpdatedAt); err != nil {
++		return nil, err
++	}
++	return &s, nil
++}
++
++type ServiceListParams struct {
++	CategoryID      string
++	Q               string
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++// List — q ищет по названию услуги (в отличие от товаров — нет артикула/коробки/места).
++func (r *ServiceRepo) List(ctx context.Context, p ServiceListParams) ([]Service, int, error) {
++	var conds []string
++	var args []any
++	add := func(cond string, val any) {
++		args = append(args, val)
++		conds = append(conds, fmt.Sprintf(cond, len(args)))
++	}
++	if p.CategoryID != "" {
++		add("category_id = $%d::uuid", p.CategoryID)
++	}
++	if !p.IncludeArchived {
++		conds = append(conds, "is_active")
++	}
++	if p.Q != "" {
++		add("name ILIKE $%d", "%"+sqlutil.EscapeLike(p.Q)+"%")
++	}
++	where := ""
++	if len(conds) > 0 {
++		where = " WHERE " + strings.Join(conds, " AND ")
++	}
++
++	var total int
++	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM services`+where, args...).Scan(&total); err != nil {
++		return nil, 0, err
++	}
++	q := `SELECT ` + serviceColumns + ` FROM services` + where +
++		fmt.Sprintf(" ORDER BY lower(name), id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
++	rows, err := r.pool.Query(ctx, q, append(args, p.Limit, p.Offset)...)
++	if err != nil {
++		return nil, 0, err
++	}
++	defer rows.Close()
++	out := []Service{}
++	for rows.Next() {
++		s, err := scanService(rows)
++		if err != nil {
++			return nil, 0, err
++		}
++		out = append(out, *s)
++	}
++	return out, total, rows.Err()
++}
++
++func (r *ServiceRepo) Get(ctx context.Context, id string) (*Service, error) {
++	return scanService(r.pool.QueryRow(ctx, `SELECT `+serviceColumns+` FROM services WHERE id = $1::uuid`, id))
++}
++
++// Products — комплект услуги, порядок по position (SSR/API — «Название ×qty»).
++func (r *ServiceRepo) Products(ctx context.Context, serviceID string) ([]ServiceProductRow, error) {
++	rows, err := r.pool.Query(ctx, `
++		SELECT sp.product_id, p.name, p.unit, p.price::text, sp.qty::text
++		FROM service_products sp JOIN products p ON p.id = sp.product_id
++		WHERE sp.service_id = $1::uuid ORDER BY sp.position`, serviceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	out := []ServiceProductRow{}
++	for rows.Next() {
++		var row ServiceProductRow
++		if err := rows.Scan(&row.ProductID, &row.Name, &row.Unit, &row.Price, &row.Qty); err != nil {
++			return nil, err
++		}
++		out = append(out, row)
++	}
++	return out, rows.Err()
++}
++
++// ProductsBatch — комплекты сразу для набора услуг (Sec 18/Серьёзное 1 — N+1: раньше
++// ServiceService.List дёргал Products() на КАЖДУЮ услугу страницы отдельно, до 501
++// round-trip на limit=500; здесь — один запрос WHERE service_id = ANY($1::uuid[]),
++// группировка в Go, эталон — clients phonesBatch).
++func (r *ServiceRepo) ProductsBatch(ctx context.Context, serviceIDs []string) (map[string][]ServiceProductRow, error) {
++	out := map[string][]ServiceProductRow{}
++	if len(serviceIDs) == 0 {
++		return out, nil
++	}
++	rows, err := r.pool.Query(ctx, `
++		SELECT sp.service_id::text, sp.product_id, p.name, p.unit, p.price::text, sp.qty::text
++		FROM service_products sp JOIN products p ON p.id = sp.product_id
++		WHERE sp.service_id = ANY($1::uuid[]) ORDER BY sp.service_id, sp.position`, serviceIDs)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var serviceID string
++		var row ServiceProductRow
++		if err := rows.Scan(&serviceID, &row.ProductID, &row.Name, &row.Unit, &row.Price, &row.Qty); err != nil {
++			return nil, err
++		}
++		out[serviceID] = append(out[serviceID], row)
++	}
++	return out, rows.Err()
++}
++
++// existingServiceProductIDs — product_id, УЖЕ присутствующие в комплекте этой услуги (до
++// правки) — грандфазер-набор для checkProducts на Update (code review Medium#2).
++func existingServiceProductIDs(ctx context.Context, tx pgx.Tx, serviceID string) (map[string]bool, error) {
++	out := map[string]bool{}
++	rows, err := tx.Query(ctx, `SELECT product_id::text FROM service_products WHERE service_id = $1::uuid`, serviceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var id string
++		if err := rows.Scan(&id); err != nil {
++			return nil, err
++		}
++		out[id] = true
++	}
++	return out, rows.Err()
++}
++
++// validActiveProductIDs — активные товары из набора id, одним запросом (ANY($1::uuid[])).
++func validActiveProductIDs(ctx context.Context, tx pgx.Tx, ids []string) (map[string]bool, error) {
++	valid := map[string]bool{}
++	if len(ids) == 0 {
++		return valid, nil
++	}
++	rows, err := tx.Query(ctx, `SELECT id::text FROM products WHERE id = ANY($1::uuid[]) AND is_active`, ids)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var id string
++		if err := rows.Scan(&id); err != nil {
++			return nil, err
++		}
++		valid[id] = true
++	}
++	return valid, rows.Err()
++}
++
++// checkProducts — первая строка со ссылкой на несуществующий/архивный товар → индекс.
++// grandfathered — product_id, уже присутствовавшие в ТЕКУЩЕМ комплекте этой услуги (nil
++// на Create — там прошлого комплекта не существует): для них is_active НЕ проверяется —
++// существование уже гарантировано FK service_products.product_id (code review Medium#2:
++// task.md запрещает архивный товар «при добавлении» в комплект, не при пересохранении уже
++// существующей строки — иначе PRODUCT_IN_USE → архив делает услугу несохраняемой вовсе).
++func checkProducts(ctx context.Context, tx pgx.Tx, products []ServiceProductInput, grandfathered map[string]bool) error {
++	ids := make([]string, 0, len(products))
++	for _, p := range products {
++		if grandfathered[p.ProductID] {
++			continue
++		}
++		ids = append(ids, p.ProductID)
++	}
++	valid, err := validActiveProductIDs(ctx, tx, ids)
++	if err != nil {
++		return err
++	}
++	for i, p := range products {
++		if grandfathered[p.ProductID] {
++			continue
++		}
++		if !valid[p.ProductID] {
++			return &errServiceProductInvalid{Index: i}
++		}
++	}
++	return nil
++}
++
++// replaceServiceProducts — DELETE+INSERT всего комплекта (проще диффа, product_id RESTRICT
++// не мешает — FK защищает удаление самого товара, не строк service_products).
++func replaceServiceProducts(ctx context.Context, tx pgx.Tx, serviceID string, products []ServiceProductInput) error {
++	if _, err := tx.Exec(ctx, `DELETE FROM service_products WHERE service_id = $1::uuid`, serviceID); err != nil {
++		return err
++	}
++	for i, p := range products {
++		if _, err := tx.Exec(ctx,
++			`INSERT INTO service_products (service_id, product_id, qty, position) VALUES ($1::uuid, $2::uuid, $3::numeric, $4)`,
++			serviceID, p.ProductID, p.Qty, i); err != nil {
++			// qty ограничен validateAmount(qtyScale) до дедупа и mergeProducts()
++			// проверяет сумму дублей — 22003 здесь непредвиденный путь, страховка
++			// (code review Блокер 1).
++			return mapAmountOverflow(err)
++		}
++	}
++	return nil
++}
++
++func servicePriceArg(in ServiceInput) *string {
++	if !in.HasPrice {
++		return nil
++	}
++	return &in.Price
++}
++
++// Create — категория (kind=service) + все товары комплекта активны, одной транзакцией.
++func (r *ServiceRepo) Create(ctx context.Context, in ServiceInput) (*Service, error) {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
++	if err != nil {
++		return nil, err
++	}
++	defer tx.Rollback(ctx) //nolint:errcheck
++
++	var exists bool
++	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM catalog_categories WHERE id = $1::uuid AND kind = 'service')`,
++		in.CategoryID).Scan(&exists); err != nil {
++		return nil, err
++	}
++	if !exists {
++		return nil, errServiceCategoryInvalid
++	}
++	if err := checkProducts(ctx, tx, in.Products, nil); err != nil {
++		return nil, err
++	}
++
++	row := tx.QueryRow(ctx, `
++		INSERT INTO services (category_id, name, price)
++		VALUES ($1::uuid, $2, $3::numeric)
++		RETURNING `+serviceColumns,
++		in.CategoryID, in.Name, servicePriceArg(in))
++	s, err := scanService(row)
++	if err != nil {
++		// price ограничен validateAmount(priceScale) в валидаторе — 22003 здесь
++		// непредвиденный путь, страховка (code review Блокер 1).
++		return nil, mapAmountOverflow(err)
++	}
++	if err := replaceServiceProducts(ctx, tx, s.ID, in.Products); err != nil {
++		return nil, err
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return nil, err
++	}
++	return s, nil
++}
++
++// Update — полная замена карточки + комплекта (DELETE+INSERT), одной транзакцией.
++func (r *ServiceRepo) Update(ctx context.Context, id string, in ServiceInput) (*Service, error) {
++	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
++	if err != nil {
++		return nil, err
++	}
++	defer tx.Rollback(ctx) //nolint:errcheck
++
++	var exists bool
++	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM catalog_categories WHERE id = $1::uuid AND kind = 'service')`,
++		in.CategoryID).Scan(&exists); err != nil {
++		return nil, err
++	}
++	if !exists {
++		return nil, errServiceCategoryInvalid
++	}
++	grandfathered, err := existingServiceProductIDs(ctx, tx, id)
++	if err != nil {
++		return nil, err
++	}
++	if err := checkProducts(ctx, tx, in.Products, grandfathered); err != nil {
++		return nil, err
++	}
++
++	row := tx.QueryRow(ctx, `
++		UPDATE services SET category_id = $2::uuid, name = $3, price = $4::numeric, is_active = $5, updated_at = now()
++		WHERE id = $1::uuid
++		RETURNING `+serviceColumns,
++		id, in.CategoryID, in.Name, servicePriceArg(in), in.IsActive)
++	s, err := scanService(row)
++	if err != nil {
++		if errors.Is(err, pgx.ErrNoRows) {
++			return nil, ErrServiceNotFound
++		}
++		// price ограничен validateAmount(priceScale) в валидаторе — 22003 здесь
++		// непредвиденный путь, страховка (code review Блокер 1).
++		return nil, mapAmountOverflow(err)
++	}
++	if err := replaceServiceProducts(ctx, tx, id, in.Products); err != nil {
++		return nil, err
++	}
++	if err := tx.Commit(ctx); err != nil {
++		return nil, err
++	}
++	return s, nil
++}
++
++func (r *ServiceRepo) SetActive(ctx context.Context, id string, active bool) error {
++	tag, err := r.pool.Exec(ctx, `UPDATE services SET is_active = $2, updated_at = now() WHERE id = $1::uuid`, id, active)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrServiceNotFound
++	}
++	return nil
++}
++
++// Delete — «используется в заказах» появится в фазе 5/6 (stock_movements.task_id пока
++// NULL-only, task.md); сейчас простой DELETE, CASCADE подчищает service_products.
++func (r *ServiceRepo) Delete(ctx context.Context, id string) error {
++	tag, err := r.pool.Exec(ctx, `DELETE FROM services WHERE id = $1::uuid`, id)
++	if err != nil {
++		return err
++	}
++	if tag.RowsAffected() == 0 {
++		return ErrServiceNotFound
++	}
++	return nil
++}
+diff --git a/internal/features/catalog/services_service.go b/internal/features/catalog/services_service.go
+new file mode 100644
+index 0000000..68b91b9
+--- /dev/null
++++ b/internal/features/catalog/services_service.go
+@@ -0,0 +1,226 @@
++package catalog
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/http"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++var ErrServiceNotFoundErr = errorspkg.New("SERVICE_NOT_FOUND", http.StatusNotFound, "Услуга не найдена")
++
++type ServiceService struct {
++	repo *ServiceRepo
++}
++
++func NewServiceService(pool *pgxpool.Pool) *ServiceService {
++	return &ServiceService{repo: NewServiceRepo(pool)}
++}
++
++type ServiceListQuery struct {
++	CategoryID      string
++	Q               string
++	IncludeArchived bool
++	Limit, Offset   int
++}
++
++const serviceLookupDefaultLimit = 50 // API §Лимиты task.md: default 50 / max 500
++
++// List — !isAdmin форсирует IncludeArchived=false (исполнитель видит только активные —
++// D19). Комплекты всех услуг страницы — ОДНИМ запросом (repo.ProductsBatch,
++// WHERE service_id = ANY($1)) — code review Sec 18/Серьёзное 1: раньше toResponse дёргал
++// repo.Products на КАЖДУЮ услугу отдельно (N+1: до 501 round-trip на limit=500).
++func (s *ServiceService) List(ctx context.Context, q ServiceListQuery, isAdmin bool) (*ServiceListResponse, error) {
++	limit, offset := q.Limit, q.Offset
++	if limit <= 0 {
++		limit = serviceLookupDefaultLimit
++	}
++	limit = min(limit, maxLimit)
++	offset = max(offset, 0)
++	includeArchived := q.IncludeArchived && isAdmin
++
++	categoryID := q.CategoryID
++	if categoryID != "" && uuid.Validate(categoryID) != nil {
++		categoryID = ""
++	}
++	query := strings.TrimSpace(q.Q)
++	if sqlutil.HasInvalidText(query) {
++		query = ""
++	}
++	items, total, err := s.repo.List(ctx, ServiceListParams{
++		CategoryID: categoryID, Q: query, IncludeArchived: includeArchived, Limit: limit, Offset: offset,
++	})
++	if err != nil {
++		return nil, err
++	}
++	ids := make([]string, len(items))
++	for i, sv := range items {
++		ids[i] = sv.ID
++	}
++	productsByService, err := s.repo.ProductsBatch(ctx, ids)
++	if err != nil {
++		return nil, err
++	}
++	resp := &ServiceListResponse{Items: make([]ServiceResponse, len(items)), Total: total, Limit: limit, Offset: offset}
++	for i, sv := range items {
++		resp.Items[i] = toServiceResponse(sv, productsByService[sv.ID])
++	}
++	return resp, nil
++}
++
++// Get — as-is: архив не фильтрует ни для кого (D19 «активные записи» — про List), по
++// прецеденту equipmenttypes.Service.Get (code review LOW#5).
++func (s *ServiceService) Get(ctx context.Context, id string) (*ServiceResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrServiceNotFoundErr
++	}
++	sv, err := s.repo.Get(ctx, id)
++	if errors.Is(err, ErrServiceNotFound) {
++		return nil, ErrServiceNotFoundErr
++	}
++	if err != nil {
++		return nil, err
++	}
++	r, err := s.toResponse(ctx, *sv)
++	if err != nil {
++		return nil, err
++	}
++	return &r, nil
++}
++
++// prepareProducts — validate() построчно (индексы = исходные строки, форма их и
++// перерисует при ошибке), затем mergeProducts() дедупликация суммой qty (только над уже
++// валидными строками, code review Medium#3).
++func prepareProducts(in ServiceInput) (ServiceInput, error) {
++	if f := in.validate(); len(f) > 0 {
++		return in, errorspkg.Validation(f...)
++	}
++	merged, mergeErrs := mergeProducts(in.Products)
++	if len(mergeErrs) > 0 {
++		return in, errorspkg.Validation(mergeErrs...)
++	}
++	in.Products = merged
++	return in, nil
++}
++
++func (s *ServiceService) Create(ctx context.Context, in ServiceInput) (*ServiceResponse, error) {
++	in = in.normalize()
++	in, err := prepareProducts(in)
++	if err != nil {
++		return nil, err
++	}
++	sv, err := s.repo.Create(ctx, in)
++	if err != nil {
++		return nil, mapServiceWriteErr(err)
++	}
++	r, err := s.toResponse(ctx, *sv)
++	if err != nil {
++		return nil, err
++	}
++	return &r, nil
++}
++
++// Update — полная замена карточки+комплекта (last-write-wins, D28 — нет version).
++// Товар, уже присутствовавший в ТЕКУЩЕМ комплекте этой услуги, допустим даже архивным
++// (repo.Update передаёт id услуги дальше для чтения «старого» комплекта в транзакции) —
++// code review Medium#2: task.md запрещает архивный «при добавлении», не при пересохранении
++// уже существующей строки (иначе любое сохранение услуги, чей товар с тех пор
++// заархивирован по прецеденту PRODUCT_IN_USE, стало бы невозможным).
++func (s *ServiceService) Update(ctx context.Context, id string, in ServiceInput) (*ServiceResponse, error) {
++	if uuid.Validate(id) != nil {
++		return nil, ErrServiceNotFoundErr
++	}
++	in = in.normalize()
++	in, err := prepareProducts(in)
++	if err != nil {
++		return nil, err
++	}
++	sv, err := s.repo.Update(ctx, id, in)
++	if errors.Is(err, ErrServiceNotFound) {
++		return nil, ErrServiceNotFoundErr
++	}
++	if err != nil {
++		return nil, mapServiceWriteErr(err)
++	}
++	r, err := s.toResponse(ctx, *sv)
++	if err != nil {
++		return nil, err
++	}
++	return &r, nil
++}
++
++func (s *ServiceService) SetActive(ctx context.Context, id string, active bool) error {
++	if uuid.Validate(id) != nil {
++		return ErrServiceNotFoundErr
++	}
++	if err := s.repo.SetActive(ctx, id, active); errors.Is(err, ErrServiceNotFound) {
++		return ErrServiceNotFoundErr
++	} else if err != nil {
++		return err
++	}
++	return nil
++}
++
++// Delete — «используется в заказах» — проверка появится в фазе 5/6 (как D26 у клиентов,
++// task.md); сейчас — простое удаление.
++func (s *ServiceService) Delete(ctx context.Context, id string) error {
++	if uuid.Validate(id) != nil {
++		return ErrServiceNotFoundErr
++	}
++	err := s.repo.Delete(ctx, id)
++	if errors.Is(err, ErrServiceNotFound) {
++		return ErrServiceNotFoundErr
++	}
++	return err
++}
++
++// mapServiceWriteErr — категория/строка комплекта невалидны → 400 по конкретному полю
++// (task.md: «архивный/несуществующий товар → 400 по полю строки»); 22003 — страховка,
++// не должна встречаться после validateAmount() в validate()/mergeProducts() (code review
++// Блокер 1).
++func mapServiceWriteErr(err error) error {
++	switch {
++	case errors.Is(err, errServiceCategoryInvalid):
++		return errorspkg.Validation(errorspkg.Field{Name: "category_id", Message: msgInvalid})
++	case errors.Is(err, errAmountOutOfRange):
++		return ErrAmountOutOfRange
++	}
++	var pe *errServiceProductInvalid
++	if errors.As(err, &pe) {
++		return errorspkg.Validation(errorspkg.Field{Name: fmt.Sprintf("products[%d].product_id", pe.Index), Message: msgInvalid})
++	}
++	return err
++}
++
++// toResponse — комплект дозагружается отдельным запросом (re-fetch-after-write —
++// репозиторий не возвращает JOIN-поля товаров из транзакции записи). Для списков —
++// toServiceResponse напрямую с батч-загруженными rows (см. List выше, N+1).
++func (s *ServiceService) toResponse(ctx context.Context, sv Service) (ServiceResponse, error) {
++	rows, err := s.repo.Products(ctx, sv.ID)
++	if err != nil {
++		return ServiceResponse{}, err
++	}
++	return toServiceResponse(sv, rows), nil
++}
++
++func toServiceResponse(sv Service, rows []ServiceProductRow) ServiceResponse {
++	resp := ServiceResponse{
++		ID: sv.ID, CategoryID: sv.CategoryID, Name: sv.Name, IsActive: sv.IsActive,
++		Products: make([]ServiceProductResponse, len(rows)), CreatedAt: sv.CreatedAt, UpdatedAt: sv.UpdatedAt,
++	}
++	if sv.Price != nil {
++		a := Amount(*sv.Price)
++		resp.Price = &a
++	}
++	for i, row := range rows {
++		resp.Products[i] = ServiceProductResponse{ProductID: row.ProductID, Name: row.Name, Unit: row.Unit, Price: Amount(row.Price), Qty: Amount(row.Qty)}
++	}
++	return resp
++}
+diff --git a/internal/features/catalog/services_validate.go b/internal/features/catalog/services_validate.go
+new file mode 100644
+index 0000000..a0f397d
+--- /dev/null
++++ b/internal/features/catalog/services_validate.go
+@@ -0,0 +1,148 @@
++package catalog
++
++import (
++	"fmt"
++	"math/big"
++	"strconv"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/google/uuid"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
++)
++
++const serviceNameMax = 200
++
++// ServiceProductInput — строка комплекта (product_id + qty, нормализованные строки).
++type ServiceProductInput struct {
++	ProductID string
++	Qty       string
++}
++
++// ServiceInput — нормализованные поля услуги. HasPrice=false — «по факту» (NULL в БД).
++// Products — ИСХОДНЫЕ (не смерженные) строки: дедупликация — отдельный шаг mergeProducts(),
++// вызываемый ТОЛЬКО после успешного validate() (code review Medium#3 — дедуп ДО валидации
++// принимал мусор как 0 и отрицательные как компенсирующие: [{p,"abc"},{p,"2"}]→"2.000",
++// [{p,"-5"},{p,"6"}]→"1.000" проходили; экспонента "1e5" обходила decimalRe через
++// big.Rat.SetString, который её прекрасно понимает).
++type ServiceInput struct {
++	CategoryID string
++	Name       string
++	HasPrice   bool
++	Price      string
++	Products   []ServiceProductInput
++	IsActive   bool
++}
++
++// sumAmount — точное десятичное сложение (big.Rat, не float64 — без потери точности,
++// CLAUDE.md §Уроки). Вызывается ТОЛЬКО из mergeProducts() над уже провалидированными
++// (decimalRe-совместимыми) строками — здесь не нужно защищаться от мусора/экспоненты.
++func sumAmount(a, b string) string {
++	ra, ok := new(big.Rat).SetString(a)
++	if !ok {
++		ra = new(big.Rat)
++	}
++	rb, ok := new(big.Rat).SetString(b)
++	if !ok {
++		rb = new(big.Rat)
++	}
++	return new(big.Rat).Add(ra, rb).FloatString(3)
++}
++
++// normalize — trim полей комплекта БЕЗ дедупликации (code review Medium#3: дедуп —
++// отдельный шаг mergeProducts(), после validate()); пустые строки (SSR row-list добавил
++// строку, но ничего не выбрано) отбрасываются здесь — на них нет смысла заводить ошибку.
++func (in ServiceInput) normalize() ServiceInput {
++	in.CategoryID = normStr(in.CategoryID)
++	in.Name = normStr(in.Name)
++	if in.HasPrice {
++		in.Price = strings.TrimSpace(in.Price)
++		if in.Price == "" {
++			in.HasPrice = false
++		}
++	}
++
++	rows := make([]ServiceProductInput, 0, len(in.Products))
++	for _, p := range in.Products {
++		pid, qty := strings.TrimSpace(p.ProductID), strings.TrimSpace(p.Qty)
++		if pid == "" && qty == "" {
++			continue
++		}
++		rows = append(rows, ServiceProductInput{ProductID: pid, Qty: qty})
++	}
++	in.Products = rows
++	return in
++}
++
++// validate — построчная валидация КАЖДОЙ исходной (ещё не смерженной) строки комплекта;
++// индексы ошибок products[i].* — позиция в in.Products ПОСЛЕ normalize() (trim + отброс
++// пустых), НО ДО mergeProducts() — форма при ошибке перерисовывает именно этот список
++// (ssr_services.go serviceFormFrom вызывает только normalize()), индексы совпадают 1:1.
++func (in ServiceInput) validate() []errorspkg.Field {
++	var f []errorspkg.Field
++	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
++
++	if in.CategoryID == "" {
++		add("category_id", msgRequired)
++	} else if uuid.Validate(in.CategoryID) != nil {
++		add("category_id", msgInvalid)
++	}
++
++	switch n := utf8.RuneCountInString(in.Name); {
++	case n == 0:
++		add("name", msgRequired)
++	case n > serviceNameMax:
++		add("name", msgTooLong)
++	}
++	if sqlutil.HasInvalidText(in.Name) {
++		add("name", msgInvalidText)
++	}
++
++	if in.HasPrice {
++		if code := validateAmount(in.Price, priceScale, false); code != "" {
++			add("price", code)
++		}
++	}
++
++	for i, p := range in.Products {
++		pf := fmt.Sprintf("products[%d].product_id", i)
++		qf := fmt.Sprintf("products[%d].qty", i)
++		if p.ProductID == "" || uuid.Validate(p.ProductID) != nil {
++			add(pf, msgInvalid)
++		}
++		if code := validateAmount(p.Qty, qtyScale, false); code != "" {
++			add(qf, code)
++		} else if v, _ := strconv.ParseFloat(p.Qty, 64); v <= 0 {
++			add(qf, msgInvalid)
++		}
++	}
++	return f
++}
++
++// mergeProducts — дедуп по product_id суммой qty (D10), порядок — по первому вхождению.
++// ВЫЗЫВАТЬ ТОЛЬКО после validate() без ошибок — каждая исходная строка уже гарантированно
++// decimalRe-валидна и >0, sumAmount() не может получить мусор на вход. Сумма дублей всё
++// равно проверяется на переполнение qtyScale (редкий кейс: две валидные строки у верхней
++// границы, ~5e8 + ~5e8) — ошибка на общее поле "products" (не products[i] — после мержа
++// индекс уже не соответствует ни одной из исходных строк формы, которые видит пользователь;
++// маппинг «какая из исходных строк виновата» здесь не имеет смысла, т.к. виноваты обе).
++func mergeProducts(rows []ServiceProductInput) ([]ServiceProductInput, []errorspkg.Field) {
++	merged := make([]ServiceProductInput, 0, len(rows))
++	index := map[string]int{}
++	for _, p := range rows {
++		if i, ok := index[p.ProductID]; ok {
++			merged[i].Qty = sumAmount(merged[i].Qty, p.Qty)
++			continue
++		}
++		index[p.ProductID] = len(merged)
++		merged = append(merged, p)
++	}
++	for _, p := range merged {
++		if code := validateAmount(p.Qty, qtyScale, false); code != "" {
++			return nil, []errorspkg.Field{{Name: "products", Message: code}}
++		}
++	}
++	return merged, nil
++}
+diff --git a/internal/features/catalog/services_validate_test.go b/internal/features/catalog/services_validate_test.go
+new file mode 100644
+index 0000000..02a7b97
+--- /dev/null
++++ b/internal/features/catalog/services_validate_test.go
+@@ -0,0 +1,225 @@
++package catalog
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/assert"
++)
++
++func validServiceInput() ServiceInput {
++	return ServiceInput{
++		CategoryID: uuid.Must(uuid.NewV7()).String(), Name: "Замена двигателя",
++		HasPrice: true, Price: "1500",
++	}
++}
++
++func TestServiceInput_Normalize_TrimsAndPrice(t *testing.T) {
++	in := ServiceInput{CategoryID: "  id  ", Name: "  Услуга  ", HasPrice: true, Price: "  "}.normalize()
++	assert.Equal(t, "id", in.CategoryID)
++	assert.Equal(t, "Услуга", in.Name)
++	assert.False(t, in.HasPrice, "пустая строка цены после trim — «по факту»")
++
++	in2 := ServiceInput{CategoryID: "id", Name: "X", HasPrice: true, Price: "  1500.50  "}.normalize()
++	assert.True(t, in2.HasPrice)
++	assert.Equal(t, "1500.50", in2.Price)
++}
++
++// code review Medium#3: normalize() больше НЕ дедуплицирует комплект — только trim и
++// отброс пустых строк; дубли объединяет отдельный шаг mergeProducts(), вызываемый только
++// после успешного validate() (см. TestMergeProducts_* ниже).
++func TestServiceInput_Normalize_KeepsDuplicateRows(t *testing.T) {
++	p1 := uuid.Must(uuid.NewV7()).String()
++	p2 := uuid.Must(uuid.NewV7()).String()
++	in := ServiceInput{
++		CategoryID: "c", Name: "X",
++		Products: []ServiceProductInput{
++			{ProductID: p1, Qty: "1.5"},
++			{ProductID: p2, Qty: "2"},
++			{ProductID: p1, Qty: "0.5"},
++		},
++	}.normalize()
++	assert.Len(t, in.Products, 3, "дедуп — отдельный шаг, не normalize()")
++	assert.Equal(t, p1, in.Products[0].ProductID)
++	assert.Equal(t, "1.5", in.Products[0].Qty)
++	assert.Equal(t, p1, in.Products[2].ProductID)
++	assert.Equal(t, "0.5", in.Products[2].Qty)
++}
++
++// Пустая строка комплекта (row-list добавил строку, но товар не выбран) отбрасывается.
++func TestServiceInput_Normalize_DropsEmptyRow(t *testing.T) {
++	in := ServiceInput{CategoryID: "c", Name: "X", Products: []ServiceProductInput{{ProductID: "", Qty: ""}}}.normalize()
++	assert.Empty(t, in.Products)
++}
++
++func TestServiceInput_Validate_HappyPath(t *testing.T) {
++	assert.Empty(t, fieldsOf(validServiceInput().normalize().validate()))
++}
++
++// «По факту» (без цены) — валидная услуга.
++func TestServiceInput_Validate_NoPriceIsFine(t *testing.T) {
++	in := validServiceInput()
++	in.HasPrice = false
++	assert.Empty(t, fieldsOf(in.normalize().validate()))
++}
++
++func TestServiceInput_Validate_CategoryID(t *testing.T) {
++	in := validServiceInput()
++	in.CategoryID = ""
++	assert.Equal(t, map[string]string{"category_id": msgRequired}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.CategoryID = "not-a-uuid"
++	assert.Equal(t, map[string]string{"category_id": msgInvalid}, fieldsOf(in.normalize().validate()))
++}
++
++func TestServiceInput_Validate_Name(t *testing.T) {
++	in := validServiceInput()
++	in.Name = ""
++	assert.Equal(t, map[string]string{"name": msgRequired}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.Name = strings.Repeat("я", 200)
++	assert.Empty(t, fieldsOf(in.normalize().validate()), "200 рун — граница")
++
++	in = validServiceInput()
++	in.Name = strings.Repeat("я", 201)
++	assert.Equal(t, map[string]string{"name": msgTooLong}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.Name = "Услуга\u0000"
++	assert.Equal(t, map[string]string{"name": msgInvalidText}, fieldsOf(in.normalize().validate()))
++}
++
++// code review Блокер 1: границы NUMERIC(12,2) для цены — переполнение/лишняя точность →
++// 400 по СВОЕМУ полю, не молчаливое округление (1.239→1.24) и не 500 (22003).
++func TestServiceInput_Validate_Price(t *testing.T) {
++	cases := []struct {
++		name  string
++		price string
++		code  string
++	}{
++		{"отрицательная", "-1", msgInvalid},
++		{"мусор", "abc", msgInvalidFormat},
++		{"экспонента", "1e5", msgInvalidFormat},
++		{"переполнение целой части", "12345678901", msgTooLarge},
++		{"переполнение форматом", "1e10", msgInvalidFormat},
++		{"лишняя точность", "1.239", msgTooPrecise},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			in := validServiceInput()
++			in.Price = tc.price
++			assert.Equal(t, map[string]string{"price": tc.code}, fieldsOf(in.normalize().validate()))
++		})
++	}
++
++	in := validServiceInput()
++	in.Price = "0"
++	assert.Empty(t, fieldsOf(in.normalize().validate()), "цена 0 допустима (≥0)")
++}
++
++// qty ≤ 0 → 400 (task.md); мусор в product_id → 400 по конкретной строке; границы
++// NUMERIC(12,3) для qty — code review Блокер 1.
++func TestServiceInput_Validate_ProductsRows(t *testing.T) {
++	pid := uuid.Must(uuid.NewV7()).String()
++
++	in := validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "0"}}
++	assert.Equal(t, map[string]string{"products[0].qty": msgInvalid}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "-1"}}
++	assert.Equal(t, map[string]string{"products[0].qty": msgInvalid}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: "not-a-uuid", Qty: "1"}}
++	assert.Equal(t, map[string]string{"products[0].product_id": msgInvalid}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "abc"}}
++	assert.Equal(t, map[string]string{"products[0].qty": msgInvalidFormat}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "0.0001"}}
++	assert.Equal(t, map[string]string{"products[0].qty": msgTooPrecise}, fieldsOf(in.normalize().validate()))
++
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "1000000000"}}
++	assert.Equal(t, map[string]string{"products[0].qty": msgTooLarge}, fieldsOf(in.normalize().validate()))
++
++	// пустой комплект допустим (task.md).
++	in = validServiceInput()
++	assert.Empty(t, fieldsOf(in.normalize().validate()))
++
++	// две валидные строки — ок, индексы ошибок считаются по позиции в списке ДО
++	// дедупликации (code review Medium#3 — форма перерисовывает именно этот список).
++	pid2 := uuid.Must(uuid.NewV7()).String()
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "1"}, {ProductID: pid2, Qty: "0"}}
++	assert.Equal(t, map[string]string{"products[1].qty": msgInvalid}, fieldsOf(in.normalize().validate()))
++}
++
++func TestSumAmount_ExactDecimal(t *testing.T) {
++	assert.Equal(t, "0.300", sumAmount("0.1", "0.2"), "без потери точности float64")
++	assert.Equal(t, "3.000", sumAmount("1", "2"))
++}
++
++// code review Medium#3 — регрессии дедупа ДО валидации (исправлено): раньше
++// [{p,"abc"},{p,"2"}] давал "2.000" (мусор трактовался как 0), [{p,"-5"},{p,"6"}] давал
++// "1.000" (отрицательное как компенсирующее, а не 400), [{p,"1e5"},{p,"1"}] давал
++// "100001.000" (экспонента обходила decimalRe через big.Rat.SetString). Теперь validate()
++// отклоняет КАЖДУЮ исходную строку ДО mergeProducts() — mergeProducts() получает на вход
++// только валидные строки.
++func TestServiceInput_Validate_RejectsBeforeMerge(t *testing.T) {
++	pid := uuid.Must(uuid.NewV7()).String()
++
++	in := validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "abc"}, {ProductID: pid, Qty: "2"}}
++	got := fieldsOf(in.normalize().validate())
++	assert.Equal(t, msgInvalidFormat, got["products[0].qty"], "мусор в первой строке — 400, не 0 после мержа")
++
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "-5"}, {ProductID: pid, Qty: "6"}}
++	got = fieldsOf(in.normalize().validate())
++	assert.Equal(t, msgInvalid, got["products[0].qty"], "отрицательная строка — 400, не «компенсируется» суммой")
++
++	in = validServiceInput()
++	in.Products = []ServiceProductInput{{ProductID: pid, Qty: "1e5"}, {ProductID: pid, Qty: "1"}}
++	got = fieldsOf(in.normalize().validate())
++	assert.Equal(t, msgInvalidFormat, got["products[0].qty"], "экспонента — 400, не сумма 100001.000")
++}
++
++func TestMergeProducts_SumsDuplicatesAfterValidation(t *testing.T) {
++	p1 := uuid.Must(uuid.NewV7()).String()
++	p2 := uuid.Must(uuid.NewV7()).String()
++	rows := []ServiceProductInput{
++		{ProductID: p1, Qty: "1.5"},
++		{ProductID: p2, Qty: "2"},
++		{ProductID: p1, Qty: "0.5"},
++	}
++	merged, errs := mergeProducts(rows)
++	assert.Empty(t, errs)
++	assert.Len(t, merged, 2)
++	assert.Equal(t, p1, merged[0].ProductID)
++	assert.Equal(t, "2.000", merged[0].Qty, "1.5+0.5 без потери точности")
++	assert.Equal(t, p2, merged[1].ProductID)
++	assert.Equal(t, "2", merged[1].Qty, "без дублей — как было")
++}
++
++// Сумма дублей у верхней границы qtyScale переполняет IntDigits — 400 на общее поле
++// "products" (не products[i] — после мержа индекс не соответствует ни одной исходной
++// строке, code review Медиум#3 — «сумма тоже проверяется на верхнюю границу»).
++func TestMergeProducts_OverflowOnSum(t *testing.T) {
++	p1 := uuid.Must(uuid.NewV7()).String()
++	rows := []ServiceProductInput{
++		{ProductID: p1, Qty: "999999999"},
++		{ProductID: p1, Qty: "999999999"},
++	}
++	merged, errs := mergeProducts(rows)
++	assert.Nil(t, merged)
++	assert.Len(t, errs, 1)
++	assert.Equal(t, "products", errs[0].Name)
++	assert.Equal(t, msgTooLarge, errs[0].Message)
++}
+diff --git a/internal/features/catalog/ssr.go b/internal/features/catalog/ssr.go
+new file mode 100644
+index 0000000..af35ee5
+--- /dev/null
++++ b/internal/features/catalog/ssr.go
+@@ -0,0 +1,67 @@
++package catalog
++
++import (
++	"log/slog"
++
++	"github.com/gofiber/fiber/v3"
++	"github.com/gofiber/fiber/v3/middleware/requestid"
++	"github.com/jackc/pgx/v5/pgxpool"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++)
++
++// SSR — экраны «Каталог»: товары (список/форма), заглушка услуг, управление категориями
++// (общее для обеих вкладок). Типы оборудования — отдельный SSR (equipmenttypes), но
++// делит с этим набором полосу вкладок (catalog-tabs partial + TabCounts).
++type SSR struct {
++	catSvc  *CategoryService
++	prodSvc *ProductService
++	svcSvc  *ServiceService
++	pool    *pgxpool.Pool
++	r       *ssr.Renderer
++	shell   ssr.ShellBuilder
++	status  *ssr.StatusPages
++	cat     ssrCategories
++}
++
++func NewSSR(catSvc *CategoryService, prodSvc *ProductService, svcSvc *ServiceService, pool *pgxpool.Pool, r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages) *SSR {
++	return &SSR{catSvc: catSvc, prodSvc: prodSvc, svcSvc: svcSvc, pool: pool, r: r, shell: shell, status: status, cat: ssrCategories{svc: catSvc}}
++}
++
++// TabsVM — полоса вкладок каталога (шаблон web/ssr/_layout/templates/partials/catalog-tabs.html).
++type TabsVM struct {
++	Active   string // "services" | "products" | "equipment-types"
++	Services int
++	Products int
++	Types    int
++}
++
++// tabs — счётчики полосы вкладок; ошибка НЕ проглатывается молча (code review LOW#2) —
++// логируется с request_id, страница рендерится дальше с нулевыми счётчиками (не 500 из-за
++// вспомогательной подписи вкладки).
++func (h *SSR) tabs(c fiber.Ctx, active string) TabsVM {
++	cnt, err := LoadTabCounts(c.Context(), h.pool)
++	if err != nil {
++		slog.ErrorContext(c.Context(), "catalog: не удалось посчитать вкладки", "error", err, "request_id", requestid.FromContext(c))
++		return TabsVM{Active: active}
++	}
++	return TabsVM{Active: active, Services: cnt.Services, Products: cnt.Products, Types: cnt.Types}
++}
++
++var flashes = map[string]string{
++	"created":           "Товар создан",
++	"saved":             "Изменения сохранены",
++	"archived":          "Товар отправлен в архив",
++	"restored":          "Товар возвращён из архива",
++	"deleted":           "Товар удалён",
++	"service_created":   "Услуга создана",
++	"service_saved":     "Изменения сохранены",
++	"service_archived":  "Услуга отправлена в архив",
++	"service_restored":  "Услуга возвращена из архива",
++	"service_deleted":   "Услуга удалена",
++	"category_created":  "Категория создана",
++	"category_saved":    "Категория переименована",
++	"category_archived": "Категория отправлена в архив",
++	"category_restored": "Категория возвращена из архива",
++	"category_deleted":  "Категория удалена",
++}
+diff --git a/internal/features/catalog/ssr_categories.go b/internal/features/catalog/ssr_categories.go
+new file mode 100644
+index 0000000..e2d6107
+--- /dev/null
++++ b/internal/features/catalog/ssr_categories.go
+@@ -0,0 +1,127 @@
++package catalog
++
++import (
++	"errors"
++	"net/url"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// ssrCategories — управление категориями встроено в экраны «Товары»/«Услуги» (левая
++// панель, task.md): создать/переименовать/архив/восстановить/удалить. Общий код для
++// обеих вкладок — редирект зависит от FormValue("kind").
++type ssrCategories struct {
++	svc *CategoryService
++}
++
++func redirectTab(kind string) string {
++	if kind == KindService {
++		return "/catalog/services"
++	}
++	return "/catalog/products"
++}
++
++// listCategoryPanel — категории вида kind (активные и архивные — панель управления
++// показывает все, «Показать архивные» списка товаров/услуг на панель не влияет).
++func (h *ssrCategories) list(c fiber.Ctx, kind string) ([]CategoryResponse, error) {
++	resp, err := h.svc.List(c.Context(), CategoryListQuery{Kind: kind, IncludeArchived: true, Limit: defaultLimit}, true)
++	if err != nil {
++		return nil, err
++	}
++	return resp.Items, nil
++}
++
++// createCategory — POST /catalog/categories.
++func (h *ssrCategories) create(c fiber.Ctx) error {
++	kind := c.FormValue("kind")
++	to := redirectTab(kind)
++	_, err := h.svc.Create(c.Context(), CategoryInput{Kind: kind, Name: c.FormValue("name")})
++	if err != nil {
++		return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?cat_error=" + url.QueryEscape(categoryErrCode(err)))
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?flash=category_created")
++}
++
++// rename — POST /catalog/categories/:id/rename.
++func (h *ssrCategories) rename(c fiber.Ctx) error {
++	kind := c.FormValue("kind")
++	to := redirectTab(kind)
++	_, err := h.svc.Rename(c.Context(), c.Params("id"), c.FormValue("name"))
++	if err != nil {
++		return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?cat_error=" + url.QueryEscape(categoryErrCode(err)))
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?flash=category_saved")
++}
++
++func (h *ssrCategories) archive(c fiber.Ctx) error { return h.setActive(c, false, "category_archived") }
++func (h *ssrCategories) restore(c fiber.Ctx) error { return h.setActive(c, true, "category_restored") }
++
++func (h *ssrCategories) setActive(c fiber.Ctx, active bool, flash string) error {
++	to := redirectTab(c.FormValue("kind"))
++	if err := h.svc.SetActive(c.Context(), c.Params("id"), active); err != nil {
++		return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?cat_error=" + url.QueryEscape(categoryErrCode(err)))
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?flash=" + flash)
++}
++
++// remove — POST /catalog/categories/:id/delete; используемая → редирект с ошибкой
++// (архивировать вместо удаления — кнопка «В архив» уже есть в панели).
++func (h *ssrCategories) remove(c fiber.Ctx) error {
++	to := redirectTab(c.FormValue("kind"))
++	if err := h.svc.Delete(c.Context(), c.Params("id")); err != nil {
++		return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?cat_error=" + url.QueryEscape(categoryErrCode(err)))
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To(to + "?flash=category_deleted")
++}
++
++// categoryErrCode — err → КОД (не готовый текст, code review LOW#1: cat_error раньше
++// уходил в URL и рендерился как есть — админ по чужой ссылке видел произвольный текст в
++// alert; теперь в query — только код из закрытого набора, текст — catErrorText() на
++// сервере, эталон flashes). Ошибка валидации name (required/too_long/invalid_text,
++// code review LOW#3) — код самого поля, не общее «unknown».
++func categoryErrCode(err error) string {
++	var app *errorspkg.AppError
++	if errors.As(err, &app) {
++		for _, f := range app.Fields {
++			if f.Name == "name" {
++				return f.Message
++			}
++		}
++	}
++	switch {
++	case errors.Is(err, ErrCategoryNameTaken):
++		return "name_taken"
++	case errors.Is(err, ErrCategoryInUse):
++		return "in_use"
++	case errors.Is(err, ErrCategoryNotFoundErr):
++		return "not_found"
++	default:
++		return "unknown"
++	}
++}
++
++// catErrorText — код cat_error (см. categoryErrCode) → текст под alert на странице
++// списка (ssr_products.go/ssr_services.go). Пустая строка на входе — пустая строка на
++// выходе (нет ошибки — нет alert).
++func catErrorText(code string) string {
++	switch code {
++	case "":
++		return ""
++	case msgRequired:
++		return "Укажите название"
++	case msgTooLong:
++		return "Слишком длинное название"
++	case msgInvalidText:
++		return "Недопустимые символы в названии"
++	case "name_taken":
++		return ErrCategoryNameTaken.Message
++	case "in_use":
++		return ErrCategoryInUse.Message
++	case "not_found":
++		return ErrCategoryNotFoundErr.Message
++	default:
++		return "Не удалось выполнить действие"
++	}
++}
+diff --git a/internal/features/catalog/ssr_products.go b/internal/features/catalog/ssr_products.go
+new file mode 100644
+index 0000000..5f04d73
+--- /dev/null
++++ b/internal/features/catalog/ssr_products.go
+@@ -0,0 +1,275 @@
++package catalog
++
++import (
++	"errors"
++	"strconv"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// ProductsListVM — /catalog/products.
++type ProductsListVM struct {
++	Shell          ssr.Shell
++	Tabs           TabsVM
++	Q              string
++	Archived       bool
++	ActiveCategory string
++	Flash          string
++	CatError       string
++	Categories     []CategoryResponse
++	Items          []ProductResponse
++	Total          int
++}
++
++// ProductFormVM — /catalog/products/new и /catalog/products/:id.
++type ProductFormVM struct {
++	Shell      ssr.Shell
++	Tabs       TabsVM
++	IsNew      bool
++	ID         string
++	CategoryID string
++	Name       string
++	SKU        string
++	Unit       string
++	Price      string
++	Stock      string
++	MinStock   string
++	Box        string
++	Place      string
++	IsActive   bool
++	Units      []string
++	Categories []CategoryResponse
++	Errors     map[string]string
++	Error      string
++}
++
++// IsLow — остаток на грани минимума (выделение в таблице, task.md).
++func (p ProductResponse) IsLow() bool {
++	stock, err1 := strconv.ParseFloat(p.Stock.String(), 64)
++	min, err2 := strconv.ParseFloat(p.MinStock.String(), 64)
++	return err1 == nil && err2 == nil && stock <= min
++}
++
++// IsDebt — отрицательный остаток («долг», task.md).
++func (p ProductResponse) IsDebt() bool {
++	stock, err := strconv.ParseFloat(p.Stock.String(), 64)
++	return err == nil && stock < 0
++}
++
++// list — GET /catalog/products.
++func (h *SSR) productsList(c fiber.Ctx) error {
++	vm := ProductsListVM{Q: c.Query("q"), ActiveCategory: c.Query("category"), Flash: flashes[c.Query("flash")], CatError: catErrorText(c.Query("cat_error"))}
++	vm.Archived, _ = strconv.ParseBool(c.Query("archived"))
++
++	cats, err := h.cat.list(c, KindProduct)
++	if err != nil {
++		return err
++	}
++	vm.Categories = cats
++
++	resp, err := h.prodSvc.List(c.Context(), ProductListQuery{
++		CategoryID: vm.ActiveCategory, Q: vm.Q, IncludeArchived: vm.Archived, Limit: defaultLimit,
++	}, true)
++	if err != nil {
++		return err
++	}
++	vm.Items, vm.Total = resp.Items, resp.Total
++	vm.Shell = h.shell.Build(c, "Каталог: товары")
++	vm.Tabs = h.tabs(c, "products")
++	return h.r.Page(c, "products-list", vm)
++}
++
++// productCategoryOptions — активные категории вида product + текущая категория товара,
++// даже если она в архиве (иначе выбор при редактировании теряется, task.md: «архивный
++// товар/категория не предлагается ПРИ ДОБАВЛЕНИИ», но уже выбранная должна остаться видна).
++func (h *SSR) productCategoryOptions(c fiber.Ctx, currentID string) ([]CategoryResponse, error) {
++	resp, err := h.catSvc.List(c.Context(), CategoryListQuery{Kind: KindProduct, IncludeArchived: false, Limit: defaultLimit}, true)
++	if err != nil {
++		return nil, err
++	}
++	opts := resp.Items
++	if currentID == "" {
++		return opts, nil
++	}
++	for _, o := range opts {
++		if o.ID == currentID {
++			return opts, nil
++		}
++	}
++	cur, err := h.catSvc.Get(c.Context(), currentID)
++	if err != nil {
++		return opts, nil //nolint:nilerr // категория могла быть удалена — форма просто не покажет её
++	}
++	return append([]CategoryResponse{*cur}, opts...), nil
++}
++
++func (h *SSR) productFormNew(c fiber.Ctx) error {
++	opts, err := h.productCategoryOptions(c, c.Query("category"))
++	if err != nil {
++		return err
++	}
++	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{IsNew: true, IsActive: true, CategoryID: c.Query("category"), Categories: opts})
++}
++
++func productFormFrom(c fiber.Ctx) ProductFormVM {
++	return ProductFormVM{
++		CategoryID: c.FormValue("category_id"), Name: c.FormValue("name"), SKU: c.FormValue("sku"),
++		Unit: c.FormValue("unit"), Price: c.FormValue("price"), Stock: c.FormValue("stock"),
++		MinStock: c.FormValue("min_stock"), Box: c.FormValue("box"), Place: c.FormValue("place"),
++	}
++}
++
++func inputFromForm(vm ProductFormVM) ProductInput {
++	return ProductInput{
++		CategoryID: vm.CategoryID, Name: vm.Name, SKU: vm.SKU, Unit: vm.Unit,
++		Price: vm.Price, Stock: vm.Stock, MinStock: vm.MinStock, Box: vm.Box, Place: vm.Place, IsActive: vm.IsActive,
++	}
++}
++
++func (h *SSR) productCreate(c fiber.Ctx) error {
++	vm := productFormFrom(c)
++	vm.IsNew, vm.IsActive = true, true
++	_, err := h.prodSvc.Create(c.Context(), inputFromForm(vm))
++	if err != nil {
++		return h.productFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/products?flash=created")
++}
++
++func (h *SSR) productFormEdit(c fiber.Ctx) error {
++	p, err := h.prodSvc.Get(c.Context(), c.Params("id"))
++	if errors.Is(err, ErrProductNotFoundErr) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	opts, err := h.productCategoryOptions(c, p.CategoryID)
++	if err != nil {
++		return err
++	}
++	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{
++		ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
++		Price: p.Price.String(), Stock: p.Stock.String(), MinStock: p.MinStock.String(),
++		Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts,
++	})
++}
++
++func (h *SSR) productUpdate(c fiber.Ctx) error {
++	vm := productFormFrom(c)
++	vm.ID = c.Params("id")
++	cur, err := h.prodSvc.Get(c.Context(), vm.ID)
++	if errors.Is(err, ErrProductNotFoundErr) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	vm.IsActive = cur.IsActive
++	userID := ""
++	if p := middleware.CurrentPrincipal(c); p != nil {
++		userID = p.ID
++	}
++	_, err = h.prodSvc.Update(c.Context(), vm.ID, userID, inputFromForm(vm))
++	if err != nil {
++		return h.productFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/products?flash=saved")
++}
++
++func (h *SSR) productArchive(c fiber.Ctx) error { return h.productSetActive(c, false, "archived") }
++func (h *SSR) productRestore(c fiber.Ctx) error { return h.productSetActive(c, true, "restored") }
++
++func (h *SSR) productSetActive(c fiber.Ctx, active bool, flash string) error {
++	id := c.Params("id")
++	if err := h.prodSvc.SetActive(c.Context(), id, active); err != nil {
++		if errors.Is(err, ErrProductNotFoundErr) {
++			return h.status.NotFound(c)
++		}
++		return err
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/products?flash=" + flash)
++}
++
++func (h *SSR) productRemove(c fiber.Ctx) error {
++	id := c.Params("id")
++	err := h.prodSvc.Delete(c.Context(), id)
++	if errors.Is(err, ErrProductNotFoundErr) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		p, gerr := h.prodSvc.Get(c.Context(), id)
++		if gerr != nil {
++			return err
++		}
++		opts, _ := h.productCategoryOptions(c, p.CategoryID)
++		vm := ProductFormVM{
++			ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
++			Price: p.Price.String(), Stock: p.Stock.String(), MinStock: p.MinStock.String(),
++			Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts,
++		}
++		return h.productFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/products?flash=deleted")
++}
++
++// productFormError — ошибки сервиса → форма с текстами (422 валидация, 409 конфликты).
++func (h *SSR) productFormError(c fiber.Ctx, vm ProductFormVM, err error) error {
++	var app *errorspkg.AppError
++	if !errors.As(err, &app) || app.HTTP >= fiber.StatusInternalServerError {
++		return err
++	}
++	vm.Errors = map[string]string{}
++	for _, f := range app.Fields {
++		vm.Errors[f.Name] = fieldText(f.Message)
++	}
++	if errors.Is(err, ErrProductInUse) {
++		vm.Error = ErrProductInUse.Message
++	} else if len(app.Fields) == 0 {
++		vm.Error = app.Message
++	}
++	status := app.HTTP
++	if len(app.Fields) > 0 {
++		status = fiber.StatusUnprocessableEntity
++	}
++	opts, _ := h.productCategoryOptions(c, vm.CategoryID)
++	vm.Categories = opts
++	return h.renderProductForm(c, status, vm)
++}
++
++func (h *SSR) renderProductForm(c fiber.Ctx, status int, vm ProductFormVM) error {
++	title := "Товар"
++	if vm.IsNew {
++		title = "Новый товар"
++	}
++	vm.Shell = h.shell.Build(c, title)
++	vm.Tabs = h.tabs(c, "products")
++	vm.Units = Units
++	c.Status(status)
++	return h.r.Page(c, "products-form", vm)
++}
++
++// fieldText — код ошибки поля → текст под полем (эталон equipmenttypes/ssr.go).
++func fieldText(code string) string {
++	switch code {
++	case msgRequired:
++		return "Обязательное поле"
++	case msgTooLong:
++		return "Слишком длинное значение"
++	case msgInvalidText:
++		return "Недопустимые символы"
++	case msgInvalidFormat:
++		return "Введите число"
++	case msgTooPrecise:
++		return "Слишком много знаков после запятой"
++	case msgTooLarge:
++		return "Слишком большое число"
++	case msgInvalid:
++		return "Недопустимое значение"
++	}
++	return "Недопустимое значение"
++}
+diff --git a/internal/features/catalog/ssr_services.go b/internal/features/catalog/ssr_services.go
+new file mode 100644
+index 0000000..ffcbe3b
+--- /dev/null
++++ b/internal/features/catalog/ssr_services.go
+@@ -0,0 +1,396 @@
++package catalog
++
++import (
++	"errors"
++	"strconv"
++	"strings"
++
++	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/internal/ssr"
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++)
++
++// ServicesListVM — /catalog/services.
++type ServicesListVM struct {
++	Shell          ssr.Shell
++	Tabs           TabsVM
++	Q              string
++	Archived       bool
++	ActiveCategory string
++	Flash          string
++	CatError       string
++	Categories     []CategoryResponse
++	Items          []ServiceResponse
++	Total          int
++}
++
++// ServiceProductRowVM — строка комплекта в form-view (совпадает с ServiceProductInput,
++// отдельный тип — вьюмодель формы, не wire-контракт API).
++type ServiceProductRowVM struct {
++	ProductID string
++	Qty       string
++}
++
++// ProductOptionVM — опция combobox товара в комплекте: подпись под названием
++// (data-hint="артикул · цена / ед.", task.md).
++type ProductOptionVM struct {
++	ID       string
++	Name     string
++	Hint     string
++	IsActive bool
++}
++
++// ServiceFormVM — /catalog/services/new и /catalog/services/:id.
++type ServiceFormVM struct {
++	Shell          ssr.Shell
++	Tabs           TabsVM
++	IsNew          bool
++	ID             string
++	CategoryID     string
++	Name           string
++	Price          string // "" — «по факту»
++	IsActive       bool
++	Products       []ServiceProductRowVM
++	Categories     []CategoryResponse
++	ProductOptions []ProductOptionVM
++	Errors         map[string]string
++	Error          string
++}
++
++// PriceLabel — «по факту» при NULL (task.md: таблица услуг).
++func (s ServiceResponse) PriceLabel() string {
++	if s.Price == nil {
++		return "по факту"
++	}
++	return s.Price.String() + " ₽"
++}
++
++// ProductsLabel — «Название ×qty, Название2 ×qty2» (task.md: таблица услуг).
++func (s ServiceResponse) ProductsLabel() string {
++	if len(s.Products) == 0 {
++		return "—"
++	}
++	parts := make([]string, len(s.Products))
++	for i, p := range s.Products {
++		parts[i] = p.Name + " ×" + p.Qty.String()
++	}
++	return strings.Join(parts, ", ")
++}
++
++func productOptionsVM(items []ProductResponse) []ProductOptionVM {
++	out := make([]ProductOptionVM, len(items))
++	for i, p := range items {
++		hint := p.Price.String() + " ₽"
++		if p.Unit != "" {
++			hint += "/" + p.Unit
++		}
++		if p.SKU != "" {
++			hint = p.SKU + " · " + hint
++		}
++		out[i] = ProductOptionVM{ID: p.ID, Name: p.Name, Hint: hint, IsActive: p.IsActive}
++	}
++	return out
++}
++
++// list — GET /catalog/services.
++func (h *SSR) servicesList(c fiber.Ctx) error {
++	vm := ServicesListVM{Q: c.Query("q"), ActiveCategory: c.Query("category"), Flash: flashes[c.Query("flash")], CatError: catErrorText(c.Query("cat_error"))}
++	vm.Archived, _ = strconv.ParseBool(c.Query("archived"))
++
++	cats, err := h.cat.list(c, KindService)
++	if err != nil {
++		return err
++	}
++	vm.Categories = cats
++
++	resp, err := h.svcSvc.List(c.Context(), ServiceListQuery{
++		CategoryID: vm.ActiveCategory, Q: vm.Q, IncludeArchived: vm.Archived, Limit: defaultLimit,
++	}, true)
++	if err != nil {
++		return err
++	}
++	vm.Items, vm.Total = resp.Items, resp.Total
++	vm.Shell = h.shell.Build(c, "Каталог: услуги")
++	vm.Tabs = h.tabs(c, "services")
++	return h.r.Page(c, "services-list", vm)
++}
++
++// serviceCategoryOptions — активные категории вида service + текущая категория услуги,
++// даже архивная (иначе выбор при редактировании теряется — эталон productCategoryOptions).
++func (h *SSR) serviceCategoryOptions(c fiber.Ctx, currentID string) ([]CategoryResponse, error) {
++	resp, err := h.catSvc.List(c.Context(), CategoryListQuery{Kind: KindService, IncludeArchived: false, Limit: defaultLimit}, true)
++	if err != nil {
++		return nil, err
++	}
++	opts := resp.Items
++	if currentID == "" {
++		return opts, nil
++	}
++	for _, o := range opts {
++		if o.ID == currentID {
++			return opts, nil
++		}
++	}
++	cur, err := h.catSvc.Get(c.Context(), currentID)
++	if err != nil {
++		return opts, nil //nolint:nilerr // категория могла быть удалена — форма просто не покажет её
++	}
++	return append([]CategoryResponse{*cur}, opts...), nil
++}
++
++// serviceProductOptions — активные товары (комбобокс строки комплекта не предлагает
++// архивные, task.md) + товары уже выбранных строк, даже архивные (иначе форма потеряет
++// отображение уже выбранного — «архивные товары не предлагаются, но у существующей
++// строки показываются», task.md — эталон productCategoryOptions).
++func (h *SSR) serviceProductOptions(c fiber.Ctx, existingIDs []string) ([]ProductOptionVM, error) {
++	resp, err := h.prodSvc.List(c.Context(), ProductListQuery{IncludeArchived: false, Limit: defaultLimit}, true)
++	if err != nil {
++		return nil, err
++	}
++	opts := resp.Items
++	have := map[string]bool{}
++	for _, o := range opts {
++		have[o.ID] = true
++	}
++	for _, id := range existingIDs {
++		if id == "" || have[id] {
++			continue
++		}
++		p, err := h.prodSvc.Get(c.Context(), id)
++		if err != nil {
++			continue //nolint:nilerr // товар мог быть удалён — строка просто не покажет название
++		}
++		opts = append(opts, *p)
++		have[id] = true
++	}
++	return productOptionsVM(opts), nil
++}
++
++func (h *SSR) serviceFormNew(c fiber.Ctx) error {
++	catOpts, err := h.serviceCategoryOptions(c, c.Query("category"))
++	if err != nil {
++		return err
++	}
++	prodOpts, err := h.serviceProductOptions(c, nil)
++	if err != nil {
++		return err
++	}
++	return h.renderServiceForm(c, fiber.StatusOK, ServiceFormVM{
++		IsNew: true, IsActive: true, CategoryID: c.Query("category"),
++		Categories: catOpts, ProductOptions: prodOpts, Products: []ServiceProductRowVM{{}},
++	})
++}
++
++// serviceProductsFrom — строки комплекта из тела POST (row-list.js: одинаковые имена
++// повторяются N раз — читаются через PostArgs().PeekMulti, эталон clients/ssr.go phonesFrom).
++func serviceProductsFrom(c fiber.Ctx) []ServiceProductInput {
++	ids := c.Request().PostArgs().PeekMulti("product_id")
++	qtys := c.Request().PostArgs().PeekMulti("qty")
++	out := make([]ServiceProductInput, 0, len(ids))
++	for i := range ids {
++		qty := ""
++		if i < len(qtys) {
++			qty = string(qtys[i])
++		}
++		out = append(out, ServiceProductInput{ProductID: string(ids[i]), Qty: qty})
++	}
++	return out
++}
++
++// serviceFormFrom — поля формы из тела POST, перерисовываются НОРМАЛИЗОВАННЫМ списком
++// строк комплекта (ServiceInput.normalize() — та же нормализация, что validate()):
++// индексы ошибок `products[i].*` считаются по нормализованному списку (design-errors.md;
++// после объединения дублей — тоже, эталон clients/ssr.go formFrom).
++func serviceFormFrom(c fiber.Ctx) ServiceFormVM {
++	in := ServiceInput{
++		CategoryID: c.FormValue("category_id"),
++		Name:       c.FormValue("name"),
++		Products:   serviceProductsFrom(c),
++	}
++	if price := c.FormValue("price"); price != "" {
++		in.HasPrice, in.Price = true, price
++	}
++	in = in.normalize()
++
++	rows := make([]ServiceProductRowVM, len(in.Products))
++	for i, p := range in.Products {
++		rows[i] = ServiceProductRowVM{ProductID: p.ProductID, Qty: p.Qty}
++	}
++	if len(rows) == 0 {
++		rows = []ServiceProductRowVM{{}}
++	}
++	price := ""
++	if in.HasPrice {
++		price = in.Price
++	}
++	return ServiceFormVM{CategoryID: in.CategoryID, Name: in.Name, Price: price, Products: rows}
++}
++
++func serviceInputFromForm(vm ServiceFormVM) ServiceInput {
++	products := make([]ServiceProductInput, len(vm.Products))
++	for i, p := range vm.Products {
++		products[i] = ServiceProductInput{ProductID: p.ProductID, Qty: p.Qty}
++	}
++	in := ServiceInput{CategoryID: vm.CategoryID, Name: vm.Name, Products: products, IsActive: vm.IsActive}
++	if vm.Price != "" {
++		in.HasPrice, in.Price = true, vm.Price
++	}
++	return in
++}
++
++func (h *SSR) serviceCreate(c fiber.Ctx) error {
++	vm := serviceFormFrom(c)
++	vm.IsNew, vm.IsActive = true, true
++	_, err := h.svcSvc.Create(c.Context(), serviceInputFromForm(vm))
++	if err != nil {
++		return h.serviceFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/services?flash=service_created")
++}
++
++func serviceRowsFrom(resp *ServiceResponse) []ServiceProductRowVM {
++	rows := make([]ServiceProductRowVM, len(resp.Products))
++	for i, p := range resp.Products {
++		rows[i] = ServiceProductRowVM{ProductID: p.ProductID, Qty: p.Qty.String()}
++	}
++	if len(rows) == 0 {
++		rows = []ServiceProductRowVM{{}}
++	}
++	return rows
++}
++
++func (h *SSR) serviceFormEdit(c fiber.Ctx) error {
++	sv, err := h.svcSvc.Get(c.Context(), c.Params("id"))
++	if errors.Is(err, ErrServiceNotFoundErr) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	catOpts, err := h.serviceCategoryOptions(c, sv.CategoryID)
++	if err != nil {
++		return err
++	}
++	ids := make([]string, len(sv.Products))
++	for i, p := range sv.Products {
++		ids[i] = p.ProductID
++	}
++	prodOpts, err := h.serviceProductOptions(c, ids)
++	if err != nil {
++		return err
++	}
++	price := ""
++	if sv.Price != nil {
++		price = sv.Price.String()
++	}
++	return h.renderServiceForm(c, fiber.StatusOK, ServiceFormVM{
++		ID: sv.ID, CategoryID: sv.CategoryID, Name: sv.Name, Price: price, IsActive: sv.IsActive,
++		Products: serviceRowsFrom(sv), Categories: catOpts, ProductOptions: prodOpts,
++	})
++}
++
++func (h *SSR) serviceUpdate(c fiber.Ctx) error {
++	vm := serviceFormFrom(c)
++	vm.ID = c.Params("id")
++	cur, err := h.svcSvc.Get(c.Context(), vm.ID)
++	if errors.Is(err, ErrServiceNotFoundErr) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		return err
++	}
++	vm.IsActive = cur.IsActive
++	_, err = h.svcSvc.Update(c.Context(), vm.ID, serviceInputFromForm(vm))
++	if err != nil {
++		return h.serviceFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/services?flash=service_saved")
++}
++
++func (h *SSR) serviceArchive(c fiber.Ctx) error {
++	return h.serviceSetActive(c, false, "service_archived")
++}
++func (h *SSR) serviceRestore(c fiber.Ctx) error {
++	return h.serviceSetActive(c, true, "service_restored")
++}
++
++func (h *SSR) serviceSetActive(c fiber.Ctx, active bool, flash string) error {
++	id := c.Params("id")
++	if err := h.svcSvc.SetActive(c.Context(), id, active); err != nil {
++		if errors.Is(err, ErrServiceNotFoundErr) {
++			return h.status.NotFound(c)
++		}
++		return err
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/services?flash=" + flash)
++}
++
++func (h *SSR) serviceRemove(c fiber.Ctx) error {
++	id := c.Params("id")
++	err := h.svcSvc.Delete(c.Context(), id)
++	if errors.Is(err, ErrServiceNotFoundErr) {
++		return h.status.NotFound(c)
++	}
++	if err != nil {
++		sv, gerr := h.svcSvc.Get(c.Context(), id)
++		if gerr != nil {
++			return err
++		}
++		catOpts, _ := h.serviceCategoryOptions(c, sv.CategoryID)
++		ids := make([]string, len(sv.Products))
++		for i, p := range sv.Products {
++			ids[i] = p.ProductID
++		}
++		prodOpts, _ := h.serviceProductOptions(c, ids)
++		price := ""
++		if sv.Price != nil {
++			price = sv.Price.String()
++		}
++		vm := ServiceFormVM{
++			ID: sv.ID, CategoryID: sv.CategoryID, Name: sv.Name, Price: price, IsActive: sv.IsActive,
++			Products: serviceRowsFrom(sv), Categories: catOpts, ProductOptions: prodOpts,
++		}
++		return h.serviceFormError(c, vm, err)
++	}
++	return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/services?flash=service_deleted")
++}
++
++// serviceFormError — ошибки сервиса → форма с текстами (422 валидация, 409 конфликты).
++func (h *SSR) serviceFormError(c fiber.Ctx, vm ServiceFormVM, err error) error {
++	var app *errorspkg.AppError
++	if !errors.As(err, &app) || app.HTTP >= fiber.StatusInternalServerError {
++		return err
++	}
++	vm.Errors = map[string]string{}
++	for _, f := range app.Fields {
++		vm.Errors[f.Name] = fieldText(f.Message)
++	}
++	if len(app.Fields) == 0 {
++		vm.Error = app.Message
++	}
++	status := app.HTTP
++	if len(app.Fields) > 0 {
++		status = fiber.StatusUnprocessableEntity
++	}
++	catOpts, _ := h.serviceCategoryOptions(c, vm.CategoryID)
++	vm.Categories = catOpts
++	ids := make([]string, len(vm.Products))
++	for i, p := range vm.Products {
++		ids[i] = p.ProductID
++	}
++	prodOpts, _ := h.serviceProductOptions(c, ids)
++	vm.ProductOptions = prodOpts
++	return h.renderServiceForm(c, status, vm)
++}
++
++func (h *SSR) renderServiceForm(c fiber.Ctx, status int, vm ServiceFormVM) error {
++	title := "Услуга"
++	if vm.IsNew {
++		title = "Новая услуга"
++	}
++	vm.Shell = h.shell.Build(c, title)
++	vm.Tabs = h.tabs(c, "services")
++	c.Status(status)
++	return h.r.Page(c, "services-form", vm)
++}
+diff --git a/internal/features/equipmenttypes/routes.go b/internal/features/equipmenttypes/routes.go
+index 6c104ed..16a406a 100644
+--- a/internal/features/equipmenttypes/routes.go
++++ b/internal/features/equipmenttypes/routes.go
+@@ -8,9 +8,8 @@ import (
+ 
+ // Register — JSON API /api/v1/equipment-types (D28: !isAdmin — только чтение активных
+ // типов, мутации — admin) + SSR-экран /catalog/equipment-types (только admin,
+-// ADR-005/ADR-006). GET /catalog — 303 на список типов (единственный подраздел каталога
+-// на эту фазу). При s == nil SSR-группа не регистрируется (используется в тестах,
+-// где рендерер не нужен).
++// ADR-005/ADR-006). Редирект с /catalog (303) владеет пакет catalog (фаза 4). При s == nil
++// SSR-группа не регистрируется (используется в тестах, где рендерер не нужен).
+ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
+ 	admin := middleware.RequireAdmin(nil)
+ 	g := api.Group("/equipment-types", a.RequireAPI())
+@@ -24,9 +23,6 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler,
+ 		return
+ 	}
+ 	ssrAdmin := middleware.RequireAdmin(s.status.Forbidden)
+-	app.Get("/catalog", a.RequireSSR(), ssrAdmin, func(c fiber.Ctx) error {
+-		return c.Redirect().Status(fiber.StatusSeeOther).To("/catalog/equipment-types")
+-	})
+ 	p := app.Group("/catalog/equipment-types", a.RequireSSR(), ssrAdmin)
+ 	p.Get("", s.list)
+ 	p.Get("/new", s.formNew)
+diff --git a/internal/features/equipmenttypes/ssr.go b/internal/features/equipmenttypes/ssr.go
+index 3b3b0ea..10ca3ba 100644
+--- a/internal/features/equipmenttypes/ssr.go
++++ b/internal/features/equipmenttypes/ssr.go
+@@ -2,12 +2,16 @@ package equipmenttypes
+ 
+ import (
+ 	"errors"
++	"log/slog"
+ 	"net/url"
+ 	"strconv"
+ 	"strings"
+ 
+ 	"github.com/gofiber/fiber/v3"
++	"github.com/gofiber/fiber/v3/middleware/requestid"
++	"github.com/jackc/pgx/v5/pgxpool"
+ 
++	"github.com/kitavrus/kanban-tree/internal/features/catalog"
+ 	"github.com/kitavrus/kanban-tree/internal/ssr"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+@@ -16,22 +20,37 @@ import (
+ const Root = "web/ssr/equipmenttypes/templates"
+ 
+ // SSR — экран «Каталог: типы оборудования» (admin): список + формы создания/правки
+-// (PRG), архив/восстановление, удаление свободного типа (AC-011, AC-012).
++// (PRG), архив/восстановление, удаление свободного типа (AC-011, AC-012). Делит полосу
++// вкладок каталога (catalog-tabs partial) с пакетом catalog (фаза 4) — pool нужен только
++// для счётчиков catalog.LoadTabCounts, без обратного импорта catalog → equipmenttypes.
+ type SSR struct {
+ 	svc    *Service
++	pool   *pgxpool.Pool
+ 	r      *ssr.Renderer
+ 	shell  ssr.ShellBuilder
+ 	status *ssr.StatusPages
+ }
+ 
+-func NewSSR(svc *Service, r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages) *SSR {
+-	return &SSR{svc: svc, r: r, shell: shell, status: status}
++func NewSSR(svc *Service, pool *pgxpool.Pool, r *ssr.Renderer, shell ssr.ShellBuilder, status *ssr.StatusPages) *SSR {
++	return &SSR{svc: svc, pool: pool, r: r, shell: shell, status: status}
++}
++
++// tabs — счётчики полосы вкладок; ошибка НЕ проглатывается молча (code review LOW#2,
++// тот же фикс, что в catalog/ssr.go tabs).
++func (h *SSR) tabs(c fiber.Ctx) catalog.TabsVM {
++	cnt, err := catalog.LoadTabCounts(c.Context(), h.pool)
++	if err != nil {
++		slog.ErrorContext(c.Context(), "equipmenttypes: не удалось посчитать вкладки", "error", err, "request_id", requestid.FromContext(c))
++		return catalog.TabsVM{Active: "equipment-types"}
++	}
++	return catalog.TabsVM{Active: "equipment-types", Services: cnt.Services, Products: cnt.Products, Types: cnt.Types}
+ }
+ 
+ // ListVM — список типов. Фильтры (q, archived) — в URL: reload/назад/ссылка сохраняют
+ // состояние (AC-011).
+ type ListVM struct {
+ 	Shell    ssr.Shell
++	Tabs     catalog.TabsVM
+ 	Q        string
+ 	Archived bool
+ 	Flash    string
+@@ -80,6 +99,7 @@ func (h *SSR) list(c fiber.Ctx) error {
+ 	}
+ 	vm.Items, vm.Total = resp.Items, resp.Total
+ 	vm.Shell = h.shell.Build(c, "Каталог: типы оборудования")
++	vm.Tabs = h.tabs(c)
+ 	return h.r.Page(c, "list", vm)
+ }
+ 
+diff --git a/internal/server/router.go b/internal/server/router.go
+index 9b5aa8b..958b6f0 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -16,6 +16,7 @@ import (
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/config"
+ 	"github.com/kitavrus/kanban-tree/internal/features/auth"
++	"github.com/kitavrus/kanban-tree/internal/features/catalog"
+ 	"github.com/kitavrus/kanban-tree/internal/features/clients"
+ 	"github.com/kitavrus/kanban-tree/internal/features/equipmenttypes"
+ 	"github.com/kitavrus/kanban-tree/internal/features/home"
+@@ -100,15 +101,24 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	catalogR, err := ssr.NewRenderer(catalog.Root, ssr.SharedRoot)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	api := app.Group("/api/v1")
+ 	auth.Register(app, api, auth.NewHandler(authSvc, guard, authR, shell), guard)
+ 	usersSvc := users.NewService(pool, store)
+ 	users.Register(app, api, guard, users.NewHandler(usersSvc), users.NewSSR(usersSvc, usersR, shell, status))
+ 	typesSvc := equipmenttypes.NewService(pool)
+-	equipmenttypes.Register(app, api, guard, equipmenttypes.NewHandler(typesSvc), equipmenttypes.NewSSR(typesSvc, typesR, shell, status))
++	equipmenttypes.Register(app, api, guard, equipmenttypes.NewHandler(typesSvc), equipmenttypes.NewSSR(typesSvc, pool, typesR, shell, status))
+ 	clientsSvc := clients.NewService(pool)
+ 	clients.Register(app, api, guard, clients.NewHandler(clientsSvc), clients.NewSSR(clientsSvc, clientsR, shell, status))
++	catCatSvc := catalog.NewCategoryService(pool)
++	catProdSvc := catalog.NewProductService(pool)
++	catSvcSvc := catalog.NewServiceService(pool)
++	catalog.Register(app, api, guard, catalog.NewCategoryHandler(catCatSvc), catalog.NewProductHandler(catProdSvc), catalog.NewServiceHandler(catSvcSvc),
++		catalog.NewSSR(catCatSvc, catProdSvc, catSvcSvc, pool, catalogR, shell, status))
+ 	(&home.Handlers{R: homeR, Shell: shell}).Register(app, guard)
+ 
+ 	return app, nil

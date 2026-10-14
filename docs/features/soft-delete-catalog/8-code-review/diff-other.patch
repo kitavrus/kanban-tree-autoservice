@@ -1,0 +1,1517 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index e19c1fd..7ecb2b2 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -69,6 +69,8 @@ export type Equipment = {
+   type_id: string;
+   type_name: string;
+   type_is_active: boolean;
++  /** Тип единицы мягко удалён — бейдж «удалён» у типа (soft-delete-catalog DS-014). */
++  type_is_deleted: boolean;
+   brand: string;
+   model: string;
+   sku: string;
+@@ -112,6 +114,8 @@ export type NewProduct = {
+ export type Product = {
+   id: string;
+   category_id: string;
++  /** Категория товара мягко удалена — бейдж «категория удалена» (soft-delete-catalog DS-014). */
++  category_is_deleted: boolean;
+   name: string;
+   sku: string;
+   unit: string;
+@@ -169,6 +173,8 @@ export type TransferItem = {
+   id: string;
+   kind: TransferItemKind;
+   product_id: string | null;
++  /** Товар строки мягко удалён из каталога — бейдж «удалён» (soft-delete-catalog §6.9); false у единицы. */
++  product_is_deleted: boolean;
+   product_name: string | null;
+   unit: string | null;
+   equipment_id: string | null;
+@@ -309,10 +315,20 @@ export type NewService = {
+   price?: number | null;
+   products?: NewServiceProduct[];
+ };
+-export type ServiceProduct = { product_id: string; name: string; unit: string; price: number; qty: number };
++export type ServiceProduct = {
++  product_id: string;
++  /** Товар строки состава мягко удалён из каталога (soft-delete-catalog DS-014). */
++  product_is_deleted: boolean;
++  name: string;
++  unit: string;
++  price: number;
++  qty: number;
++};
+ export type Service = {
+   id: string;
+   category_id: string;
++  /** Категория услуги мягко удалена (soft-delete-catalog DS-014). */
++  category_is_deleted: boolean;
+   name: string;
+   price: number | null;
+   is_active: boolean;
+@@ -668,13 +684,14 @@ export class AdminApi {
+   // ---- мягкое удаление (soft-delete-core §6.1–§6.4; типы — board-types.ts, §TD-6.2) ----
+ 
+   /** Адрес ресурса вида kind: заказы (часть 1), документы перемещения (часть 2), колонки
+-   *  (часть 3), клиенты и единицы оборудования (часть 4). */
++   *  (часть 3), клиенты и единицы оборудования (часть 4), каталог и типы оборудования (часть 5). */
+   private softDeletePath(kind: import('./board-types').DeletedKind, id: number | string): string {
+     if (kind === 'tasks') return `/api/v1/tasks/${id}`;
+     if (kind === 'transfers') return `/api/v1/transfers/${id}`;
+     if (kind === 'columns') return `/api/v1/columns/${id}`;
+     if (kind === 'clients') return `/api/v1/clients/${id}`;
+-    if (kind === 'equipment') return `/api/v1/equipment/${id}`;
++    // часть 5 (soft-delete-catalog): товары, услуги, категории каталога и типы оборудования.
++    if (kind === 'products' || kind === 'services' || kind === 'catalog-categories' || kind === 'equipment-types') return `/api/v1/${kind}/${id}`;
+     throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);
+   }
+ 
+@@ -684,10 +701,12 @@ export class AdminApi {
+   async softDelete(kind: 'columns', id: number | string, reason?: string): Promise<import('./board-types').ColumnDeleteResponse>;
+   async softDelete(kind: 'clients', id: number | string, reason?: string): Promise<import('./board-types').ClientDeleteResponse>;
+   async softDelete(kind: 'equipment', id: number | string, reason?: string): Promise<import('./board-types').EquipmentDeleteResponse>;
++  async softDelete(kind: import('./board-types').CatalogKind, id: number | string, reason?: string): Promise<import('./board-types').CatalogDeleteResponse>;
+   async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason?: string): Promise<import('./board-types').TaskDeleteResponse>;
+   async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<
+     | import('./board-types').TaskDeleteResponse | TransferDeleteResponse | import('./board-types').ColumnDeleteResponse
+     | import('./board-types').ClientDeleteResponse | import('./board-types').EquipmentDeleteResponse
++    | import('./board-types').CatalogDeleteResponse
+   > {
+     if (kind === 'transfers') return this.deleteTransfer(Number(id), reason);
+     const data: import('./board-types').DeleteBody = { reason };
+@@ -717,6 +736,37 @@ export class AdminApi {
+     return { status: res.status(), body: await res.json() };
+   }
+ 
++  /** Восстановление записи каталога либо типа оборудования: POST /api/v1/{ресурс}/:id/restore
++   *  (soft-delete-catalog §6.2, §6.4, §6.6, §6.8). Статус не проверяется — ждут и 409 NAME_TAKEN. */
++  async restoreCatalog(kind: import('./board-types').CatalogKind, id: string): Promise<{
++    status: number;
++    body: import('./board-types').CatalogRestoreResponse | import('./board-types').CatalogError;
++  }> {
++    const res = await this.ctx.post(`${this.softDeletePath(kind, id)}/restore`, { headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /** Попытка мягкого удаления записи каталога без проверки статуса (ждут 409 PRODUCT_HAS_STOCK). */
++  async tryDeleteCatalog(kind: import('./board-types').CatalogKind, id: string, reason = 'e2e: создан по ошибке'): Promise<{
++    status: number;
++    body: import('./board-types').CatalogDeleteResponse | import('./board-types').CatalogError;
++  }> {
++    const data: import('./board-types').DeleteBody = { reason };
++    const res = await this.ctx.delete(this.softDeletePath(kind, id), { data, headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /** Запись каталога по точному названию (в том числе архивная; удалённых список не отдаёт) —
++   *  для записей, созданных тестом через экран: их id нужен для уборки (TS-F10). */
++  async findCatalogByName(kind: import('./board-types').CatalogKind, name: string): Promise<{ id: string; name: string } | undefined> {
++    const params: Record<string, string> = { include_archived: 'true', limit: '2000' };
++    if (kind !== 'catalog-categories') params.q = name;
++    const res = await this.ctx.get(`/api/v1/${kind}`, { params });
++    expect(res.status(), `поиск ${kind} «${name}»: ${await res.text()}`).toBe(200);
++    const list = (await res.json()) as { items: Array<{ id: string; name: string }> };
++    return list.items.find((x) => x.name === name);
++  }
++
+   /**
+    * ФИЗИЧЕСКАЯ уборка записи вида kind — служебный адрес DELETE /api/v1/test/purge/:kind/:id
+    * (soft-delete DS-027; стенд — с TEST_PURGE_ENABLED=true). Общий помощник уборки тестовых
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 4aa60b7..3439e16 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -114,8 +114,22 @@ export type ClientRestoreError = {
+   code: 'NOT_DELETED' | 'CLIENT_DELETED' | 'CLIENT_NOT_FOUND' | 'EQUIPMENT_NOT_FOUND' | 'FORBIDDEN';
+   message: string;
+ };
+-/** Виды служебной уборки, подключённые на стенде (части 1–4 мастер-спеки soft-delete). */
+-export type PurgeKind = 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment';
++/** Виды записей каталога и типов оборудования (часть 5, soft-delete-catalog). */
++export type CatalogKind = 'products' | 'services' | 'catalog-categories' | 'equipment-types';
++/** 200 DELETE /api/v1/{products|services|catalog-categories|equipment-types}/:id
++ *  (catalog.DeleteResponse / equipmenttypes.DeleteResponse, soft-delete-catalog §6.1, §6.3, §6.5, §6.7). */
++export type CatalogDeleteResponse = { id: string; deleted_at: string };
++/** 200 POST /api/v1/{…}/:id/restore (catalog.RestoreResponse, §6.2, §6.4, §6.6, §6.8). */
++export type CatalogRestoreResponse = { id: string };
++/** Отказы удаления и восстановления записей каталога (§6.1–§6.8). */
++export type CatalogError = {
++  code:
++    | 'NOT_DELETED' | 'NAME_TAKEN' | 'PRODUCT_HAS_STOCK' | 'PRODUCT_NOT_FOUND' | 'SERVICE_NOT_FOUND'
++    | 'CATEGORY_NOT_FOUND' | 'EQUIPMENT_TYPE_NOT_FOUND' | 'FORBIDDEN' | 'VALIDATION';
++  message: string;
++};
++/** Виды служебной уборки, подключённые на стенде (части 1–5 мастер-спеки soft-delete). */
++export type PurgeKind = 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment' | CatalogKind;
+ /** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
+ export type PurgeResponse = { id: string };
+ 
+@@ -166,6 +180,8 @@ export type StockWarehouseCell = {
+ 
+ export type StockRow = {
+   product_id: string;
++  /** Товар удалён из каталога, но на складе числится его остаток (soft-delete-catalog DS-042). */
++  is_deleted: boolean;
+   name: string;
+   unit: string;
+   box: string;
+@@ -233,6 +249,8 @@ export type EquipmentLocationStatus = 'at_client' | 'at_warehouse' | 'in_transit
+ export type CardSubtaskProduct = {
+   id: string;
+   product_id: string;
++  /** Товар мягко удалён из каталога — бейдж «удалён» (soft-delete-catalog DS-014). */
++  product_is_deleted: boolean;
+   name: string;
+   unit: string;
+   position: number;
+@@ -258,6 +276,8 @@ export type CardSubtask = {
+   id: string;
+   service_id: string;
+   service_name: string;
++  /** Услуга мягко удалена из каталога — бейдж «удалён» (soft-delete-catalog DS-014). */
++  service_is_deleted: boolean;
+   status: 'new' | 'in_progress' | 'done';
+   assignee_id: string | null;
+   assignee_name: string | null;
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index 93df39e..3038492 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -18,6 +18,10 @@ type Fixtures = {
+    *  adminApi ловятся автоматически; заказ, созданный тестом через UI (без adminApi),
+    *  тест регистрирует сам вызовом `registerTaskForCleanup(id)`, если знает id. */
+   _boardCleanup: (taskId: number) => void;
++  /** autouse-уборка записей каталога и типов оборудования (soft-delete-catalog TS-F10):
++   *  созданные через adminApi ловятся автоматически; запись, созданную тестом через экран,
++   *  тест регистрирует сам — `catalogCleanup(kind, id)`. */
++  catalogCleanup: (kind: import('./board-types').CatalogKind, id: string) => void;
+ };
+ 
+ type WorkerFixtures = {
+@@ -84,8 +88,76 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+   // любая другая ошибка
+   // удаления — неожиданная, глотать её молча нельзя (code review MEDIUM/LOW) —
+   // идёт в console.warn, чтобы не потерялась незамеченной.
+-  _boardCleanup: [
++  // catalogCleanup (soft-delete-catalog TS-F10, DS-027): обычное удаление товара, услуги,
++  // категории и типа оборудования теперь мягкое — тестовые записи копились бы в справочниках и
++  // во вкладках раздела «Удалённые». Убираются ФИЗИЧЕСКИ служебным адресом purge — и
++  // действующие, и мягко удалённые тестом. Порядок: услуги → товары → категории → типы (услуга
++  // держит товар составом, товар и услуга — категорию). _boardCleanup зависит от этой фикстуры,
++  // поэтому она сворачивается ПОСЛЕ него: заказы, держащие услуги и товары, к этому моменту
++  // убраны. Статус уборки читается: 200 — убрано, 404 — записи уже нет (тест убрал её сам);
++  // 409 «используется» (товар остался в документе без заказа либо в журнале склада, тип — у
++  // оборудования клиента, которого тест не убирает) — запись остаётся, такие отказы считаются и
++  // выводятся ОДНИМ итоговым предупреждением с числом и перечнем; любой другой статус и
++  // исключение (выключенная на стенде уборка) — отдельный console.warn с видом, id и статусом.
++  catalogCleanup: [
+     async ({ adminApi }, use) => {
++      type Kind = import('./board-types').CatalogKind;
++      const created: Array<{ kind: Kind; id: string }> = [];
++      const origCategory = adminApi.createCategory.bind(adminApi);
++      const origProduct = adminApi.createProduct.bind(adminApi);
++      const origService = adminApi.createService.bind(adminApi);
++      const origType = adminApi.createEquipmentType.bind(adminApi);
++      adminApi.createCategory = (async (c) => {
++        const r = await origCategory(c);
++        created.push({ kind: 'catalog-categories', id: r.id });
++        return r;
++      }) as typeof adminApi.createCategory;
++      adminApi.createProduct = (async (p) => {
++        const r = await origProduct(p);
++        created.push({ kind: 'products', id: r.id });
++        return r;
++      }) as typeof adminApi.createProduct;
++      adminApi.createService = (async (s) => {
++        const r = await origService(s);
++        created.push({ kind: 'services', id: r.id });
++        return r;
++      }) as typeof adminApi.createService;
++      adminApi.createEquipmentType = (async (t) => {
++        const r = await origType(t);
++        created.push({ kind: 'equipment-types', id: r.id });
++        return r;
++      }) as typeof adminApi.createEquipmentType;
++
++      await use((kind, id) => { created.push({ kind, id }); });
++
++      adminApi.createCategory = origCategory;
++      adminApi.createProduct = origProduct;
++      adminApi.createService = origService;
++      adminApi.createEquipmentType = origType;
++      const order: Kind[] = ['services', 'products', 'catalog-categories', 'equipment-types'];
++      const inUse: string[] = [];
++      for (const kind of order) {
++        for (const rec of created.filter((r) => r.kind === kind)) {
++          try {
++            const status = await adminApi.purge(kind, rec.id);
++            if (status === 409) inUse.push(`${kind} ${rec.id}`);
++            else if (status !== 200 && status !== 404) console.warn(`catalogCleanup: уборка ${kind} ${rec.id} — неожиданный статус ${status}`);
++          } catch (e) {
++            console.warn(`catalogCleanup: не удалось убрать ${kind} ${rec.id}: ${e instanceof Error ? e.message : String(e)}`);
++          }
++        }
++      }
++      if (inUse.length > 0) {
++        console.warn(`catalogCleanup: не убрано записей — ${inUse.length} (409 «используется», остались ссылки): ${inUse.join(', ')}`);
++      }
++    },
++    { auto: true },
++  ],
++
++  _boardCleanup: [
++    // catalogCleanup в зависимостях — только ради порядка сворачивания (см. выше).
++    async ({ adminApi, catalogCleanup: _catalogFirst }, use) => {
++      void _catalogFirst;
+       const createdTasks: number[] = [];
+       const createdColumns: string[] = [];
+       const createdTransfers: number[] = [];
+diff --git a/e2e/pages/CatalogPage.ts b/e2e/pages/CatalogPage.ts
+index a6f842c..46e5c8c 100644
+--- a/e2e/pages/CatalogPage.ts
++++ b/e2e/pages/CatalogPage.ts
+@@ -223,11 +223,55 @@ export class CatalogPage {
+     if (p.place !== undefined) await this.place.fill(p.place);
+   }
+ 
+-  /** Подтверждает удаление через KT.uiConfirm (Bootstrap-модалка, не нативный confirm). */
+-  async confirmDelete() {
++
++  // Общее окно «Удаление» с причиной (soft-delete-catalog §8.1; KT.uiDeleteDialog).
++  get deleteDialog(): Locator { return this.page.locator('[data-testid="ui-dialog"][data-dialog-kind="delete"]'); }
++  get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
++  get deleteDialogText(): Locator { return this.deleteDialog.getByTestId('ui-dialog-text'); }
++  get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
++  get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
++  get deleteDialogOk(): Locator { return this.deleteDialog.getByTestId('ui-dialog-ok'); }
++  get deleteDialogCancel(): Locator { return this.deleteDialog.getByTestId('ui-dialog-cancel'); }
++  /** Тост после PRG-перехода («Удалено. Восстановить можно в разделе «Удалённые»»). */
++  get toast(): Locator { return this.page.getByTestId('toast'); }
++
++  /** «Удалить» в форме товара → окно «Удаление». */
++  async openDelete() {
+     await this.deleteButton.click();
+-    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
+-    await this.page.getByTestId('ui-dialog-ok').click();
++    await expect(this.deleteDialog).toBeVisible();
++  }
++
++  /** Мягкое удаление товара: «Удалить» → причина в окне → «Удалить» (форма уходит обычным POST). */
++  async confirmDelete(reason = 'e2e: создан по ошибке') {
++    await this.openDelete();
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
++  }
++
++  /** Мягкое удаление категории из панели: «Удалить» в строке → причина → «Удалить». */
++  async confirmCategoryDelete(name: string, reason = 'e2e: создана по ошибке') {
++    await this.categoryDelete(name).click();
++    await expect(this.deleteDialog).toBeVisible();
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
++  }
++
++  /** Бейдж «в архиве» строки товара / услуги списка. */
++  archivedBadge(name: string): Locator {
++    return this.row(name).getByTestId('product-archived-badge');
++  }
++
++  /** Бейдж «категория удалена» строки товара списка (soft-delete-catalog §8.1 п.3). */
++  categoryDeletedBadge(name: string): Locator {
++    return this.row(name).getByTestId('category-deleted-badge');
++  }
++
++  /** Бейдж «удалена» у поля «Категория» формы товара / услуги (§8.1 п.4). */
++  get formCategoryDeletedBadge(): Locator { return this.page.getByTestId('category-deleted-badge'); }
++
++  /** Бейдж «удалён» у строки состава услуги (§8.1 п.5). */
++  productDeletedBadge(i: number): Locator {
++    return this.productRow(i).getByTestId('product-deleted-badge');
+   }
+ 
+   // ---- услуги ----
+@@ -277,9 +321,11 @@ export class CatalogPage {
+     if (p.price !== undefined) await this.servicePrice.fill(p.price);
+   }
+ 
+-  async confirmServiceDelete() {
++  /** Мягкое удаление услуги: «Удалить» → причина в окне → «Удалить». */
++  async confirmServiceDelete(reason = 'e2e: создана по ошибке') {
+     await this.serviceDeleteButton.click();
+-    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
+-    await this.page.getByTestId('ui-dialog-ok').click();
++    await expect(this.deleteDialog).toBeVisible();
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
+   }
+ }
+diff --git a/e2e/pages/DeletedPage.ts b/e2e/pages/DeletedPage.ts
+index 809e844..ef5bef7 100644
+--- a/e2e/pages/DeletedPage.ts
++++ b/e2e/pages/DeletedPage.ts
+@@ -91,6 +91,8 @@ export class DeletedPage {
+   rowSubtitle(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-subtitle'); }
+   /** Бейдж «вместе с клиентом» у единицы, ушедшей в удалённые с клиентом (soft-delete-clients §8.2). */
+   rowWith(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-with'); }
++  /** Бейдж «в архиве» у записи, удалённой из архива (soft-delete-catalog §8.2, DS-009). */
++  rowArchived(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-archived'); }
+   rowReason(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-reason'); }
+   rowBy(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-by'); }
+   rowAt(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-at'); }
+diff --git a/e2e/pages/EquipmentTypesPage.ts b/e2e/pages/EquipmentTypesPage.ts
+index d76a6f6..1b87bbb 100644
+--- a/e2e/pages/EquipmentTypesPage.ts
++++ b/e2e/pages/EquipmentTypesPage.ts
+@@ -49,6 +49,11 @@ export class EquipmentTypesPage {
+     return this.page.locator(`[data-testid="type-row"][data-name="${name}"]`);
+   }
+ 
++  /** Ячейка «Единиц» строки списка — число действующих единиц типа (soft-delete-catalog TS-061). */
++  rowCount(name: string): Locator {
++    return this.row(name).getByTestId('type-equipment-count');
++  }
++
+   /** Кнопка «В архив»/«Вернуть» в строке списка. */
+   rowToggle(name: string): Locator {
+     return this.row(name).getByTestId('type-toggle-active');
+@@ -68,10 +73,28 @@ export class EquipmentTypesPage {
+     if (t.specKeys !== undefined) await this.specKeys.fill(t.specKeys);
+   }
+ 
+-  /** Подтверждает удаление через KT.uiConfirm (Bootstrap-модалка, не нативный confirm). */
+-  async confirmDelete() {
++
++  // Общее окно «Удаление» с причиной (soft-delete-catalog §8.1; KT.uiDeleteDialog).
++  get deleteDialog(): Locator { return this.page.locator('[data-testid="ui-dialog"][data-dialog-kind="delete"]'); }
++  get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
++  get deleteDialogText(): Locator { return this.deleteDialog.getByTestId('ui-dialog-text'); }
++  get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
++  get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
++  get deleteDialogOk(): Locator { return this.deleteDialog.getByTestId('ui-dialog-ok'); }
++  get deleteDialogCancel(): Locator { return this.deleteDialog.getByTestId('ui-dialog-cancel'); }
++  /** Тост после PRG-перехода («Удалено. Восстановить можно в разделе «Удалённые»»). */
++  get toast(): Locator { return this.page.getByTestId('toast'); }
++
++  /** «Удалить» в форме типа → окно «Удаление». */
++  async openDelete() {
+     await this.deleteButton.click();
+-    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
+-    await this.page.getByTestId('ui-dialog-ok').click();
++    await expect(this.deleteDialog).toBeVisible();
++  }
++
++  /** Мягкое удаление типа: «Удалить» → причина в окне → «Удалить» (форма уходит обычным POST). */
++  async confirmDelete(reason = 'e2e: создан по ошибке') {
++    await this.openDelete();
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
+   }
+ }
+diff --git a/e2e/pages/StockPage.ts b/e2e/pages/StockPage.ts
+index a986752..4136013 100644
+--- a/e2e/pages/StockPage.ts
++++ b/e2e/pages/StockPage.ts
+@@ -52,6 +52,11 @@ export class StockPage {
+     return this.page.getByTestId(`stock-row-${productId}`);
+   }
+ 
++  /** Бейдж «удалён» у товара, удалённого из каталога, чей остаток числится на складе (DS-042). */
++  rowDeleted(productId: string): Locator {
++    return this.row(productId).getByTestId('stock-row-deleted');
++  }
++
+   editBtn(productId: string): Locator {
+     return this.page.getByTestId(`stock-edit-${productId}`);
+   }
+diff --git a/e2e/tests/board-guards.spec.ts b/e2e/tests/board-guards.spec.ts
+index 28a990c..c406610 100644
+--- a/e2e/tests/board-guards.spec.ts
++++ b/e2e/tests/board-guards.spec.ts
+@@ -2,10 +2,12 @@ import { test, expect } from '../fixtures/board';
+ import { ClientsPage } from '../pages/ClientsPage';
+ import { EquipmentPage } from '../pages/EquipmentPage';
+ import { CatalogPage } from '../pages/CatalogPage';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
+ 
+-// Фаза 8 (D26): E2E-гарды поверх backend-гардов — удаление товара/услуги, на которые ссылается
+-// заказ, отклоняется (409), сущность остаётся на месте, форма показывает понятное сообщение
+-// вместо голого JSON (эталон CT-005 catalog.spec.ts).
++// Фаза 8 (D26) → soft-delete-catalog DS-014, TS-F4: товар и услуга каталога, на которые
++// ссылается заказ, больше не удерживаются — удаляются мягко с причиной, в карточке заказа
++// остаются с бейджем «удалён» (BD-019a / BD-019b).
+ // Клиент и оборудование (soft-delete-clients DS-014, DS-041, TS-F4): заказы и документы их
+ // больше не удерживают — удаление мягкое (SDCL-001, soft-delete-clients.spec.ts); отказ остался
+ // один — оборудование не у клиента (на нашем складе, в пути либо в незавершённом перемещении).
+@@ -78,12 +80,11 @@ test.describe('BD: нельзя удалить оборудование, пок
+   });
+ });
+ 
+-test.describe('BD: нельзя удалить товар, использованный в заказе (PRODUCT_IN_USE)', () => {
+-  test('BD-019a: товар в subtask_products действующего заказа — сообщение, не 500', async ({
++test.describe('BD: товар и услуга каталога удаляются при наличии заказов (soft-delete-catalog DS-014)', () => {
++  test('BD-019a (TS-027): товар в услуге действующего заказа удаляется с причиной — список без товара, тост; в карточке заказа у товара бейдж «удалён», строка остаётся', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+-    allowHttpErrors,
+     insertSubtask,
+   }) => {
+     const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-019a категория товаров') });
+@@ -91,41 +92,46 @@ test.describe('BD: нельзя удалить товар, использова
+     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-019a категория услуг') });
+     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-019a услуга') });
+     const client = await adminApi.createClient({ company_name: uniq('BD-019a клиент'), phones: [{ phone: '9990003333', note: '' }] });
+-    const columns = (await adminApi.listColumns()).items;
+-    const task = await adminApi.createTask({ title: uniq('BD-019a заказ'), client_id: client.id, column_id: columns[0].id });
++    const column = (await adminApi.listColumns()).items.find((c) => !c.is_final && !c.consumes_stock)!;
++    const task = await adminApi.createTask({ title: uniq('BD-019a заказ'), client_id: client.id, column_id: column.id });
+     await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 1 }] });
+ 
+-    allowHttpErrors((url, status) => url.includes(`/catalog/products/${product.id}/delete`) && status === 409);
+-
+     const catalog = new CatalogPage(page);
+     // pagination DS-005: список постраничный — своя запись только через ?q=.
+     await catalog.gotoProductsByName(product.name);
+     await catalog.open(product.name);
+-    await catalog.confirmDelete();
++    await catalog.confirmDelete(uniq('BD-019a снят с продажи'));
+ 
+-    // не 500 — форма показывает понятное сообщение (design-errors.md #15), товар остаётся.
+-    await expect(catalog.formError).toContainText('используется в услугах, заказах или журнале склада');
++    // заказ удалению не мешает — отказа «используется» больше нет.
++    await expect(page).toHaveURL(/\/catalog\/products\?flash=deleted$/);
++    await expect(catalog.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
+     await catalog.gotoProductsByName(product.name);
+-    await expect(catalog.row(product.name)).toBeVisible();
++    await expect(catalog.row(product.name)).toHaveCount(0);
++
++    // в карточке заказа строка товара осталась — с бейджем «удалён».
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    const card = new OrderCardPage(page);
++    await card.waitOpen();
++    await expect(page.getByTestId('card-product-deleted')).toHaveText('удалён');
++    await expect(page.getByTestId('card-subtask-service-deleted')).toHaveCount(0);
++    const apiCard = await adminApi.getCard(task.id);
++    expect(apiCard.subtasks[0].products.map((p) => p.product_is_deleted)).toEqual([true]);
+   });
+-});
+ 
+-test.describe('BD: нельзя удалить услугу, использованную в заказе (SERVICE_IN_USE)', () => {
+-  test('BD-019b: услуга в subtasks действующего заказа — сообщение, не 500', async ({
++  test('BD-019b (TS-030): услуга каталога в действующем заказе удаляется с причиной — список без услуги, тост; в карточке заказа у услуги бейдж «удалён», услуга заказа остаётся', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+-    allowHttpErrors,
+     insertSubtask,
+   }) => {
+     const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-019b категория услуг') });
+     const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-019b услуга') });
+     const client = await adminApi.createClient({ company_name: uniq('BD-019b клиент'), phones: [{ phone: '9990004444', note: '' }] });
+-    const columns = (await adminApi.listColumns()).items;
+-    const task = await adminApi.createTask({ title: uniq('BD-019b заказ'), client_id: client.id, column_id: columns[0].id });
+-    await insertSubtask({ taskId: task.id, serviceId: svc.id });
+-
+-    allowHttpErrors((url, status) => url.includes(`/catalog/services/${svc.id}/delete`) && status === 409);
++    const column = (await adminApi.listColumns()).items.find((c) => !c.is_final && !c.consumes_stock)!;
++    const task = await adminApi.createTask({ title: uniq('BD-019b заказ'), client_id: client.id, column_id: column.id });
++    const subtaskId = await insertSubtask({ taskId: task.id, serviceId: svc.id });
+ 
+     const catalog = new CatalogPage(page);
+     // ?q= — без фильтра список услуг на общей dev-БД (годы e2e-прогонов) отдаёт первую
+@@ -134,11 +140,21 @@ test.describe('BD: нельзя удалить услугу, использов
+     // code-plan-status.md фазы 05); эталон — clients.goto(`?q=${company}`) выше в этом файле.
+     await catalog.gotoServices(`?q=${encodeURIComponent(svc.name)}`);
+     await catalog.openService(svc.name);
+-    await catalog.confirmServiceDelete();
++    await catalog.confirmServiceDelete(uniq('BD-019b не оказываем'));
+ 
+-    // не 500 — форма показывает сообщение (design-errors.md §Codes 01-15 #09), услуга остаётся.
+-    await expect(catalog.formError).toContainText('используется в заказах');
++    await expect(page).toHaveURL(/\/catalog\/services\?flash=service_deleted$/);
++    await expect(catalog.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
+     await catalog.gotoServices(`?q=${encodeURIComponent(svc.name)}`);
+-    await expect(catalog.serviceRow(svc.name)).toBeVisible();
++    await expect(catalog.serviceRow(svc.name)).toHaveCount(0);
++
++    // услуга заказа осталась — с бейджем «удалён» у названия.
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    const card = new OrderCardPage(page);
++    await card.waitOpen();
++    await expect(card.subtaskRow(subtaskId).getByTestId('card-subtask-service-deleted')).toHaveText('удалён');
++    const apiCard = await adminApi.getCard(task.id);
++    expect(apiCard.subtasks.map((s) => s.service_is_deleted)).toEqual([true]);
+   });
+ });
+diff --git a/e2e/tests/catalog.spec.ts b/e2e/tests/catalog.spec.ts
+index 8edc452..7c7d12f 100644
+--- a/e2e/tests/catalog.spec.ts
++++ b/e2e/tests/catalog.spec.ts
+@@ -5,6 +5,8 @@ import { ShellPage } from '../pages/ShellPage';
+ // Фаза 4: «Каталог» — вкладки, категории, товары (подфаза A), услуги + комплект (подфаза B).
+ // Каждый тест независим от состояния БД стенда (§TD-6.2) — свои данные заводятся через
+ // uniq()/adminApi, проверка «есть/пусто» — только в рамках собственного uniq()-фильтра.
++// Уборка (soft-delete-catalog TS-F10): записи, созданные через adminApi, убирает autouse-фикстура
++// catalogCleanup служебным адресом purge; созданные через экран тест регистрирует сам.
+ test.use({ colorScheme: 'light' });
+ 
+ test.describe('CT: каталог — вкладки и меню', () => {
+@@ -41,7 +43,7 @@ test.describe('CT: каталог — вкладки и меню', () => {
+ });
+ 
+ test.describe('CT: категории', () => {
+-  test('CT-002: создать категорию, дубль → ошибка, переименовать, фильтр в URL', async ({ adminPage: page, uniq }) => {
++  test('CT-002: создать категорию, дубль → ошибка, переименовать, фильтр в URL', async ({ adminPage: page, adminApi, uniq, catalogCleanup }) => {
+     // дубль категории — SSR всегда 303 (флаг ошибки в query, не HTTP-статус) — сеть чистая.
+     const catalog = new CatalogPage(page);
+     const name = uniq('Расходники');
+@@ -51,6 +53,9 @@ test.describe('CT: категории', () => {
+     await expect(page).toHaveURL(/flash=category_created/);
+     await expect(catalog.flash).toHaveText('Категория создана');
+     await expect(catalog.categoryRow(name)).toBeVisible();
++    const createdCategory = await adminApi.findCatalogByName('catalog-categories', name);
++    expect(createdCategory, 'категория создана через экран').toBeTruthy();
++    catalogCleanup('catalog-categories', createdCategory!.id);
+ 
+     // дубль (без учёта регистра/пробелов, D16) — сообщение об ошибке, категория не задвоена.
+     await catalog.addCategory(`  ${name.toUpperCase()}  `);
+@@ -79,6 +84,7 @@ test.describe('CT: товары', () => {
+     adminApi,
+     uniq,
+     allowHttpErrors,
++    catalogCleanup,
+   }) => {
+     // required-валидация формы (SSR /catalog/products) отвечает 422 на саму навигацию.
+     allowHttpErrors((url, status) => url.endsWith('/catalog/products') && status === 422);
+@@ -93,6 +99,9 @@ test.describe('CT: товары', () => {
+ 
+     await expect(page).toHaveURL(/\/catalog\/products\?flash=created$/);
+     await expect(catalog.flash).toHaveText('Товар создан');
++    const createdProduct = await adminApi.findCatalogByName('products', name);
++    expect(createdProduct, 'товар создан через экран').toBeTruthy();
++    catalogCleanup('products', createdProduct!.id);
+     // редирект после создания не сохраняет фильтр — список без q может быть обрезан
+     // лимитом на разросшемся стенде (§TD-6.2), проверяем свою запись через ?q=.
+     await catalog.gotoProducts(`?q=${encodeURIComponent(name)}`);
+@@ -123,6 +132,7 @@ test.describe('CT: услуги', () => {
+     adminPage: page,
+     adminApi,
+     uniq,
++    catalogCleanup,
+   }) => {
+     const catalog = new CatalogPage(page);
+     const svcCatName = uniq('Категория услуг');
+@@ -152,6 +162,9 @@ test.describe('CT: услуги', () => {
+     await catalog.serviceSave.click();
+     await expect(page).toHaveURL(/\/catalog\/services\?flash=service_created$/);
+     await expect(catalog.flash).toHaveText('Услуга создана');
++    const createdService = await adminApi.findCatalogByName('services', name);
++    expect(createdService, 'услуга создана через экран').toBeTruthy();
++    catalogCleanup('services', createdService!.id);
+ 
+     // редирект после создания не сохраняет фильтр — список без q может быть обрезан
+     // лимитом на разросшемся стенде (§TD-6.2), проверяем свою запись через ?q=.
+@@ -166,7 +179,7 @@ test.describe('CT: услуги', () => {
+ });
+ 
+ test.describe('CT: удаление и архив', () => {
+-  test('CT-005: неиспользуемый товар удаляется; товар из комплекта → сообщение + архив; архивный не предлагается в комплекте', async ({
++  test('CT-005 (TS-027): товар удаляется с причиной — и свободный, и стоящий в комплекте услуги (ссылки не мешают): список без товара, тост «Удалено. Восстановить можно в разделе «Удалённые»», в составе услуги — бейдж «удалён»; окно без причины — «Укажите причину удаления», товар не удалён; «В архив» — отдельное действие, архивный товар в комплекте новой услуги не предлагается', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+@@ -181,34 +194,66 @@ test.describe('CT: удаление и архив', () => {
+     const usedName = uniq('Товар в комплекте');
+     const used = await adminApi.createProduct({ category_id: prodCat.id, name: usedName });
+     const freeName = uniq('Свободный товар');
+-    await adminApi.createProduct({ category_id: prodCat.id, name: freeName });
+-    await adminApi.createService({ category_id: svcCat.id, name: uniq('Услуга с комплектом'), products: [{ product_id: used.id, qty: 1 }] });
++    const free = await adminApi.createProduct({ category_id: prodCat.id, name: freeName });
++    const archivedName = uniq('Товар для архива');
++    await adminApi.createProduct({ category_id: prodCat.id, name: archivedName });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('Услуга с комплектом'), products: [{ product_id: used.id, qty: 1 }] });
++    // серверная форма удаления без причины отвечает 422 на саму навигацию.
++    allowHttpErrors((url, status) => url.endsWith(`/catalog/products/${free.id}/delete`) && status === 422);
+ 
+-    // свободный товар — удаляется без вопросов.
+     // pagination DS-005: список постраничный — своя запись только через ?q=.
+     await catalog.gotoProductsByName(freeName);
+     await catalog.open(freeName);
+-    await catalog.confirmDelete();
+-    await expect(page).toHaveURL(/flash=deleted/);
++    await catalog.openDelete();
++    await expect(catalog.deleteDialogTitle).toHaveText(`Удалить «${freeName}»?`);
++    await expect(catalog.deleteDialogText).toHaveText(
++      'Запись можно восстановить в разделе «Удалённые». Чтобы только скрыть её из выбора, используйте «В архив»',
++    );
++    // негатив: причина из пробелов — окно остаётся с ошибкой под полем, товар не удалён.
++    await catalog.deleteReason.fill('   ');
++    await catalog.deleteDialogOk.click();
++    await expect(catalog.deleteReasonError).toHaveText('Укажите причину удаления');
++    await expect(catalog.deleteDialog).toBeVisible();
++    expect((await adminApi.findCatalogByName('products', freeName))?.id, 'товар не удалён').toBe(free.id);
++
++    await catalog.deleteReason.fill(uniq('CT-005 создан по ошибке'));
++    await catalog.deleteDialogOk.click();
++    await expect(page).toHaveURL(/\/catalog\/products\?flash=deleted$/);
++    await expect(catalog.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
+     await catalog.gotoProductsByName(freeName);
+     await expect(catalog.row(freeName)).toHaveCount(0);
++    // и в списке с архивом удалённого нет — удаление и архив независимы.
++    await catalog.gotoProducts(`?archived=1&q=${encodeURIComponent(freeName)}`);
++    await expect(catalog.row(freeName)).toHaveCount(0);
+ 
+-    // товар из комплекта — удалить нельзя (409), форма показывает сообщение.
+-    allowHttpErrors((url, status) => url.includes(`/catalog/products/${used.id}/delete`) && status === 409);
++    // товар из комплекта услуги — тоже удаляется: отказа «используется» больше нет.
+     await catalog.gotoProductsByName(usedName);
+     await catalog.open(usedName);
+     await catalog.confirmDelete();
+-    // Текст PRODUCT_IN_USE расширен в фазе 5 (design-errors #15): услуги, заказы, журнал склада.
+-    await expect(catalog.formError).toContainText('используется в услугах');
++    await expect(page).toHaveURL(/\/catalog\/products\?flash=deleted$/);
++    await expect(catalog.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
++    await catalog.gotoProductsByName(usedName);
++    await expect(catalog.row(usedName)).toHaveCount(0);
++    // строка состава услуги осталась — с бейджем «удалён»; в новой строке удалённый не предлагается.
++    await page.goto(`/catalog/services/${svc.id}`);
++    await expect(catalog.serviceForm).toBeVisible();
++    await expect(catalog.productDeletedBadge(0)).toHaveText('удалён');
++    await catalog.serviceProductAdd.click();
++    await catalog.productRow(1).getByTestId('service-product-select').click();
++    await expect(page.getByTestId('combobox-dropdown').getByText(usedName)).toHaveCount(0);
++    await page.keyboard.press('Escape');
+ 
+-    // вместо удаления — архивирование, оно работает.
++    // «В архив» — отдельное действие: архивный товар виден в справочнике с бейджем, но в
++    // комплекте новой услуги не предлагается.
++    await catalog.gotoProductsByName(archivedName);
++    await catalog.open(archivedName);
+     await catalog.archiveButton.click();
+     await expect(page).toHaveURL(/flash=archived/);
+-
+-    // архивный товар не предлагается в комплекте новой услуги.
++    await catalog.gotoProducts(`?archived=1&q=${encodeURIComponent(archivedName)}`);
++    await expect(catalog.archivedBadge(archivedName)).toHaveText('в архиве');
+     await catalog.gotoNewService();
+     await catalog.productRow(0).getByTestId('service-product-select').click();
+-    await expect(page.getByTestId('combobox-dropdown').getByText(usedName)).toHaveCount(0);
++    await expect(page.getByTestId('combobox-dropdown').getByText(archivedName)).toHaveCount(0);
+     await page.keyboard.press('Escape');
+   });
+ });
+diff --git a/e2e/tests/equipment-types.spec.ts b/e2e/tests/equipment-types.spec.ts
+index 359e5fd..fea7bce 100644
+--- a/e2e/tests/equipment-types.spec.ts
++++ b/e2e/tests/equipment-types.spec.ts
+@@ -3,10 +3,12 @@ import { EquipmentTypesPage } from '../pages/EquipmentTypesPage';
+ 
+ // Фаза 4: экран «Каталог → Типы оборудования» (admin) — AC-011, AC-012, ADR-006/007.
+ // ET-021 (адаптив) — Phase 9.
++// Уборка (soft-delete-catalog TS-F10): типы, созданные через adminApi, убирает autouse-фикстура
++// catalogCleanup служебным адресом purge; созданные через экран тест регистрирует сам.
+ test.use({ colorScheme: 'light' });
+ 
+ test.describe('ET: типы оборудования', () => {
+-  test('ET-001: админ создаёт тип через форму, тот виден в списке', async ({ adminPage: page, uniq }) => {
++  test('ET-001: админ создаёт тип через форму, тот виден в списке', async ({ adminPage: page, adminApi, uniq, catalogCleanup }) => {
+     const name = uniq('Чиллер');
+     const types = new EquipmentTypesPage(page);
+     await types.goto();
+@@ -18,6 +20,9 @@ test.describe('ET: типы оборудования', () => {
+ 
+     await expect(page).toHaveURL(/\/catalog\/equipment-types\?flash=created$/);
+     await expect(types.flash).toHaveText('Тип оборудования создан');
++    const created = await adminApi.findCatalogByName('equipment-types', name);
++    expect(created, 'тип создан через экран').toBeTruthy();
++    catalogCleanup('equipment-types', created!.id);
+     // редирект после создания не сохраняет q — на наполненной БД список без фильтра
+     // может быть обрезан лимитом (§TD-6.2), проверяем свою запись через ?q=.
+     await types.goto(`?q=${encodeURIComponent(name)}`);
+@@ -53,26 +58,55 @@ test.describe('ET: типы оборудования', () => {
+     await expect(types.row(name)).toBeVisible();
+   });
+ 
+-  test('ET-003: удаление свободного типа и архивирование из списка', async ({ adminPage: page, uniq }) => {
++  test('ET-003 (TS-030): тип удаляется с причиной — список без типа, тост «Удалено. Восстановить можно в разделе «Удалённые»»; окно без причины — «Укажите причину удаления», тип не удалён; архивирование из списка — отдельное действие', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++    catalogCleanup,
++  }) => {
+     const free = uniq('Свободный тип');
+     const types = new EquipmentTypesPage(page);
+     await types.gotoNew();
+     await types.fill({ name: free });
+     await types.save.click();
++    await expect(page).toHaveURL(/flash=created$/);
++    const created = await adminApi.findCatalogByName('equipment-types', free);
++    expect(created, 'тип создан через экран').toBeTruthy();
++    catalogCleanup('equipment-types', created!.id);
++    // серверная форма удаления без причины отвечает 422 на саму навигацию.
++    allowHttpErrors((url, status) => url.endsWith(`/catalog/equipment-types/${created!.id}/delete`) && status === 422);
+     // редирект после создания не сохраняет q — на наполненной БД список без фильтра
+     // может быть обрезан лимитом (§TD-6.2).
+     await types.goto(`?q=${encodeURIComponent(free)}`);
+     await types.open(free);
+ 
+-    await types.confirmDelete();
++    await types.openDelete();
++    await expect(types.deleteDialogTitle).toHaveText(`Удалить «${free}»?`);
++    await expect(types.deleteDialogText).toHaveText(
++      'Запись можно восстановить в разделе «Удалённые». Чтобы только скрыть её из выбора, используйте «В архив»',
++    );
++    // негатив: без причины окно остаётся с ошибкой под полем, тип не удалён.
++    await types.deleteDialogOk.click();
++    await expect(types.deleteReasonError).toHaveText('Укажите причину удаления');
++    await expect(types.deleteDialog).toBeVisible();
++    expect((await adminApi.findCatalogByName('equipment-types', free))?.id, 'тип не удалён').toBe(created!.id);
++
++    await types.deleteReason.fill(uniq('ET-003 создан по ошибке'));
++    await types.deleteDialogOk.click();
+     await expect(page).toHaveURL(/\/catalog\/equipment-types\?flash=deleted$/);
+-    await expect(types.flash).toHaveText('Тип удалён');
++    await expect(types.toast).toHaveText('Удалено. Восстановить можно в разделе «Удалённые»');
++    await types.goto(`?archived=1&q=${encodeURIComponent(free)}`);
+     await expect(types.row(free)).toHaveCount(0);
+ 
+     const toArchive = uniq('Тип для архива');
+     await types.gotoNew();
+     await types.fill({ name: toArchive });
+     await types.save.click();
++    await expect(page).toHaveURL(/flash=created$/);
++    const archived = await adminApi.findCatalogByName('equipment-types', toArchive);
++    expect(archived, 'тип создан через экран').toBeTruthy();
++    catalogCleanup('equipment-types', archived!.id);
+     await types.goto(`?q=${toArchive}`);
+     await types.rowToggle(toArchive).click();
+     await expect(types.flash).toHaveText('Тип отправлен в архив');
+diff --git a/e2e/tests/soft-delete-catalog.spec.ts b/e2e/tests/soft-delete-catalog.spec.ts
+new file mode 100644
+index 0000000..2357939
+--- /dev/null
++++ b/e2e/tests/soft-delete-catalog.spec.ts
+@@ -0,0 +1,280 @@
++import { test, expect } from '../fixtures/board';
++import { CatalogPage } from '../pages/CatalogPage';
++import { DeletedPage } from '../pages/DeletedPage';
++import { EquipmentPage } from '../pages/EquipmentPage';
++import { EquipmentTypesPage } from '../pages/EquipmentTypesPage';
++import { StockPage } from '../pages/StockPage';
++
++// Мягкое удаление — каталог (товары, услуги, категории) и типы оборудования
++// (docs/features/soft-delete-catalog/draft-spec.md §8.1–§8.3, §11): удаление с причиной рядом с
++// архивом, вкладки «Товары», «Услуги», «Категории», «Типы оборудования» раздела «Удалённые»,
++// свободное название удалённой категории и отказ восстановления при занятом (TS-044), остаток
++// удалённого товара в отчёте «Остатки» (TS-054), тип оборудования с единицами (TS-061).
++// Удаление товара и услуги, стоящих в заказе, и бейджи в карточке заказа — BD-019a / BD-019b
++// (board-guards.spec.ts); окно «Удаление» без причины — CT-005, ET-003. Адаптив и темы раздела
++// «Удалённые» и окна удаления — SD-007 / SD-008 (soft-delete-core.spec.ts).
++// Общая dev-БД (§TD-6.2): свои записи через uniq()+adminApi. Уборка (TS-F10): записи каталога —
++// autouse catalogCleanup (служебный адрес purge, стенд с TEST_PURGE_ENABLED=true), заказы —
++// _boardCleanup, клиент с единицей — adminApi.purgeClient.
++test.use({ colorScheme: 'light' });
++
++const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
++const TOAST_DELETED = 'Удалено. Восстановить можно в разделе «Удалённые»';
++
++test.describe('SDCT: мягкое удаление каталога и типов оборудования', () => {
++  test('SDCT-001 (TS-044): категория удаляется с причиной → её товар остаётся с бейджем «категория удалена»; новая категория с тем же названием создаётся; «Восстановить» старую → «Название занято — переименуйте действующую запись», строка остаётся; после переименования новой — «Восстановлено»; архивный товар после удаления и восстановления остаётся в архиве (бейдж «в архиве», «Запись вернётся в архив»); негатив: товар с остатком — «У товара есть остаток на складе — сначала переместите или спишите его», товар не удалён', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++    catalogCleanup,
++  }) => {
++    const catName = uniq('SDCT-001 расходники');
++    const category = await adminApi.createCategory({ kind: 'product', name: catName });
++    const keepCatName = uniq('SDCT-001 запчасти');
++    const keepCat = await adminApi.createCategory({ kind: 'product', name: keepCatName });
++    const inCatName = uniq('SDCT-001 товар категории');
++    const inCat = await adminApi.createProduct({ category_id: category.id, name: inCatName });
++    const archivedName = uniq('SDCT-001 архивный товар');
++    const archived = await adminApi.createProduct({ category_id: keepCat.id, name: archivedName });
++    const stockName = uniq('SDCT-001 товар с остатком');
++    const withStock = await adminApi.createProduct({ category_id: keepCat.id, name: stockName, stock: 3 });
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/catalog-categories/${category.id}/restore`) && status === 409);
++    allowHttpErrors((url, status) => url.endsWith(`/catalog/products/${withStock.id}/delete`) && status === 409);
++
++    // ---- §8.1: удаление категории из панели — окно с пояснением про товары и услуги ----
++    const catalog = new CatalogPage(page);
++    await catalog.gotoProductsByName(inCatName);
++    await expect(catalog.categoryDeletedBadge(inCatName)).toHaveCount(0);
++    await catalog.categoryDelete(catName).click();
++    await expect(catalog.deleteDialogTitle).toHaveText(`Удалить «${catName}»?`);
++    await expect(catalog.deleteDialogText).toHaveText('Товары и услуги категории останутся в каталоге с пометкой «категория удалена»');
++    const catReason = uniq('SDCT-001 категория не нужна');
++    await catalog.deleteReason.fill(catReason);
++    await catalog.deleteDialogOk.click();
++    await expect(page).toHaveURL(/\/catalog\/products\?flash=category_deleted$/);
++    await expect(catalog.toast).toHaveText(TOAST_DELETED);
++    await expect(catalog.categoryRowById(category.id)).toHaveCount(0);
++
++    // товар удалённой категории остался в каталоге — с бейджем; в форме категория «удалена».
++    await catalog.gotoProductsByName(inCatName);
++    await expect(catalog.row(inCatName)).toBeVisible();
++    await expect(catalog.categoryDeletedBadge(inCatName)).toHaveText('категория удалена');
++    await catalog.open(inCatName);
++    await expect(catalog.formCategoryDeletedBadge).toHaveText('удалена');
++    await expect(catalog.category).toContainText(`${catName} (удалена)`);
++    expect((await adminApi.findCatalogByName('products', inCatName))?.id).toBe(inCat.id);
++
++    // ---- название удалённой категории свободно: новая с тем же названием создаётся ----
++    await catalog.gotoProducts();
++    await catalog.addCategory(catName);
++    await expect(page).toHaveURL(/flash=category_created/);
++    await expect(catalog.flash).toHaveText('Категория создана');
++    const fresh = await adminApi.findCatalogByName('catalog-categories', catName);
++    expect(fresh, 'новая категория с названием удалённой').toBeTruthy();
++    expect(fresh!.id).not.toBe(category.id);
++    catalogCleanup('catalog-categories', fresh!.id);
++
++    // ---- §8.2: «Удалённые» → «Категории»; восстановление при занятом названии ----
++    const del = new DeletedPage(page);
++    await del.goto(`kind=catalog-categories&q=${encodeURIComponent(catName)}`);
++    await expect(del.tab('catalog-categories')).toHaveClass(/active/);
++    await expect(del.tab('catalog-categories')).toContainText('Категории');
++    await expect(del.tab('products')).toContainText('Товары');
++    await expect(del.tab('services')).toContainText('Услуги');
++    await expect(del.tab('equipment-types')).toContainText('Типы оборудования');
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.rowTitle(category.id)).toHaveText(catName);
++    await expect(del.rowSubtitle(category.id)).toHaveText('товары');
++    await expect(del.rowArchived(category.id)).toHaveCount(0);
++    await expect(del.rowReason(category.id)).toHaveText(catReason);
++    await expect(del.rowBy(category.id)).toHaveText('Админ Прогона');
++    await expect(del.rowAt(category.id)).toHaveText(DATE_TIME);
++    const summary = await adminApi.deletedSummary();
++    await expect(del.tabCount('catalog-categories')).toHaveText(String(summary.counts.catalog_categories));
++
++    await del.restoreBtn(category.id).click();
++    await expect(del.dialogText).toHaveText(`Восстановить «${catName}»?`);
++    await del.dialogOk.click();
++    await expect(del.toastError).toHaveText('Название занято — переименуйте действующую запись');
++    await expect(del.row(category.id)).toBeVisible();
++    expect((await adminApi.listDeleted('catalog-categories', { q: catName })).total, 'категория осталась в удалённых').toBe(1);
++
++    // новая переименована — старая восстанавливается.
++    const renamed = uniq('SDCT-001 расходники новые');
++    await catalog.gotoProducts();
++    await catalog.categoryRenameInput(catName).fill(renamed);
++    await catalog.categoryRenameSubmit(catName).click();
++    await expect(page).toHaveURL(/flash=category_saved/);
++    await del.goto(`kind=catalog-categories&q=${encodeURIComponent(catName)}`);
++    await del.restore(category.id);
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.row(category.id)).toHaveCount(0);
++    await expect(del.tabCount('catalog-categories')).toHaveText(String(summary.counts.catalog_categories - 1));
++    await catalog.gotoProductsByName(inCatName);
++    await expect(catalog.categoryRowById(category.id)).toBeVisible();
++    await expect(catalog.categoryDeletedBadge(inCatName)).toHaveCount(0);
++
++    // ---- архив и удаление независимы: архивный товар возвращается в архив ----
++    await catalog.gotoProductsByName(archivedName);
++    await catalog.rowToggle(archivedName).click();
++    await expect(page).toHaveURL(/flash=archived/);
++    await catalog.gotoProducts(`?archived=1&q=${encodeURIComponent(archivedName)}`);
++    await expect(catalog.archivedBadge(archivedName)).toHaveText('в архиве');
++    await catalog.open(archivedName);
++    const productReason = uniq('SDCT-001 снят с продажи');
++    await catalog.confirmDelete(productReason);
++    await expect(page).toHaveURL(/\/catalog\/products\?flash=deleted$/);
++    await expect(catalog.toast).toHaveText(TOAST_DELETED);
++    await catalog.gotoProducts(`?archived=1&q=${encodeURIComponent(archivedName)}`);
++    await expect(catalog.row(archivedName)).toHaveCount(0);
++
++    await del.goto(`kind=products&q=${encodeURIComponent(archivedName)}`);
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.rowTitle(archived.id)).toHaveText(archivedName);
++    await expect(del.rowSubtitle(archived.id)).toHaveText(keepCatName);
++    await expect(del.rowArchived(archived.id)).toHaveText('в архиве');
++    await expect(del.rowReason(archived.id)).toHaveText(productReason);
++    await del.restoreBtn(archived.id).click();
++    await expect(del.dialogText).toHaveText(`Восстановить «${archivedName}»? Запись вернётся в архив`);
++    await del.dialogOk.click();
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.row(archived.id)).toHaveCount(0);
++    await expect(del.empty).toBeVisible();
++    // восстановлен архивным: в обычном списке его нет, в списке с архивом — с бейджем.
++    await catalog.gotoProductsByName(archivedName);
++    await expect(catalog.row(archivedName)).toHaveCount(0);
++    await catalog.gotoProducts(`?archived=1&q=${encodeURIComponent(archivedName)}`);
++    await expect(catalog.archivedBadge(archivedName)).toHaveText('в архиве');
++
++    // ---- негатив: товар с остатком не удаляется — красный блок в форме товара ----
++    await catalog.gotoProductsByName(stockName);
++    await catalog.open(stockName);
++    await catalog.confirmDelete(uniq('SDCT-001 не нужен'));
++    await expect(catalog.formError).toHaveText('У товара есть остаток на складе — сначала переместите или спишите его');
++    await expect(catalog.form).toBeVisible();
++    await catalog.gotoProductsByName(stockName);
++    await expect(catalog.row(stockName)).toBeVisible();
++    expect((await adminApi.listDeleted('products', { q: stockName })).total, 'товар с остатком не удалён').toBe(0);
++  });
++
++  test('SDCT-002 (TS-054): товар списан заказом до нуля и удалён, затем заказ уходит из списывающей колонки → в «Остатках» строка товара с бейджем «удалён» и возвращённым остатком; корректировка остатка до нуля — строка исчезает из отчёта; негатив: пока остаток нулевой, удалённого товара в отчёте нет', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++  }) => {
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('SDCT-002 категория товаров') });
++    const productName = uniq('SDCT-002 товар');
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: productName, stock: 2 });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('SDCT-002 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('SDCT-002 услуга') });
++    const client = await adminApi.createClient({ company_name: uniq('SDCT-002 клиент'), phones: [{ phone: '9990005402', note: '' }] });
++    const columns = (await adminApi.listColumns()).items;
++    const consuming = columns.find((c) => c.consumes_stock && !c.is_final)!;
++    const plain = columns.find((c) => !c.consumes_stock && !c.is_final)!;
++    const task = await adminApi.createTask({ title: uniq('SDCT-002 заказ'), client_id: client.id, column_id: consuming.id });
++
++    try {
++      // заказ в списывающей колонке забрал весь остаток — товар удаляется (остаток нулевой).
++      await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 2 }] });
++      await adminApi.softDelete('products', product.id, uniq('SDCT-002 снят с продажи'));
++
++      // негатив: удалённого товара с нулевым остатком в отчёте нет.
++      expect((await adminApi.getStock({ scope: 'all', q: productName })).items, 'нулевой остаток — строки нет').toHaveLength(0);
++      const stock = new StockPage(page);
++      await stock.goto();
++      await stock.q.fill(productName);
++      await expect(stock.empty).toBeVisible();
++      await expect(stock.row(product.id)).toHaveCount(0);
++
++      // заказ уходит из списывающей колонки — остаток возвращается удалённому товару.
++      const moved = await adminApi.moveTask(task.id, { column_id: plain.id });
++      expect(moved.status, 'перенос заказа').toBe(200);
++      const rows = (await adminApi.getStock({ q: productName })).items;
++      expect(rows.map((r) => [r.product_id, r.is_deleted, Number(r.stock)])).toEqual([[product.id, true, 2]]);
++
++      await stock.goto();
++      await stock.q.fill(productName);
++      await expect(stock.row(product.id)).toBeVisible();
++      await expect(stock.rowDeleted(product.id)).toHaveText('удалён');
++      await expect(stock.row(product.id).getByTestId('stock-cell-total')).toContainText('2');
++
++      // корректировка остатка работает как обычно: списали до нуля — строка исчезла.
++      await stock.openEdit(product.id);
++      await stock.submitValue(0);
++      await expect(stock.form).toBeHidden();
++      await expect(stock.row(product.id)).toHaveCount(0);
++      await expect(stock.empty).toBeVisible();
++      expect((await adminApi.getStock({ scope: 'all', q: productName })).items).toHaveLength(0);
++    } finally {
++      await adminApi.purgeClient(client.id, [task.id]);
++    }
++  });
++
++  test('SDCT-003 (TS-061): тип оборудования с единицей клиента удаляется с причиной → список без типа, тост; в форме единицы и в карточке клиента у типа бейдж «удалён», в выборе типа новой единицы его нет; в «Удалённых» вкладка «Типы оборудования» — строка типа; «Восстановить» → «Восстановлено», бейдж исчезает; негатив: единица при удалении типа не удалена', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const typeName = uniq('SDCT-003 тип');
++    const type = await adminApi.createEquipmentType({ name: typeName });
++    const client = await adminApi.createClient({ company_name: uniq('SDCT-003 клиент'), phones: [{ phone: '9990005403', note: '' }] });
++    const unit = await adminApi.createEquipment(client.id, { type_id: type.id, brand: 'Raycus', model: uniq('SDCT-003 единица') });
++
++    try {
++      // §8.1: форма типа → окно «Удаление»; единица клиента удалению не мешает (DS-014).
++      const types = new EquipmentTypesPage(page);
++      await types.goto(`?q=${encodeURIComponent(typeName)}`);
++      await expect(types.rowCount(typeName)).toHaveText('1'); // счётчик единиц типа — действующие
++      await types.open(typeName);
++      const reason = uniq('SDCT-003 тип заведён по ошибке');
++      await types.confirmDelete(reason);
++      await expect(page).toHaveURL(/\/catalog\/equipment-types\?flash=deleted$/);
++      await expect(types.toast).toHaveText(TOAST_DELETED);
++      await types.goto(`?archived=1&q=${encodeURIComponent(typeName)}`);
++      await expect(types.row(typeName)).toHaveCount(0);
++
++      // §8.3: единица осталась действующей — у типа бейдж «удалён» в форме и в карточке клиента.
++      expect((await adminApi.getClient(client.id)).equipment_count, 'единица не удалена').toBe(1);
++      const eq = new EquipmentPage(page);
++      await eq.gotoEdit(unit.id);
++      await expect(page.getByTestId('type-deleted-badge')).toHaveText('удалён');
++      await expect(eq.typeButton).toContainText(`${typeName} (удалён)`);
++      await page.goto(`/clients/${client.id}`);
++      await expect(page.getByTestId('equipment-table').getByTestId('type-deleted-badge')).toHaveText('удалён');
++      // в выборе типа новой единицы удалённого типа нет.
++      await eq.gotoNew(client.id);
++      await eq.typeButton.click();
++      await expect(page.getByTestId('combobox-dropdown').getByText(typeName)).toHaveCount(0);
++      await page.keyboard.press('Escape');
++
++      // §8.2: «Удалённые» → «Типы оборудования».
++      const del = new DeletedPage(page);
++      await del.goto(`kind=equipment-types&q=${encodeURIComponent(typeName)}`);
++      await expect(del.tab('equipment-types')).toHaveClass(/active/);
++      await expect(del.rows).toHaveCount(1);
++      await expect(del.rowTitle(type.id)).toHaveText(typeName);
++      await expect(del.rowSubtitle(type.id)).toHaveCount(0);
++      await expect(del.rowArchived(type.id)).toHaveCount(0);
++      await expect(del.rowReason(type.id)).toHaveText(reason);
++      await expect(del.rowAt(type.id)).toHaveText(DATE_TIME);
++
++      await del.restoreBtn(type.id).click();
++      await expect(del.dialogText).toHaveText(`Восстановить «${typeName}»?`);
++      await del.dialogOk.click();
++      await expect(del.toast).toHaveText('Восстановлено');
++      await expect(del.row(type.id)).toHaveCount(0);
++      await expect(del.empty).toBeVisible();
++
++      // тип снова в справочнике со своей единицей; бейдж у единицы исчез.
++      await types.goto(`?q=${encodeURIComponent(typeName)}`);
++      await expect(types.rowCount(typeName)).toHaveText('1');
++      await eq.gotoEdit(unit.id);
++      await expect(eq.form).toBeVisible();
++      await expect(page.getByTestId('type-deleted-badge')).toHaveCount(0);
++    } finally {
++      await adminApi.purgeClient(client.id);
++    }
++  });
++});
+diff --git a/web/ssr/_shared/js/deleted.js b/web/ssr/_shared/js/deleted.js
+index 446bbef..1b2685f 100644
+--- a/web/ssr/_shared/js/deleted.js
++++ b/web/ssr/_shared/js/deleted.js
+@@ -58,9 +58,39 @@
+       kind: 'equipment', label: 'Оборудование', countKey: 'equipment',
+       restoreUrl: function (id) { return '/api/v1/equipment/' + encodeURIComponent(id) + '/restore'; },
+       notFound: 'Оборудование не найдено'
++    },
++    // часть 5 (soft-delete-catalog §8.2): товары, услуги, категории каталога и типы
++    // оборудования. Запись возвращается с прежним признаком архива (бейдж «в архиве» и строка
++    // «Запись вернётся в архив» в подтверждении). Отказ 409 NAME_TAKEN (категория, тип) — тост
++    // с текстом сервера, строка остаётся.
++    {
++      kind: 'products', label: 'Товары', countKey: 'products',
++      restoreUrl: function (id) { return '/api/v1/products/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Товар не найден', confirmText: archivedConfirm
++    },
++    {
++      kind: 'services', label: 'Услуги', countKey: 'services',
++      restoreUrl: function (id) { return '/api/v1/services/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Услуга не найдена', confirmText: archivedConfirm
++    },
++    {
++      kind: 'catalog-categories', label: 'Категории', countKey: 'catalog_categories',
++      restoreUrl: function (id) { return '/api/v1/catalog-categories/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Категория не найдена', confirmText: archivedConfirm
++    },
++    {
++      kind: 'equipment-types', label: 'Типы оборудования', countKey: 'equipment_types',
++      restoreUrl: function (id) { return '/api/v1/equipment-types/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Тип оборудования не найден', confirmText: archivedConfirm
+     }
+   ];
+ 
++  // Вопрос подтверждения для видов с архивом (DS-009): запись, удалённая из архива, вернётся
++  // в архив — об этом вторая фраза.
++  function archivedConfirm(it) {
++    return 'Восстановить «' + it.title + '»?' + (it.is_archived ? ' Запись вернётся в архив' : '');
++  }
++
+   // Подписи бейджа «удалено вместе с …» по значению deleted_with строки (DS-015).
+   var DELETED_WITH = { client: 'вместе с клиентом' };
+ 
+@@ -218,6 +248,12 @@
+         withBadge.setAttribute('data-testid', 'deleted-row-with');
+         title.append(withBadge);
+       }
++      // запись удалена из архива (DS-009) — серый бейдж «в архиве» справа от названия
++      if (it.is_archived) {
++        var archBadge = el('span', 'badge text-bg-secondary ms-2', 'в архиве');
++        archBadge.setAttribute('data-testid', 'deleted-row-archived');
++        title.append(archBadge);
++      }
+       if (it.subtitle) {
+         var sub = el('div', 'small text-body-secondary', it.subtitle);
+         sub.style.overflowWrap = 'anywhere';
+diff --git a/web/ssr/_shared/js/stock.js b/web/ssr/_shared/js/stock.js
+index 065f3f4..55603a0 100644
+--- a/web/ssr/_shared/js/stock.js
++++ b/web/ssr/_shared/js/stock.js
+@@ -126,7 +126,9 @@
+     }).join('');
+     return '' +
+       '<tr data-testid="stock-row-' + esc(r.product_id) + '">' +
+-      '  <td><b>' + esc(r.name) + '</b></td>' +
++      // товар удалён из каталога, но на складе числится его остаток (soft-delete-catalog §8.3
++      // п.5, DS-042) — серый бейдж «удалён» справа от названия; корректировка работает как обычно
++      '  <td><b>' + esc(r.name) + '</b>' + (r.is_deleted ? ' <span class="badge text-bg-secondary" data-testid="stock-row-deleted">удалён</span>' : '') + '</td>' +
+       '  <td class="d-none d-md-table-cell text-body-secondary small">' + esc(whereabouts) + '</td>' +
+       whCells +
+       '  <td class="' + stockCls + '" data-testid="stock-cell-total">' + esc(String(r.stock)) + ' ' + esc(r.unit) + (Number(r.stock) < 0 ? ' (долг)' : '') + '</td>' +
+@@ -260,6 +262,14 @@
+             showError(err.fields.map(function (f) { return f.message; }).join('; '));
+             return;
+           }
++          // товара для корректировки больше нет (удалён, остаток уже нулевой — DS-042): тост,
++          // окно закрывается, отчёт перечитывается без этой строки
++          if (err && err.status === 404) {
++            stockModal.hide();
++            KT.uiToast(err.message || 'Товар не найден', true);
++            reloadAll();
++            return;
++          }
+           showError((err && err.message) || 'Не удалось сохранить остаток');
+         });
+     });
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 60d54d7..f452de6 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -848,7 +848,9 @@
+       '<div class="card mb-2" data-testid="card-subtask-row" data-row-key="' + key + '" data-subtask-id="' + esc(sub.id) + '">' +
+       '  <div class="card-body py-2">' +
+       '    <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">' +
+-      '      <strong>' + esc(sub.service_name) + '</strong>' +
++      // услуга удалена из каталога (soft-delete-catalog §8.3 п.1) — серый бейдж «удалён»;
++      // услуга заказа правится как обычно
++      '      <strong>' + esc(sub.service_name) + (sub.service_is_deleted ? deletedBadge('card-subtask-service-deleted') : '') + '</strong>' +
+       '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-subtask-delete" data-subtask-id="' + esc(sub.id) + '">Удалить</button>' +
+       '    </div>' +
+       '    <div class="row g-2 mt-1">' +
+@@ -891,7 +893,8 @@
+       var pkey = reqKeyProduct(p.id);
+       return '' +
+         '<tr data-testid="card-product-row" data-row-key="' + pkey + '" data-product-id="' + esc(p.id) + '">' +
+-        '  <td>' + esc(p.name) + ' <span class="text-body-secondary small">(' + esc(p.unit) + ')</span></td>' +
++        '  <td>' + esc(p.name) + ' <span class="text-body-secondary small">(' + esc(p.unit) + ')</span>' +
++        (p.product_is_deleted ? deletedBadge('card-product-deleted') : '') + '</td>' +
+         '  <td style="max-width:90px">' +
+         '    <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="qty" data-row-key="' + pkey + '" data-testid="card-product-qty" value="' + esc(p.qty) + '">' +
+         '    <div class="invalid-feedback d-block d-none small" data-testid="card-warning"></div>' +
+diff --git a/web/ssr/_shared/js/transfers.js b/web/ssr/_shared/js/transfers.js
+index 5effd2f..9ee4992 100644
+--- a/web/ssr/_shared/js/transfers.js
++++ b/web/ssr/_shared/js/transfers.js
+@@ -281,6 +281,7 @@
+     state.items = (t && t.items ? t.items : []).map(function (it) {
+       return {
+         kind: it.kind, product_id: it.product_id, product_name: it.product_name, unit: it.unit,
++        product_is_deleted: !!it.product_is_deleted,
+         equipment_id: it.equipment_id, equipment_name: it.equipment_name, equipment_serial: it.equipment_serial,
+         equipment_client_name: it.equipment_client_name, qty: it.qty_sent == null ? '' : num(it.qty_sent),
+         price: it.price == null ? '' : money(it.price),
+@@ -478,7 +479,9 @@
+         (it.equipment_is_deleted ? ' ' + deletedBadge('st-item-equipment-deleted') : '') + '</div>' +
+         (sub.length ? '<div class="small text-body-secondary">' + sub.join(' · ') + '</div>' : '');
+     }
+-    return '<div data-testid="st-item-name">' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</div>';
++    // товар строки удалён из каталога (soft-delete-catalog §8.3 п.4) — серый бейдж «удалён»
++    return '<div data-testid="st-item-name">' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') +
++      (it.product_is_deleted ? ' ' + deletedBadge('st-item-product-deleted') : '') + '</div>';
+   }
+ 
+   // priceCellsHTML — ячейки «Цена» и «Сумма» строки редактора накладной: у товара — текстовый
+diff --git a/web/ssr/catalog/templates/pages/products-form.html b/web/ssr/catalog/templates/pages/products-form.html
+index 27a0098..88698c0 100644
+--- a/web/ssr/catalog/templates/pages/products-form.html
++++ b/web/ssr/catalog/templates/pages/products-form.html
+@@ -16,9 +16,9 @@
+         {{ with index .Errors "sku" }}<div class="invalid-feedback" data-testid="error-sku">{{ . }}</div>{{ end }}
+       </div>
+       <div class="col-md-6">
+-        <label for="category_id" class="form-label">Категория *</label>
++        <label for="category_id" class="form-label">Категория *{{ if .CategoryIsDeleted }} <span class="badge text-bg-secondary" data-testid="category-deleted-badge">удалена</span>{{ end }}</label>
+         <select id="category_id" name="category_id" class="form-select{{ if index .Errors "category_id" }} is-invalid{{ end }}" data-testid="product-category">
+-          {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++          {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if .IsDeleted }} (удалена){{ else if not .IsActive }} (архив){{ end }}</option>{{ end }}
+         </select>
+         {{ template "categoriesTruncated" .CatTrunc }}
+         {{ with index .Errors "category_id" }}<div class="invalid-feedback" data-testid="error-category_id">{{ . }}</div>{{ end }}
+@@ -89,19 +89,13 @@
+ <form id="product-archive-form" method="post" action="/catalog/products/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-none" aria-hidden="true">
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+ </form>
+-<form method="post" action="/catalog/products/{{ .ID }}/delete" class="mt-3" data-testid="product-delete-form">
++<form method="post" action="/catalog/products/{{ .ID }}/delete" class="mt-3" data-testid="product-delete-form" data-delete-dialog
++      data-delete-title="Удалить «{{ .Name }}»?"
++      data-delete-text="Запись можно восстановить в разделе «Удалённые». Чтобы только скрыть её из выбора, используйте «В архив»"
++      {{ if .DeleteError }}data-delete-error="{{ .DeleteError }}"{{ end }}>
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+-  <button type="submit" class="btn btn-link text-danger p-0" data-testid="product-delete" data-confirm="Удалить товар «{{ .Name }}»? Отменить нельзя.">Удалить</button>
++  <input type="hidden" name="reason" value="{{ .DeleteReason }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="product-delete">Удалить</button>
+ </form>
+ {{ end }}
+ {{ end }}
+-{{ define "scripts" }}
+-<script>
+-document.querySelectorAll('[data-confirm]').forEach(function (btn) {
+-  btn.addEventListener('click', async function (e) {
+-    e.preventDefault();
+-    if (await KT.uiConfirm(btn.getAttribute('data-confirm'))) btn.closest('form').submit();
+-  });
+-});
+-</script>
+-{{ end }}
+diff --git a/web/ssr/catalog/templates/pages/products-list.html b/web/ssr/catalog/templates/pages/products-list.html
+index cfbc8eb..b323a00 100644
+--- a/web/ssr/catalog/templates/pages/products-list.html
++++ b/web/ssr/catalog/templates/pages/products-list.html
+@@ -2,6 +2,7 @@
+ {{ define "content" }}
+ {{ template "catalogTabs" .Tabs }}
+ {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
+ {{ if .CatError }}<div class="alert alert-danger py-2" role="alert" data-testid="cat-error">{{ .CatError }}</div>{{ end }}
+ <form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/products" data-testid="products-filters">
+   {{ if .ActiveCategory }}<input type="hidden" name="category" value="{{ .ActiveCategory }}">{{ end }}
+@@ -35,10 +36,14 @@
+           <input type="hidden" name="kind" value="product">
+           <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
+         </form>
+-        <form method="post" action="/catalog/categories/{{ .ID }}/delete">
++        <form method="post" action="/catalog/categories/{{ .ID }}/delete" data-testid="cat-delete-form" data-delete-dialog
++              data-delete-title="Удалить «{{ .Name }}»?"
++              data-delete-text="Товары и услуги категории останутся в каталоге с пометкой «категория удалена»"
++              {{ if eq $.CatDelete.ID .ID }}data-delete-error="{{ $.CatDelete.Error }}"{{ end }}>
+           <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
+           <input type="hidden" name="kind" value="product">
+-          <button type="submit" class="btn btn-sm btn-outline-danger" data-testid="cat-delete" data-confirm="Удалить категорию «{{ .Name }}»?">Удалить</button>
++          <input type="hidden" name="reason" value="{{ if eq $.CatDelete.ID .ID }}{{ $.CatDelete.Reason }}{{ end }}">
++          <button type="submit" class="btn btn-sm btn-outline-danger" data-testid="cat-delete">Удалить</button>
+         </form>
+       </div>
+     </div>
+@@ -62,6 +67,7 @@
+         <td>
+           <a href="/catalog/products/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
+           {{ if not .IsActive }}<span class="badge-off" data-testid="product-archived-badge">в архиве</span>{{ end }}
++          {{ if .CategoryIsDeleted }}<span class="badge text-bg-secondary" data-testid="category-deleted-badge">категория удалена</span>{{ end }}
+         </td>
+         <td class="text-body-secondary">{{ .SKU }}</td>
+         <td class="d-none d-md-table-cell">{{ .Unit }}</td>
+@@ -93,13 +99,3 @@
+   </div>
+ </div>
+ {{ end }}
+-{{ define "scripts" }}
+-<script>
+-document.querySelectorAll('[data-confirm]').forEach(function (btn) {
+-  btn.addEventListener('click', function (e) {
+-    e.preventDefault();
+-    KT.uiConfirm(btn.getAttribute('data-confirm')).then(function (ok) { if (ok) btn.closest('form').submit(); });
+-  });
+-});
+-</script>
+-{{ end }}
+diff --git a/web/ssr/catalog/templates/pages/services-form.html b/web/ssr/catalog/templates/pages/services-form.html
+index 11a0a5e..21f662c 100644
+--- a/web/ssr/catalog/templates/pages/services-form.html
++++ b/web/ssr/catalog/templates/pages/services-form.html
+@@ -11,9 +11,9 @@
+     </div>
+     <div class="row g-3 mb-3">
+       <div class="col-md-6">
+-        <label for="category_id" class="form-label">Категория (вид работ)</label>
++        <label for="category_id" class="form-label">Категория (вид работ){{ if .CategoryIsDeleted }} <span class="badge text-bg-secondary" data-testid="category-deleted-badge">удалена</span>{{ end }}</label>
+         <select id="category_id" name="category_id" class="form-select{{ if index .Errors "category_id" }} is-invalid{{ end }}" data-testid="service-category">
+-          {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++          {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if .IsDeleted }} (удалена){{ else if not .IsActive }} (архив){{ end }}</option>{{ end }}
+         </select>
+         {{ template "categoriesTruncated" .CatTrunc }}
+         {{ with index .Errors "category_id" }}<div class="invalid-feedback" data-testid="error-category_id">{{ . }}</div>{{ end }}
+@@ -32,8 +32,9 @@
+         <div class="flex-grow-1">
+           <select name="product_id" class="form-select{{ if index $.Errors (printf "products[%d].product_id" $i) }} is-invalid{{ end }}" data-testid="service-product-select">
+             <option value="">— выбрать товар —</option>
+-            {{ range $.ProductOptions }}<option value="{{ .ID }}" data-hint="{{ .Hint }}"{{ if eq .ID $row.ProductID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++            {{ range $.ProductOptions }}{{ if or (not .IsDeleted) (eq .ID $row.ProductID) }}<option value="{{ .ID }}" data-hint="{{ .Hint }}"{{ if eq .ID $row.ProductID }} selected{{ end }}>{{ .Name }}{{ if .IsDeleted }} (удалён){{ else if not .IsActive }} (архив){{ end }}</option>{{ end }}{{ end }}
+           </select>
++          {{ if $row.IsDeleted }}<span class="badge text-bg-secondary mt-1" data-testid="product-deleted-badge">удалён</span>{{ end }}
+           {{ with index $.Errors (printf "products[%d].product_id" $i) }}<div class="invalid-feedback d-block" data-testid="error-products-{{ $i }}-product">{{ . }}</div>{{ end }}
+         </div>
+         <div style="max-width:140px">
+@@ -48,7 +49,7 @@
+           <div class="flex-grow-1">
+             <select name="product_id" class="form-select" data-testid="service-product-select">
+               <option value="">— выбрать товар —</option>
+-              {{ range .ProductOptions }}<option value="{{ .ID }}" data-hint="{{ .Hint }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
++              {{ range .ProductOptions }}{{ if not .IsDeleted }}<option value="{{ .ID }}" data-hint="{{ .Hint }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}{{ end }}
+             </select>
+           </div>
+           <div style="max-width:140px">
+@@ -72,9 +73,13 @@
+ <form id="service-archive-form" method="post" action="/catalog/services/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-none" aria-hidden="true">
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+ </form>
+-<form method="post" action="/catalog/services/{{ .ID }}/delete" class="mt-3" data-testid="service-delete-form" data-once>
++<form method="post" action="/catalog/services/{{ .ID }}/delete" class="mt-3" data-testid="service-delete-form" data-delete-dialog
++      data-delete-title="Удалить «{{ .Name }}»?"
++      data-delete-text="Запись можно восстановить в разделе «Удалённые». Чтобы только скрыть её из выбора, используйте «В архив»"
++      {{ if .DeleteError }}data-delete-error="{{ .DeleteError }}"{{ end }}>
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+-  <button type="submit" class="btn btn-link text-danger p-0" data-testid="service-delete" data-confirm="Удалить услугу «{{ .Name }}»? Отменить нельзя.">Удалить</button>
++  <input type="hidden" name="reason" value="{{ .DeleteReason }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="service-delete">Удалить</button>
+ </form>
+ {{ end }}
+ {{ end }}
+@@ -101,21 +106,4 @@
+   new MutationObserver(wire).observe(rows, { childList: true, subtree: true });
+ })();
+ </script>
+-<script>
+-/* data-once на самой форме — маркер для читателя разметки; глобальный делегированный
+-   обработчик (ui-dialog.js) слушает НАСТОЯЩЕЕ событие 'submit', которое form.submit()
+-   ниже НЕ создаёт (WHATWG: HTMLFormElement.submit() событие submit не генерирует — этим
+-   и пользуется ui-dialog.js, чтобы не зациклиться на form[data-confirm]). Поэтому
+-   двойной клик после подтверждения блокируем здесь же — отключением кнопки. */
+-document.querySelectorAll('[data-confirm]').forEach(function (btn) {
+-  btn.addEventListener('click', async function (e) {
+-    e.preventDefault();
+-    if (btn.disabled) return;
+-    if (await KT.uiConfirm(btn.getAttribute('data-confirm'))) {
+-      btn.disabled = true;
+-      btn.closest('form').submit();
+-    }
+-  });
+-});
+-</script>
+ {{ end }}
+diff --git a/web/ssr/catalog/templates/pages/services-list.html b/web/ssr/catalog/templates/pages/services-list.html
+index 9d79c14..2dcd1f2 100644
+--- a/web/ssr/catalog/templates/pages/services-list.html
++++ b/web/ssr/catalog/templates/pages/services-list.html
+@@ -2,6 +2,7 @@
+ {{ define "content" }}
+ {{ template "catalogTabs" .Tabs }}
+ {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
+ {{ if .CatError }}<div class="alert alert-danger py-2" role="alert" data-testid="cat-error">{{ .CatError }}</div>{{ end }}
+ <form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/services" data-testid="services-filters">
+   {{ if .ActiveCategory }}<input type="hidden" name="category" value="{{ .ActiveCategory }}">{{ end }}
+@@ -35,10 +36,14 @@
+           <input type="hidden" name="kind" value="service">
+           <button type="submit" class="btn btn-sm btn-outline-secondary" data-testid="cat-toggle-active">{{ if .IsActive }}В архив{{ else }}Вернуть{{ end }}</button>
+         </form>
+-        <form method="post" action="/catalog/categories/{{ .ID }}/delete">
++        <form method="post" action="/catalog/categories/{{ .ID }}/delete" data-testid="cat-delete-form" data-delete-dialog
++              data-delete-title="Удалить «{{ .Name }}»?"
++              data-delete-text="Товары и услуги категории останутся в каталоге с пометкой «категория удалена»"
++              {{ if eq $.CatDelete.ID .ID }}data-delete-error="{{ $.CatDelete.Error }}"{{ end }}>
+           <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">
+           <input type="hidden" name="kind" value="service">
+-          <button type="submit" class="btn btn-sm btn-outline-danger" data-testid="cat-delete" data-confirm="Удалить категорию «{{ .Name }}»?">Удалить</button>
++          <input type="hidden" name="reason" value="{{ if eq $.CatDelete.ID .ID }}{{ $.CatDelete.Reason }}{{ end }}">
++          <button type="submit" class="btn btn-sm btn-outline-danger" data-testid="cat-delete">Удалить</button>
+         </form>
+       </div>
+     </div>
+@@ -62,6 +67,7 @@
+         <td>
+           <a href="/catalog/services/{{ .ID }}" class="fw-semibold">{{ .Name }}</a>
+           {{ if not .IsActive }}<span class="badge-off" data-testid="service-archived-badge">в архиве</span>{{ end }}
++          {{ if .CategoryIsDeleted }}<span class="badge text-bg-secondary" data-testid="category-deleted-badge">категория удалена</span>{{ end }}
+         </td>
+         <td class="d-none d-md-table-cell" data-testid="service-price">{{ .PriceLabel }}</td>
+         <td class="text-body-secondary small" data-testid="service-products">{{ .ProductsLabel }}</td>
+@@ -84,13 +90,3 @@
+   </div>
+ </div>
+ {{ end }}
+-{{ define "scripts" }}
+-<script>
+-document.querySelectorAll('[data-confirm]').forEach(function (btn) {
+-  btn.addEventListener('click', function (e) {
+-    e.preventDefault();
+-    KT.uiConfirm(btn.getAttribute('data-confirm')).then(function (ok) { if (ok) btn.closest('form').submit(); });
+-  });
+-});
+-</script>
+-{{ end }}
+diff --git a/web/ssr/clients/templates/pages/equipment-form.html b/web/ssr/clients/templates/pages/equipment-form.html
+index 2f9f8a1..4036140 100644
+--- a/web/ssr/clients/templates/pages/equipment-form.html
++++ b/web/ssr/clients/templates/pages/equipment-form.html
+@@ -5,11 +5,11 @@
+     <p class="text-body-secondary small" data-testid="equipment-client-name">{{ .ClientName }}</p>
+     {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
+     <div class="mb-3">
+-      <label for="type_id" class="form-label">Тип *</label>
++      <label for="type_id" class="form-label">Тип *{{ if .TypeIsDeleted }} <span class="badge text-bg-secondary" data-testid="type-deleted-badge">удалён</span>{{ end }}</label>
+       <select id="type_id" name="type_id" class="form-select{{ if index .Errors "type_id" }} is-invalid{{ end }}" data-testid="equipment-type">
+         <option value=""></option>
+         {{ range .Types }}
+-        <option value="{{ .ID }}" data-spec-keys='{{ .SpecKeysJSON }}'{{ if eq .ID $.TypeID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (в архиве){{ end }}</option>
++        <option value="{{ .ID }}" data-spec-keys='{{ .SpecKeysJSON }}'{{ if eq .ID $.TypeID }} selected{{ end }}>{{ .Name }}{{ if .IsDeleted }} (удалён){{ else if not .IsActive }} (в архиве){{ end }}</option>
+         {{ end }}
+       </select>
+       {{ with index .Errors "type_id" }}<div class="invalid-feedback d-block" data-testid="error-type_id">{{ . }}</div>{{ end }}
+diff --git a/web/ssr/clients/templates/pages/form.html b/web/ssr/clients/templates/pages/form.html
+index d0a1271..bd166d2 100644
+--- a/web/ssr/clients/templates/pages/form.html
++++ b/web/ssr/clients/templates/pages/form.html
+@@ -87,7 +87,7 @@
+       {{ range .Equipment }}
+         <tr data-testid="equipment-row" data-model="{{ .Model }}">
+           <td><a href="/equipment/{{ .ID }}" class="fw-semibold">{{ .Model }}</a></td>
+-          <td>{{ .TypeName }}{{ if not .TypeIsActive }} <span class="text-body-secondary small">(в архиве)</span>{{ end }}</td>
++          <td>{{ .TypeName }}{{ if .TypeIsDeleted }} <span class="badge text-bg-secondary" data-testid="type-deleted-badge">удалён</span>{{ else if not .TypeIsActive }} <span class="text-body-secondary small">(в архиве)</span>{{ end }}</td>
+           <td>{{ .Serial }}</td>
+           <td class="text-end text-nowrap">
+             <a href="/equipment/{{ .ID }}" class="btn btn-outline-secondary btn-sm" data-testid="equipment-edit">Редактировать</a>
+diff --git a/web/ssr/equipmenttypes/templates/pages/form.html b/web/ssr/equipmenttypes/templates/pages/form.html
+index 589912c..42cffc1 100644
+--- a/web/ssr/equipmenttypes/templates/pages/form.html
++++ b/web/ssr/equipmenttypes/templates/pages/form.html
+@@ -27,19 +27,13 @@
+ <form id="type-archive-form" method="post" action="/catalog/equipment-types/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-none" aria-hidden="true">
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+ </form>
+-<form method="post" action="/catalog/equipment-types/{{ .ID }}/delete" class="mt-3" data-testid="type-delete-form">
++<form method="post" action="/catalog/equipment-types/{{ .ID }}/delete" class="mt-3" data-testid="type-delete-form" data-delete-dialog
++      data-delete-title="Удалить «{{ .Name }}»?"
++      data-delete-text="Запись можно восстановить в разделе «Удалённые». Чтобы только скрыть её из выбора, используйте «В архив»"
++      {{ if .DeleteError }}data-delete-error="{{ .DeleteError }}"{{ end }}>
+   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+-  <button type="submit" class="btn btn-link text-danger p-0" data-testid="type-delete" data-confirm="Удалить тип «{{ .Name }}»? Отменить нельзя.">Удалить</button>
++  <input type="hidden" name="reason" value="{{ .DeleteReason }}">
++  <button type="submit" class="btn btn-link text-danger p-0" data-testid="type-delete">Удалить</button>
+ </form>
+ {{ end }}
+ {{ end }}
+-{{ define "scripts" }}
+-<script>
+-document.querySelectorAll('[data-confirm]').forEach(function (btn) {
+-  btn.addEventListener('click', async function (e) {
+-    e.preventDefault();
+-    if (await KT.uiConfirm(btn.getAttribute('data-confirm'))) btn.closest('form').submit();
+-  });
+-});
+-</script>
+-{{ end }}
+diff --git a/web/ssr/equipmenttypes/templates/pages/list.html b/web/ssr/equipmenttypes/templates/pages/list.html
+index df00345..8433e8d 100644
+--- a/web/ssr/equipmenttypes/templates/pages/list.html
++++ b/web/ssr/equipmenttypes/templates/pages/list.html
+@@ -2,6 +2,7 @@
+ {{ define "content" }}
+ {{ template "catalogTabs" .Tabs }}
+ {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
++{{ if .Toast }}<span hidden data-kt-toast="{{ .Toast }}"></span>{{ end }}
+ <form class="d-flex flex-wrap align-items-center gap-2 mb-3" method="get" action="/catalog/equipment-types" data-testid="types-filters">
+   <input class="form-control" style="max-width:280px" type="search" name="q" value="{{ .Q }}" placeholder="Поиск по названию" aria-label="Поиск" data-testid="filter-q">
+   <button class="btn btn-outline-secondary" type="submit">Найти</button>
+@@ -23,7 +24,7 @@
+         {{ if not .IsActive }}<span class="badge-off" data-testid="type-archived-badge">в архиве</span>{{ end }}
+       </td>
+       <td class="text-body-secondary">{{ .SpecKeysText }}</td>
+-      <td class="d-none d-md-table-cell">{{ .EquipmentCount }}</td>
++      <td class="d-none d-md-table-cell" data-testid="type-equipment-count">{{ .EquipmentCount }}</td>
+       <td class="text-end">
+         <form method="post" action="/catalog/equipment-types/{{ .ID }}/{{ if .IsActive }}archive{{ else }}restore{{ end }}" class="d-inline">
+           <input type="hidden" name="_csrf" value="{{ $.Shell.CSRFToken }}">

@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Spec: Мягкое удаление — каталог (товары, услуги, категории) и типы оборудования</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #24241f; --muted: #5f5e5a;
+  --border: #d3d1c7; --border-soft: #e4e2d9;
+  --surface: #f1efe8; --surface-soft: #fafaf7; --pre-bg: #f6f5f0;
+  --link: #185fa5; --open: #a32d2d;
+  --asis: #2e7d4f; --tobe: #b06000;
+  --kt: #dde9f8; --kf: #f6ecc8; --ki: #e8e6df; --ks: #dff0e2; --ke: #ece2f4; --kx: #f6dcda;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+    --border: #4c4c47; --border-soft: #3a3a36;
+    --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+    --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+  --border: #4c4c47; --border-soft: #3a3a36;
+  --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+  --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+}
+#themeBtn { position: fixed; top: 14px; right: 16px; z-index: 10;
+  width: 38px; height: 38px; border-radius: 50%; cursor: pointer; font-size: 17px;
+  background: var(--surface); color: var(--fg); border: 1px solid var(--border); }
+pre { position: relative; }
+.copyBtn { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 9px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; }
+.copyBtn:hover { color: var(--fg); border-color: var(--border); }
+a.pnum { color: var(--muted); font-size: .72em; display: inline-block; min-width: 2.2em;
+  vertical-align: baseline; opacity: .6; text-decoration: none; margin-right: .3em; }
+a.pnum:hover { opacity: 1; }
+li:has(> a.pnum:target) { background: var(--surface); border-radius: 4px; }
+tr:has(a.pnum:target) td { background: var(--surface) !important; }
+html { background: var(--bg); }
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+       color: var(--fg); background: var(--bg);
+       max-width: 920px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.55; }
+h1 { font-size: 1.7rem; border-bottom: 2px solid var(--border); padding-bottom: .4rem; }
+h2 { font-size: 1.3rem; margin-top: 2.2rem; border-bottom: 1px solid var(--border-soft); padding-bottom: .25rem; }
+h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+table { border-collapse: collapse; margin: .8rem 0; width: 100%; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+tr:nth-child(even) td { background: var(--surface-soft); }
+code { background: var(--surface); border-radius: 4px; padding: .1rem .35rem; font-size: .88em;
+       font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+pre { background: var(--pre-bg); border: 1px solid var(--border-soft); border-radius: 8px;
+      padding: .8rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid var(--border); margin: .8rem 0; padding: .2rem 1rem;
+             color: var(--muted); background: var(--surface-soft); }
+figure { margin: 1rem 0; text-align: center; }
+figure svg { max-width: 100%; height: auto; border-radius: 8px; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: .15rem 0; }
+nav.toc { background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 8px;
+          padding: .8rem 1.2rem; font-size: .92rem; }
+nav.toc ul { margin: .3rem 0; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc > ul > li { font-weight: 600; margin: .3rem 0; break-inside: avoid; }
+nav.toc ul ul { font-weight: 400; font-size: .9em; margin: .1rem 0 .25rem; }
+nav.toc ul ul li { margin: .05rem 0; }
+@media (min-width: 700px) { nav.toc > ul { column-count: 2; column-gap: 2.5rem; } }
+a { color: var(--link); }
+a.xref { text-decoration: none; border-bottom: 1px dotted var(--link); }
+a.xref:hover { border-bottom-style: solid; }
+h1, h2, h3, a[id^="ds-"] { scroll-margin-top: 14px; }
+tr:has(a:target) td { background: var(--surface) !important; }
+h2:target, h3:target { background: var(--surface-soft); }
+.badge-open { color: var(--open); font-weight: 600; }
+.badge-asis, .badge-tobe { font-weight: 600; font-size: .85em; padding: 0 .45em; border-radius: .7em; border: 1px solid currentColor; white-space: nowrap; }
+.badge-asis { color: var(--asis); }
+.badge-tobe { color: var(--tobe); }
+code.k-t { background: var(--kt); font-weight: 700; }
+code.k-f { background: var(--kf); }
+code.k-i { background: var(--ki); font-style: italic; }
+code.k-s { background: var(--ks); font-weight: 600; }
+code.k-e { background: var(--ke); }
+code.k-x { background: var(--kx); text-decoration: line-through; }
+.klegend { font-size: .85em; color: var(--muted); }
+@media print { body { max-width: none; } }
+</style>
+</head>
+<body>
+<button id="themeBtn" title="Тема: авто / тёмная / светлая">◐</button>
+<script>
+const r=document.documentElement,k='draft-spec-theme';
+const apply=v=>{v?r.setAttribute('data-theme',v):r.removeAttribute('data-theme')};
+apply(localStorage.getItem(k)||'');
+document.getElementById('themeBtn').onclick=()=>{
+  const cur=r.getAttribute('data-theme')||'';
+  const next=cur===''?'dark':cur==='dark'?'light':'';
+  next?localStorage.setItem(k,next):localStorage.removeItem(k);apply(next);
+};
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('pre').forEach(p=>{
+    const b=document.createElement('button');b.className='copyBtn';b.textContent='копировать';
+    b.onclick=()=>{navigator.clipboard.writeText(p.querySelector('code').innerText)
+      .then(()=>{b.textContent='✓ скопировано';setTimeout(()=>b.textContent='копировать',1500);});};
+    p.appendChild(b);
+  });
+});
+</script>
+<h1 id="h1-0">Draft Spec: Мягкое удаление — каталог (товары, услуги, категории) и типы оборудования</h1>
+<nav class="toc"><strong>Содержание</strong><ul><li><a href="#s-1">§1. Суть задачи</a></li><li><a href="#s-2">§2. Интеграции и master-data</a></li><li><a href="#s-3">§3. Нефункциональные требования</a></li><li><a href="#s-4">§4. Данные</a><ul><li><a href="#s-4-1">§4.1. products (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</a></li><li><a href="#s-4-2">§4.2. services (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</a></li><li><a href="#s-4-3">§4.3. catalog_categories (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</a></li><li><a href="#s-4-4">§4.4. equipment_types (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</a></li><li><a href="#s-4-5">§4.5. product_stock (общая таблица, чужая — фича использует, не владеет)</a></li><li><a href="#s-4-6">§4.6. service_products (существующая таблица, не меняется — фича использует, созданием не владеет)</a></li></ul></li><li><a href="#s-5">§5. Статусная модель</a></li><li><a href="#s-6">§6. API</a><ul><li><a href="#s-6-1">§6.1. DELETE /api/v1/products/:id</a></li><li><a href="#s-6-2">§6.2. POST /api/v1/products/:id/restore</a></li><li><a href="#s-6-3">§6.3. DELETE /api/v1/services/:id</a></li><li><a href="#s-6-4">§6.4. POST /api/v1/services/:id/restore</a></li><li><a href="#s-6-5">§6.5. DELETE /api/v1/catalog-categories/:id</a></li><li><a href="#s-6-6">§6.6. POST /api/v1/catalog-categories/:id/restore</a></li><li><a href="#s-6-7">§6.7. DELETE /api/v1/equipment-types/:id</a></li><li><a href="#s-6-8">§6.8. POST /api/v1/equipment-types/:id/restore</a></li><li><a href="#s-6-9">§6.9. Прочие изменения существующих endpoints (дельта)</a></li></ul></li><li><a href="#s-7">§7. UX/UI + API (сквозной флоу)</a></li><li><a href="#s-8">§8. UI-иерархия</a><ul><li><a href="#s-8-1">§8.1. Экран/форма «Каталог и типы оборудования — удаление»</a></li><li><a href="#s-8-2">§8.2. Экран/форма «Удалённые», вкладки каталога</a></li><li><a href="#s-8-3">§8.3. Экран/форма «Карточка заказа, оборудование, Перемещения — бейджи «удалён»»</a></li></ul></li><li><a href="#s-9">§9. Решения (DS-index)</a></li><li><a href="#s-10">§10. Открытые вопросы (status: open)</a></li><li><a href="#s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</a><ul><li><a href="#h3-650">Unit / Integration (Go)</a></li><li><a href="#h3-705">E2E (Playwright)</a></li><li><a href="#h3-712">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</a></li></ul></li><li><a href="#h2-719">§Impact — точки касания существующего кода</a></li></ul></nav>
+<p class="klegend">Обозначения: <code class="k-t">таблица</code> <code class="k-f">поле</code> <code class="k-i">индекс</code> <code class="k-s">статус</code> <code class="k-e">endpoint</code> <code class="k-x">удаляется</code></p>
+<p><strong>Tier:</strong> M · <strong>Совместимость:</strong> MVP · <strong>Режим:</strong> new</p>
+<p><strong>Дата:</strong> 2026-10-08 | <strong>Статус:</strong> draft → final (после подтверждения пользователя) | <strong>Tier:</strong> M <strong>Совместимость:</strong> MVP (<a class="xref" href="#ds-022">DS-022</a>) — рабочей версии с живыми пользователями нет: таблицы и адреса меняем свободно, без переходного периода и отката; данные на базе сохраняются — все существующие записи каталога после миграции считаются действующими, признак архива не меняется <strong>UI-scope:</strong> swagger:no | adaptive:min | themes:both (<a class="xref" href="#ds-023">DS-023</a>) <strong>Источник:</strong> мастер-спека <code>docs/features/soft-delete/draft-spec.md</code> (<a class="xref" href="#s-4-6">§4.6</a>–<a class="xref" href="#s-4-9">§4.9</a>, <a class="xref" href="#s-6-11">§6.11</a>–<a class="xref" href="#s-6-18">§6.18</a>, <a class="xref" href="#s-6-26">§6.26</a>, <a class="xref" href="#s-8-5">§8.5</a>) + её журнал <code>docs/features/soft-delete/draft-spec-decisions.md</code> + as-is факты кода (<code>internal/features/catalog</code>, <code>internal/features/equipmenttypes</code>, <code>internal/features/board/card_dto.go</code>, <code>migrations/0003_clients_equipment.up.sql</code>, <code>0004_catalog.up.sql</code>, <code>0008_warehouses.up.sql</code>) <strong>Часть 5 из 6 мастер-спеки <code>soft-delete</code>; зависит от: 1 (<code>soft-delete-core</code>).</strong> Номера DS и TS — мастер-идентификаторы, не перенумерованы. Номера разделов — свои: <a class="xref" href="#s-6-1">§6.1</a>–<a class="xref" href="#s-6-8">§6.8</a> = мастер <a class="xref" href="#s-6-11">§6.11</a>–<a class="xref" href="#s-6-18">§6.18</a>, <a class="xref" href="#s-6-9">§6.9</a> = строки мастера <a class="xref" href="#s-6-26">§6.26</a> про каталог; <a class="xref" href="#s-8-1">§8.1</a> = часть мастера <a class="xref" href="#s-8-5">§8.5</a>.</p>
+<blockquote><p>После мержа этой части: товар, услуга каталога, категория и тип оборудования удаляются с причиной при любых ссылках — отказы «используется — отправьте в архив» сняты — и восстанавливаются из вкладок «Товары», «Услуги», «Категории», «Типы оборудования» раздела «Удалённые». «В архив» остаётся отдельным действием. Товар с остатком на складе не удаляется. Название удалённой категории или типа свободно.</p></blockquote>
+<h2 id="s-1">§1. Суть задачи</h2>
+<p>Удаление записей каталога и типов оборудования становится восстановимым и существует рядом с архивом. Для администратора; исполнитель видит бейджи «удалён» в заказах.</p>
+<p><strong>Бизнес (что делает пользователь/процесс):</strong></p>
+<ol>
+<li data-mdline="17"><a class="pnum" id="p-1" href="#p-1">1</a>Администратор удаляет товар, услугу, категорию или тип оборудования с причиной — запись исчезает из справочника и уходит в «Удалённые» (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-020">DS-020</a>.</li>
+<li data-mdline="18"><a class="pnum" id="p-2" href="#p-2">2</a>Администратор по-прежнему отправляет запись в архив и возвращает из архива — это отдельное действие (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-009">DS-009</a>.</li>
+<li data-mdline="19"><a class="pnum" id="p-3" href="#p-3">3</a>Администратор восстанавливает запись — она возвращается в справочник в том же виде: активной либо архивной (<a class="xref" href="#s-8-2">§8.2</a>) — <a class="xref" href="#ds-009">DS-009</a>.</li>
+<li data-mdline="20"><a class="pnum" id="p-4" href="#p-4">4</a>Любой пользователь в заказе видит бейдж «удалён» у услуги и товара, удалённых из каталога (<a class="xref" href="#s-8-3">§8.3</a>) — <a class="xref" href="#ds-014">DS-014</a>.</li>
+</ol>
+<p><strong>Логика (правила системы):</strong></p>
+<ol>
+<li data-mdline="23"><a class="pnum" id="p-5" href="#p-5">5</a>Удаление и архив независимы: архивная запись видна в справочнике и не предлагается в выборе; удалённая видна только в «Удалённых»; при восстановлении признак архива прежний — <a class="xref" href="#ds-009">DS-009</a>.</li>
+<li data-mdline="24"><a class="pnum" id="p-6" href="#p-6">6</a>Ссылки удалению не мешают: отказы <code class="k-x">PRODUCT_IN_USE</code>, <code class="k-x">SERVICE_IN_USE</code>, <code class="k-x">CATEGORY_IN_USE</code>, <code class="k-x">EQUIPMENT_TYPE_IN_USE</code> сняты; в заказах, составе услуг, единицах оборудования удалённая запись остаётся с бейджем — <a class="xref" href="#ds-014">DS-014</a>.</li>
+<li data-mdline="25"><a class="pnum" id="p-7" href="#p-7">7</a>Товар с ненулевым остатком хотя бы на одном складе не удаляется; остаток, появившийся у удалённого товара позже (возврат из заказа, приём документа), виден в отчёте «Остатки» с пометкой «удалён» и может быть списан корректировкой — <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-042">DS-042</a>.</li>
+<li data-mdline="26"><a class="pnum" id="p-8" href="#p-8">8</a>Название удалённой категории (в пределах её вида) и удалённого типа свободно; восстановление при занятом названии — отказ — <a class="xref" href="#ds-017">DS-017</a>.</li>
+<li data-mdline="27"><a class="pnum" id="p-9" href="#p-9">9</a>Удалённая запись не выбирается в новых заказах, услугах, товарах, единицах оборудования, документах — <a class="xref" href="#ds-014">DS-014</a>.</li>
+<li data-mdline="28"><a class="pnum" id="p-10" href="#p-10">10</a>Время: <code class="k-f">deleted_at</code> — UTC (<code>timestamptz</code>), показ и фильтр — по поясу пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ» — <a class="xref" href="#ds-025">DS-025</a> (краткий дубль <a class="xref" href="#s-3">§3</a>).</li>
+<li data-mdline="29"><a class="pnum" id="p-11" href="#p-11">11</a>Конкурентный доступ: удаляем запись → один UPDATE с условием «ещё не удалена» (товар — под блокировкой строк остатка); восстанавливаем → условие «удалена», уникальность названия держит частичный индекс; правка действующей записи остаётся last-write-wins — <a class="xref" href="#ds-024">DS-024</a> (краткий дубль <a class="xref" href="#s-3">§3</a>).</li>
+</ol>
+<p><strong>Техника (API/данные/интеграции):</strong></p>
+<ol>
+<li data-mdline="32"><a class="pnum" id="p-12" href="#p-12">12</a>Данные: по три новые колонки в <code class="k-t">products</code>, <code class="k-t">services</code>, <code class="k-t">catalog_categories</code>, <code class="k-t">equipment_types</code>; два уникальных индекса названий становятся частичными (<a class="xref" href="#s-4">§4</a>).</li>
+<li data-mdline="33"><a class="pnum" id="p-13" href="#p-13">13</a>API: четыре адреса удаления меняют поведение, запрос и ответ, четыре новых адреса восстановления (<a class="xref" href="#s-6-1">§6.1</a>–<a class="xref" href="#s-6-8">§6.8</a>); новые поля-признаки в ответах, условие «не удалён» в списках и выборе, виды раздела «Удалённые» и служебной уборки (<a class="xref" href="#s-6-9">§6.9</a>).</li>
+<li data-mdline="34"><a class="pnum" id="p-14" href="#p-14">14</a>Пакеты: <code>internal/features/catalog</code>, <code>internal/features/equipmenttypes</code>, <code>internal/features/board</code>, <code>internal/features/clients</code>, <code>internal/features/transfers</code>, <code>internal/features/softdelete</code>.</li>
+<li data-mdline="35"><a class="pnum" id="p-15" href="#p-15">15</a>Внешних систем нет.</li>
+</ol>
+<p><strong>UI (графическая часть):</strong></p>
+<ol>
+<li data-mdline="38"><a class="pnum" id="p-16" href="#p-16">16</a>Каталог (товары, услуги, категории) и типы оборудования: «Удалить» рядом с «В архив» открывает общее окно с причиной (<a class="xref" href="#s-8-1">§8.1</a>).</li>
+<li data-mdline="39"><a class="pnum" id="p-17" href="#p-17">17</a>«Удалённые»: новые вкладки «Товары», «Услуги», «Категории», «Типы оборудования» (<a class="xref" href="#s-8-2">§8.2</a>).</li>
+<li data-mdline="40"><a class="pnum" id="p-18" href="#p-18">18</a>Карточка заказа, формы каталога и оборудования: бейджи «удалён», «категория удалена»; выбор без удалённых (<a class="xref" href="#s-8-3">§8.3</a>).</li>
+</ol>
+<p>Out-of-scope:</p>
+<ol>
+<li data-mdline="43"><a class="pnum" id="p-19" href="#p-19">19</a>Удаление склада и пометка удалённого склада в отчёте «Остатки» — часть 6 (<a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-042">DS-042</a>).</li>
+<li data-mdline="44"><a class="pnum" id="p-20" href="#p-20">20</a>Окончательное удаление — не делаем (решение пользователя, <a class="xref" href="#ds-012">DS-012</a>).</li>
+</ol>
+<h2 id="s-2">§2. Интеграции и master-data</h2>
+<p>Потоки: не применимо — внешних систем нет.</p>
+<p>Справочники (master-data):</p>
+<table><thead><tr><th>Справочник</th><th>Источник правды</th><th>Синхронизация</th><th>Где используется</th></tr></thead><tbody><tr data-mdline="53"><td><a class="pnum" id="p-21" href="#p-21">21</a><code class="k-t">users</code></td><td>эта же база (пакет <code>users</code>)</td><td>нет</td><td><code class="k-f">deleted_by</code> на четырёх таблицах части; колонка «Кто удалил» — <a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="54"><td><a class="pnum" id="p-22" href="#p-22">22</a><code class="k-t">warehouses</code></td><td>эта же база (пакет <code>warehouses</code>)</td><td>нет</td><td>название склада в сообщении об остатке при удалении товара (<code class="k-t">product_stock</code>) — <a class="xref" href="#ds-021">DS-021</a></td></tr></tbody></table>
+<h2 id="s-3">§3. Нефункциональные требования</h2>
+<p><strong>Конкурентность (по операциям):</strong></p>
+<ol>
+<li data-mdline="59"><a class="pnum" id="p-23" href="#p-23">23</a><strong>Удаление товара:</strong></li>
+<ul>
+<li data-mdline="60"><a class="pnum" id="p-24" href="#p-24">24</a>одна транзакция, порядок блокировок «товар → категория → <code class="k-t">product_stock</code>» (принятое уточнение реализации: общий порядок с правкой товара, иначе взаимная блокировка с формой товара): строка товара <code>FOR UPDATE</code> (нет либо удалён → 404), строка его категории, затем строки <code class="k-t">product_stock</code> товара; есть строка с <code>stock &lt;&gt; 0</code> → 409 <code>PRODUCT_HAS_STOCK</code>; затем UPDATE товара — <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-024">DS-024</a></li>
+<li data-mdline="61"><a class="pnum" id="p-25" href="#p-25">25</a>отправка заявки с этим товаром одновременно с удалением товара: отправка ждёт блокировку строки товара и затем видит его удалённым → 409 <code>TRANSFER_HAS_DELETED_REFS</code>; отправка выиграла → товар в пути, остаток источника уменьшен, удаление проверяет остаток как обычно — <a class="xref" href="#ds-047">DS-047</a></li>
+<li data-mdline="62"><a class="pnum" id="p-26" href="#p-26">26</a>правка остатков через форму товара блокирует те же строки (as-is <code>updateStocks</code>) и проверяет <code>deleted_at IS NULL</code> товара: удаление выиграло → 404 <code>PRODUCT_NOT_FOUND</code>; правка выиграла → удаление видит остаток и отказывает; ручная корректировка из отчёта «Остатки» удалённый товар не отклоняет (<a class="xref" href="#ds-042">DS-042</a>) — она идёт под той же блокировкой строк остатка, остаток не теряется</li>
+</ul>
+<li data-mdline="63"><a class="pnum" id="p-27" href="#p-27">27</a><strong>Удаление услуги, категории, типа оборудования:</strong></li>
+<ul>
+<li data-mdline="64"><a class="pnum" id="p-28" href="#p-28">28</a>один UPDATE с условием <code>deleted_at IS NULL</code>; 0 строк → 404 своего вида; второй одновременный запрос → 404 — <a class="xref" href="#ds-024">DS-024</a></li>
+</ul>
+<li data-mdline="65"><a class="pnum" id="p-29" href="#p-29">29</a><strong>Восстановление (все четыре вида):</strong></li>
+<ul>
+<li data-mdline="66"><a class="pnum" id="p-30" href="#p-30">30</a>один UPDATE с условием <code>deleted_at IS NOT NULL</code>; не удалена → 409 <code>NOT_DELETED</code>; у категории и типа нарушение частичного уникального индекса → 409 <code>NAME_TAKEN</code> — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-024">DS-024</a></li>
+</ul>
+<li data-mdline="67"><a class="pnum" id="p-31" href="#p-31">31</a><strong>Создание и переименование категории и типа одновременно с восстановлением записи с тем же названием:</strong></li>
+<ul>
+<li data-mdline="68"><a class="pnum" id="p-32" href="#p-32">32</a>исход определяет частичный уникальный индекс: ровно один запрос успешен, второй — 409 (<code>CATEGORY_NAME_TAKEN</code> / <code>EQUIPMENT_TYPE_NAME_TAKEN</code> у создания, <code>NAME_TAKEN</code> у восстановления) — <a class="xref" href="#ds-017">DS-017</a></li>
+</ul>
+<li data-mdline="69"><a class="pnum" id="p-33" href="#p-33">33</a><strong>Выбор записи одновременно с её удалением (товар в услугу заказа, услуга в заказ, категория в товар, тип в единицу):</strong></li>
+<ul>
+<li data-mdline="70"><a class="pnum" id="p-34" href="#p-34">34</a>проверка существования выбранной записи получает условие <code>deleted_at IS NULL</code>; запрос, прошедший раньше удаления, оставляет ссылку на удалённую запись — допустимо, она показывается с бейджем (<a class="xref" href="#ds-014">DS-014</a>)</li>
+</ul>
+<li data-mdline="71"><a class="pnum" id="p-35" href="#p-35">35</a><strong>Правка действующей записи:</strong></li>
+<ul>
+<li data-mdline="72"><a class="pnum" id="p-36" href="#p-36">36</a>версии у записей каталога нет — last-write-wins (as-is); правка удалённой → 404 — <a class="xref" href="#ds-026">DS-026</a></li>
+</ul>
+</ol>
+<p><strong>Аудит:</strong></p>
+<ul>
+<li data-mdline="75"><a class="pnum" id="p-37" href="#p-37">37</a>на записи хранится последнее удаление: <code class="k-f">deleted_by</code>, <code class="k-f">deleted_at</code>, <code class="k-f">delete_reason</code>; при восстановлении очищаются — <a class="xref" href="#ds-030">DS-030</a></li>
+<li data-mdline="76"><a class="pnum" id="p-38" href="#p-38">38</a>факт удаления и восстановления — в журнал приложения (<code>slog</code>, info); причина в журнал не пишется</li>
+</ul>
+<p><strong>Время/таймзоны:</strong></p>
+<ul>
+<li data-mdline="79"><a class="pnum" id="p-39" href="#p-39">39</a>хранение: <code class="k-f">deleted_at</code> — <code>timestamptz</code>, UTC, <code>now()</code> — <a class="xref" href="#ds-025">DS-025</a></li>
+<li data-mdline="80"><a class="pnum" id="p-40" href="#p-40">40</a>фильтр периода и показ в разделе «Удалённые» — по поясу пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ» (механика части 1)</li>
+</ul>
+<p><strong>Метрики/таймстемпы:</strong></p>
+<ul>
+<li data-mdline="83"><a class="pnum" id="p-41" href="#p-41">41</a>новый таймстемп — <code class="k-f">deleted_at</code>; счётчики вкладок — <code class="k-f">counts.products</code>, <code class="k-f">counts.services</code>, <code class="k-f">counts.catalog_categories</code>, <code class="k-f">counts.equipment_types</code> (часть 1)</li>
+</ul>
+<p><strong>Offline / деградация / восстановление:</strong></p>
+<ul>
+<li data-mdline="86"><a class="pnum" id="p-42" href="#p-42">42</a>одиночные запросы и отправки форм; при потере связи — тост либо ошибка страницы, повтор безопасен (см. «Идемпотентность» в <a class="xref" href="#s-6">§6</a>)</li>
+</ul>
+<p><strong>Объёмы и производительность:</strong></p>
+<ul>
+<li data-mdline="89"><a class="pnum" id="p-43" href="#p-43">43</a>списки каталога получают условие <code>deleted_at IS NULL</code> рядом с существующим фильтром архива; списки удалённых — частичные индексы по <code class="k-f">deleted_at</code></li>
+</ul>
+<p><strong>Логирование и чувствительные данные:</strong></p>
+<ul>
+<li data-mdline="92"><a class="pnum" id="p-44" href="#p-44">44</a>причина удаления в журнал не пишется; раздел «Удалённые» — только администратору — <a class="xref" href="#ds-003">DS-003</a></li>
+</ul>
+<p><strong>Формат ошибок:</strong></p>
+<ul>
+<li data-mdline="95"><a class="pnum" id="p-45" href="#p-45">45</a><code>pkg/errorspkg</code>: <code>{code, message, details}</code>; 400 → <code>details.fields[]</code>; отказ в доступе — 403 «Нет доступа»</li>
+</ul>
+<p><strong>Abuse cases (инсайдерские риски — вход для adversarial E2E TD-4):</strong></p>
+<ol>
+<li data-mdline="98"><a class="pnum" id="p-46" href="#p-46">46</a>Исполнитель вызывает удаление или восстановление записи каталога либо типа → 403 «Нет доступа» — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="99"><a class="pnum" id="p-47" href="#p-47">47</a>Идентификатор удалённого товара, услуги, категории, типа подставляется в запрос создания или правки в обход выпадающего списка → 400 <code>not_found</code> по полю — <a class="xref" href="#ds-014">DS-014</a>.</li>
+<li data-mdline="100"><a class="pnum" id="p-48" href="#p-48">48</a>Удаление товара с остатком повторяется параллельно с обнулением остатка → исход детерминирован блокировкой строк остатка: либо 409, либо 200 при нулевом остатке — <a class="xref" href="#ds-021">DS-021</a>.</li>
+<li data-mdline="101"><a class="pnum" id="p-49" href="#p-49">49</a>Форма удалённой записи по прямой ссылке → страница 404 — <a class="xref" href="#ds-026">DS-026</a>.</li>
+<li data-mdline="102"><a class="pnum" id="p-50" href="#p-50">50</a>Причина из пробелов или длиннее 500 символов → 400 — <a class="xref" href="#ds-020">DS-020</a>.</li>
+</ol>
+<p><strong>Применённые zap-дефолты</strong> (zap-list — стандарты проекта из CLAUDE.md, применяются автоматически, без вопросов; в <a class="xref" href="#s-9">§9</a> — источник <code>zap</code>):</p>
+<ul>
+<li data-mdline="105"><a class="pnum" id="p-51" href="#p-51">51</a>коды ответов: 404 / 403 / 409 (zap)</li>
+<li data-mdline="106"><a class="pnum" id="p-52" href="#p-52">52</a>обработка синхронная (zap)</li>
+<li data-mdline="107"><a class="pnum" id="p-53" href="#p-53">53</a>миграции вручную (<code>make migrate-up</code>) (zap)</li>
+</ul>
+<h2 id="s-4">§4. Данные</h2>
+<p>Легенда колонки «Обяз.»: <code>да</code> — клиент обязан передать при создании/правке; <code>нет</code> — опционально; <code>авто</code> — заполняет система (PK, дефолты, таймстемпы, значения из URL/сессии); <code>условно</code> — зависит от правила, оно указано в Описании. NULL — DDL-факт, Обяз. — семантика заполнения.</p>
+<h3 id="s-4-1">§4.1. <code class="k-t">products</code> (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</h3>
+<p>Товар каталога. Создана в <code>migrations/0004_catalog.up.sql</code>; колонки <code>stock</code>, <code>min_stock</code>, <code>box</code>, <code>place</code> удалены в <code>migrations/0008_warehouses.up.sql</code> (перенесены в <code class="k-t">product_stock</code>). Строки без пометки «новое» — существующие поля без изменений.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="117"><td><a class="pnum" id="p-54" href="#p-54">54</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="118"><td><a class="pnum" id="p-55" href="#p-55">55</a><code class="k-f">category_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>да</td><td>FK → <code class="k-t">catalog_categories(id)</code> <code>ON DELETE RESTRICT</code>; категория может быть мягко удалена — товар остаётся с пометкой «категория удалена» (as-is поле)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="119"><td><a class="pnum" id="p-56" href="#p-56">56</a><code class="k-f">name</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>название, не пусто после обрезки пробелов; уникальности нет (as-is)</td><td><a class="xref" href="#ds-011">DS-011</a></td></tr><tr data-mdline="120"><td><a class="pnum" id="p-57" href="#p-57">57</a><code class="k-f">sku</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>артикул — строка (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="121"><td><a class="pnum" id="p-58" href="#p-58">58</a><code class="k-f">unit</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>единица измерения (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="122"><td><a class="pnum" id="p-59" href="#p-59">59</a><code class="k-f">price</code></td><td>numeric(12,2)</td><td>нет</td><td>0</td><td>нет</td><td>цена, не меньше 0 (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="123"><td><a class="pnum" id="p-60" href="#p-60">60</a><code class="k-f">is_active</code></td><td>boolean</td><td>нет</td><td>true</td><td>нет</td><td>false — в архиве (as-is); удалением и восстановлением не меняется</td><td><a class="xref" href="#ds-009">DS-009</a></td></tr><tr data-mdline="124"><td><a class="pnum" id="p-61" href="#p-61">61</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент создания (as-is)</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="125"><td><a class="pnum" id="p-62" href="#p-62">62</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент изменения (as-is); обновляется при удалении и восстановлении</td><td><a class="xref" href="#ds-024">DS-024</a></td></tr><tr data-mdline="126"><td><a class="pnum" id="p-63" href="#p-63">63</a><strong><code class="k-f">deleted_at</code></strong> (новое)</td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>момент удаления, UTC, <code>now()</code>; NULL — товар действует</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="127"><td><a class="pnum" id="p-64" href="#p-64">64</a><strong><code class="k-f">deleted_by</code></strong> (новое)</td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; кто удалил — из сессии</td><td><a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="128"><td><a class="pnum" id="p-65" href="#p-65">65</a><strong><code class="k-f">delete_reason</code></strong> (новое)</td><td>text</td><td>да</td><td>—</td><td>условно</td><td>причина удаления: обязательна в запросе удаления, 1–500 символов после обрезки крайних пробелов</td><td><a class="xref" href="#ds-020">DS-020</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="131"><a class="pnum" id="p-66" href="#p-66">66</a>PK: <code class="k-f">id</code> (as-is)</li>
+<li data-mdline="132"><a class="pnum" id="p-67" href="#p-67">67</a>UNIQUE: нет (as-is)</li>
+<li data-mdline="133"><a class="pnum" id="p-68" href="#p-68">68</a>Индексы (as-is): <code class="k-i">products_category_id_idx</code> (<code>category_id</code>)</li>
+<li data-mdline="134"><a class="pnum" id="p-69" href="#p-69">69</a>Индексы (новое): <code class="k-i">products_deleted_at_idx</code> (<code>deleted_at DESC</code>, <code>id</code>) <code>WHERE deleted_at IS NOT NULL</code> — вкладка «Товары» раздела «Удалённые»</li>
+<li data-mdline="135"><a class="pnum" id="p-70" href="#p-70">70</a>CHECK (новое) <code class="k-i">products_deleted_chk</code>: три поля удаления либо все NULL, либо все заполнены; <code>char_length(btrim(delete_reason))</code> от 1 до 500 — <a class="xref" href="#ds-030">DS-030</a></li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="138"><a class="pnum" id="p-71" href="#p-71">71</a>N→1 <code class="k-t">catalog_categories</code> — RESTRICT (as-is)</li>
+<li data-mdline="139"><a class="pnum" id="p-72" href="#p-72">72</a>1→N <code class="k-t">product_stock</code> — CASCADE (as-is) — строки остатков остаются</li>
+<li data-mdline="140"><a class="pnum" id="p-73" href="#p-73">73</a>1→N <code class="k-t">service_products.product_id</code> — RESTRICT (as-is) — товар в составе услуг остаётся с бейджем (<a class="xref" href="#ds-014">DS-014</a>)</li>
+<li data-mdline="141"><a class="pnum" id="p-74" href="#p-74">74</a>1→N <code class="k-t">subtask_products.product_id</code>, <code class="k-t">task_stock.product_id</code>, <code class="k-t">transfer_items.product_id</code>, <code class="k-t">stock_movements.product_id</code> — RESTRICT (as-is) — строки остаются (<a class="xref" href="#ds-014">DS-014</a>)</li>
+<li data-mdline="142"><a class="pnum" id="p-75" href="#p-75">75</a>N→1 <code class="k-t">users</code> (<code class="k-f">deleted_by</code>) — RESTRICT (новое)</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="145"><a class="pnum" id="p-76" href="#p-76">76</a>Создание: как сейчас; <code class="k-f">category_id</code> удалённой категории → 400 <code>VALIDATION</code> (<code>category_id: not_found</code>) — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="146"><a class="pnum" id="p-77" href="#p-77">77</a>Изменение: как сейчас для действующего; смена <code class="k-f">category_id</code> на удалённую категорию → 400 <code>not_found</code>; сохранение товара, чья категория уже удалена, без смены категории — разрешено; удалённый товар → 404 <code>PRODUCT_NOT_FOUND</code> — <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-026">DS-026</a></li>
+<li data-mdline="147"><a class="pnum" id="p-78" href="#p-78">78</a>Архив и возврат из архива: как сейчас; для удалённого товара → 404 — <a class="xref" href="#ds-009">DS-009</a></li>
+<li data-mdline="148"><a class="pnum" id="p-79" href="#p-79">79</a>Удаление: только admin, причина обязательна; на момент удаления остаток на любом складе не равен нулю → 409 <code>PRODUCT_HAS_STOCK</code>; ссылки из заказов, услуг, документов, журнала склада не мешают — отказ <code class="k-x">PRODUCT_IN_USE</code> снят — <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="149"><a class="pnum" id="p-80" href="#p-80">80</a>Восстановление: только admin; <code class="k-f">is_active</code> прежний — <a class="xref" href="#ds-009">DS-009</a></li>
+<li data-mdline="150"><a class="pnum" id="p-81" href="#p-81">81</a>Добавление удалённого товара в услугу заказа, в состав услуги каталога, в строку документа → 400 <code>VALIDATION</code> (<code>product_id: not_found</code>) — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="151"><a class="pnum" id="p-82" href="#p-82">82</a>Остаток удалённого товара: возврат из заказа и приём документа, созданного до удаления, меняют остаток как обычно; ненулевой остаток виден в отчёте «Остатки» с пометкой «удалён»; ручная корректировка остатка удалённого товара из отчёта «Остатки» разрешена только на списание — к нулю, без увеличения и смены знака, только по паре товар × склад с ненулевым остатком (<a class="xref" href="#ds-048">DS-048</a>); правка остатков через форму товара недоступна (формы удалённого товара нет) — <a class="xref" href="#ds-042">DS-042</a></li>
+<li data-mdline="152"><a class="pnum" id="p-83" href="#p-83">83</a>Отправка заявки перемещения с удалённым товаром → 409 <code>TRANSFER_HAS_DELETED_REFS</code> (<code>details.kind</code> = <code>product</code>); отмена документа «В пути» с удалённым товаром разрешена — <a class="xref" href="#ds-047">DS-047</a></li>
+<li data-mdline="153"><a class="pnum" id="p-84" href="#p-84">84</a>Физическое удаление: только служебная уборка автотестов (<a class="xref" href="#s-6-9">§6.9</a>) — <a class="xref" href="#ds-027">DS-027</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="156"><a class="pnum" id="p-85" href="#p-85">85</a>остаток, появившийся у удалённого товара после удаления, не теряется из вида → отчёт «Остатки» включает удалённые товары с ненулевым остатком → <a class="xref" href="#ds-042">DS-042</a></li>
+<li data-mdline="157"><a class="pnum" id="p-86" href="#p-86">86</a>на момент удаления у товара нет остатка на складах → проверка <code class="k-t">product_stock</code> под блокировкой строк в транзакции удаления → <a class="xref" href="#ds-021">DS-021</a></li>
+<li data-mdline="158"><a class="pnum" id="p-87" href="#p-87">87</a>удалённый товар не виден в списках и выборе → условие <code>products.deleted_at IS NULL</code> в запросах списка, чтения по идентификатору и проверки существования; в соединениях из заказов, услуг и документов условие НЕ ставится → <a class="xref" href="#ds-014">DS-014</a></li>
+</ul>
+<h3 id="s-4-2">§4.2. <code class="k-t">services</code> (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</h3>
+<p>Услуга каталога. Создана в <code>migrations/0004_catalog.up.sql</code>, позднейшие миграции её не меняли.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="165"><td><a class="pnum" id="p-88" href="#p-88">88</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="166"><td><a class="pnum" id="p-89" href="#p-89">89</a><code class="k-f">category_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>да</td><td>FK → <code class="k-t">catalog_categories(id)</code> <code>ON DELETE RESTRICT</code>; категория может быть мягко удалена (as-is поле)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="167"><td><a class="pnum" id="p-90" href="#p-90">90</a><code class="k-f">name</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>название, не пусто после обрезки пробелов; уникальности нет (as-is)</td><td><a class="xref" href="#ds-011">DS-011</a></td></tr><tr data-mdline="168"><td><a class="pnum" id="p-91" href="#p-91">91</a><code class="k-f">price</code></td><td>numeric(12,2)</td><td>да</td><td>—</td><td>нет</td><td>цена, не меньше 0; NULL — «по факту» (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="169"><td><a class="pnum" id="p-92" href="#p-92">92</a><code class="k-f">is_active</code></td><td>boolean</td><td>нет</td><td>true</td><td>нет</td><td>false — в архиве (as-is); удалением и восстановлением не меняется</td><td><a class="xref" href="#ds-009">DS-009</a></td></tr><tr data-mdline="170"><td><a class="pnum" id="p-93" href="#p-93">93</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент создания (as-is)</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="171"><td><a class="pnum" id="p-94" href="#p-94">94</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент изменения (as-is)</td><td><a class="xref" href="#ds-024">DS-024</a></td></tr><tr data-mdline="172"><td><a class="pnum" id="p-95" href="#p-95">95</a><strong><code class="k-f">deleted_at</code></strong> (новое)</td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>момент удаления, UTC, <code>now()</code>; NULL — услуга действует</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="173"><td><a class="pnum" id="p-96" href="#p-96">96</a><strong><code class="k-f">deleted_by</code></strong> (новое)</td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; кто удалил — из сессии</td><td><a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="174"><td><a class="pnum" id="p-97" href="#p-97">97</a><strong><code class="k-f">delete_reason</code></strong> (новое)</td><td>text</td><td>да</td><td>—</td><td>условно</td><td>причина удаления: обязательна в запросе удаления, 1–500 символов</td><td><a class="xref" href="#ds-020">DS-020</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="177"><a class="pnum" id="p-98" href="#p-98">98</a>PK: <code class="k-f">id</code> (as-is)</li>
+<li data-mdline="178"><a class="pnum" id="p-99" href="#p-99">99</a>UNIQUE: нет (as-is)</li>
+<li data-mdline="179"><a class="pnum" id="p-100" href="#p-100">100</a>Индексы (as-is): <code class="k-i">services_category_id_idx</code> (<code>category_id</code>)</li>
+<li data-mdline="180"><a class="pnum" id="p-101" href="#p-101">101</a>Индексы (новое): <code class="k-i">services_deleted_at_idx</code> (<code>deleted_at DESC</code>, <code>id</code>) <code>WHERE deleted_at IS NOT NULL</code> — вкладка «Услуги»</li>
+<li data-mdline="181"><a class="pnum" id="p-102" href="#p-102">102</a>CHECK (новое) <code class="k-i">services_deleted_chk</code>: три поля удаления вместе; длина причины 1–500 — <a class="xref" href="#ds-030">DS-030</a></li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="184"><a class="pnum" id="p-103" href="#p-103">103</a>N→1 <code class="k-t">catalog_categories</code> — RESTRICT (as-is)</li>
+<li data-mdline="185"><a class="pnum" id="p-104" href="#p-104">104</a>1→N <code class="k-t">service_products</code> — CASCADE (as-is) — состав услуги остаётся</li>
+<li data-mdline="186"><a class="pnum" id="p-105" href="#p-105">105</a>1→N <code class="k-t">subtasks.service_id</code> — RESTRICT (as-is) — услуги заказов остаются с бейджем (<a class="xref" href="#ds-014">DS-014</a>)</li>
+<li data-mdline="187"><a class="pnum" id="p-106" href="#p-106">106</a>N→1 <code class="k-t">users</code> (<code class="k-f">deleted_by</code>) — RESTRICT (новое)</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="190"><a class="pnum" id="p-107" href="#p-107">107</a>Создание и изменение: как сейчас; удалённая категория → 400 <code>category_id: not_found</code>; удалённый товар в составе при добавлении строки → 400 <code>products[i].product_id: not_found</code>; удалённая услуга → 404 <code>SERVICE_NOT_FOUND</code> — <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-026">DS-026</a></li>
+<li data-mdline="191"><a class="pnum" id="p-108" href="#p-108">108</a>Удаление: только admin, причина обязательна; ссылки из заказов не мешают — отказ <code class="k-x">SERVICE_IN_USE</code> снят — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="192"><a class="pnum" id="p-109" href="#p-109">109</a>Восстановление: только admin; <code class="k-f">is_active</code> прежний — <a class="xref" href="#ds-009">DS-009</a></li>
+<li data-mdline="193"><a class="pnum" id="p-110" href="#p-110">110</a>Добавление удалённой услуги в заказ → 400 <code>VALIDATION</code> (<code>service_id: not_found</code>) — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="194"><a class="pnum" id="p-111" href="#p-111">111</a>Физическое удаление: только служебная уборка автотестов (<a class="xref" href="#s-6-9">§6.9</a>) — <a class="xref" href="#ds-027">DS-027</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="197"><a class="pnum" id="p-112" href="#p-112">112</a>удалённая услуга не видна в списках и выборе → условие <code>services.deleted_at IS NULL</code> в запросах списка, чтения и проверки существования; в соединениях из заказов условие НЕ ставится → <a class="xref" href="#ds-014">DS-014</a></li>
+</ul>
+<h3 id="s-4-3">§4.3. <code class="k-t">catalog_categories</code> (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</h3>
+<p>Категория каталога. Создана в <code>migrations/0004_catalog.up.sql</code>, позднейшие миграции её не меняли.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="204"><td><a class="pnum" id="p-113" href="#p-113">113</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="205"><td><a class="pnum" id="p-114" href="#p-114">114</a><code class="k-f">kind</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>вид категории: <code class="k-s">service</code>, <code class="k-s">product</code> (полный набор — CHECK таблицы); после создания не меняется (as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="206"><td><a class="pnum" id="p-115" href="#p-115">115</a><code class="k-f">name</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>название, не пусто после обрезки пробелов; уникально в пределах <code class="k-f">kind</code> без учёта регистра — теперь только среди действующих (as-is поле)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="207"><td><a class="pnum" id="p-116" href="#p-116">116</a><code class="k-f">position</code></td><td>integer</td><td>нет</td><td>0</td><td>авто</td><td>порядок (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="208"><td><a class="pnum" id="p-117" href="#p-117">117</a><code class="k-f">is_active</code></td><td>boolean</td><td>нет</td><td>true</td><td>нет</td><td>false — в архиве (as-is); удалением и восстановлением не меняется</td><td><a class="xref" href="#ds-009">DS-009</a></td></tr><tr data-mdline="209"><td><a class="pnum" id="p-118" href="#p-118">118</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент создания (as-is)</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="210"><td><a class="pnum" id="p-119" href="#p-119">119</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент изменения (as-is)</td><td><a class="xref" href="#ds-024">DS-024</a></td></tr><tr data-mdline="211"><td><a class="pnum" id="p-120" href="#p-120">120</a><strong><code class="k-f">deleted_at</code></strong> (новое)</td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>момент удаления, UTC, <code>now()</code>; NULL — категория действует</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="212"><td><a class="pnum" id="p-121" href="#p-121">121</a><strong><code class="k-f">deleted_by</code></strong> (новое)</td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; кто удалил — из сессии</td><td><a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="213"><td><a class="pnum" id="p-122" href="#p-122">122</a><strong><code class="k-f">delete_reason</code></strong> (новое)</td><td>text</td><td>да</td><td>—</td><td>условно</td><td>причина удаления: обязательна в запросе удаления, 1–500 символов</td><td><a class="xref" href="#ds-020">DS-020</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="216"><a class="pnum" id="p-123" href="#p-123">123</a>PK: <code class="k-f">id</code> (as-is)</li>
+<li data-mdline="217"><a class="pnum" id="p-124" href="#p-124">124</a>UNIQUE: <code class="k-i">catalog_categories_kind_name_lower_uq</code> (<code>kind</code>, <code>lower(btrim(name))</code>) пересоздаётся частичным — <code>WHERE deleted_at IS NULL</code> — <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="218"><a class="pnum" id="p-125" href="#p-125">125</a>Индексы (новое): <code class="k-i">catalog_categories_deleted_at_idx</code> (<code>deleted_at DESC</code>, <code>id</code>) <code>WHERE deleted_at IS NOT NULL</code> — вкладка «Категории»</li>
+<li data-mdline="219"><a class="pnum" id="p-126" href="#p-126">126</a>CHECK (новое) <code class="k-i">catalog_categories_deleted_chk</code>: три поля удаления вместе; длина причины 1–500 — <a class="xref" href="#ds-030">DS-030</a></li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="222"><a class="pnum" id="p-127" href="#p-127">127</a>1→N <code class="k-t">products.category_id</code> — RESTRICT (as-is) — товары остаются действующими (<a class="xref" href="#ds-014">DS-014</a>)</li>
+<li data-mdline="223"><a class="pnum" id="p-128" href="#p-128">128</a>1→N <code class="k-t">services.category_id</code> — RESTRICT (as-is) — услуги остаются действующими (<a class="xref" href="#ds-014">DS-014</a>)</li>
+<li data-mdline="224"><a class="pnum" id="p-129" href="#p-129">129</a>N→1 <code class="k-t">users</code> (<code class="k-f">deleted_by</code>) — RESTRICT (новое)</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="227"><a class="pnum" id="p-130" href="#p-130">130</a>Создание и переименование: название сверяется только с действующими категориями того же <code class="k-f">kind</code>; занято → 409 <code>CATEGORY_NAME_TAKEN</code> (as-is код) — <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="228"><a class="pnum" id="p-131" href="#p-131">131</a>Удаление: только admin, причина обязательна; товары и услуги категории не мешают и остаются действующими — отказ <code class="k-x">CATEGORY_IN_USE</code> снят — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="229"><a class="pnum" id="p-132" href="#p-132">132</a>Восстановление: только admin; среди действующих категорий того же <code class="k-f">kind</code> есть такое название → 409 <code>NAME_TAKEN</code>; <code class="k-f">is_active</code> прежний — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-009">DS-009</a></li>
+<li data-mdline="230"><a class="pnum" id="p-133" href="#p-133">133</a>Выбор удалённой категории в товаре или услуге → 400 <code>VALIDATION</code> (<code>category_id: not_found</code>) — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="231"><a class="pnum" id="p-134" href="#p-134">134</a>Физическое удаление: только служебная уборка автотестов (<a class="xref" href="#s-6-9">§6.9</a>) — <a class="xref" href="#ds-027">DS-027</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="234"><a class="pnum" id="p-135" href="#p-135">135</a>название уникально в пределах <code class="k-f">kind</code> среди действующих → частичный уникальный индекс → <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="235"><a class="pnum" id="p-136" href="#p-136">136</a>счётчик <code class="k-f">item_count</code> категории считает только действующие товары либо услуги → условие <code>deleted_at IS NULL</code> в подзапросе → <a class="xref" href="#ds-014">DS-014</a></li>
+</ul>
+<h3 id="s-4-4">§4.4. <code class="k-t">equipment_types</code> (существующая таблица — фича добавляет колонки миграцией ALTER, созданием не владеет)</h3>
+<p>Тип оборудования. Создана в <code>migrations/0003_clients_equipment.up.sql</code>, позднейшие миграции её не меняли.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="242"><td><a class="pnum" id="p-137" href="#p-137">137</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="243"><td><a class="pnum" id="p-138" href="#p-138">138</a><code class="k-f">name</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>название, не пусто после обрезки пробелов; уникально без учёта регистра — теперь только среди действующих (as-is поле)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="244"><td><a class="pnum" id="p-139" href="#p-139">139</a><code class="k-f">spec_keys</code></td><td>text[]</td><td>нет</td><td><code>'{}'</code></td><td>нет</td><td>названия характеристик типа, массив строк (as-is)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="245"><td><a class="pnum" id="p-140" href="#p-140">140</a><code class="k-f">is_active</code></td><td>boolean</td><td>нет</td><td>true</td><td>нет</td><td>false — в архиве (as-is); удалением и восстановлением не меняется</td><td><a class="xref" href="#ds-009">DS-009</a></td></tr><tr data-mdline="246"><td><a class="pnum" id="p-141" href="#p-141">141</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент создания (as-is)</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="247"><td><a class="pnum" id="p-142" href="#p-142">142</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>момент изменения (as-is)</td><td><a class="xref" href="#ds-024">DS-024</a></td></tr><tr data-mdline="248"><td><a class="pnum" id="p-143" href="#p-143">143</a><strong><code class="k-f">deleted_at</code></strong> (новое)</td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>момент удаления, UTC, <code>now()</code>; NULL — тип действует</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="249"><td><a class="pnum" id="p-144" href="#p-144">144</a><strong><code class="k-f">deleted_by</code></strong> (новое)</td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; кто удалил — из сессии</td><td><a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-030">DS-030</a></td></tr><tr data-mdline="250"><td><a class="pnum" id="p-145" href="#p-145">145</a><strong><code class="k-f">delete_reason</code></strong> (новое)</td><td>text</td><td>да</td><td>—</td><td>условно</td><td>причина удаления: обязательна в запросе удаления, 1–500 символов</td><td><a class="xref" href="#ds-020">DS-020</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="253"><a class="pnum" id="p-146" href="#p-146">146</a>PK: <code class="k-f">id</code> (as-is)</li>
+<li data-mdline="254"><a class="pnum" id="p-147" href="#p-147">147</a>UNIQUE: <code class="k-i">equipment_types_name_lower_uq</code> (<code>lower(btrim(name))</code>) пересоздаётся частичным — <code>WHERE deleted_at IS NULL</code> — <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="255"><a class="pnum" id="p-148" href="#p-148">148</a>Индексы (новое): <code class="k-i">equipment_types_deleted_at_idx</code> (<code>deleted_at DESC</code>, <code>id</code>) <code>WHERE deleted_at IS NOT NULL</code> — вкладка «Типы оборудования»</li>
+<li data-mdline="256"><a class="pnum" id="p-149" href="#p-149">149</a>CHECK (новое) <code class="k-i">equipment_types_deleted_chk</code>: три поля удаления вместе; длина причины 1–500 — <a class="xref" href="#ds-030">DS-030</a></li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="259"><a class="pnum" id="p-150" href="#p-150">150</a>1→N <code class="k-t">equipment.type_id</code> — RESTRICT (as-is) — единицы остаются действующими, тип показывается с бейджем (<a class="xref" href="#ds-014">DS-014</a>)</li>
+<li data-mdline="260"><a class="pnum" id="p-151" href="#p-151">151</a>N→1 <code class="k-t">users</code> (<code class="k-f">deleted_by</code>) — RESTRICT (новое)</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="263"><a class="pnum" id="p-152" href="#p-152">152</a>Создание и переименование: название сверяется только с действующими типами; занято активным → 409 <code>EQUIPMENT_TYPE_NAME_TAKEN</code>, занято архивным → 409 <code>EQUIPMENT_TYPE_NAME_ARCHIVED</code> (as-is коды); название удалённого типа свободно — <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="264"><a class="pnum" id="p-153" href="#p-153">153</a>Удаление: только admin, причина обязательна; единицы этого типа не мешают — отказ <code class="k-x">EQUIPMENT_TYPE_IN_USE</code> снят — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="265"><a class="pnum" id="p-154" href="#p-154">154</a>Восстановление: только admin; среди действующих типов (активных или архивных) есть такое название → 409 <code>NAME_TAKEN</code>; <code class="k-f">is_active</code> прежний — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-009">DS-009</a></li>
+<li data-mdline="266"><a class="pnum" id="p-155" href="#p-155">155</a>Выбор удалённого типа при создании единицы и при смене типа единицы → 400 <code>VALIDATION</code> (<code>type_id: not_found</code>); сохранение единицы без смены уже удалённого типа — разрешено — <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="267"><a class="pnum" id="p-156" href="#p-156">156</a>Физическое удаление: только служебная уборка автотестов (<a class="xref" href="#s-6-9">§6.9</a>) — <a class="xref" href="#ds-027">DS-027</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="270"><a class="pnum" id="p-157" href="#p-157">157</a>название уникально среди действующих → частичный уникальный индекс → <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="271"><a class="pnum" id="p-158" href="#p-158">158</a>счётчик <code class="k-f">equipment_count</code> типа считает только действующие единицы → условие <code>equipment.deleted_at IS NULL</code> в подзапросе <code>listColumns</code> (<code>internal/features/equipmenttypes/repo.go:43</code>; as-is после части 4 подзапрос считает и удалённые единицы) → <a class="xref" href="#ds-014">DS-014</a></li>
+<li data-mdline="272"><a class="pnum" id="p-159" href="#p-159">159</a>тип удаляется при любых единицах, в том числе когда единственная его единица в удалённых: отказа <code class="k-x">EQUIPMENT_TYPE_IN_USE</code> в продуктовом удалении нет → UPDATE вместо DELETE, внешний ключ <code class="k-t">equipment.type_id</code> не срабатывает → <a class="xref" href="#ds-014">DS-014</a></li>
+</ul>
+<h3 id="s-4-5">§4.5. <code class="k-t">product_stock</code> (общая таблица, чужая — фича использует, не владеет)</h3>
+<p>Остаток товара по складам. Часть 5 таблицу не меняет: читает и блокирует строки товара при его удалении. DDL: <code>migrations/0008_warehouses.up.sql</code>.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="279"><td><a class="pnum" id="p-160" href="#p-160">160</a><code class="k-f">product_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">products(id)</code> <code>ON DELETE CASCADE</code>; часть PK</td><td><a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="280"><td><a class="pnum" id="p-161" href="#p-161">161</a><code class="k-f">warehouse_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>да</td><td>FK → <code class="k-t">warehouses(id)</code> <code>ON DELETE RESTRICT</code>; часть PK</td><td><a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="281"><td><a class="pnum" id="p-162" href="#p-162">162</a><code class="k-f">stock</code></td><td>numeric(12,3)</td><td>нет</td><td>0</td><td>нет</td><td>остаток товара на складе; может быть отрицательным; не равен нулю → товар не удаляется</td><td><a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="282"><td><a class="pnum" id="p-163" href="#p-163">163</a><code class="k-f">min_stock</code></td><td>numeric(12,3)</td><td>нет</td><td>0</td><td>нет</td><td>минимальный остаток, не меньше 0</td><td><a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="283"><td><a class="pnum" id="p-164" href="#p-164">164</a><code class="k-f">box</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>коробка хранения</td><td><a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="284"><td><a class="pnum" id="p-165" href="#p-165">165</a><code class="k-f">place</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>место хранения</td><td><a class="xref" href="#ds-021">DS-021</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="287"><a class="pnum" id="p-166" href="#p-166">166</a>PK: (<code>product_id</code>, <code>warehouse_id</code>)</li>
+<li data-mdline="288"><a class="pnum" id="p-167" href="#p-167">167</a>UNIQUE: нет</li>
+<li data-mdline="289"><a class="pnum" id="p-168" href="#p-168">168</a>Индексы (as-is): <code class="k-i">product_stock_warehouse_id_idx</code> (<code>warehouse_id</code>)</li>
+</ul>
+<p>Используется в модулях (used by):</p>
+<table><thead><tr><th>Модуль</th><th>Ключ-дискриминатор (если есть)</th><th>Роль (writer/reader)</th><th>Что делает</th><th>Путь</th></tr></thead><tbody><tr data-mdline="295"><td><a class="pnum" id="p-169" href="#p-169">169</a><code>catalog</code></td><td>—</td><td>writer</td><td>остатки в форме товара, ручная правка остатка; в части 5 — проверка нулевого остатка при удалении</td><td><code>internal/features/catalog/products_stock.go</code>, <code>products_repo.go</code></td></tr><tr data-mdline="296"><td><a class="pnum" id="p-170" href="#p-170">170</a><code>board</code></td><td>—</td><td>writer</td><td>списание и возврат по заказам (<code>StockEngine</code>), отчёт «Остатки», ручная корректировка</td><td><code>internal/features/board/stock_engine.go</code>, <code>stock_repo.go</code></td></tr><tr data-mdline="297"><td><a class="pnum" id="p-171" href="#p-171">171</a><code>transfers</code></td><td>—</td><td>writer</td><td>приход и расход при проведении документов</td><td><code>internal/features/transfers/repo.go</code></td></tr><tr data-mdline="298"><td><a class="pnum" id="p-172" href="#p-172">172</a><code>warehouses</code></td><td>—</td><td>reader</td><td>проверки склада</td><td><code>internal/features/warehouses</code></td></tr></tbody></table>
+<h3 id="s-4-6">§4.6. <code class="k-t">service_products</code> (существующая таблица, не меняется — фича использует, созданием не владеет)</h3>
+<p>Состав услуги каталога (комплект товаров). Часть 5 таблицу не меняет: строки остаются при удалении услуги и товара. DDL: <code>migrations/0004_catalog.up.sql</code>.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="305"><td><a class="pnum" id="p-173" href="#p-173">173</a><code class="k-f">service_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">services(id)</code> <code>ON DELETE CASCADE</code>; часть PK</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="306"><td><a class="pnum" id="p-174" href="#p-174">174</a><code class="k-f">product_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>да</td><td>FK → <code class="k-t">products(id)</code> <code>ON DELETE RESTRICT</code>; часть PK; товар может быть мягко удалён — строка остаётся, в ответе <code class="k-f">product_is_deleted</code> = true</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="307"><td><a class="pnum" id="p-175" href="#p-175">175</a><code class="k-f">qty</code></td><td>numeric(12,3)</td><td>нет</td><td>—</td><td>да</td><td>количество, больше 0</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="308"><td><a class="pnum" id="p-176" href="#p-176">176</a><code class="k-f">position</code></td><td>integer</td><td>нет</td><td>0</td><td>авто</td><td>порядок строки</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="311"><a class="pnum" id="p-177" href="#p-177">177</a>PK: (<code>service_id</code>, <code>product_id</code>)</li>
+<li data-mdline="312"><a class="pnum" id="p-178" href="#p-178">178</a>UNIQUE: нет</li>
+<li data-mdline="313"><a class="pnum" id="p-179" href="#p-179">179</a>Индексы (as-is): <code class="k-i">service_products_product_id_idx</code> (<code>product_id</code>)</li>
+</ul>
+<p>Используется в модулях (used by):</p>
+<table><thead><tr><th>Модуль</th><th>Ключ-дискриминатор (если есть)</th><th>Роль (writer/reader)</th><th>Что делает</th><th>Путь</th></tr></thead><tbody><tr data-mdline="319"><td><a class="pnum" id="p-180" href="#p-180">180</a><code>catalog</code></td><td>—</td><td>writer</td><td>состав услуги: создание и замена вместе с услугой</td><td><code>internal/features/catalog/services_repo.go</code></td></tr><tr data-mdline="320"><td><a class="pnum" id="p-181" href="#p-181">181</a><code>board</code></td><td>—</td><td>reader</td><td>копирование комплекта товаров при добавлении услуги в заказ (<code>CopyKit</code>): архивные товары копируются (as-is), удалённые — нет</td><td><code>internal/features/board/subtask_products_repo.go:99</code></td></tr></tbody></table>
+<h2 id="s-5">§5. Статусная модель</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 430" width="680" height="430" font-family="Helvetica Neue, Arial, sans-serif">
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<rect width="680" height="430" fill="#ffffff"/>
+<text x="340" y="26" font-size="15" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="403.2" lengthAdjust="spacingAndGlyphs">Состояния записи: действует / в архиве / удалена</text>
+<circle cx="60" cy="110" r="7" fill="#0f172a"/>
+<line x1="67" y1="110" x2="118" y2="110" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="92" y="100" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="44.8" lengthAdjust="spacingAndGlyphs">создание</text>
+<rect x="120" y="70" width="190" height="80" rx="10" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+<text x="215" y="96" font-size="13" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="131.0" lengthAdjust="spacingAndGlyphs">Действует (active)</text>
+<text x="215" y="116" font-size="10.5" fill="#14532d" text-anchor="middle" font-weight="normal" textLength="147.0" lengthAdjust="spacingAndGlyphs">можно: всё, что и сейчас;</text>
+<text x="215" y="132" font-size="10.5" fill="#14532d" text-anchor="middle" font-weight="normal" textLength="117.6" lengthAdjust="spacingAndGlyphs">«В архив», «Удалить»</text>
+<rect x="120" y="270" width="190" height="80" rx="10" fill="#fef9c3" stroke="#a16207" stroke-width="1.5"/>
+<text x="215" y="296" font-size="13" fill="#713f12" text-anchor="middle" font-weight="bold" textLength="138.3" lengthAdjust="spacingAndGlyphs">В архиве (archived)</text>
+<text x="215" y="316" font-size="10.5" fill="#713f12" text-anchor="middle" font-weight="normal" textLength="141.1" lengthAdjust="spacingAndGlyphs">можно: просмотр, правка,</text>
+<text x="215" y="332" font-size="10.5" fill="#713f12" text-anchor="middle" font-weight="normal" textLength="117.6" lengthAdjust="spacingAndGlyphs">«Вернуть», «Удалить»</text>
+<rect x="450" y="150" width="200" height="110" rx="10" fill="#fee2e2" stroke="#b91c1c" stroke-width="1.5"/>
+<text x="550" y="178" font-size="13" fill="#7f1d1d" text-anchor="middle" font-weight="bold" textLength="123.8" lengthAdjust="spacingAndGlyphs">Удалена (deleted)</text>
+<text x="550" y="198" font-size="10.5" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="158.8" lengthAdjust="spacingAndGlyphs">видна только в «Удалённых»;</text>
+<text x="550" y="214" font-size="10.5" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="129.4" lengthAdjust="spacingAndGlyphs">можно: «Восстановить»;</text>
+<text x="550" y="230" font-size="10.5" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="88.2" lengthAdjust="spacingAndGlyphs">остальное — 404</text>
+<text x="550" y="248" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="117.6" lengthAdjust="spacingAndGlyphs">кто · когда · причина</text>
+<line x1="185" y1="150" x2="185" y2="268" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="178" y="206" font-size="10" fill="#475569" text-anchor="end" font-weight="normal" textLength="50.4" lengthAdjust="spacingAndGlyphs">«В архив»</text>
+<text x="178" y="220" font-size="10" fill="#475569" text-anchor="end" font-weight="normal" textLength="39.2" lengthAdjust="spacingAndGlyphs">(as-is)</text>
+<line x1="245" y1="270" x2="245" y2="152" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="252" y="206" font-size="10" fill="#475569" text-anchor="start" font-weight="normal" textLength="106.4" lengthAdjust="spacingAndGlyphs">«Вернуть из архива»</text>
+<text x="252" y="220" font-size="10" fill="#475569" text-anchor="start" font-weight="normal" textLength="39.2" lengthAdjust="spacingAndGlyphs">(as-is)</text>
+<path d="M310,95 C400,95 470,110 500,148" fill="none" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="420" y="86" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="151.2" lengthAdjust="spacingAndGlyphs">«Удалить» + причина (admin)</text>
+<path d="M450,185 C400,170 360,150 312,135" fill="none" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="420" y="146" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="78.4" lengthAdjust="spacingAndGlyphs">«Восстановить»</text>
+<path d="M310,325 C400,325 470,300 500,262" fill="none" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="420" y="340" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="151.2" lengthAdjust="spacingAndGlyphs">«Удалить» + причина (admin)</text>
+<path d="M450,225 C400,245 360,270 312,288" fill="none" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="412" y="278" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="78.4" lengthAdjust="spacingAndGlyphs">«Восстановить»</text>
+<text x="412" y="291" font-size="9.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="79.8" lengthAdjust="spacingAndGlyphs">(была в архиве)</text>
+<line x1="20" y1="372" x2="660" y2="372" stroke="#e2e8f0"/>
+<text x="20" y="390" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="517.4" lengthAdjust="spacingAndGlyphs">Архив есть только у товаров, услуг, категорий, типов оборудования, складов, поставщиков.</text>
+<text x="20" y="406" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="493.9" lengthAdjust="spacingAndGlyphs">Заказы, перемещения, клиенты, оборудование, колонки: только «Действует» и «Удалена».</text>
+<text x="20" y="422" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="476.3" lengthAdjust="spacingAndGlyphs">Терминальных состояний нет: удалённое хранится бессрочно и восстановимо (DS-012).</text>
+</svg></figure></p>
+<p>У записей каталога и типов оборудования три состояния — действует, в архиве, удалена; диаграмма общая с мастером.</p>
+<p>Состояния: <code class="k-s">active</code> — действует (<code>deleted_at IS NULL</code>, <code>is_active</code>); <code class="k-s">archived</code> — в архиве (<code>deleted_at IS NULL</code>, <code>NOT is_active</code>); <code class="k-s">deleted</code> — удалена (<code>deleted_at IS NOT NULL</code> при любом <code class="k-f">is_active</code>). Терминальных состояний нет — <a class="xref" href="#ds-012">DS-012</a>.</p>
+<table><thead><tr><th>Из</th><th>В</th><th>Триггер</th><th>Кто</th><th>Guard / конкурентный исход</th><th>Side effects</th></tr></thead><tbody><tr data-mdline="331"><td><a class="pnum" id="p-182" href="#p-182">182</a><code class="k-s">active</code></td><td><code class="k-s">deleted</code></td><td>«Удалить» + причина</td><td>admin</td><td><code>deleted_at IS NULL</code> в том же UPDATE; товар — нулевой остаток, иначе 409 <code>PRODUCT_HAS_STOCK</code>; второй запрос → 404</td><td>—</td></tr><tr data-mdline="332"><td><a class="pnum" id="p-183" href="#p-183">183</a><code class="k-s">archived</code></td><td><code class="k-s">deleted</code></td><td>«Удалить» + причина</td><td>admin</td><td>то же; <code class="k-f">is_active</code> = false сохраняется</td><td>—</td></tr><tr data-mdline="333"><td><a class="pnum" id="p-184" href="#p-184">184</a><code class="k-s">deleted</code></td><td><code class="k-s">active</code></td><td>«Восстановить» (запись была активной)</td><td>admin</td><td><code>deleted_at IS NOT NULL</code>; категория и тип — название свободно, иначе 409 <code>NAME_TAKEN</code>; второй запрос → 409 <code>NOT_DELETED</code></td><td>—</td></tr><tr data-mdline="334"><td><a class="pnum" id="p-185" href="#p-185">185</a><code class="k-s">deleted</code></td><td><code class="k-s">archived</code></td><td>«Восстановить» (запись была в архиве)</td><td>admin</td><td>то же</td><td>—</td></tr><tr data-mdline="335"><td><a class="pnum" id="p-186" href="#p-186">186</a><code class="k-s">active</code></td><td><code class="k-s">archived</code></td><td>«В архив» (as-is, без изменений)</td><td>admin</td><td><span class="badge-asis">as-is</span></td><td>—</td></tr><tr data-mdline="336"><td><a class="pnum" id="p-187" href="#p-187">187</a><code class="k-s">archived</code></td><td><code class="k-s">active</code></td><td>«Вернуть из архива» (as-is, без изменений)</td><td>admin</td><td><span class="badge-asis">as-is</span></td><td>—</td></tr></tbody></table>
+<p>Что можно в <code class="k-s">deleted</code>: только «Восстановить» и просмотр в разделе «Удалённые»; правка, архив, возврат из архива, выбор в новых записях → 404 либо 400 <code>not_found</code> — <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-014">DS-014</a>.</p>
+<h2 id="s-6">§6. API</h2>
+<blockquote><p>Режим B «API + фронтенд». Базовый URL стенда: <code>http://localhost:8080</code>. Авторизация — сессионная cookie <code>sid</code> (плейсхолдер <code>&lt;SID&gt;</code>). Копируй curl в терминал или в Postman: Import → Raw text. Тело ошибки — формат <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; при 400 — <code>details.fields[]</code> с <code>name</code> и <code>message</code>. Все ключи — snake_case, URL — kebab-case (CLAUDE.md §API-1). Текст отказа в доступе единый — «Нет доступа».</p></blockquote>
+<h3 id="s-6-1">§6.1. <code class="k-e">DELETE /api/v1/products/:id</code></h3>
+<ul>
+<li data-mdline="344"><a class="pnum" id="p-188" href="#p-188">188</a>Назначение: мягко удалить запись «товар» — она уходит в раздел «Удалённые» (существующий адрес, раньше удалял безвозвратно). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="345"><a class="pnum" id="p-189" href="#p-189">189</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой, до поиска записи — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="346"><a class="pnum" id="p-190" href="#p-190">190</a>Идемпотентность/повтор: повтор удаления уже удалённой записи → 404 (удалённая запись для обычных адресов не существует, <a class="xref" href="#ds-026">DS-026</a>); двойное применение невозможно — UPDATE с условием <code>deleted_at IS NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="347"><a class="pnum" id="p-191" href="#p-191">191</a>Side effects: одна транзакция под блокировкой строк <code class="k-t">product_stock</code> товара — три поля удаления <code class="k-t">products</code>.</li>
+<li data-mdline="348"><a class="pnum" id="p-192" href="#p-192">192</a>as-is: адрес отвечал 204 без тела, не принимал тело запроса и отказывал при ссылках кодом <code class="k-x">PRODUCT_IN_USE</code> («Товар используется в услугах, заказах или журнале склада — удалить нельзя, отправьте его в архив»); теперь — тело <code>{reason}</code>, ответ 200 с телом, ссылки удалению не мешают (<a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-028">DS-028</a>).</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="354"><td><a class="pnum" id="p-193" href="#p-193">193</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая действующая запись; иное → 404</td></tr><tr data-mdline="355"><td><a class="pnum" id="p-194" href="#p-194">194</a><code class="k-f">reason</code></td><td>body</td><td>string</td><td>да</td><td>1–500 символов после обрезки крайних пробелов; пусто → 400 <code>required</code>; длиннее → 400 <code>too_long</code>; недопустимые символы (NUL) → 400 <code>invalid_text</code></td></tr></tbody></table>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="361"><td><a class="pnum" id="p-195" href="#p-195">195</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор удалённой записи</td></tr><tr data-mdline="362"><td><a class="pnum" id="p-196" href="#p-196">196</a><code class="k-f">deleted_at</code></td><td>string (RFC 3339, UTC)</td><td>момент удаления</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="368"><td><a class="pnum" id="p-197" href="#p-197">197</a>400 <code>VALIDATION</code></td><td><code>reason: required</code></td><td>«Укажите причину удаления»</td></tr><tr data-mdline="369"><td><a class="pnum" id="p-198" href="#p-198">198</a>400 <code>VALIDATION</code></td><td><code>reason: too_long</code></td><td>«Причина — не длиннее 500 символов»</td></tr><tr data-mdline="370"><td><a class="pnum" id="p-199" href="#p-199">199</a>400 <code>VALIDATION</code></td><td><code>reason: invalid_text</code></td><td>«Недопустимые символы в причине»</td></tr><tr data-mdline="371"><td><a class="pnum" id="p-200" href="#p-200">200</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="372"><td><a class="pnum" id="p-201" href="#p-201">201</a>404 <code>PRODUCT_NOT_FOUND</code></td><td>записи нет либо она уже удалена</td><td>«Товар не найден»</td></tr><tr data-mdline="373"><td><a class="pnum" id="p-202" href="#p-202">202</a>409 <code>PRODUCT_HAS_STOCK</code></td><td>остаток товара на каком-либо складе не равен нулю</td><td>«У товара есть остаток на складе — сначала переместите или спишите его»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/products/c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке"}'</code></pre>
+<pre><code>{ "id": "c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6", "deleted_at": "2026-10-08T09:15:42Z" }</code></pre>
+<p>Ошибка (PRODUCT_HAS_STOCK → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/products/c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке"}'</code></pre>
+<pre><code>{
+  "code": "PRODUCT_HAS_STOCK",
+  "message": "У товара есть остаток на складе — сначала переместите или спишите его"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>, <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-028">DS-028</a>.</p>
+<h3 id="s-6-2">§6.2. <code class="k-e">POST /api/v1/products/:id/restore</code></h3>
+<ul>
+<li data-mdline="397"><a class="pnum" id="p-203" href="#p-203">203</a>Назначение: восстановить удалённую запись «товар» из раздела «Удалённые» (новый адрес). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="398"><a class="pnum" id="p-204" href="#p-204">204</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="399"><a class="pnum" id="p-205" href="#p-205">205</a>Идемпотентность/повтор: повтор восстановления действующей записи → 409 <code>NOT_DELETED</code>; двойное применение невозможно — UPDATE с условием <code>deleted_at IS NOT NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="400"><a class="pnum" id="p-206" href="#p-206">206</a>Side effects: один UPDATE — очистка трёх полей удаления.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="406"><td><a class="pnum" id="p-207" href="#p-207">207</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая запись (удалённая); иное → 404</td></tr></tbody></table>
+<p>Тела запроса нет. Признак архива (<code class="k-f">is_active</code>) восстановленной записи остаётся прежним (<a class="xref" href="#ds-009">DS-009</a>).</p>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="414"><td><a class="pnum" id="p-208" href="#p-208">208</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор восстановленной записи</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="420"><td><a class="pnum" id="p-209" href="#p-209">209</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="421"><td><a class="pnum" id="p-210" href="#p-210">210</a>404 <code>PRODUCT_NOT_FOUND</code></td><td>записи нет</td><td>«Товар не найден»</td></tr><tr data-mdline="422"><td><a class="pnum" id="p-211" href="#p-211">211</a>409 <code>NOT_DELETED</code></td><td>запись не удалена (уже восстановлена)</td><td>«Запись уже восстановлена»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/products/c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6/restore'</code></pre>
+<pre><code>{ "id": "c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6" }</code></pre>
+<p>Ошибка (NOT_DELETED → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/products/c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6/restore'</code></pre>
+<pre><code>{
+  "code": "NOT_DELETED",
+  "message": "Запись уже восстановлена"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>.</p>
+<h3 id="s-6-3">§6.3. <code class="k-e">DELETE /api/v1/services/:id</code></h3>
+<ul>
+<li data-mdline="444"><a class="pnum" id="p-212" href="#p-212">212</a>Назначение: мягко удалить запись «услуга каталога» — она уходит в раздел «Удалённые» (существующий адрес, раньше удалял безвозвратно). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="445"><a class="pnum" id="p-213" href="#p-213">213</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой, до поиска записи — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="446"><a class="pnum" id="p-214" href="#p-214">214</a>Идемпотентность/повтор: повтор удаления уже удалённой записи → 404 (удалённая запись для обычных адресов не существует, <a class="xref" href="#ds-026">DS-026</a>); двойное применение невозможно — UPDATE с условием <code>deleted_at IS NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="447"><a class="pnum" id="p-215" href="#p-215">215</a>Side effects: один UPDATE — три поля удаления <code class="k-t">services</code>.</li>
+<li data-mdline="448"><a class="pnum" id="p-216" href="#p-216">216</a>as-is: адрес отвечал 204 без тела, не принимал тело запроса и отказывал при ссылках кодом <code class="k-x">SERVICE_IN_USE</code> («Услуга используется в заказах — удалить нельзя, отправьте её в архив»); теперь — тело <code>{reason}</code>, ответ 200 с телом, ссылки удалению не мешают (<a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-028">DS-028</a>).</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="454"><td><a class="pnum" id="p-217" href="#p-217">217</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая действующая запись; иное → 404</td></tr><tr data-mdline="455"><td><a class="pnum" id="p-218" href="#p-218">218</a><code class="k-f">reason</code></td><td>body</td><td>string</td><td>да</td><td>1–500 символов после обрезки крайних пробелов; пусто → 400 <code>required</code>; длиннее → 400 <code>too_long</code>; недопустимые символы (NUL) → 400 <code>invalid_text</code></td></tr></tbody></table>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="461"><td><a class="pnum" id="p-219" href="#p-219">219</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор удалённой записи</td></tr><tr data-mdline="462"><td><a class="pnum" id="p-220" href="#p-220">220</a><code class="k-f">deleted_at</code></td><td>string (RFC 3339, UTC)</td><td>момент удаления</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="468"><td><a class="pnum" id="p-221" href="#p-221">221</a>400 <code>VALIDATION</code></td><td><code>reason: required</code></td><td>«Укажите причину удаления»</td></tr><tr data-mdline="469"><td><a class="pnum" id="p-222" href="#p-222">222</a>400 <code>VALIDATION</code></td><td><code>reason: too_long</code></td><td>«Причина — не длиннее 500 символов»</td></tr><tr data-mdline="470"><td><a class="pnum" id="p-223" href="#p-223">223</a>400 <code>VALIDATION</code></td><td><code>reason: invalid_text</code></td><td>«Недопустимые символы в причине»</td></tr><tr data-mdline="471"><td><a class="pnum" id="p-224" href="#p-224">224</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="472"><td><a class="pnum" id="p-225" href="#p-225">225</a>404 <code>SERVICE_NOT_FOUND</code></td><td>записи нет либо она уже удалена</td><td>«Услуга не найдена»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/services/d1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке"}'</code></pre>
+<pre><code>{ "id": "d1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6", "deleted_at": "2026-10-08T09:15:42Z" }</code></pre>
+<p>Ошибка (VALIDATION → 400):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/services/d1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6' \
+  -H 'Content-Type: application/json' -d '{"reason":"  "}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "validation failed",
+  "details": { "fields": [ { "name": "reason", "message": "required" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>, <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-028">DS-028</a>.</p>
+<h3 id="s-6-4">§6.4. <code class="k-e">POST /api/v1/services/:id/restore</code></h3>
+<ul>
+<li data-mdline="497"><a class="pnum" id="p-226" href="#p-226">226</a>Назначение: восстановить удалённую запись «услуга каталога» из раздела «Удалённые» (новый адрес). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="498"><a class="pnum" id="p-227" href="#p-227">227</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="499"><a class="pnum" id="p-228" href="#p-228">228</a>Идемпотентность/повтор: повтор восстановления действующей записи → 409 <code>NOT_DELETED</code>; двойное применение невозможно — UPDATE с условием <code>deleted_at IS NOT NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="500"><a class="pnum" id="p-229" href="#p-229">229</a>Side effects: один UPDATE — очистка трёх полей удаления.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="506"><td><a class="pnum" id="p-230" href="#p-230">230</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая запись (удалённая); иное → 404</td></tr></tbody></table>
+<p>Тела запроса нет. Признак архива (<code class="k-f">is_active</code>) восстановленной записи остаётся прежним (<a class="xref" href="#ds-009">DS-009</a>).</p>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="514"><td><a class="pnum" id="p-231" href="#p-231">231</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор восстановленной записи</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="520"><td><a class="pnum" id="p-232" href="#p-232">232</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="521"><td><a class="pnum" id="p-233" href="#p-233">233</a>404 <code>SERVICE_NOT_FOUND</code></td><td>записи нет</td><td>«Услуга не найдена»</td></tr><tr data-mdline="522"><td><a class="pnum" id="p-234" href="#p-234">234</a>409 <code>NOT_DELETED</code></td><td>запись не удалена (уже восстановлена)</td><td>«Запись уже восстановлена»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/services/d1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6/restore'</code></pre>
+<pre><code>{ "id": "d1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6" }</code></pre>
+<p>Ошибка (NOT_DELETED → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/services/d1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6/restore'</code></pre>
+<pre><code>{
+  "code": "NOT_DELETED",
+  "message": "Запись уже восстановлена"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>.</p>
+<h3 id="s-6-5">§6.5. <code class="k-e">DELETE /api/v1/catalog-categories/:id</code></h3>
+<ul>
+<li data-mdline="544"><a class="pnum" id="p-235" href="#p-235">235</a>Назначение: мягко удалить запись «категория каталога» — она уходит в раздел «Удалённые» (существующий адрес, раньше удалял безвозвратно). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="545"><a class="pnum" id="p-236" href="#p-236">236</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой, до поиска записи — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="546"><a class="pnum" id="p-237" href="#p-237">237</a>Идемпотентность/повтор: повтор удаления уже удалённой записи → 404 (удалённая запись для обычных адресов не существует, <a class="xref" href="#ds-026">DS-026</a>); двойное применение невозможно — UPDATE с условием <code>deleted_at IS NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="547"><a class="pnum" id="p-238" href="#p-238">238</a>Side effects: один UPDATE — три поля удаления <code class="k-t">catalog_categories</code>.</li>
+<li data-mdline="548"><a class="pnum" id="p-239" href="#p-239">239</a>as-is: адрес отвечал 204 без тела, не принимал тело запроса и отказывал при ссылках кодом <code class="k-x">CATEGORY_IN_USE</code> («Категория используется — удалить нельзя, отправьте её в архив»); теперь — тело <code>{reason}</code>, ответ 200 с телом, ссылки удалению не мешают (<a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-028">DS-028</a>).</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="554"><td><a class="pnum" id="p-240" href="#p-240">240</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая действующая запись; иное → 404</td></tr><tr data-mdline="555"><td><a class="pnum" id="p-241" href="#p-241">241</a><code class="k-f">reason</code></td><td>body</td><td>string</td><td>да</td><td>1–500 символов после обрезки крайних пробелов; пусто → 400 <code>required</code>; длиннее → 400 <code>too_long</code>; недопустимые символы (NUL) → 400 <code>invalid_text</code></td></tr></tbody></table>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="561"><td><a class="pnum" id="p-242" href="#p-242">242</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор удалённой записи</td></tr><tr data-mdline="562"><td><a class="pnum" id="p-243" href="#p-243">243</a><code class="k-f">deleted_at</code></td><td>string (RFC 3339, UTC)</td><td>момент удаления</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="568"><td><a class="pnum" id="p-244" href="#p-244">244</a>400 <code>VALIDATION</code></td><td><code>reason: required</code></td><td>«Укажите причину удаления»</td></tr><tr data-mdline="569"><td><a class="pnum" id="p-245" href="#p-245">245</a>400 <code>VALIDATION</code></td><td><code>reason: too_long</code></td><td>«Причина — не длиннее 500 символов»</td></tr><tr data-mdline="570"><td><a class="pnum" id="p-246" href="#p-246">246</a>400 <code>VALIDATION</code></td><td><code>reason: invalid_text</code></td><td>«Недопустимые символы в причине»</td></tr><tr data-mdline="571"><td><a class="pnum" id="p-247" href="#p-247">247</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="572"><td><a class="pnum" id="p-248" href="#p-248">248</a>404 <code>CATEGORY_NOT_FOUND</code></td><td>записи нет либо она уже удалена</td><td>«Категория не найдена»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/catalog-categories/e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке"}'</code></pre>
+<pre><code>{ "id": "e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b", "deleted_at": "2026-10-08T09:15:42Z" }</code></pre>
+<p>Ошибка (VALIDATION → 400):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/catalog-categories/e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b' \
+  -H 'Content-Type: application/json' -d '{"reason":"  "}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "validation failed",
+  "details": { "fields": [ { "name": "reason", "message": "required" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>, <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-028">DS-028</a>.</p>
+<h3 id="s-6-6">§6.6. <code class="k-e">POST /api/v1/catalog-categories/:id/restore</code></h3>
+<ul>
+<li data-mdline="597"><a class="pnum" id="p-249" href="#p-249">249</a>Назначение: восстановить удалённую запись «категория каталога» из раздела «Удалённые» (новый адрес). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="598"><a class="pnum" id="p-250" href="#p-250">250</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="599"><a class="pnum" id="p-251" href="#p-251">251</a>Идемпотентность/повтор: повтор восстановления действующей записи → 409 <code>NOT_DELETED</code>; двойное применение невозможно — UPDATE с условием <code>deleted_at IS NOT NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="600"><a class="pnum" id="p-252" href="#p-252">252</a>Side effects: один UPDATE — очистка трёх полей удаления; уникальность названия проверяет частичный индекс.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="606"><td><a class="pnum" id="p-253" href="#p-253">253</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая запись (удалённая); иное → 404</td></tr></tbody></table>
+<p>Тела запроса нет. Признак архива (<code class="k-f">is_active</code>) восстановленной записи остаётся прежним (<a class="xref" href="#ds-009">DS-009</a>).</p>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="614"><td><a class="pnum" id="p-254" href="#p-254">254</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор восстановленной записи</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="620"><td><a class="pnum" id="p-255" href="#p-255">255</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="621"><td><a class="pnum" id="p-256" href="#p-256">256</a>404 <code>CATEGORY_NOT_FOUND</code></td><td>записи нет</td><td>«Категория не найдена»</td></tr><tr data-mdline="622"><td><a class="pnum" id="p-257" href="#p-257">257</a>409 <code>NOT_DELETED</code></td><td>запись не удалена (уже восстановлена)</td><td>«Запись уже восстановлена»</td></tr><tr data-mdline="623"><td><a class="pnum" id="p-258" href="#p-258">258</a>409 <code>NAME_TAKEN</code></td><td>среди действующих категорий того же вида есть такое название</td><td>«Название занято — переименуйте действующую запись»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/catalog-categories/e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b/restore'</code></pre>
+<pre><code>{ "id": "e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b" }</code></pre>
+<p>Ошибка (NAME_TAKEN → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/catalog-categories/e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b/restore'</code></pre>
+<pre><code>{
+  "code": "NAME_TAKEN",
+  "message": "Название занято — переименуйте действующую запись"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>.</p>
+<h3 id="s-6-7">§6.7. <code class="k-e">DELETE /api/v1/equipment-types/:id</code></h3>
+<ul>
+<li data-mdline="645"><a class="pnum" id="p-259" href="#p-259">259</a>Назначение: мягко удалить запись «тип оборудования» — она уходит в раздел «Удалённые» (существующий адрес, раньше удалял безвозвратно). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="646"><a class="pnum" id="p-260" href="#p-260">260</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой, до поиска записи — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="647"><a class="pnum" id="p-261" href="#p-261">261</a>Идемпотентность/повтор: повтор удаления уже удалённой записи → 404 (удалённая запись для обычных адресов не существует, <a class="xref" href="#ds-026">DS-026</a>); двойное применение невозможно — UPDATE с условием <code>deleted_at IS NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="648"><a class="pnum" id="p-262" href="#p-262">262</a>Side effects: один UPDATE — три поля удаления <code class="k-t">equipment_types</code>.</li>
+<li data-mdline="649"><a class="pnum" id="p-263" href="#p-263">263</a>as-is: адрес отвечал 204 без тела, не принимал тело запроса и отказывал при ссылках кодом <code class="k-x">EQUIPMENT_TYPE_IN_USE</code> («Тип используется в оборудовании клиентов — удалить нельзя, отправьте его в архив»); теперь — тело <code>{reason}</code>, ответ 200 с телом, ссылки удалению не мешают (<a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-028">DS-028</a>).</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="655"><td><a class="pnum" id="p-264" href="#p-264">264</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая действующая запись; иное → 404</td></tr><tr data-mdline="656"><td><a class="pnum" id="p-265" href="#p-265">265</a><code class="k-f">reason</code></td><td>body</td><td>string</td><td>да</td><td>1–500 символов после обрезки крайних пробелов; пусто → 400 <code>required</code>; длиннее → 400 <code>too_long</code>; недопустимые символы (NUL) → 400 <code>invalid_text</code></td></tr></tbody></table>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="662"><td><a class="pnum" id="p-266" href="#p-266">266</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор удалённой записи</td></tr><tr data-mdline="663"><td><a class="pnum" id="p-267" href="#p-267">267</a><code class="k-f">deleted_at</code></td><td>string (RFC 3339, UTC)</td><td>момент удаления</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="669"><td><a class="pnum" id="p-268" href="#p-268">268</a>400 <code>VALIDATION</code></td><td><code>reason: required</code></td><td>«Укажите причину удаления»</td></tr><tr data-mdline="670"><td><a class="pnum" id="p-269" href="#p-269">269</a>400 <code>VALIDATION</code></td><td><code>reason: too_long</code></td><td>«Причина — не длиннее 500 символов»</td></tr><tr data-mdline="671"><td><a class="pnum" id="p-270" href="#p-270">270</a>400 <code>VALIDATION</code></td><td><code>reason: invalid_text</code></td><td>«Недопустимые символы в причине»</td></tr><tr data-mdline="672"><td><a class="pnum" id="p-271" href="#p-271">271</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="673"><td><a class="pnum" id="p-272" href="#p-272">272</a>404 <code>EQUIPMENT_TYPE_NOT_FOUND</code></td><td>записи нет либо она уже удалена</td><td>«Тип оборудования не найден»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/equipment-types/f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c' \
+  -H 'Content-Type: application/json' -d '{"reason":"Создан по ошибке"}'</code></pre>
+<pre><code>{ "id": "f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c", "deleted_at": "2026-10-08T09:15:42Z" }</code></pre>
+<p>Ошибка (VALIDATION → 400):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/equipment-types/f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c' \
+  -H 'Content-Type: application/json' -d '{"reason":"  "}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "validation failed",
+  "details": { "fields": [ { "name": "reason", "message": "required" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>, <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-028">DS-028</a>.</p>
+<h3 id="s-6-8">§6.8. <code class="k-e">POST /api/v1/equipment-types/:id/restore</code></h3>
+<ul>
+<li data-mdline="698"><a class="pnum" id="p-273" href="#p-273">273</a>Назначение: восстановить удалённую запись «тип оборудования» из раздела «Удалённые» (новый адрес). Часть 5 <code>soft-delete-catalog</code>.</li>
+<li data-mdline="699"><a class="pnum" id="p-274" href="#p-274">274</a>Authz: только admin; executor → 403 «Нет доступа»; роль проверяется первой — <a class="xref" href="#ds-003">DS-003</a>.</li>
+<li data-mdline="700"><a class="pnum" id="p-275" href="#p-275">275</a>Идемпотентность/повтор: повтор восстановления действующей записи → 409 <code>NOT_DELETED</code>; двойное применение невозможно — UPDATE с условием <code>deleted_at IS NOT NULL</code> (<a class="xref" href="#ds-024">DS-024</a>).</li>
+<li data-mdline="701"><a class="pnum" id="p-276" href="#p-276">276</a>Side effects: один UPDATE — очистка трёх полей удаления; уникальность названия проверяет частичный индекс.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="707"><td><a class="pnum" id="p-277" href="#p-277">277</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующая запись (удалённая); иное → 404</td></tr></tbody></table>
+<p>Тела запроса нет. Признак архива (<code class="k-f">is_active</code>) восстановленной записи остаётся прежним (<a class="xref" href="#ds-009">DS-009</a>).</p>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="715"><td><a class="pnum" id="p-278" href="#p-278">278</a><code class="k-f">id</code></td><td>uuid</td><td>идентификатор восстановленной записи</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="721"><td><a class="pnum" id="p-279" href="#p-279">279</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="722"><td><a class="pnum" id="p-280" href="#p-280">280</a>404 <code>EQUIPMENT_TYPE_NOT_FOUND</code></td><td>записи нет</td><td>«Тип оборудования не найден»</td></tr><tr data-mdline="723"><td><a class="pnum" id="p-281" href="#p-281">281</a>409 <code>NOT_DELETED</code></td><td>запись не удалена (уже восстановлена)</td><td>«Запись уже восстановлена»</td></tr><tr data-mdline="724"><td><a class="pnum" id="p-282" href="#p-282">282</a>409 <code>NAME_TAKEN</code></td><td>среди действующих типов есть такое название</td><td>«Название занято — переименуйте действующую запись»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/equipment-types/f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c/restore'</code></pre>
+<pre><code>{ "id": "f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c" }</code></pre>
+<p>Ошибка (NAME_TAKEN → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/equipment-types/f7a8b9c0-d1e2-4f3a-8b4c-5d6e7f8a9b0c/restore'</code></pre>
+<pre><code>{
+  "code": "NAME_TAKEN",
+  "message": "Название занято — переименуйте действующую запись"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-003">DS-003</a>, <a class="xref" href="#ds-024">DS-024</a>.</p>
+<h3 id="s-6-9">§6.9. Прочие изменения существующих endpoints (дельта)</h3>
+<p>Существующие DTO плоские, поэтому признак удаления добавляется плоским полем рядом с идентификатором или именем (как существующие <code>type_is_active</code>, <code>assignee_is_active</code>). Точные имена новых полей (существующие поля не переименовываются):</p>
+<table><thead><tr><th>DTO (файл)</th><th>Новое поле</th><th>Рядом с существующими</th></tr></thead><tbody><tr data-mdline="750"><td><a class="pnum" id="p-283" href="#p-283">283</a><code>ProductResponse</code> (<code>internal/features/catalog/products_dto.go:8</code>)</td><td><code class="k-f">category_is_deleted</code> (boolean)</td><td><code class="k-f">category_id</code></td></tr><tr data-mdline="751"><td><a class="pnum" id="p-284" href="#p-284">284</a><code>ServiceResponse</code> (<code>internal/features/catalog/services_dto.go:18</code>)</td><td><code class="k-f">category_is_deleted</code> (boolean)</td><td><code class="k-f">category_id</code></td></tr><tr data-mdline="752"><td><a class="pnum" id="p-285" href="#p-285">285</a><code>ServiceProductResponse</code> — строка состава услуги (<code>internal/features/catalog/services_dto.go:10</code>)</td><td><code class="k-f">product_is_deleted</code> (boolean)</td><td><code class="k-f">product_id</code>, <code class="k-f">name</code></td></tr><tr data-mdline="753"><td><a class="pnum" id="p-286" href="#p-286">286</a><code>EquipmentResponse</code> (<code>internal/features/clients/dto.go:61</code>)</td><td><code class="k-f">type_is_deleted</code> (boolean)</td><td><code class="k-f">type_id</code>, <code class="k-f">type_name</code>, <code class="k-f">type_is_active</code></td></tr><tr data-mdline="754"><td><a class="pnum" id="p-287" href="#p-287">287</a><code>CardSubtask</code> — услуга в карточке заказа (<code>internal/features/board/card_dto.go:102</code>)</td><td><code class="k-f">service_is_deleted</code> (boolean)</td><td><code class="k-f">service_id</code>, <code class="k-f">service_name</code></td></tr><tr data-mdline="755"><td><a class="pnum" id="p-288" href="#p-288">288</a><code>CardSubtaskProduct</code> — товар услуги в карточке заказа (<code>internal/features/board/card_dto.go:124</code>)</td><td><code class="k-f">product_is_deleted</code> (boolean)</td><td><code class="k-f">product_id</code>, <code class="k-f">name</code></td></tr><tr data-mdline="756"><td><a class="pnum" id="p-289" href="#p-289">289</a><code>TransferItemResponse</code> — строка документа (<code>internal/features/transfers/dto.go:159</code>)</td><td><code class="k-f">product_is_deleted</code> (boolean; false у строки-единицы)</td><td><code class="k-f">product_id</code>, <code class="k-f">product_name</code></td></tr><tr data-mdline="757"><td><a class="pnum" id="p-290" href="#p-290">290</a><code>StockRow</code> — строка отчёта «Остатки» (<code>internal/features/board/stock_dto.go</code>)</td><td><code class="k-f">is_deleted</code> (boolean)</td><td><code class="k-f">product_id</code>, <code class="k-f">name</code></td></tr></tbody></table>
+<table><thead><tr><th>Endpoint</th><th>Что меняется</th><th>Ответ</th><th>DS</th></tr></thead><tbody><tr data-mdline="761"><td><a class="pnum" id="p-291" href="#p-291">291</a><code class="k-e">GET /api/v1/products</code>, <code class="k-e">GET /api/v1/services</code>, <code class="k-e">GET /api/v1/catalog-categories</code>, <code class="k-e">GET /api/v1/equipment-types</code></td><td>удалённые записи не возвращаются ни при каком значении фильтра архива; <code class="k-f">item_count</code> категории и <code class="k-f">equipment_count</code> типа — только действующие записи</td><td>—</td><td><a class="xref" href="#ds-009">DS-009</a>, <a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="762"><td><a class="pnum" id="p-292" href="#p-292">292</a><code class="k-e">GET /api/v1/products/:id</code>, <code class="k-e">GET /api/v1/services/:id</code>, <code class="k-e">GET /api/v1/catalog-categories/:id</code>, <code class="k-e">GET /api/v1/equipment-types/:id</code></td><td>удалённая запись — 404</td><td>404 <code>PRODUCT_NOT_FOUND</code>, <code>SERVICE_NOT_FOUND</code>, <code>CATEGORY_NOT_FOUND</code>, <code>EQUIPMENT_TYPE_NOT_FOUND</code></td><td><a class="xref" href="#ds-026">DS-026</a></td></tr><tr data-mdline="763"><td><a class="pnum" id="p-293" href="#p-293">293</a><code class="k-e">PUT /api/v1/products/:id</code>, <code class="k-e">PUT /api/v1/services/:id</code>, <code class="k-e">PUT /api/v1/catalog-categories/:id</code>, <code class="k-e">PUT /api/v1/equipment-types/:id</code></td><td>удалённая запись — 404; новая ссылка на удалённую категорию либо товар состава — 400 по полю с сообщением <code>not_found</code>; идентификатор категории или товара, которых никогда не было, — as-is сообщение <code>invalid</code> (принятое уточнение реализации)</td><td>404 своего вида; 400 <code>VALIDATION</code> (<code>category_id: not_found</code>, <code>products[i].product_id: not_found</code>; as-is <code>invalid</code>)</td><td><a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="764"><td><a class="pnum" id="p-294" href="#p-294">294</a><code class="k-e">POST /api/v1/products</code>, <code class="k-e">POST /api/v1/services</code></td><td>ссылка на удалённую категорию либо товар состава — 400 по полю</td><td>400 <code>VALIDATION</code></td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="765"><td><a class="pnum" id="p-295" href="#p-295">295</a><code class="k-e">POST /api/v1/catalog-categories</code>, <code class="k-e">PUT /api/v1/catalog-categories/:id</code></td><td>название сверяется только с действующими категориями того же вида</td><td>409 <code>CATEGORY_NAME_TAKEN</code> (as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="766"><td><a class="pnum" id="p-296" href="#p-296">296</a><code class="k-e">POST /api/v1/equipment-types</code>, <code class="k-e">PUT /api/v1/equipment-types/:id</code></td><td>название сверяется только с действующими типами</td><td>409 <code>EQUIPMENT_TYPE_NAME_TAKEN</code>, 409 <code>EQUIPMENT_TYPE_NAME_ARCHIVED</code> (as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="767"><td><a class="pnum" id="p-297" href="#p-297">297</a>SSR <code>POST /catalog/products/:id/delete</code>, <code>POST /catalog/services/:id/delete</code>, <code>POST /catalog/categories/:id/delete</code>, <code>POST /catalog/equipment-types/:id/delete</code></td><td>обязательное поле формы <code class="k-f">reason</code>; мягкое удаление; после успеха — as-is переход к списку</td><td>ошибка формы под полем «Причина»</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="768"><td><a class="pnum" id="p-298" href="#p-298">298</a>SSR <code>POST /catalog/products/:id/archive</code>, <code>POST /catalog/products/:id/restore</code>, <code>POST /catalog/services/:id/archive</code>, <code>POST /catalog/services/:id/restore</code>, <code>POST /catalog/categories/:id/archive</code>, <code>POST /catalog/categories/:id/restore</code>, <code>POST /catalog/equipment-types/:id/archive</code>, <code>POST /catalog/equipment-types/:id/restore</code></td><td>без изменений для действующих — это архив и возврат из архива, не восстановление удалённого; для удалённой записи — страница 404; SSR-переименование (<code>POST /catalog/categories/:id/rename</code>) и архив удалённой либо несуществующей категории — тоже страница 404 (принятое уточнение реализации)</td><td>страница 404</td><td><a class="xref" href="#ds-009">DS-009</a>, <a class="xref" href="#ds-026">DS-026</a></td></tr><tr data-mdline="769"><td><a class="pnum" id="p-299" href="#p-299">299</a><code class="k-e">GET /api/v1/tasks/:id/card</code></td><td>новые поля <code class="k-f">service_is_deleted</code> у услуг и <code class="k-f">product_is_deleted</code> у товаров услуг</td><td>—</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="770"><td><a class="pnum" id="p-300" href="#p-300">300</a><code class="k-e">POST /api/v1/tasks/:id/subtasks</code></td><td><code class="k-f">service_id</code> удалённой услуги; товары комплекта услуги, удалённые из каталога, в заказ не копируются; архивные товары комплекта копируются, как сейчас (<code>CopyKit</code>; принятое уточнение реализации)</td><td>400 <code>VALIDATION</code> (<code>service_id: not_found</code>)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="771"><td><a class="pnum" id="p-301" href="#p-301">301</a><code class="k-e">POST /api/v1/subtasks/:id/products</code> (<code class="k-e">PUT /api/v1/subtask-products/:id</code> товар строки не меняет — проверять там нечего; принятое уточнение реализации)</td><td>удалённый товар в новой строке</td><td>400 <code>VALIDATION</code> (<code>product_id: not_found</code>)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="772"><td><a class="pnum" id="p-302" href="#p-302">302</a><code class="k-e">GET /api/v1/stock</code></td><td>удалённый товар с нулевым остатком на всех складах не показывается; с ненулевым хотя бы на одном — показывается строкой с новым полем <code class="k-f">is_deleted</code> = true — независимо от признака архива и при любом режиме списка отчёта (принятое уточнение реализации: фильтры режима удалённый товар с остатком не скрывают); у остальных строк <code class="k-f">is_deleted</code> = false</td><td>—</td><td><a class="xref" href="#ds-042">DS-042</a></td></tr><tr data-mdline="773"><td><a class="pnum" id="p-303" href="#p-303">303</a><code class="k-e">GET /api/v1/stock/summary</code></td><td>удалённые товары в счётчики (<code class="k-f">products_total</code>, <code class="k-f">low_count</code>, <code class="k-f">out_count</code>, <code class="k-f">will_low_count</code>, <code class="k-f">risk_count</code>) не входят</td><td>—</td><td><a class="xref" href="#ds-042">DS-042</a></td></tr><tr data-mdline="774"><td><a class="pnum" id="p-304" href="#p-304">304</a>ручная корректировка остатка из отчёта «Остатки» (as-is адрес корректировки пакета <code>board</code>, тело <code>StockAdjustRequest</code>)</td><td>для удалённого товара — только списание: допустима только по паре товар × склад с ненулевым остатком (иначе 404, строка остатка не создаётся); новое значение — между нулём и текущим включительно, отрицательный остаток (долг) так же списывается к нулю; увеличение или смена знака — отказ; активность склада для удалённого товара не требуется</td><td>404 <code>PRODUCT_NOT_FOUND</code>; 409 <code>PRODUCT_DELETED_WRITE_OFF_ONLY</code> «Товар удалён — его остаток можно только списать»</td><td><a class="xref" href="#ds-042">DS-042</a>, <a class="xref" href="#ds-048">DS-048</a></td></tr><tr data-mdline="775"><td><a class="pnum" id="p-305" href="#p-305">305</a><code class="k-e">GET /api/v1/clients/:id/equipment</code>, <code class="k-e">GET /api/v1/equipment/:id</code></td><td>новое поле <code class="k-f">type_is_deleted</code></td><td>—</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="776"><td><a class="pnum" id="p-306" href="#p-306">306</a><code class="k-e">POST /api/v1/clients/:id/equipment</code>, <code class="k-e">PUT /api/v1/equipment/:id</code></td><td>удалённый тип при создании единицы и при смене типа</td><td>400 <code>VALIDATION</code> (<code>type_id: not_found</code>)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="777"><td><a class="pnum" id="p-307" href="#p-307">307</a><code class="k-e">GET /api/v1/transfers/:id</code></td><td>новое поле <code class="k-f">product_is_deleted</code> в товарных строках</td><td>—</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="778"><td><a class="pnum" id="p-308" href="#p-308">308</a><code class="k-e">POST /api/v1/transfers</code>, <code class="k-e">PUT /api/v1/transfers/:id</code></td><td>удалённый товар в новой строке документа</td><td>400 <code>VALIDATION</code> (<code>items[i].product_id: not_found</code>)</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="779"><td><a class="pnum" id="p-309" href="#p-309">309</a><code class="k-e">POST /api/v1/transfers/:id/send</code> (отправка заявки)</td><td>отклоняется, если товар заявки в удалённых — для всех направлений; <code class="k-e">POST /api/v1/transfers/:id/cancel</code> для документа «В пути» с удалённым товаром НЕ запрещается: товар возвращается на склад-источник и виден с пометкой (<a class="xref" href="#ds-042">DS-042</a>)</td><td>409 <code>TRANSFER_HAS_DELETED_REFS</code> «В перемещении есть удалённые записи — сначала восстановите их» (<code>details.kind</code> = <code>product</code>, <code>details.id</code>)</td><td><a class="xref" href="#ds-047">DS-047</a></td></tr><tr data-mdline="780"><td><a class="pnum" id="p-310" href="#p-310">310</a><code class="k-e">POST /api/v1/transfers/:id/unreceive</code> (отмена проведения)</td><td>отклоняется, если товар документа в удалённых: откат изменил бы остаток удалённого товара и вернул документ в «В пути»; приём документа «В пути» с удалённым товаром по-прежнему проходит (<a class="xref" href="#ds-042">DS-042</a>)</td><td>409 <code>TRANSFER_HAS_DELETED_REFS</code> «В перемещении есть удалённые записи — сначала восстановите их» (<code>details.kind</code> = <code>product</code>, <code>details.id</code>)</td><td><a class="xref" href="#ds-046">DS-046</a></td></tr><tr data-mdline="781"><td><a class="pnum" id="p-311" href="#p-311">311</a><code class="k-e">POST /api/v1/transfers/:id/restore</code> (часть 2 <a class="xref" href="#s-6-2">§6.2</a>)</td><td>восстановление заявки, товар которой в удалённых; отменённый документ не проверяется</td><td>409 <code>TRANSFER_HAS_DELETED_REFS</code> «В перемещении есть удалённые записи — сначала восстановите их» (<code>details.kind</code> = <code>product</code>, <code>details.id</code>)</td><td><a class="xref" href="#ds-045">DS-045</a></td></tr><tr data-mdline="782"><td><a class="pnum" id="p-312" href="#p-312">312</a><code class="k-e">GET /api/v1/deleted</code> (часть 1 <a class="xref" href="#s-6-3">§6.3</a>)</td><td>виды <code class="k-s">products</code>, <code class="k-s">services</code>, <code class="k-s">catalog-categories</code>, <code class="k-s">equipment-types</code> начинают отдавать строки: <code class="k-f">title</code> — название; <code class="k-f">subtitle</code> — у товара и услуги название категории, у категории «товары» либо «услуги», у типа пустая строка; <code class="k-f">is_archived</code> = true у записи, удалённой из архива</td><td>—</td><td><a class="xref" href="#ds-011">DS-011</a>, <a class="xref" href="#ds-009">DS-009</a></td></tr><tr data-mdline="783"><td><a class="pnum" id="p-313" href="#p-313">313</a><code class="k-e">GET /api/v1/deleted/summary</code> (часть 1 <a class="xref" href="#s-6-4">§6.4</a>)</td><td><code class="k-f">counts.products</code>, <code class="k-f">counts.services</code>, <code class="k-f">counts.catalog_categories</code>, <code class="k-f">counts.equipment_types</code></td><td>—</td><td><a class="xref" href="#ds-011">DS-011</a></td></tr><tr data-mdline="784"><td><a class="pnum" id="p-314" href="#p-314">314</a><code class="k-e">DELETE /api/v1/test/purge/:kind/:id</code> (часть 1 <a class="xref" href="#s-6-5">§6.5</a>)</td><td>новые виды <code class="k-s">products</code>, <code class="k-s">services</code>, <code class="k-s">catalog-categories</code>, <code class="k-s">equipment-types</code>: физическое удаление действующей или удалённой записи по правилам действующего безвозвратного удаления</td><td>409 <code>PRODUCT_IN_USE</code>, <code>SERVICE_IN_USE</code>, <code>CATEGORY_IN_USE</code>, <code>EQUIPMENT_TYPE_IN_USE</code> (as-is коды остаются только здесь)</td><td><a class="xref" href="#ds-027">DS-027</a></td></tr></tbody></table>
+<p>Пример новых полей в товаре удалённой категории:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' 'http://localhost:8080/api/v1/products/c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6'</code></pre>
+<pre><code>{
+  "id": "c8f0a1d2-3b4c-4d5e-8f60-718293a4b5c6",
+  "category_id": "e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b",
+  "category_is_deleted": true,
+  "name": "Фильтр угольный",
+  "is_active": true
+}</code></pre>
+<p>(ответ сокращён — остальные поля <code>ProductResponse</code> без изменений)</p>
+<p>Ошибка (VALIDATION → 400, товар с удалённой категорией):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X POST 'http://localhost:8080/api/v1/products' \
+  -H 'Content-Type: application/json' \
+  -d '{"category_id":"e4f5a6b7-c8d9-4e0f-9a1b-2c3d4e5f6a7b","name":"Фильтр сетчатый","unit":"шт","price":1500}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "validation failed",
+  "details": { "fields": [ { "name": "category_id", "message": "not_found" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-009">DS-009</a>, <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-026">DS-026</a>, <a class="xref" href="#ds-027">DS-027</a>, <a class="xref" href="#ds-032">DS-032</a>, <a class="xref" href="#ds-042">DS-042</a>, <a class="xref" href="#ds-045">DS-045</a>, <a class="xref" href="#ds-046">DS-046</a>, <a class="xref" href="#ds-047">DS-047</a>, <a class="xref" href="#ds-048">DS-048</a>.</p>
+<h2 id="s-7">§7. UX/UI + API (сквозной флоу)</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 676" width="680" height="676" font-family="Helvetica Neue, Arial, sans-serif">
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<rect width="680" height="676" fill="#ffffff"/>
+<text x="340" y="24" font-size="15" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="554.4" lengthAdjust="spacingAndGlyphs">Сценарий: удалить категорию и товар, занять название, восстановить</text>
+<rect x="15" y="40" width="150" height="30" rx="6" fill="#e0f2fe" stroke="#0369a1"/>
+<text x="90" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="87.4" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<line x1="90" y1="70" x2="90" y2="636" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="265" y="40" width="150" height="30" rx="6" fill="#ede9fe" stroke="#6d28d9"/>
+<text x="340" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="67.2" lengthAdjust="spacingAndGlyphs">Экран (§8)</text>
+<line x1="340" y1="70" x2="340" y2="636" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="515" y="40" width="150" height="30" rx="6" fill="#dcfce7" stroke="#15803d"/>
+<text x="590" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="53.8" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<line x1="590" y1="70" x2="590" y2="636" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<line x1="90" y1="100" x2="340" y2="100" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="94" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="263.2" lengthAdjust="spacingAndGlyphs">«Удалить» у категории «Фильтры» (§8.1), причина</text>
+<line x1="340" y1="128" x2="590" y2="128" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="122" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="302.4" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/catalog-categories/{id} {reason} (§6.5)</text>
+<text x="465.0" y="141" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="202.2" lengthAdjust="spacingAndGlyphs">товары категории остаются действующими</text>
+<line x1="590" y1="168" x2="340" y2="168" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="162" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">200 {id, deleted_at}</text>
+<line x1="90" y1="196" x2="340" y2="196" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="190" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">создаёт новую категорию «Фильтры»</text>
+<line x1="340" y1="224" x2="590" y2="224" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="218" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="212.8" lengthAdjust="spacingAndGlyphs">POST /api/v1/catalog-categories (§6.9)</text>
+<text x="465.0" y="237" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="180.9" lengthAdjust="spacingAndGlyphs">название удалённой записи свободно</text>
+<line x1="590" y1="264" x2="340" y2="264" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="258" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="72.8" lengthAdjust="spacingAndGlyphs">200 — создана</text>
+<line x1="90" y1="292" x2="340" y2="292" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="286" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="274.4" lengthAdjust="spacingAndGlyphs">«Удалённые» → «Категории» → «Восстановить» (§8.2)</text>
+<rect x="20" y="302" width="640" height="78" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-dasharray="5 4"/>
+<text x="28" y="316" font-size="10" fill="#7f1d1d" text-anchor="start" font-weight="bold" textLength="257.6" lengthAdjust="spacingAndGlyphs">ошибка: название занято действующей категорией</text>
+<line x1="340" y1="338" x2="590" y2="338" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#r)"/>
+<text x="465.0" y="332" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="285.6" lengthAdjust="spacingAndGlyphs">POST /api/v1/catalog-categories/{id}/restore (§6.6)</text>
+<line x1="590" y1="366" x2="340" y2="366" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#r)"/>
+<text x="465.0" y="360" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="78.4" lengthAdjust="spacingAndGlyphs">409 NAME_TAKEN</text>
+<line x1="90" y1="418" x2="340" y2="418" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="412" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="252.0" lengthAdjust="spacingAndGlyphs">«Удалить» у товара с остатком (§8.1), причина</text>
+<rect x="20" y="428" width="640" height="78" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-dasharray="5 4"/>
+<text x="28" y="442" font-size="10" fill="#7f1d1d" text-anchor="start" font-weight="bold" textLength="162.4" lengthAdjust="spacingAndGlyphs">ошибка: у товара есть остаток</text>
+<line x1="340" y1="464" x2="590" y2="464" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#r)"/>
+<text x="465.0" y="458" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="246.4" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/products/{id} {reason} (§6.1)</text>
+<line x1="590" y1="492" x2="340" y2="492" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#r)"/>
+<text x="465.0" y="486" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="117.6" lengthAdjust="spacingAndGlyphs">409 PRODUCT_HAS_STOCK</text>
+<line x1="90" y1="534" x2="340" y2="534" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="528" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="179.2" lengthAdjust="spacingAndGlyphs">списывает остаток, удаляет снова</text>
+<line x1="340" y1="562" x2="590" y2="562" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="556" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="246.4" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/products/{id} {reason} (§6.1)</text>
+<line x1="590" y1="590" x2="340" y2="590" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="584" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">200 {id, deleted_at}</text>
+<line x1="340" y1="618" x2="90" y2="618" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="215.0" y="612" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="201.6" lengthAdjust="spacingAndGlyphs">в заказах товар — с бейджем «удалён»</text>
+<text x="20" y="664" font-size="10" fill="#334155" text-anchor="start" font-weight="normal" textLength="408.8" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос, пунктир — ответ, красная рамка — ветка ошибки.</text>
+</svg></figure></p>
+<p>Полнота покрытия: каждый адрес <a class="xref" href="#s-6">§6</a> встречается на экране <a class="xref" href="#s-8">§8</a>, каждое действие экрана имеет адрес.</p>
+<table><thead><tr><th>Endpoint</th><th>Экраны</th></tr></thead><tbody><tr data-mdline="823"><td><a class="pnum" id="p-315" href="#p-315">315</a><a class="xref" href="#s-6-1">§6.1</a>, <a class="xref" href="#s-6-3">§6.3</a>, <a class="xref" href="#s-6-5">§6.5</a>, <a class="xref" href="#s-6-7">§6.7</a> (удаление; и SSR-формы удаления <a class="xref" href="#s-6-9">§6.9</a>)</td><td><a class="xref" href="#s-8-1">§8.1</a> (через общее окно «Удаление» части 1)</td></tr><tr data-mdline="824"><td><a class="pnum" id="p-316" href="#p-316">316</a><a class="xref" href="#s-6-2">§6.2</a>, <a class="xref" href="#s-6-4">§6.4</a>, <a class="xref" href="#s-6-6">§6.6</a>, <a class="xref" href="#s-6-8">§6.8</a> (восстановление)</td><td><a class="xref" href="#s-8-2">§8.2</a></td></tr><tr data-mdline="825"><td><a class="pnum" id="p-317" href="#p-317">317</a><a class="xref" href="#s-6-9">§6.9</a> адреса каталога и типов (списки, создание, правка, архив)</td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="826"><td><a class="pnum" id="p-318" href="#p-318">318</a><a class="xref" href="#s-6-9">§6.9</a> адреса заказов, оборудования, документов (новые поля, отказы выбора)</td><td><a class="xref" href="#s-8-3">§8.3</a></td></tr><tr data-mdline="827"><td><a class="pnum" id="p-319" href="#p-319">319</a><a class="xref" href="#s-6-9">§6.9</a> <code class="k-e">GET /api/v1/deleted</code>, <code class="k-e">GET /api/v1/deleted/summary</code></td><td><a class="xref" href="#s-8-2">§8.2</a></td></tr><tr data-mdline="828"><td><a class="pnum" id="p-320" href="#p-320">320</a><a class="xref" href="#s-6-9">§6.9</a> <code class="k-e">DELETE /api/v1/test/purge/:kind/:id</code></td><td>экранов нет — только автотесты (<a class="xref" href="#ds-027">DS-027</a>)</td></tr></tbody></table>
+<h2 id="s-8">§8. UI-иерархия</h2>
+<ul>
+<li data-mdline="831"><a class="pnum" id="p-321" href="#p-321">321</a>Справочники → <strong>Каталог</strong> (<code>/catalog</code>) → «Товары», «Услуги», «Категории», «Типы оборудования» → «Удалить» рядом с «В архив» — <a class="xref" href="#s-8-1">§8.1</a></li>
+<li data-mdline="832"><a class="pnum" id="p-322" href="#p-322">322</a>Администрирование → <strong>Удалённые</strong> (<code>/deleted</code>) → вкладки «Товары», «Услуги», «Категории», «Типы оборудования» → «Восстановить» — <a class="xref" href="#s-8-2">§8.2</a></li>
+<li data-mdline="833"><a class="pnum" id="p-323" href="#p-323">323</a><strong>Карточка заказа</strong>, формы товара, услуги, единицы оборудования, <strong>Перемещения</strong>, <strong>Остатки</strong> → бейджи «удалён»; выбор без удалённых — <a class="xref" href="#s-8-3">§8.3</a></li>
+</ul>
+<p>UI-конвенции (<a class="xref" href="#ds-033">DS-033</a>): как в части 1 — ошибка поля под полем (<code>is-invalid</code>), тост в правом верхнем углу на 5 секунд, причина — общее окно «Удаление» (<code>KT.uiDialog</code>), на время запроса кнопка заблокирована. Бейджи «удалён», «категория удалена», «в архиве» — серые бейджи Bootstrap (<code>badge text-bg-secondary</code>) справа от названия. Даты — в поясе пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ». Адаптив — минимальный (<a class="xref" href="#ds-023">DS-023</a>).</p>
+<h3 id="s-8-1">§8.1. Экран/форма «Каталог и типы оборудования — удаление»</h3>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="840"><a class="pnum" id="p-324" href="#p-324">324</a><strong>Путь:</strong> меню «Справочники → Каталог» → разделы «Товары», «Услуги», «Категории», «Типы оборудования»</li>
+<li data-mdline="841"><a class="pnum" id="p-325" href="#p-325">325</a><strong>URL:</strong> <code>/catalog/products</code>, <code>/catalog/products/:id</code>, <code>/catalog/services</code>, <code>/catalog/services/:id</code>, <code>/catalog/categories</code>, <code>/catalog/equipment-types</code>, <code>/catalog/equipment-types/:id</code> (as-is, серверные страницы)</li>
+<li data-mdline="842"><a class="pnum" id="p-326" href="#p-326">326</a><strong>Роли:</strong> admin · <strong>Устройство:</strong> десктоп, телефон</li>
+<li data-mdline="843"><a class="pnum" id="p-327" href="#p-327">327</a><strong>При открытии:</strong> as-is серверная отрисовка (<a class="xref" href="#s-6-9">§6.9</a>: удалённых записей нет)</li>
+<li data-mdline="844"><a class="pnum" id="p-328" href="#p-328">328</a><strong>200:</strong> списки без удалённых; архивные — по as-is переключателю архива · <strong>Пусто:</strong> as-is · <strong>4xx:</strong> прямая ссылка на удалённую запись — страница 404</li>
+</ul>
+<p><strong>Что на странице (сверху вниз) — только изменения:</strong></p>
+<ol>
+<li data-mdline="847"><a class="pnum" id="p-329" href="#p-329">329</a>Товары, услуги, типы оборудования: кнопка «Удалить» рядом с «В архив» (as-is расположение обеих) — вместо нынешнего подтверждения открывает общее окно «Удаление» (часть 1 <a class="xref" href="#s-8-2">§8.2</a>) с пояснением «Запись можно восстановить в разделе «Удалённые». Чтобы только скрыть её из выбора, используйте «В архив»».</li>
+<li data-mdline="848"><a class="pnum" id="p-330" href="#p-330">330</a>Категории: кнопка «Удалить» в строке категории рядом с «В архив» открывает то же окно с пояснением «Товары и услуги категории останутся в каталоге с пометкой «категория удалена»».</li>
+<li data-mdline="849"><a class="pnum" id="p-331" href="#p-331">331</a>Список товаров и услуг: у записи удалённой категории бейдж «категория удалена» (<code class="k-f">category_is_deleted</code>) стоит справа от названия самой записи — отдельной колонки категории в списках нет (принятое уточнение реализации).</li>
+<li data-mdline="850"><a class="pnum" id="p-332" href="#p-332">332</a>Форма товара и форма услуги: в выборе категории удалённых категорий нет; если категория записи уже удалена — она показана текущим значением с бейджем «удалена» и не предлагается повторно после смены.</li>
+<li data-mdline="851"><a class="pnum" id="p-333" href="#p-333">333</a>Форма услуги, состав: у товара, удалённого из каталога, — бейдж «удалён» (<code class="k-f">product_is_deleted</code>); в выборе товара для новой строки удалённых нет.</li>
+<li data-mdline="852"><a class="pnum" id="p-334" href="#p-334">334</a>Счётчики «товаров / услуг в категории» и «единиц типа» — только действующие записи.</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="855"><a class="pnum" id="p-335" href="#p-335">335</a><strong>Удалить товар</strong></li>
+<ul>
+<li data-mdline="856"><a class="pnum" id="p-336" href="#p-336">336</a><strong>Элемент:</strong> кнопка (второстепенная, красный текст) рядом с «В архив»; только admin</li>
+<li data-mdline="857"><a class="pnum" id="p-337" href="#p-337">337</a><strong>UI:</strong> общее окно «Удаление»; причина из окна подставляется в скрытое поле <code>reason</code> формы удаления; кнопка окна заблокирована на время отправки</li>
+<li data-mdline="858"><a class="pnum" id="p-338" href="#p-338">338</a><strong>Вызов:</strong> SSR <code>POST /catalog/products/{id}/delete</code> с полем формы <code>reason</code> (<a class="xref" href="#s-6-9">§6.9</a>); то же действие через API — <code>DELETE <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/products/{id}</code>, body: <code>{ reason }</code></li>
+<li data-mdline="859"><a class="pnum" id="p-339" href="#p-339">339</a><strong>200:</strong> переход к списку товаров (as-is), товара в списке нет; тост «Удалено. Восстановить можно в разделе «Удалённые»»</li>
+<li data-mdline="860"><a class="pnum" id="p-340" href="#p-340">340</a><strong>4xx (409 PRODUCT_HAS_STOCK):</strong> форма товара открывается снова с красным блоком вверху «У товара есть остаток на складе — сначала переместите или спишите его»</li>
+<li data-mdline="861"><a class="pnum" id="p-341" href="#p-341">341</a><strong>4xx (400 reason required):</strong> окно «Удаление» показано снова, под полем — «Укажите причину удаления»</li>
+<li data-mdline="862"><a class="pnum" id="p-342" href="#p-342">342</a><strong>4xx (400 reason too_long):</strong> под полем — «Причина — не длиннее 500 символов»</li>
+<li data-mdline="863"><a class="pnum" id="p-343" href="#p-343">343</a><strong>4xx (400 reason invalid_text):</strong> под полем — «Недопустимые символы в причине»</li>
+<li data-mdline="864"><a class="pnum" id="p-344" href="#p-344">344</a><strong>4xx (404 PRODUCT_NOT_FOUND):</strong> страница 404</li>
+<li data-mdline="865"><a class="pnum" id="p-345" href="#p-345">345</a><strong>4xx (403):</strong> страница отказа «Нет доступа»</li>
+</ul>
+<li data-mdline="866"><a class="pnum" id="p-346" href="#p-346">346</a><strong>Удалить услугу</strong></li>
+<ul>
+<li data-mdline="867"><a class="pnum" id="p-347" href="#p-347">347</a><strong>Элемент:</strong> кнопка (второстепенная, красный текст) рядом с «В архив»; только admin</li>
+<li data-mdline="868"><a class="pnum" id="p-348" href="#p-348">348</a><strong>UI:</strong> как у товара</li>
+<li data-mdline="869"><a class="pnum" id="p-349" href="#p-349">349</a><strong>Вызов:</strong> SSR <code>POST /catalog/services/{id}/delete</code> с полем <code>reason</code>; через API — <code>DELETE <a class="xref" href="#s-6-3">§6.3</a></code> → <code>/api/v1/services/{id}</code>, body: <code>{ reason }</code></li>
+<li data-mdline="870"><a class="pnum" id="p-350" href="#p-350">350</a><strong>200:</strong> переход к списку услуг, услуги в списке нет; тост «Удалено. Восстановить можно в разделе «Удалённые»»</li>
+<li data-mdline="871"><a class="pnum" id="p-351" href="#p-351">351</a><strong>4xx (400 reason):</strong> под полем «Причина» — текст по причине отказа (как у товара)</li>
+<li data-mdline="872"><a class="pnum" id="p-352" href="#p-352">352</a><strong>4xx (404 SERVICE_NOT_FOUND):</strong> страница 404</li>
+<li data-mdline="873"><a class="pnum" id="p-353" href="#p-353">353</a><strong>4xx (403):</strong> страница отказа «Нет доступа»</li>
+</ul>
+<li data-mdline="874"><a class="pnum" id="p-354" href="#p-354">354</a><strong>Удалить категорию</strong></li>
+<ul>
+<li data-mdline="875"><a class="pnum" id="p-355" href="#p-355">355</a><strong>Элемент:</strong> кнопка (второстепенная, красный текст) в строке категории рядом с «В архив»; только admin</li>
+<li data-mdline="876"><a class="pnum" id="p-356" href="#p-356">356</a><strong>UI:</strong> как у товара</li>
+<li data-mdline="877"><a class="pnum" id="p-357" href="#p-357">357</a><strong>Вызов:</strong> SSR <code>POST /catalog/categories/{id}/delete</code> с полем <code>reason</code>; через API — <code>DELETE <a class="xref" href="#s-6-5">§6.5</a></code> → <code>/api/v1/catalog-categories/{id}</code>, body: <code>{ reason }</code></li>
+<li data-mdline="878"><a class="pnum" id="p-358" href="#p-358">358</a><strong>200:</strong> страница категорий без этой строки; тост «Удалено. Восстановить можно в разделе «Удалённые»»</li>
+<li data-mdline="879"><a class="pnum" id="p-359" href="#p-359">359</a><strong>4xx (400 reason):</strong> под полем «Причина» — текст по причине отказа</li>
+<li data-mdline="880"><a class="pnum" id="p-360" href="#p-360">360</a><strong>4xx (404 CATEGORY_NOT_FOUND):</strong> страница 404</li>
+<li data-mdline="881"><a class="pnum" id="p-361" href="#p-361">361</a><strong>4xx (403):</strong> страница отказа «Нет доступа»</li>
+</ul>
+<li data-mdline="882"><a class="pnum" id="p-362" href="#p-362">362</a><strong>Удалить тип оборудования</strong></li>
+<ul>
+<li data-mdline="883"><a class="pnum" id="p-363" href="#p-363">363</a><strong>Элемент:</strong> кнопка (второстепенная, красный текст) рядом с «В архив»; только admin</li>
+<li data-mdline="884"><a class="pnum" id="p-364" href="#p-364">364</a><strong>UI:</strong> как у товара</li>
+<li data-mdline="885"><a class="pnum" id="p-365" href="#p-365">365</a><strong>Вызов:</strong> SSR <code>POST /catalog/equipment-types/{id}/delete</code> с полем <code>reason</code>; через API — <code>DELETE <a class="xref" href="#s-6-7">§6.7</a></code> → <code>/api/v1/equipment-types/{id}</code>, body: <code>{ reason }</code></li>
+<li data-mdline="886"><a class="pnum" id="p-366" href="#p-366">366</a><strong>200:</strong> переход к списку типов, типа в списке нет; тост «Удалено. Восстановить можно в разделе «Удалённые»»</li>
+<li data-mdline="887"><a class="pnum" id="p-367" href="#p-367">367</a><strong>4xx (400 reason):</strong> под полем «Причина» — текст по причине отказа</li>
+<li data-mdline="888"><a class="pnum" id="p-368" href="#p-368">368</a><strong>4xx (404 EQUIPMENT_TYPE_NOT_FOUND):</strong> страница 404</li>
+<li data-mdline="889"><a class="pnum" id="p-369" href="#p-369">369</a><strong>4xx (403):</strong> страница отказа «Нет доступа»</li>
+</ul>
+<li data-mdline="890"><a class="pnum" id="p-370" href="#p-370">370</a><strong>Создать категорию или тип с названием удалённой записи</strong></li>
+<ul>
+<li data-mdline="891"><a class="pnum" id="p-371" href="#p-371">371</a><strong>Элемент:</strong> as-is форма создания</li>
+<li data-mdline="892"><a class="pnum" id="p-372" href="#p-372">372</a><strong>UI:</strong> as-is</li>
+<li data-mdline="893"><a class="pnum" id="p-373" href="#p-373">373</a><strong>Вызов:</strong> as-is SSR <code>POST /catalog/categories</code>, <code>POST /catalog/equipment-types</code> (через API — <code>POST /api/v1/catalog-categories</code>, <code>POST /api/v1/equipment-types</code>)</li>
+<li data-mdline="894"><a class="pnum" id="p-374" href="#p-374">374</a><strong>200:</strong> запись создаётся — название удалённой записи свободно</li>
+<li data-mdline="895"><a class="pnum" id="p-375" href="#p-375">375</a><strong>4xx (409 CATEGORY_NAME_TAKEN):</strong> под полем «Название» — «Такая категория уже есть»</li>
+<li data-mdline="896"><a class="pnum" id="p-376" href="#p-376">376</a><strong>4xx (409 EQUIPMENT_TYPE_NAME_TAKEN):</strong> под полем «Название» — «Такой тип уже есть»</li>
+<li data-mdline="897"><a class="pnum" id="p-377" href="#p-377">377</a><strong>4xx (409 EQUIPMENT_TYPE_NAME_ARCHIVED):</strong> под полем «Название» — «Такой тип уже есть в архиве — верните его из архива»</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> запись удалил другой администратор, пока форма открыта, — сохранение, архив и удаление вернут страницу 404.</p>
+<h3 id="s-8-2">§8.2. Экран/форма «Удалённые», вкладки каталога</h3>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="904"><a class="pnum" id="p-378" href="#p-378">378</a><strong>Путь:</strong> меню «Администрирование → Удалённые» → вкладки «Товары», «Услуги», «Категории», «Типы оборудования» (добавляются этой частью; экран, фильтры, пагинация — часть 1 <a class="xref" href="#s-8-1">§8.1</a>)</li>
+<li data-mdline="905"><a class="pnum" id="p-379" href="#p-379">379</a><strong>URL:</strong> <code>/deleted?kind=products</code>, <code>/deleted?kind=services</code>, <code>/deleted?kind=catalog-categories</code>, <code>/deleted?kind=equipment-types</code></li>
+<li data-mdline="906"><a class="pnum" id="p-380" href="#p-380">380</a><strong>Роли:</strong> admin · <strong>Устройство:</strong> десктоп, телефон</li>
+<li data-mdline="907"><a class="pnum" id="p-381" href="#p-381">381</a><strong>При открытии:</strong> <code>GET /api/v1/deleted/summary</code>, <code>GET /api/v1/deleted?kind=products&amp;limit=50&amp;offset=0</code> (<a class="xref" href="#s-6-9">§6.9</a>)</li>
+<li data-mdline="908"><a class="pnum" id="p-382" href="#p-382">382</a><strong>200:</strong> таблица удалённых записей вкладки · <strong>Пусто:</strong> «Удалённых записей нет» · <strong>4xx:</strong> тост с текстом ошибки</li>
+</ul>
+<p><strong>Что на странице (сверху вниз) — только изменения:</strong></p>
+<ol>
+<li data-mdline="911"><a class="pnum" id="p-383" href="#p-383">383</a>Вкладки «Товары» (<code class="k-s">products</code>), «Услуги» (<code class="k-s">services</code>), «Категории» (<code class="k-s">catalog-categories</code>), «Типы оборудования» (<code class="k-s">equipment-types</code>) со счётчиками — после вкладки «Оборудование».</li>
+<li data-mdline="912"><a class="pnum" id="p-384" href="#p-384">384</a>Таблица каждой из четырёх вкладок, колонки слева направо:</li>
+<ul>
+<li data-mdline="913"><a class="pnum" id="p-385" href="#p-385">385</a>«Что удалено» — название; под ним мелким шрифтом: у товара и услуги — категория, у категории — «товары» либо «услуги»; бейдж «в архиве» при <code class="k-f">is_archived</code></li>
+<li data-mdline="914"><a class="pnum" id="p-386" href="#p-386">386</a>«Причина» (<code class="k-f">delete_reason</code>)</li>
+<li data-mdline="915"><a class="pnum" id="p-387" href="#p-387">387</a>«Кто удалил» (<code class="k-f">deleted_by.name</code>)</li>
+<li data-mdline="916"><a class="pnum" id="p-388" href="#p-388">388</a>«Когда» (<code class="k-f">deleted_at</code>, «ДД.ММ.ГГГГ ЧЧ:ММ»)</li>
+<li data-mdline="917"><a class="pnum" id="p-389" href="#p-389">389</a>кнопка «Восстановить» (второстепенная, в строке справа)</li>
+</ul>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="920"><a class="pnum" id="p-390" href="#p-390">390</a><strong>Восстановить товар или услугу</strong></li>
+<ul>
+<li data-mdline="921"><a class="pnum" id="p-391" href="#p-391">391</a><strong>Элемент:</strong> кнопка (второстепенная) в строке таблицы справа</li>
+<li data-mdline="922"><a class="pnum" id="p-392" href="#p-392">392</a><strong>UI:</strong> подтверждение <code>KT.uiDialog</code> «Восстановить «{название}»?»; для записи с бейджем «в архиве» — дополнительная строка «Запись вернётся в архив»; на время запроса кнопка заблокирована</li>
+<li data-mdline="923"><a class="pnum" id="p-393" href="#p-393">393</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/products/{id}/restore</code>; <code>POST <a class="xref" href="#s-6-4">§6.4</a></code> → <code>/api/v1/services/{id}/restore</code></li>
+<li data-mdline="924"><a class="pnum" id="p-394" href="#p-394">394</a><strong>200:</strong> <code>{ id }</code> → строка исчезает, счётчик вкладки уменьшается; тост «Восстановлено»</li>
+<li data-mdline="925"><a class="pnum" id="p-395" href="#p-395">395</a><strong>4xx (409 NOT_DELETED):</strong> тост «Запись уже восстановлена», строка исчезает</li>
+<li data-mdline="926"><a class="pnum" id="p-396" href="#p-396">396</a><strong>4xx (404 PRODUCT_NOT_FOUND / SERVICE_NOT_FOUND):</strong> тост «Товар не найден» / «Услуга не найдена», строка исчезает</li>
+<li data-mdline="927"><a class="pnum" id="p-397" href="#p-397">397</a><strong>4xx (403):</strong> тост «Нет доступа»</li>
+</ul>
+<li data-mdline="928"><a class="pnum" id="p-398" href="#p-398">398</a><strong>Восстановить категорию или тип оборудования</strong></li>
+<ul>
+<li data-mdline="929"><a class="pnum" id="p-399" href="#p-399">399</a><strong>Элемент:</strong> кнопка (второстепенная) в строке таблицы справа</li>
+<li data-mdline="930"><a class="pnum" id="p-400" href="#p-400">400</a><strong>UI:</strong> как у товара</li>
+<li data-mdline="931"><a class="pnum" id="p-401" href="#p-401">401</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-6">§6.6</a></code> → <code>/api/v1/catalog-categories/{id}/restore</code>; <code>POST <a class="xref" href="#s-6-8">§6.8</a></code> → <code>/api/v1/equipment-types/{id}/restore</code></li>
+<li data-mdline="932"><a class="pnum" id="p-402" href="#p-402">402</a><strong>200:</strong> <code>{ id }</code> → строка исчезает, счётчик вкладки уменьшается; тост «Восстановлено»</li>
+<li data-mdline="933"><a class="pnum" id="p-403" href="#p-403">403</a><strong>4xx (409 NAME_TAKEN):</strong> тост «Название занято — переименуйте действующую запись», строка остаётся</li>
+<li data-mdline="934"><a class="pnum" id="p-404" href="#p-404">404</a><strong>4xx (409 NOT_DELETED):</strong> тост «Запись уже восстановлена», строка исчезает</li>
+<li data-mdline="935"><a class="pnum" id="p-405" href="#p-405">405</a><strong>4xx (404 CATEGORY_NOT_FOUND / EQUIPMENT_TYPE_NOT_FOUND):</strong> тост «Категория не найдена» / «Тип оборудования не найден», строка исчезает</li>
+<li data-mdline="936"><a class="pnum" id="p-406" href="#p-406">406</a><strong>4xx (403):</strong> тост «Нет доступа»</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> как в части 1 <a class="xref" href="#s-8-1">§8.1</a> — потеря связи, перезагрузка из адресной строки, параллельное восстановление другим администратором.</p>
+<h3 id="s-8-3">§8.3. Экран/форма «Карточка заказа, оборудование, Перемещения — бейджи «удалён»»</h3>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="943"><a class="pnum" id="p-407" href="#p-407">407</a><strong>Путь:</strong> доска → карточка заказа; «Клиенты» → форма единицы оборудования; меню «Работа → Перемещения»</li>
+<li data-mdline="944"><a class="pnum" id="p-408" href="#p-408">408</a><strong>URL:</strong> <code>/?task={номер}</code>, <code>/equipment/:id</code>, <code>/transfers?id={номер}</code> (as-is)</li>
+<li data-mdline="945"><a class="pnum" id="p-409" href="#p-409">409</a><strong>Роли:</strong> admin, executor (форма единицы — admin) · <strong>Устройство:</strong> десктоп, телефон</li>
+<li data-mdline="946"><a class="pnum" id="p-410" href="#p-410">410</a><strong>При открытии:</strong> as-is <code>GET /api/v1/tasks/:id/card</code>, <code>GET /api/v1/transfers/:id</code>; форма единицы — серверная отрисовка (<a class="xref" href="#s-6-9">§6.9</a>)</li>
+<li data-mdline="947"><a class="pnum" id="p-411" href="#p-411">411</a><strong>200:</strong> as-is экраны с новыми бейджами · <strong>Пусто:</strong> as-is · <strong>4xx:</strong> as-is</li>
+</ul>
+<p><strong>Что на странице (сверху вниз) — только изменения:</strong></p>
+<ol>
+<li data-mdline="950"><a class="pnum" id="p-412" href="#p-412">412</a>Карточка заказа, блок «Услуги»: бейдж «удалён» у названия услуги при <code class="k-f">service_is_deleted</code>; у товара услуги — при <code class="k-f">product_is_deleted</code>.</li>
+<li data-mdline="951"><a class="pnum" id="p-413" href="#p-413">413</a>Карточка заказа, выбор услуги для добавления и выбор товара для строки услуги — без удалённых записей.</li>
+<li data-mdline="952"><a class="pnum" id="p-414" href="#p-414">414</a>Форма единицы оборудования и список единиц клиента: бейдж «удалён» у типа при <code class="k-f">type_is_deleted</code>; в выборе типа удалённых нет.</li>
+<li data-mdline="953"><a class="pnum" id="p-415" href="#p-415">415</a>«Перемещения», документ: бейдж «удалён» у товара в строке при <code class="k-f">product_is_deleted</code>; в выборе товара для новой строки удалённых нет.</li>
+<li data-mdline="954"><a class="pnum" id="p-416" href="#p-416">416</a>«Остатки» (<code>/stock</code>): удалённый товар с ненулевым остатком — строкой с бейджем «удалён» справа от названия (<code class="k-f">is_deleted</code>); кнопка корректировки остатка в строке работает как обычно; удалённые товары с нулевым остатком не показываются.</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="957"><a class="pnum" id="p-417" href="#p-417">417</a><strong>Добавить в заказ услугу, удалённую, пока карточка открыта</strong></li>
+<ul>
+<li data-mdline="958"><a class="pnum" id="p-418" href="#p-418">418</a><strong>Элемент:</strong> кнопка добавления услуги в блоке «Услуги» (as-is)</li>
+<li data-mdline="959"><a class="pnum" id="p-419" href="#p-419">419</a><strong>UI:</strong> as-is</li>
+<li data-mdline="960"><a class="pnum" id="p-420" href="#p-420">420</a><strong>Вызов:</strong> as-is <code>POST /api/v1/tasks/{id}/subtasks</code> (<a class="xref" href="#s-6-9">§6.9</a>)</li>
+<li data-mdline="961"><a class="pnum" id="p-421" href="#p-421">421</a><strong>200:</strong> —</li>
+<li data-mdline="962"><a class="pnum" id="p-422" href="#p-422">422</a><strong>4xx (400 service_id not_found):</strong> ошибка в шапке карточки «Услуга не найдена»</li>
+</ul>
+<li data-mdline="963"><a class="pnum" id="p-423" href="#p-423">423</a><strong>Добавить в услугу заказа или в документ товар, удалённый, пока форма открыта</strong></li>
+<ul>
+<li data-mdline="964"><a class="pnum" id="p-424" href="#p-424">424</a><strong>Элемент:</strong> кнопка добавления товара в услуге (as-is); кнопка «Сохранить» документа (as-is)</li>
+<li data-mdline="965"><a class="pnum" id="p-425" href="#p-425">425</a><strong>UI:</strong> as-is</li>
+<li data-mdline="966"><a class="pnum" id="p-426" href="#p-426">426</a><strong>Вызов:</strong> as-is <code>POST /api/v1/subtasks/{id}/products</code>; <code>POST /api/v1/transfers</code> либо <code>PUT /api/v1/transfers/{id}</code> (<a class="xref" href="#s-6-9">§6.9</a>)</li>
+<li data-mdline="967"><a class="pnum" id="p-427" href="#p-427">427</a><strong>200:</strong> —</li>
+<li data-mdline="968"><a class="pnum" id="p-428" href="#p-428">428</a><strong>4xx (400 product_id not_found):</strong> ошибка в шапке карточки либо под строкой документа — «Товар не найден»</li>
+</ul>
+<li data-mdline="969"><a class="pnum" id="p-429" href="#p-429">429</a><strong>Списать остаток удалённого товара (отчёт «Остатки»)</strong></li>
+<ul>
+<li data-mdline="970"><a class="pnum" id="p-430" href="#p-430">430</a><strong>Элемент:</strong> кнопка корректировки остатка в строке товара отчёта «Остатки» (as-is расположение и вид)</li>
+<li data-mdline="971"><a class="pnum" id="p-431" href="#p-431">431</a><strong>UI:</strong> as-is окно корректировки</li>
+<li data-mdline="972"><a class="pnum" id="p-432" href="#p-432">432</a><strong>Вызов:</strong> as-is адрес корректировки остатка пакета <code>board</code>, тело <code>{ stock, warehouse_id }</code> (<a class="xref" href="#s-6-9">§6.9</a>)</li>
+<li data-mdline="973"><a class="pnum" id="p-433" href="#p-433">433</a><strong>200:</strong> остаток уменьшен (значение между нулём и текущим); при нулевом остатке на всех складах строка удалённого товара исчезает из отчёта</li>
+<li data-mdline="974"><a class="pnum" id="p-434" href="#p-434">434</a><strong>4xx (409 PRODUCT_DELETED_WRITE_OFF_ONLY):</strong> красный текст под полем остатка «Товар удалён — его остаток можно только списать» (введено значение больше текущего либо с другим знаком)</li>
+<li data-mdline="975"><a class="pnum" id="p-435" href="#p-435">435</a><strong>4xx (404 PRODUCT_NOT_FOUND):</strong> тост «Товар не найден» (на выбранном складе у удалённого товара остатка нет)</li>
+<li data-mdline="976"><a class="pnum" id="p-436" href="#p-436">436</a><strong>4xx (400):</strong> as-is ошибки корректировки под полем</li>
+</ul>
+<li data-mdline="977"><a class="pnum" id="p-437" href="#p-437">437</a><strong>Работа с услугой заказа, удалённой из каталога</strong></li>
+<ul>
+<li data-mdline="978"><a class="pnum" id="p-438" href="#p-438">438</a><strong>Элемент:</strong> все as-is кнопки и поля услуги в карточке заказа</li>
+<li data-mdline="979"><a class="pnum" id="p-439" href="#p-439">439</a><strong>UI:</strong> as-is</li>
+<li data-mdline="980"><a class="pnum" id="p-440" href="#p-440">440</a><strong>Вызов:</strong> as-is адреса <code>/api/v1/subtasks/{id}</code></li>
+<li data-mdline="981"><a class="pnum" id="p-441" href="#p-441">441</a><strong>200:</strong> as-is — статус, исполнитель, цена, товары услуги правятся как обычно</li>
+<li data-mdline="982"><a class="pnum" id="p-442" href="#p-442">442</a><strong>4xx:</strong> as-is ошибки</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> запись каталога восстановили — бейдж исчезает при следующей загрузке экрана (автообновления нет, as-is).</p>
+<h2 id="s-9">§9. Решения (DS-index)</h2>
+<p>Строки — дословно из мастера, номера не меняются; включены только решения, действующие в части 5.</p>
+<table><thead><tr><th>DS</th><th>Формулировка</th><th>Источник</th><th>Статус</th></tr></thead><tbody><tr data-mdline="991"><td><a class="pnum" id="p-443" href="#p-443">443</a><a id="ds-003"></a><strong>DS-003</strong></td><td>Удаляет и восстанавливает только администратор; раздел «Удалённые» и его API — только администратор; остальным — 403 «Нет доступа»</td><td>батч 1 (В-2)</td><td>closed</td></tr><tr data-mdline="992"><td><a class="pnum" id="p-444" href="#p-444">444</a><a id="ds-009"></a><strong>DS-009</strong></td><td>Архив и удаление — два независимых состояния: «В архив» остаётся как есть; удалённая запись возвращается с прежним признаком архива</td><td>батч 2 (В-5)</td><td>closed</td></tr><tr data-mdline="993"><td><a class="pnum" id="p-445" href="#p-445">445</a><a id="ds-011"></a><strong>DS-011</strong></td><td>Один раздел «Удалённые» с вкладками по видам записей; в строке — что удалено, причина, кто, когда и кнопка «Восстановить»; фильтры — поиск, период, кто удалил</td><td>батч 2 (В-8), батч 4 (В-15); фильтры — inferred</td><td>closed</td></tr><tr data-mdline="994"><td><a class="pnum" id="p-446" href="#p-446">446</a><a id="ds-012"></a><strong>DS-012</strong></td><td>Удалённое хранится бессрочно; окончательного удаления и автоматической очистки нет</td><td>батч 3 (В-9)</td><td>closed</td></tr><tr data-mdline="995"><td><a class="pnum" id="p-447" href="#p-447">447</a><a id="ds-014"></a><strong>DS-014</strong></td><td>Удалить можно всегда, ссылки не мешают: в действующих заказах и документах удалённая запись остаётся видна с пометкой «удалён», в новых выбрать её нельзя. Сняты отказы <code>CLIENT_HAS_TASKS</code>, <code>EQUIPMENT_HAS_TRANSFERS</code>, <code>EQUIPMENT_USED_IN_TASKS</code> и отказы «используется» каталога. Заменяет transfers <a class="xref" href="#ds-026">DS-026</a> в части удаления единицы из справочника</td><td>батч 3 (В-10)</td><td>closed</td></tr><tr data-mdline="996"><td><a class="pnum" id="p-448" href="#p-448">448</a><a id="ds-017"></a><strong>DS-017</strong></td><td>Название удалённой записи свободно: уникальность — только среди действующих (категории, типы оборудования, склады, поставщики); восстановление при занятом названии — 409 <code>NAME_TAKEN</code> «Название занято — переименуйте действующую запись»</td><td>батч 3 (В-12)</td><td>closed</td></tr><tr data-mdline="997"><td><a class="pnum" id="p-449" href="#p-449">449</a><a id="ds-020"></a><strong>DS-020</strong></td><td>Причина удаления обязательна для любого вида записи: 1–500 символов после обрезки пробелов; без неё удалить нельзя</td><td>батч 4 (В-15); границы длины — inferred</td><td>closed</td></tr><tr data-mdline="998"><td><a class="pnum" id="p-450" href="#p-450">450</a><a id="ds-021"></a><strong>DS-021</strong></td><td>Не удаляются: товар с ненулевым остатком на любом складе (409 <code>PRODUCT_HAS_STOCK</code>); склад с товаром, оборудованием или незавершёнными перемещениями (409 <code>WAREHOUSE_IN_USE</code>); последний активный склад (409 <code>WAREHOUSE_LAST_ACTIVE</code>)</td><td>батч 4 (В-16); последний активный склад — inferred из кода (<code>internal/features/warehouses</code>)</td><td>closed</td></tr><tr data-mdline="999"><td><a class="pnum" id="p-451" href="#p-451">451</a><a id="ds-022"></a><strong>DS-022</strong></td><td>Совместимость — MVP: рабочей версии нет, меняем свободно, без переходного периода; данные на базе сохраняются, существующие записи — действующие</td><td>батч 5 (В-17)</td><td>closed</td></tr><tr data-mdline="1000"><td><a class="pnum" id="p-452" href="#p-452">452</a><a id="ds-023"></a><strong>DS-023</strong></td><td>UI-scope: Swagger не ведём; адаптив минимальный; темы в автотестах — обе</td><td>батч 5 (В-18, В-19, В-20)</td><td>closed</td></tr><tr data-mdline="1001"><td><a class="pnum" id="p-453" href="#p-453">453</a><a id="ds-024"></a><strong>DS-024</strong></td><td>Конкурентность: удаление и восстановление — атомарный UPDATE с условием по <code class="k-f">deleted_at</code>; повтор удаления — 404, повтор восстановления — 409 <code>NOT_DELETED</code>; заказ — под блокировкой строки; документ — по <code class="k-f">version</code></td><td>inferred</td><td>closed</td></tr><tr data-mdline="1002"><td><a class="pnum" id="p-454" href="#p-454">454</a><a id="ds-025"></a><strong>DS-025</strong></td><td>Время удаления хранится в UTC, показывается и фильтруется по часовому поясу пользователя, формат «ДД.ММ.ГГГГ ЧЧ:ММ»</td><td>черновик (правила проекта), <code>docs/features/user-timezone</code></td><td>closed</td></tr><tr data-mdline="1003"><td><a class="pnum" id="p-455" href="#p-455">455</a><a id="ds-026"></a><strong>DS-026</strong></td><td>Удалённая запись для всех обычных адресов не существует: чтение по идентификатору и любая мутация — 404 своего вида; доступны только восстановление и раздел «Удалённые»</td><td>inferred из В-7</td><td>closed</td></tr><tr data-mdline="1004"><td><a class="pnum" id="p-456" href="#p-456">456</a><a id="ds-027"></a><strong>DS-027</strong></td><td>Уборка тестовых данных автотестами — служебный адрес физического удаления, включается переменной окружения <code>TEST_PURGE_ENABLED=true</code>, по умолчанию выключен</td><td>inferred, согласовано оркестратором (батч 4)</td><td>closed</td></tr><tr data-mdline="1005"><td><a class="pnum" id="p-457" href="#p-457">457</a><a id="ds-028"></a><strong>DS-028</strong></td><td>Единый API: удаление — <code>DELETE /api/v1/{ресурс}/:id</code> с JSON-телом <code>{reason}</code> (у документа — и <code>version</code>, перенесён из query); восстановление — <code>POST /api/v1/{ресурс}/:id/restore</code>; список — <code>GET /api/v1/deleted</code> в конверте <code>{items, total, limit, offset}</code></td><td>inferred, CLAUDE.md §API-1</td><td>closed</td></tr><tr data-mdline="1006"><td><a class="pnum" id="p-458" href="#p-458">458</a><a id="ds-030"></a><strong>DS-030</strong></td><td>Аудит: на записи хранится последнее удаление — кто, когда, почему; при восстановлении отметка стирается; история повторных удалений не ведётся; факты удаления и восстановления — в журнал приложения</td><td>inferred из В-15, zap</td><td>closed</td></tr><tr data-mdline="1007"><td><a class="pnum" id="p-459" href="#p-459">459</a><a id="ds-031"></a><strong>DS-031</strong></td><td>Задача Tier L реализуется шестью частями S/M по порядку: <code>soft-delete-core</code>, <code>soft-delete-transfers</code>, <code>soft-delete-board-columns</code>, <code>soft-delete-clients</code>, <code>soft-delete-catalog</code>, <code>soft-delete-warehouses-suppliers</code>; спека части разворачивает полные таблицы полей своих таблиц</td><td>оркестратор (бриф), inferred</td><td>closed</td></tr><tr data-mdline="1008"><td><a class="pnum" id="p-460" href="#p-460">460</a><a id="ds-032"></a><strong>DS-032</strong></td><td>Существующие SSR-формы удаления (клиенты, оборудование, каталог, типы оборудования) принимают обязательное поле «Причина» и удаляют мягко</td><td>inferred из В-15</td><td>closed</td></tr><tr data-mdline="1009"><td><a class="pnum" id="p-461" href="#p-461">461</a><a id="ds-033"></a><strong>DS-033</strong></td><td>UI-конвенции: ошибка поля — под полем; тосты — правый верхний угол, 5 секунд; причина и подтверждения — <code>KT.uiDialog</code>; пометка «удалён» — серый бейдж; предупреждения восстановления — жёлтый блок над таблицей</td><td>inferred, transfers <a class="xref" href="#ds-052">DS-052</a></td><td>closed</td></tr><tr data-mdline="1010"><td><a class="pnum" id="p-462" href="#p-462">462</a><a id="ds-042"></a><strong>DS-042</strong></td><td>Остаток, появившийся у удалённого товара или на удалённом складе позже (возврат из заказа, приём документа), виден в отчёте «Остатки» с пометкой «удалён»; при нулевом остатке удалённые товар и склад в отчёте не показываются. Ручная корректировка такого остатка разрешена — чтобы его списать</td><td>батч 6 (В-23); разрешение корректировки — inferred</td><td>closed</td></tr><tr data-mdline="1011"><td><a class="pnum" id="p-463" href="#p-463">463</a><a id="ds-045"></a><strong>DS-045</strong></td><td>Заявка перемещения не восстанавливается, пока что-то из её состава в удалённых — единица оборудования, товар, склад или поставщик: 409 <code>TRANSFER_HAS_DELETED_REFS</code> «В перемещении есть удалённые записи — сначала восстановите их», <code>details.kind</code> и <code>details.id</code>. Отменённые документы не проверяются. Строки удалённой заявки не удерживают единицу, товар, склад и поставщика от удаления (следствие <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-018">DS-018</a>, <a class="xref" href="#ds-044">DS-044</a>), поэтому без этой проверки восстановленная заявка привезла бы товар или оборудование на удалённый склад либо заняла удалённую единицу (нарушение <a class="xref" href="#ds-041">DS-041</a>). Проверка каждого вида вводится его частью: единица — часть 4, товар — часть 5, склад и поставщик — часть 6</td><td>inferred (следствие <a class="xref" href="#ds-041">DS-041</a>, <a class="xref" href="#ds-044">DS-044</a>; по аналогии с <a class="xref" href="#ds-043">DS-043</a>)</td><td>closed</td></tr><tr data-mdline="1012"><td><a class="pnum" id="p-464" href="#p-464">464</a><a id="ds-046"></a><strong>DS-046</strong></td><td>Дополняет <a class="xref" href="#ds-045">DS-045</a>. Отмена проведения документа перемещения отклоняется, если его единица оборудования, товар или склад в удалённых: 409 <code>TRANSFER_HAS_DELETED_REFS</code>, <code>details.kind</code> и <code>details.id</code>. Откат вернул бы документ в «В пути»: удалённая единица оказалась бы в пути (нарушение <a class="xref" href="#ds-041">DS-041</a>), а остаток удалённого товара или на удалённом складе изменился бы. Достижимый случай для единицы — документ «склад → клиент» получен, затем единицу или клиента удалили. Удалённый поставщик отмене проведения не мешает: он не держит ни остатка, ни местоположения. Проверка вводится по частям: единица — часть 4, товар — часть 5, склад — часть 6</td><td>оркестратор по ревью части 4 (единица; пользователь уведомлён); товар, склад и исключение для поставщика — inferred</td><td>closed</td></tr><tr data-mdline="1013"><td><a class="pnum" id="p-465" href="#p-465">465</a><a id="ds-047"></a><strong>DS-047</strong></td><td>Дополняет <a class="xref" href="#ds-046">DS-046</a>. Отправка заявки перемещения отклоняется, если её товар в удалённых: 409 <code>TRANSFER_HAS_DELETED_REFS</code>, <code>details.kind</code> = <code>product</code>, <code>details.id</code> — для всех направлений. Отмена документа «В пути» с удалённым товаром НЕ запрещается: товар возвращается на склад-источник и виден в «Остатках» с пометкой (<a class="xref" href="#ds-042">DS-042</a>). Отправка заявки с удалённым складом отправления или назначения отклоняется тем же кодом (<code>details.kind</code> = <code>warehouse</code>) — как страховка: склад с действующей заявкой не удаляется (<a class="xref" href="#ds-021">DS-021</a>), а заявка с удалённым складом не восстанавливается (<a class="xref" href="#ds-045">DS-045</a>). Удалённый поставщик отправке не мешает: он не держит ни остатка, ни местоположения, а отправка — доведение начатого документа (<a class="xref" href="#ds-007">DS-007</a>). Проверка товара — часть 5, склада — часть 6</td><td>оркестратор по ревью части 5 (товар; пользователь уведомлён и не возразил); склад и исключение для поставщика — inferred</td><td>closed</td></tr><tr data-mdline="1014"><td><a class="pnum" id="p-466" href="#p-466">466</a><a id="ds-048"></a><strong>DS-048</strong></td><td>Уточняет <a class="xref" href="#ds-042">DS-042</a>. Остаток удалённого товара и остаток на удалённом складе можно только списывать. Корректировка допустима только по паре товар × склад с ненулевым остатком (иначе 404 <code>PRODUCT_NOT_FOUND</code> для удалённого товара, строка остатка не создаётся); новое значение — между нулём и текущим включительно (отрицательный остаток — долг — так же списывается к нулю); увеличение или смена знака → 409 <code>PRODUCT_DELETED_WRITE_OFF_ONLY</code> «Товар удалён — его остаток можно только списать» либо 409 <code>WAREHOUSE_DELETED_WRITE_OFF_ONLY</code> «Склад удалён — остаток на нём можно только списать». Корректировка остатка удалённого товара не требует, чтобы склад был активным. Товар — часть 5, склад — часть 6</td><td>оркестратор по ревью части 5 (товар; реализовано); правило и код для склада — inferred</td><td>closed</td></tr></tbody></table>
+<h2 id="s-10">§10. Открытые вопросы (status: open)</h2>
+<p>Открытых вопросов нет</p>
+<h2 id="s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</h2>
+<p>Оси UI-scope (<a class="xref" href="#ds-023">DS-023</a>): Swagger-сценариев нет; адаптив и темы раздела «Удалённые» и окна удаления покрыты TS-046, TS-047 части 1 (новые вкладки и бейджи проверяются в них же). Номера TS — мастер-идентификаторы; включены только сценарии части 5. В TS-012 и TS-033 в этой части проверяются таблицы <code class="k-t">products</code>, <code class="k-t">services</code>, <code class="k-t">catalog_categories</code>, <code class="k-t">equipment_types</code> и адреса <a class="xref" href="#s-6-1">§6.1</a>–<a class="xref" href="#s-6-8">§6.8</a>; в TS-026 — признаки услуги каталога и товара (клиент и единица — часть 4). В TS-027 негатив «приход на удалённый товар → 400» относится к новым строкам документов и заказов; остаток, пришедший по существующим ссылкам, — TS-054. В TS-059 и TS-060 в этой части проверяется вид <code>product</code>. TS-062 и TS-063 добавлены по ревью реализации части 5 и уже реализованы тестами. Видимость остатка на архивном и удалённом складе и список складов окна корректировки — часть 6 (TS-065, <a class="xref" href="#ds-049">DS-049</a>).</p>
+<h3 id="h3-650">Unit / Integration (Go)</h3>
+<ul>
+<li data-mdline="1023"><a class="pnum" id="p-467" href="#p-467">467</a><strong>TS-012.</strong> Миграция: после применения все существующие строки 11 таблиц имеют <code>deleted_at IS NULL</code>; CHECK «три поля вместе» отклоняет частичное заполнение (части 1–6, каждая — свои таблицы) — <a class="xref" href="#ds-022">DS-022</a>, <a class="xref" href="#ds-030">DS-030</a></li>
+<ul>
+<li data-mdline="1024"><a class="pnum" id="p-468" href="#p-468">468</a>негатив: UPDATE только <code>deleted_at</code> без <code>deleted_by</code> → ошибка CHECK</li>
+</ul>
+<li data-mdline="1025"><a class="pnum" id="p-469" href="#p-469">469</a><strong>TS-026.</strong> Пометки в карточке: у действующего заказа с удалённым клиентом, единицей, услугой каталога, товаром в <code>GET /api/v1/tasks/:id/card</code> — <code class="k-f">client_is_deleted</code>, <code class="k-f">is_deleted</code> (единица), <code class="k-f">service_is_deleted</code>, <code class="k-f">product_is_deleted</code> = true (части 4, 5) — <a class="xref" href="#ds-014">DS-014</a></li>
+<ul>
+<li data-mdline="1026"><a class="pnum" id="p-470" href="#p-470">470</a>негатив: у действующих записей все четыре признака = false</li>
+</ul>
+<li data-mdline="1027"><a class="pnum" id="p-471" href="#p-471">471</a><strong>TS-027.</strong> Удаление товара: нулевой остаток на всех складах → 200; ненулевой хотя бы на одном → 409 <code>PRODUCT_HAS_STOCK</code>; товар в заказах удалению не мешает (часть 5) — <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-014">DS-014</a></li>
+<ul>
+<li data-mdline="1028"><a class="pnum" id="p-472" href="#p-472">472</a>негатив: приход на удалённый товар → 400 <code>product_id: not_found</code></li>
+</ul>
+<li data-mdline="1029"><a class="pnum" id="p-473" href="#p-473">473</a><strong>TS-028.</strong> Архив и удаление независимы: архивная запись удаляется и восстанавливается архивной (<code class="k-f">is_active</code> = false); активная — активной; список справочника с фильтром «архив» удалённых не содержит (часть 5) — <a class="xref" href="#ds-009">DS-009</a></li>
+<ul>
+<li data-mdline="1030"><a class="pnum" id="p-474" href="#p-474">474</a>негатив: в <code>GET /api/v1/deleted</code> у архивной <code class="k-f">is_archived</code> = true</li>
+</ul>
+<li data-mdline="1031"><a class="pnum" id="p-475" href="#p-475">475</a><strong>TS-029.</strong> Название свободно: после удаления категории создаётся новая с тем же названием и видом; восстановление старой → 409 <code>NAME_TAKEN</code>; после переименования новой — восстановление 200 (часть 5) — <a class="xref" href="#ds-017">DS-017</a></li>
+<ul>
+<li data-mdline="1032"><a class="pnum" id="p-476" href="#p-476">476</a>негатив: две действующие категории одного вида с одним названием по-прежнему невозможны</li>
+</ul>
+<li data-mdline="1033"><a class="pnum" id="p-477" href="#p-477">477</a><strong>TS-030.</strong> Тип оборудования и услуга каталога: удаление при наличии единиц и услуг заказов → 200; выбор удалённого типа в единице → 400 <code>type_id: not_found</code>; удалённой услуги в заказе → 400 <code>service_id: not_found</code> (часть 5) — <a class="xref" href="#ds-014">DS-014</a></li>
+<ul>
+<li data-mdline="1034"><a class="pnum" id="p-478" href="#p-478">478</a>негатив: существующие единицы и услуги заказов не изменились</li>
+</ul>
+<li data-mdline="1035"><a class="pnum" id="p-479" href="#p-479">479</a><strong>TS-033.</strong> Права на всех 22 адресах удаления и восстановления: executor → 403 «Нет доступа» до поиска записи, включая несуществующий идентификатор (части 1–6) — <a class="xref" href="#ds-003">DS-003</a></li>
+<ul>
+<li data-mdline="1036"><a class="pnum" id="p-480" href="#p-480">480</a>негатив: без сессии → 401</li>
+</ul>
+<li data-mdline="1037"><a class="pnum" id="p-481" href="#p-481">481</a><strong>TS-054.</strong> Остаток на удалённом товаре: товар удалён при нулевом остатке, затем заказ с этим товаром уходит из списывающей колонки → в <code>GET /api/v1/stock</code> строка товара с <code class="k-f">is_deleted</code> = true и возвращённым остатком; ручная корректировка до нуля → 200, строка исчезает из отчёта (часть 5) — <a class="xref" href="#ds-042">DS-042</a></li>
+<ul>
+<li data-mdline="1038"><a class="pnum" id="p-482" href="#p-482">482</a>негатив: удалённый товар с нулевым остатком в отчёте не показывается; добавить его в новый заказ нельзя — 400 <code>product_id: not_found</code></li>
+</ul>
+<li data-mdline="1039"><a class="pnum" id="p-483" href="#p-483">483</a><strong>TS-059.</strong> Восстановление заявки с удалённым товаром, складом или поставщиком → 409 <code>TRANSFER_HAS_DELETED_REFS</code> с соответствующим <code>details.kind</code> (<code>product</code>, <code>warehouse</code>, <code>supplier</code>); после восстановления записи заявка восстанавливается (товар — часть 5; склад и поставщик — часть 6) — <a class="xref" href="#ds-045">DS-045</a></li>
+<ul>
+<li data-mdline="1040"><a class="pnum" id="p-484" href="#p-484">484</a>негатив: отменённый документ с удалёнными товаром, складом, поставщиком восстанавливается — 200</li>
+</ul>
+<li data-mdline="1041"><a class="pnum" id="p-485" href="#p-485">485</a><strong>TS-060.</strong> Отмена проведения документа с удалённым товаром или складом: <code>POST /api/v1/transfers/:id/unreceive</code> → 409 <code>TRANSFER_HAS_DELETED_REFS</code> с <code>details.kind</code> = <code>product</code> либо <code>warehouse</code>, документ остаётся «Получено», остатки не изменились; после восстановления записи отмена проведения проходит; документ удалённого поставщика при действующих товаре и складе откатывается — 200 (товар — часть 5; склад и поставщик — часть 6) — <a class="xref" href="#ds-046">DS-046</a></li>
+<ul>
+<li data-mdline="1042"><a class="pnum" id="p-486" href="#p-486">486</a>негатив: приём документа «В пути» с удалённым товаром по-прежнему проходит — остаток виден с пометкой (<a class="xref" href="#ds-042">DS-042</a>)</li>
+</ul>
+<li data-mdline="1043"><a class="pnum" id="p-487" href="#p-487">487</a><strong>TS-061.</strong> Счётчик единиц типа оборудования: <code class="k-f">equipment_count</code> в <code>GET /api/v1/equipment-types</code> считает только действующие единицы — тип с единственной мягко удалённой единицей показывает 0; такой тип удаляется (<code>DELETE /api/v1/equipment-types/:id</code> → 200) без <code>EQUIPMENT_TYPE_IN_USE</code> (часть 5) — <a class="xref" href="#ds-014">DS-014</a></li>
+<ul>
+<li data-mdline="1044"><a class="pnum" id="p-488" href="#p-488">488</a>негатив: после восстановления единицы счётчик типа снова 1; удалённый тип у неё показан с <code class="k-f">type_is_deleted</code> = true</li>
+</ul>
+<li data-mdline="1045"><a class="pnum" id="p-489" href="#p-489">489</a><strong>TS-062.</strong> Отправка заявки с удалённым товаром: <code>POST /api/v1/transfers/:id/send</code> → 409 <code>TRANSFER_HAS_DELETED_REFS</code> с <code>details.kind</code> = <code>product</code>, документ остаётся «Заявка», остатки не изменились — для всех направлений; гонка «отправка ↔ удаление товара» даёт детерминированный исход; реализовано тестами <code>TestSendRefusedForDeletedProduct</code>, <code>TestRace_SendWaitsForProductDelete</code> (часть 5) — <a class="xref" href="#ds-047">DS-047</a></li>
+<ul>
+<li data-mdline="1046"><a class="pnum" id="p-490" href="#p-490">490</a>негатив: отмена документа «В пути» с удалённым товаром проходит — 200, товар вернулся на склад-источник и виден в «Остатках» с пометкой</li>
+</ul>
+<li data-mdline="1047"><a class="pnum" id="p-491" href="#p-491">491</a><strong>TS-063.</strong> Остаток удалённого товара — только списание: корректировка к значению между нулём и текущим → 200; увеличение или смена знака → 409 <code>PRODUCT_DELETED_WRITE_OFF_ONLY</code>; отрицательный остаток списывается к нулю; пара товар × склад без остатка → 404 <code>PRODUCT_NOT_FOUND</code>, строка <code>product_stock</code> не создана; корректировка на архивном складе проходит; реализовано тестом <code>TestStock_DeletedProductAdjustOnlyWriteOff</code> (часть 5) — <a class="xref" href="#ds-048">DS-048</a></li>
+<ul>
+<li data-mdline="1048"><a class="pnum" id="p-492" href="#p-492">492</a>негатив: у действующего товара корректировка в обе стороны работает как раньше</li>
+</ul>
+</ul>
+<h3 id="h3-705">E2E (Playwright)</h3>
+<ul>
+<li data-mdline="1051"><a class="pnum" id="p-493" href="#p-493">493</a><strong>TS-044.</strong> Товар и категория — экраны <a class="xref" href="#s-8-1">§8.1</a>, <a class="xref" href="#s-8-2">§8.2</a> — <a class="xref" href="#ds-009">DS-009</a>, <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-021">DS-021</a> (часть 5)</li>
+<ul>
+<li data-mdline="1052"><a class="pnum" id="p-494" href="#p-494">494</a>шаги: удалить категорию → создать новую с тем же названием → восстановить старую; проверка: «Название занято — переименуйте действующую запись»; архивный товар после удаления и восстановления остаётся в архиве; негатив: товар с остатком — «У товара есть остаток на складе…»</li>
+</ul>
+</ul>
+<h3 id="h3-712">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</h3>
+<ul>
+<li data-mdline="1055"><a class="pnum" id="p-495" href="#p-495">495</a><strong>TS-F3.</strong> <code>e2e/fixtures/auth.ts</code>: новые помощники <code>softDelete(kind, id, reason)</code>, <code>restore(kind, id)</code>, <code>listDeleted(kind, filters)</code>; payload'ы типизировать wire-типами (§TD-6.2; сырые ключи невидимы гейтам) — <a class="xref" href="#ds-028">DS-028</a></li>
+<li data-mdline="1056"><a class="pnum" id="p-496" href="#p-496">496</a><strong>TS-F4.</strong> Существующие спеки с проверками безвозвратного удаления и отказов по ссылкам (<code>e2e/tests/board.spec.ts</code>, <code>board-guards.spec.ts</code>, <code>clients.spec.ts</code>, <code>equipment.spec.ts</code>, <code>catalog.spec.ts</code>, <code>equipment-types.spec.ts</code>, <code>transfers.spec.ts</code>, <code>transfers-revert.spec.ts</code>, <code>transfers-partners.spec.ts</code>, <code>polish.spec.ts</code>): ожидания меняются — обязательная причина, отсутствие 409 по ссылкам; каждая часть обновляет свои спеки — <a class="xref" href="#ds-006">DS-006</a>, <a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-020">DS-020</a></li>
+<li data-mdline="1057"><a class="pnum" id="p-497" href="#p-497">497</a><strong>TS-F6.</strong> Go live-тесты удаления (<code>internal/features/board/board_http_live_test.go</code>, <code>internal/features/transfers/transfers_partners_http_live_test.go</code>, <code>internal/features/clients</code>, <code>internal/features/catalog</code>): запросы DELETE получают тело с причиной; проверки «строки нет в базе» заменяются на «строка помечена удалённой» — <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-028">DS-028</a></li>
+<li data-mdline="1058"><a class="pnum" id="p-498" href="#p-498">498</a><strong>TS-F10.</strong> Каталог и типы оборудования в автотестах: <code>e2e/pages/CatalogPage.ts</code>, <code>e2e/pages/EquipmentTypesPage.ts</code>, <code>e2e/tests/catalog.spec.ts</code>, <code>equipment-types.spec.ts</code> — в шаги удаления добавляется ввод причины; проверки отказов «используется — отправьте в архив» заменяются на успешное удаление; созданные тестами товары, услуги, категории и типы убираются <code>purge(kind, id)</code>; обновить в части 5 — <a class="xref" href="#ds-027">DS-027</a>, <a class="xref" href="#ds-014">DS-014</a></li>
+</ul>
+<h2 id="h2-719">§Impact — точки касания существующего кода</h2>
+<p>Источник: <code>python3 ~/.claude/tools/impact_scan.py</code> (sample <code>internal/features/catalog</code>, <code>internal/features/equipmenttypes</code>; термы <code>products</code>, <code>services</code>, <code>catalog_categories</code>, <code>equipment_types</code>, <code>product_stock</code>, <code>PRODUCT_IN_USE</code>, <code>SERVICE_IN_USE</code>, <code>CATEGORY_IN_USE</code>, <code>EQUIPMENT_TYPE_IN_USE</code>) + поиск запросов к таблицам каталога вне пакетов-владельцев (fff) + решения мастера.</p>
+<table><thead><tr><th>#</th><th>Класс</th><th>Что задеваем (file:line / объект)</th><th>Дельта фичи</th><th>Решение</th><th>DS</th></tr></thead><tbody><tr data-mdline="1065"><td><a class="pnum" id="p-499" href="#p-499">499</a>1</td><td>SHARED-DEP</td><td><code>internal/features/catalog/products_service.go:155</code> (<code>Delete</code>), <code>services_service.go:183</code>, <code>categories_service.go:138</code>; обработчики <code>products_handler.go:93</code>, <code>services_handler.go:95</code>, <code>categories_handler.go:75</code> (ответы 204); <code>routes.go:22</code>, <code>:29</code>, <code>:36</code></td><td>мягкое удаление с причиной; ответ 200 с телом; новые <code>Restore</code> и маршруты <code>POST /:id/restore</code></td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-028">DS-028</a></td></tr><tr data-mdline="1066"><td><a class="pnum" id="p-500" href="#p-500">500</a>2</td><td>SHARED-DEP</td><td><code>internal/features/catalog/products_repo.go:198</code>, <code>services_repo.go:376</code>, <code>categories_repo.go:152</code> (<code>Delete</code>)</td><td>DELETE → UPDATE; разбор нарушений внешних ключей убирается; у товара — блокировка и проверка <code>product_stock</code></td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="1067"><td><a class="pnum" id="p-501" href="#p-501">501</a>3</td><td>SHARED-DEP</td><td><code>internal/features/catalog/products_repo.go:74</code>–<code>:110</code> (список, чтение), <code>categories_repo.go:58</code>–<code>:96</code> (список, <code>item_count</code>), <code>services_repo.go</code> (список, чтение, состав), <code>products_stock.go</code> (<code>updateStocks</code>, <code>checkStockWarehouses</code>)</td><td>условие <code>deleted_at IS NULL</code>; <code>category_is_deleted</code>, <code>product_is_deleted</code> в выборках; <code>item_count</code> — только действующие</td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-009">DS-009</a></td></tr><tr data-mdline="1068"><td><a class="pnum" id="p-502" href="#p-502">502</a>4</td><td>SHARED-DEP</td><td><code>internal/features/catalog/ssr_products.go:275</code>, <code>ssr_services.go:339</code>, <code>ssr_categories.go:74</code>; шаблоны <code>web/ssr/catalog</code></td><td>поле формы <code>reason</code>; повторный показ окна при ошибке; бейджи; страница 404 для удалённых</td><td>править</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="1069"><td><a class="pnum" id="p-503" href="#p-503">503</a>5</td><td>SHARED-DEP</td><td><code>internal/features/equipmenttypes/service.go:146</code> (<code>Delete</code>), <code>repo.go:157</code>, <code>handler.go:79</code>, <code>ssr.go:191</code>, <code>routes.go:20</code>; шаблоны <code>web/ssr/equipmenttypes</code></td><td>то же для типов оборудования; <code>equipment_count</code> — только действующие единицы: подзапрос <code>repo.go:43</code> получает условие <code>deleted_at IS NULL</code></td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="1070"><td><a class="pnum" id="p-504" href="#p-504">504</a>6</td><td>ENUMERATION</td><td>коды ошибок пакетов <code>catalog</code>, <code>equipmenttypes</code></td><td>новые <code>PRODUCT_HAS_STOCK</code>, <code>NAME_TAKEN</code> (409); <code>PRODUCT_IN_USE</code>, <code>SERVICE_IN_USE</code>, <code>CATEGORY_IN_USE</code>, <code>EQUIPMENT_TYPE_IN_USE</code> перестают возвращаться продуктовыми адресами (остаются в служебной уборке); <code>CATEGORY_NAME_TAKEN</code>, <code>EQUIPMENT_TYPE_NAME_TAKEN</code>, <code>EQUIPMENT_TYPE_NAME_ARCHIVED</code> — без изменений</td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="1071"><td><a class="pnum" id="p-505" href="#p-505">505</a>7</td><td>SHARED-DEP</td><td><code>internal/features/board/card_repo.go:134</code> (услуги карточки), <code>:193</code> (товары услуг), <code>card_dto.go:102</code>, <code>:124</code></td><td>новые поля <code>service_is_deleted</code>, <code>product_is_deleted</code></td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="1072"><td><a class="pnum" id="p-506" href="#p-506">506</a>8</td><td>SHARED-DEP</td><td><code>internal/features/board/subtask_products_repo.go:41</code> (проверка товара), <code>:99</code> (комплект услуги), проверка услуги при создании услуги заказа</td><td>удалённый товар и услуга → <code>not_found</code>; комплект — без удалённых товаров</td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="1073"><td><a class="pnum" id="p-507" href="#p-507">507</a>9</td><td>SHARED-DEP</td><td><code>internal/features/board/stock_repo.go:41</code>, <code>:70</code>, <code>:172</code>, <code>:219</code>, <code>:246</code> (отчёт «Остатки», корректировка), <code>stock_dto.go</code> (<code>StockRow</code>)</td><td>отчёт: существующее условие <code>is_active</code> дополняется «либо удалён с ненулевым остатком» при любом режиме списка; новое поле <code>is_deleted</code>; счётчики — без удалённых; корректировка удалённого товара — только списание (<code>PRODUCT_DELETED_WRITE_OFF_ONLY</code>), без требования активного склада</td><td>править</td><td><a class="xref" href="#ds-042">DS-042</a>, <a class="xref" href="#ds-048">DS-048</a>, <a class="xref" href="#ds-021">DS-021</a></td></tr><tr data-mdline="1074"><td><a class="pnum" id="p-508" href="#p-508">508</a>10</td><td>SHARED-DEP</td><td><code>internal/features/board/tasks_repo.go:183</code>, <code>:347</code>, <code>:350</code>, <code>:355</code>, <code>task_equipment_repo.go:75</code>, <code>:119</code> (соединения с <code>services</code>, <code>products</code> из заказов)</td><td>без изменений: из заказов удалённая запись читается как обычно</td><td>не трогать</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="1075"><td><a class="pnum" id="p-509" href="#p-509">509</a>11</td><td>SHARED-DEP</td><td><code>internal/features/clients/repo.go:406</code> (соединение с <code>equipment_types</code>), <code>:444</code> (<code>TypeActive</code>), <code>:554</code> (<code>TypeOptions</code>), <code>dto.go:61</code></td><td>новое поле <code>type_is_deleted</code>; выбор типа без удалённых; удалённый тип → <code>not_found</code></td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="1076"><td><a class="pnum" id="p-510" href="#p-510">510</a>12</td><td>SHARED-DEP</td><td><code>internal/features/transfers/dto.go:159</code>, проверка товаров строк документа в <code>repo.go</code>, восстановление документа</td><td>новое поле <code>product_is_deleted</code>; удалённый товар в новой строке → <code>not_found</code>; восстановление заявки, отправка заявки и отмена проведения документа с удалённым товаром → <code>TRANSFER_HAS_DELETED_REFS</code></td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-045">DS-045</a>, <a class="xref" href="#ds-046">DS-046</a>, <a class="xref" href="#ds-047">DS-047</a></td></tr><tr data-mdline="1077"><td><a class="pnum" id="p-511" href="#p-511">511</a>13</td><td>SHARED-DEP</td><td><code>internal/features/softdelete</code> (часть 1)</td><td>четыре вида в списке, счётчиках и служебной уборке; <code>is_archived</code></td><td>править</td><td><a class="xref" href="#ds-011">DS-011</a>, <a class="xref" href="#ds-027">DS-027</a></td></tr><tr data-mdline="1078"><td><a class="pnum" id="p-512" href="#p-512">512</a>14</td><td>FK</td><td><code>migrations/0004_catalog.up.sql:15</code> (<code>catalog_categories_kind_name_lower_uq</code>), <code>migrations/0003_clients_equipment.up.sql:31</code> (<code>equipment_types_name_lower_uq</code>); внешние ключи <code>:19</code>, <code>:36</code>, <code>:47</code>, <code>:56</code></td><td>новая миграция: по три поля на четырёх таблицах, CHECK, FK <code>deleted_by</code>, частичные индексы; два уникальных индекса названий пересоздаются частичными; внешние ключи не меняются</td><td>добавить</td><td><a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-022">DS-022</a></td></tr><tr data-mdline="1079"><td><a class="pnum" id="p-513" href="#p-513">513</a>15</td><td>FRONTEND</td><td><code>web/ssr/catalog</code>, <code>web/ssr/equipmenttypes</code>, <code>web/ssr/board</code>, <code>web/ssr/clients</code>, <code>web/ssr/transfers</code>, <code>web/ssr/softdelete</code> (часть 1)</td><td>окно с причиной; бейджи; четыре вкладки</td><td>править</td><td><a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="1080"><td><a class="pnum" id="p-514" href="#p-514">514</a>16</td><td>ENUMERATION</td><td><code>e2e/pages/CatalogPage.ts</code>, <code>e2e/pages/EquipmentTypesPage.ts</code>, <code>e2e/tests/catalog.spec.ts</code>, <code>equipment-types.spec.ts</code>, <code>polish.spec.ts</code>, <code>stock.spec.ts</code></td><td>причина в шагах удаления; ожидания по снятым отказам; уборка служебным адресом</td><td>править</td><td><a class="xref" href="#ds-027">DS-027</a>, <a class="xref" href="#ds-014">DS-014</a></td></tr><tr data-mdline="1081"><td><a class="pnum" id="p-515" href="#p-515">515</a>17</td><td>SHARED-DEP</td><td>Go live-тесты пакетов <code>catalog</code>, <code>equipmenttypes</code> (проверки 204, «используется → 409»)</td><td>ожидания: 200 с телом, удаление при ссылках проходит</td><td>править</td><td><a class="xref" href="#ds-014">DS-014</a>, <a class="xref" href="#ds-028">DS-028</a></td></tr><tr data-mdline="1082"><td><a class="pnum" id="p-516" href="#p-516">516</a>18</td><td>CONFIG</td><td>env-ключи</td><td>не задеваются</td><td>—</td><td>—</td></tr><tr data-mdline="1083"><td><a class="pnum" id="p-517" href="#p-517">517</a>19</td><td>MONITORING</td><td>дашборды, nginx</td><td>не задеваются</td><td>—</td><td>—</td></tr></tbody></table>
+<p><strong>Вне каталога фичи:</strong> есть — internal/features/catalog, internal/features/equipmenttypes, internal/features/board, internal/features/clients, internal/features/transfers, internal/features/softdelete, migrations, web/ssr/catalog, web/ssr/equipmenttypes, web/ssr/board, web/ssr/clients, web/ssr/transfers, web/ssr/softdelete, e2e</p>
+</body>
+</html>

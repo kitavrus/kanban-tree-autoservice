@@ -1,0 +1,42 @@
+# Изолированный стенд E2E (make e2e-isolated → scripts/e2e/run.sh): свои postgres+redis,
+# отдельные от dev-стенда docker-compose.yml. Данные — в tmpfs: каждый прогон стартует
+# с пустой БД (миграции + seed-админ), ничего не копится между прогонами и не трогает dev-БД.
+# Параллельные прогоны (несколько сессий/ворктри) не пересекаются: scripts/e2e/run.sh даёт
+# каждому прогону свой compose-проект (-p kanban-tree-e2e-<pid>-<время>), container_name
+# не задан (имена от проекта), host-порты по умолчанию — случайные свободные (пустой
+# E2E_PG_PORT/E2E_REDIS_PORT → «127.0.0.1::5432»), фактический порт скрипт читает через
+# `docker compose port`. Явный порт — env E2E_PG_PORT / E2E_REDIS_PORT.
+# Сервер приложения в compose не входит — его env (включая TEST_PURGE_ENABLED=true: служебная
+# уборка тестовых заказов, soft-delete-core DS-027) задаёт scripts/e2e/run.sh.
+name: kanban-tree-e2e
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: e2e
+    ports:
+      - "127.0.0.1:${E2E_PG_PORT:-}:5432"
+    # PG18+: каталог данных — /var/lib/postgresql (см. docker-compose.yml); tmpfs вместо
+    # тома — стенд одноразовый, а fsync на диск E2E не нужен.
+    tmpfs:
+      - /var/lib/postgresql
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:8
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${E2E_REDIS_PORT:-}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

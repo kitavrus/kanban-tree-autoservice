@@ -1,0 +1,32 @@
+-- Мягкое удаление — клиенты и единицы оборудования (docs/features/soft-delete-clients/draft-spec.md
+-- §4.1, §4.2, часть 4 мастер-спеки soft-delete): DS-014 отметка удаления на клиенте и единице,
+-- DS-030 «кто, когда, почему» хранятся вместе, DS-020 причина 1–500 символов, DS-015 единица,
+-- ушедшая вместе с клиентом (deleted_with_client). Режим MVP (DS-022): ALTER поверх 0020;
+-- существующие клиенты и единицы остаются действующими (три поля NULL, флаг false).
+
+ALTER TABLE clients
+    ADD COLUMN deleted_at timestamptz NULL,
+    ADD COLUMN deleted_by uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
+    ADD COLUMN delete_reason text NULL,
+    ADD CONSTRAINT clients_deleted_chk CHECK (
+        (deleted_at IS NULL AND deleted_by IS NULL AND delete_reason IS NULL)
+        OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL AND delete_reason IS NOT NULL
+            AND char_length(btrim(delete_reason)) BETWEEN 1 AND 500));
+
+-- Список вкладки «Клиенты» раздела «Удалённые»: сортировка по времени удаления (§6.5).
+CREATE INDEX clients_deleted_at_idx ON clients (deleted_at DESC, id) WHERE deleted_at IS NOT NULL;
+
+ALTER TABLE equipment
+    ADD COLUMN deleted_at timestamptz NULL,
+    ADD COLUMN deleted_by uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
+    ADD COLUMN delete_reason text NULL,
+    ADD COLUMN deleted_with_client boolean NOT NULL DEFAULT false,
+    ADD CONSTRAINT equipment_deleted_chk CHECK (
+        (deleted_at IS NULL AND deleted_by IS NULL AND delete_reason IS NULL)
+        OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL AND delete_reason IS NOT NULL
+            AND char_length(btrim(delete_reason)) BETWEEN 1 AND 500)),
+    -- DS-015: «вместе с клиентом» — только у удалённой единицы.
+    ADD CONSTRAINT equipment_deleted_with_client_chk CHECK (NOT deleted_with_client OR deleted_at IS NOT NULL);
+
+-- Список вкладки «Оборудование» раздела «Удалённые».
+CREATE INDEX equipment_deleted_at_idx ON equipment (deleted_at DESC, id) WHERE deleted_at IS NOT NULL;

@@ -1,0 +1,29 @@
+=== AC-001: POST /api/v1/clients (2 phones) ===
+curl -s -b $JAR -X POST http://localhost:8080/api/v1/clients -H "Content-Type: application/json" -H "X-Csrf-Token: $CSRF" -d '{"company_name":"ООО Ромашка","address":"ул. Ленина 1","contact_name":"Иванов Иван","contact_position":"Директор","phones":[{"phone":"+7 999 111-22-33","note":"основной"},{"phone":"8 999 444 55 66","note":""}]}'
+->
+{"id":"0c3deea8-9a39-4652-bce6-d9324fe85b08","company_name":"ООО Ромашка",...,"phones":[{"phone":"+7 999 111-22-33","note":"основной"},{"phone":"8 999 444 55 66","note":""}],"equipment_count":0,"version":1,...}
+status=201
+=> AC-001 «После сохранения клиент появляется в списке, пустые строки телефонов не сохраняются» — подтверждено (порядок сохранён, version=1).
+
+=== AC-002: пустая company_name ===
+POST /api/v1/clients {"company_name":"",...,"phones":[{"phone":"123","note":""}]}
+-> {"code":"VALIDATION","message":"validation failed","details":{"fields":[{"name":"company_name","message":"required"}]}} status=400
+=> AC-002 «Без названия компании клиент не сохраняется, сообщение у проблемного поля» — подтверждено.
+
+=== AC-002: телефоны — пустая строка ===
+POST /api/v1/clients {"company_name":"Тест",...,"phones":[{"phone":"","note":""}]}
+-> {"code":"VALIDATION",...,"fields":[{"name":"phones","message":"required"}]} status=400
+=> AC-002 «Без хотя бы одного телефона клиент не сохраняется» — подтверждено (пустая строка нормализуется в 0 телефонов -> required).
+
+=== AC-004: поиск по телефону, ведущая 8 против хранимого +7 ===
+GET /api/v1/clients?q=89994445566
+-> нашёл клиента "e2e-muhd46lo..." с телефоном "+7 (999) 444-55-66" (и другие e2e-фикстуры с тем же номером) status=200
+=> AC-004 «Поиск одной строкой находит клиента ... по телефону» — подтверждено (regexp digits-match ADR-003 работает live).
+
+=== AC-004: поиск по части компании (регистр) ===
+GET /api/v1/clients?q=ромашк
+-> нашёл 7 клиентов включая "ООО Ромашка" (created в этом прогоне) и e2e-фикстуры "...ромашка" status=200
+=> подтверждено, total=7 без дублей.
+
+=== AC-005: GET /api/v1/clients/{id} (version) ===
+-> version=1 status=200

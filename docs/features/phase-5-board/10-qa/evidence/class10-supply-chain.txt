@@ -1,0 +1,20 @@
+# Класс 10 — Supply Chain & Dependency Audit. Триггер: e2e/package.json изменён (новая devDependency `pg` ^8.13.0). go.mod/go.sum diff'ом НЕ затронуты.
+
+$ govulncheck ./...
+=== Symbol Results ===
+No vulnerabilities found.
+Your code is affected by 0 vulnerabilities.
+This scan also found 1 vulnerability in packages you import and 1 vulnerability
+in modules you require, but your code doesn't appear to call these vulnerabilities.
+
+$ govulncheck -show verbose ./...  (детали недостижимых)
+Vulnerability #1: GO-2026-6443 (Server panic via missing authority/Host headers) — google.golang.org/grpc@v1.83.1, fixed in v1.83.2. Транзитивная, код фичи не вызывает.
+Vulnerability #1 (modules): GO-2026-5932 (golang.org/x/crypto/openpgp unmaintained) — golang.org/x/crypto@v0.57.0, no fix. Транзитивная, не используется кодом фичи.
+Обе — pre-existing (go.mod/go.sum вне diff be769e5..HEAD этой фичи), reachable call path отсутствует → по правилу гейта не HIGH; т.к. вне diff текущей фичи — не заводится как new finding (нет нового прямого prod-зависимого риска, привнесённого phase-5-board).
+
+$ cd e2e && npm audit --omit=dev --audit-level=high
+found 0 vulnerabilities
+
+Новая devDependency `pg` (^8.13.0, e2e/package.json) — devDependency, не расширяет prod attack surface приложения; используется в e2e/fixtures/board.ts как pg-хелпер для тестовых фикстур услуг (design-tests.md ADR-103). npm audit 0 высоких/критических.
+
+Итог класса 10: HIGH/MEDIUM новых уязвимостей, привнесённых фичей phase-5-board, не обнаружено.

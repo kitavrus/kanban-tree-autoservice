@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature executor-payouts --repo /Users/igorpotema/mycode/kanban-tree --paths internal/features/board internal/features/executorpayouts
+(exit 0)
+
+api-conventions internal/features/board,internal/features/executorpayouts: PASS (проблем: 0)

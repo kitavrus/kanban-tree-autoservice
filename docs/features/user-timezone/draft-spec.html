@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Spec: Часовой пояс пользователя</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #24241f; --muted: #5f5e5a;
+  --border: #d3d1c7; --border-soft: #e4e2d9;
+  --surface: #f1efe8; --surface-soft: #fafaf7; --pre-bg: #f6f5f0;
+  --link: #185fa5; --open: #a32d2d;
+  --asis: #2e7d4f; --tobe: #b06000;
+  --kt: #dde9f8; --kf: #f6ecc8; --ki: #e8e6df; --ks: #dff0e2; --ke: #ece2f4; --kx: #f6dcda;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+    --border: #4c4c47; --border-soft: #3a3a36;
+    --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+    --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+  --border: #4c4c47; --border-soft: #3a3a36;
+  --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+  --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+}
+#themeBtn { position: fixed; top: 14px; right: 16px; z-index: 10;
+  width: 38px; height: 38px; border-radius: 50%; cursor: pointer; font-size: 17px;
+  background: var(--surface); color: var(--fg); border: 1px solid var(--border); }
+pre { position: relative; }
+.copyBtn { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 9px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; }
+.copyBtn:hover { color: var(--fg); border-color: var(--border); }
+a.pnum { color: var(--muted); font-size: .72em; display: inline-block; min-width: 2.2em;
+  vertical-align: baseline; opacity: .6; text-decoration: none; margin-right: .3em; }
+a.pnum:hover { opacity: 1; }
+li:has(> a.pnum:target) { background: var(--surface); border-radius: 4px; }
+tr:has(a.pnum:target) td { background: var(--surface) !important; }
+html { background: var(--bg); }
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+       color: var(--fg); background: var(--bg);
+       max-width: 920px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.55; }
+h1 { font-size: 1.7rem; border-bottom: 2px solid var(--border); padding-bottom: .4rem; }
+h2 { font-size: 1.3rem; margin-top: 2.2rem; border-bottom: 1px solid var(--border-soft); padding-bottom: .25rem; }
+h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+table { border-collapse: collapse; margin: .8rem 0; width: 100%; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+tr:nth-child(even) td { background: var(--surface-soft); }
+code { background: var(--surface); border-radius: 4px; padding: .1rem .35rem; font-size: .88em;
+       font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+pre { background: var(--pre-bg); border: 1px solid var(--border-soft); border-radius: 8px;
+      padding: .8rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid var(--border); margin: .8rem 0; padding: .2rem 1rem;
+             color: var(--muted); background: var(--surface-soft); }
+figure { margin: 1rem 0; text-align: center; }
+figure svg { max-width: 100%; height: auto; border-radius: 8px; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: .15rem 0; }
+nav.toc { background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 8px;
+          padding: .8rem 1.2rem; font-size: .92rem; }
+nav.toc ul { margin: .3rem 0; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc > ul > li { font-weight: 600; margin: .3rem 0; break-inside: avoid; }
+nav.toc ul ul { font-weight: 400; font-size: .9em; margin: .1rem 0 .25rem; }
+nav.toc ul ul li { margin: .05rem 0; }
+@media (min-width: 700px) { nav.toc > ul { column-count: 2; column-gap: 2.5rem; } }
+a { color: var(--link); }
+a.xref { text-decoration: none; border-bottom: 1px dotted var(--link); }
+a.xref:hover { border-bottom-style: solid; }
+h1, h2, h3, a[id^="ds-"] { scroll-margin-top: 14px; }
+tr:has(a:target) td { background: var(--surface) !important; }
+h2:target, h3:target { background: var(--surface-soft); }
+.badge-open { color: var(--open); font-weight: 600; }
+.badge-asis, .badge-tobe { font-weight: 600; font-size: .85em; padding: 0 .45em; border-radius: .7em; border: 1px solid currentColor; white-space: nowrap; }
+.badge-asis { color: var(--asis); }
+.badge-tobe { color: var(--tobe); }
+code.k-t { background: var(--kt); font-weight: 700; }
+code.k-f { background: var(--kf); }
+code.k-i { background: var(--ki); font-style: italic; }
+code.k-s { background: var(--ks); font-weight: 600; }
+code.k-e { background: var(--ke); }
+code.k-x { background: var(--kx); text-decoration: line-through; }
+.klegend { font-size: .85em; color: var(--muted); }
+@media print { body { max-width: none; } }
+</style>
+</head>
+<body>
+<button id="themeBtn" title="Тема: авто / тёмная / светлая">◐</button>
+<script>
+const r=document.documentElement,k='draft-spec-theme';
+const apply=v=>{v?r.setAttribute('data-theme',v):r.removeAttribute('data-theme')};
+apply(localStorage.getItem(k)||'');
+document.getElementById('themeBtn').onclick=()=>{
+  const cur=r.getAttribute('data-theme')||'';
+  const next=cur===''?'dark':cur==='dark'?'light':'';
+  next?localStorage.setItem(k,next):localStorage.removeItem(k);apply(next);
+};
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('pre').forEach(p=>{
+    const b=document.createElement('button');b.className='copyBtn';b.textContent='копировать';
+    b.onclick=()=>{navigator.clipboard.writeText(p.querySelector('code').innerText)
+      .then(()=>{b.textContent='✓ скопировано';setTimeout(()=>b.textContent='копировать',1500);});};
+    p.appendChild(b);
+  });
+});
+</script>
+<h1 id="h1-0">Draft Spec: Часовой пояс пользователя</h1>
+<nav class="toc"><strong>Содержание</strong><ul><li><a href="#s-1">§1. Суть задачи</a></li><li><a href="#s-2">§2. Интеграции и master-data</a></li><li><a href="#s-3">§3. Нефункциональные требования</a></li><li><a href="#s-4">§4. Данные</a><ul><li><a href="#s-4-1">§4.1. users (общая таблица, чужая — фича использует, не владеет)</a></li></ul></li><li><a href="#s-5">§5. Статусная модель</a></li><li><a href="#s-6">§6. API</a><ul><li><a href="#s-6-1">§6.1. PUT /api/v1/users/me/timezone</a></li><li><a href="#s-6-2">§6.2. Изменения существующих endpoints (дельта)</a></li></ul></li><li><a href="#s-7">§7. UX/UI + API (сквозной флоу)</a></li><li><a href="#s-8">§8. UI-иерархия</a><ul><li><a href="#s-8-1">§8.1. Экран/форма «Часовой пояс»</a></li></ul></li><li><a href="#s-9">§9. Решения (DS-index)</a></li><li><a href="#s-10">§10. Открытые вопросы (status: open)</a></li><li><a href="#s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</a><ul><li><a href="#h3-212">Unit / Integration (Go)</a></li><li><a href="#h3-223">E2E (Playwright)</a></li><li><a href="#h3-238">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</a></li></ul></li><li><a href="#h2-244">§Impact — точки касания существующего кода</a></li></ul></nav>
+<p class="klegend">Обозначения: <code class="k-t">таблица</code> <code class="k-f">поле</code> <code class="k-i">индекс</code> <code class="k-s">статус</code> <code class="k-e">endpoint</code> <code class="k-x">удаляется</code></p>
+<p><strong>Tier:</strong> M · <strong>Совместимость:</strong> MVP · <strong>Режим:</strong> new</p>
+<p><strong>Дата:</strong> 2026-10-07 | <strong>Статус:</strong> draft → final (после подтверждения пользователя) | <strong>Tier:</strong> M <strong>Совместимость:</strong> MVP (<a class="xref" href="#ds-027">DS-027</a> — контекст, реализуется в <code>transfers-core</code>) — живых данных нет <strong>UI-scope:</strong> swagger:no | adaptive:min | themes:both (<a class="xref" href="#ds-028">DS-028</a> — контекст, реализуется в <code>transfers-core</code>) <strong>Источник:</strong> мастер-спека <code>docs/features/transfers/draft-spec.md</code> (<a class="xref" href="#s-3">§3</a> «Время/таймзоны», <a class="xref" href="#s-4-5">§4.5</a>, <a class="xref" href="#s-6-13">§6.13</a>, <a class="xref" href="#s-6-15">§6.15</a>, <a class="xref" href="#s-8-4">§8.4</a>) + её журнал <code>docs/features/transfers/draft-spec-decisions.md</code> (батч 6, В-24 и четыре уточнения) <strong>Часть 2 из 6 мастер-спеки <code>transfers</code>; зависит от: —</strong> (независима). Номера DS и TS — мастер-идентификаторы, не перенумерованы.</p>
+<blockquote><p>После мержа этой части: у каждого пользователя есть часовой пояс (по умолчанию Алматы); все существующие экраны и печатные формы показывают дату и время по нему, а не по браузеру или серверу. Перемещения — ещё старый экран <code>/stock-transfers</code>, его время тоже идёт по поясу. Фильтра «период» в списке перемещений ещё нет (часть 4 <code>transfers-partners</code>).</p></blockquote>
+<h2 id="s-1">§1. Суть задачи</h2>
+<p>Настройка часового пояса у пользователя и показ всех дат и времени системы по ней. Для всех ролей: склады и сотрудники в разных городах (Алматы, Москва).</p>
+<p><strong>Бизнес (что делает пользователь/процесс):</strong></p>
+<ol>
+<li data-mdline="17"><a class="pnum" id="p-1" href="#p-1">1</a>Пользователь сам выбирает свой часовой пояс в сайдбаре, рядом с «Тема» и «Выйти» (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-033">DS-033</a>.</li>
+<li data-mdline="18"><a class="pnum" id="p-2" href="#p-2">2</a>Администратор задаёт пояс любому сотруднику в «Администрирование → Сотрудники» (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-056">DS-056</a>.</li>
+<li data-mdline="19"><a class="pnum" id="p-3" href="#p-3">3</a>На всех экранах и в печатных формах даты и время показаны в поясе смотрящего пользователя — <a class="xref" href="#ds-031">DS-031</a>, <a class="xref" href="#ds-032">DS-032</a>.</li>
+</ol>
+<p><strong>Логика (правила системы):</strong></p>
+<ol>
+<li data-mdline="22"><a class="pnum" id="p-4" href="#p-4">4</a>Время: хранение — UTC (<code>timestamptz</code>), как сейчас; показ — по <code class="k-f">timezone</code> пользователя (IANA), не по браузеру и не по поясу сервера — <a class="xref" href="#ds-031">DS-031</a>.</li>
+<li data-mdline="23"><a class="pnum" id="p-5" href="#p-5">5</a>Умолчание — <code>Asia/Almaty</code> (UTC+5) для новых и существующих пользователей — <a class="xref" href="#ds-033">DS-033</a>.</li>
+<li data-mdline="24"><a class="pnum" id="p-6" href="#p-6">6</a>Охват — все места, где показывается дата или время (перечень — <a class="xref" href="#s-8-1">§8.1</a> «Где применяется» и §Impact) — <a class="xref" href="#ds-032">DS-032</a>.</li>
+<li data-mdline="25"><a class="pnum" id="p-7" href="#p-7">7</a>«Сегодня / завтра / просрочен» для срока заказа на доске считается по текущей дате в поясе пользователя — <a class="xref" href="#ds-032">DS-032</a>.</li>
+<li data-mdline="26"><a class="pnum" id="p-8" href="#p-8">8</a>Исполнитель меняет только свой пояс; чужой — только администратор — <a class="xref" href="#ds-056">DS-056</a>.</li>
+<li data-mdline="27"><a class="pnum" id="p-9" href="#p-9">9</a>Конкурентный доступ: запись своего пояса → last-write-wins (одно поле, один владелец); правка сотрудника администратором → как сейчас у <code class="k-e">PUT /api/v1/users/:id</code> (поведение не меняется), поле <code class="k-f">timezone</code> при отсутствии в теле не трогается — поэтому правка сотрудника из устаревшей формы не затирает пояс, который сотрудник только что сменил сам — <a class="xref" href="#ds-033">DS-033</a>, <a class="xref" href="#ds-056">DS-056</a>.</li>
+</ol>
+<p><strong>Техника (API/данные/интеграции):</strong></p>
+<ol>
+<li data-mdline="30"><a class="pnum" id="p-10" href="#p-10">10</a><code class="k-t">users.timezone</code> — новая колонка (<a class="xref" href="#s-4-1">§4.1</a>), своя миграция.</li>
+<li data-mdline="31"><a class="pnum" id="p-11" href="#p-11">11</a>Новый <code class="k-e">PUT /api/v1/users/me/timezone</code>; поле <code class="k-f">timezone</code> в <code class="k-e">POST /api/v1/users</code>, <code class="k-e">PUT /api/v1/users/:id</code>, <code class="k-e">GET /api/v1/users</code>, <code class="k-e">GET /api/v1/users/:id</code>, <code class="k-e">GET /api/v1/auth/me</code> (<a class="xref" href="#s-6">§6</a>).</li>
+<li data-mdline="32"><a class="pnum" id="p-12" href="#p-12">12</a>SSR: пояс текущего пользователя доступен layout'у (атрибут <code>data-timezone</code> на <code>&lt;body&gt;</code>) и шаблонам (перевод <code>time.Time</code> в пояс перед форматированием).</li>
+<li data-mdline="33"><a class="pnum" id="p-13" href="#p-13">13</a>JS: единый форматтер даты/времени с <code>timeZone</code> вместо четырёх локальных копий.</li>
+</ol>
+<p><strong>UI (графическая часть):</strong></p>
+<ol>
+<li data-mdline="36"><a class="pnum" id="p-14" href="#p-14">14</a>Select «Часовой пояс» в сайдбаре всех страниц (<a class="xref" href="#s-8-1">§8.1</a>).</li>
+<li data-mdline="37"><a class="pnum" id="p-15" href="#p-15">15</a>Поле «Часовой пояс» в форме сотрудника (<a class="xref" href="#s-8-1">§8.1</a>).</li>
+<li data-mdline="38"><a class="pnum" id="p-16" href="#p-16">16</a>Правка форматирования времени на существующих экранах: карточка заказа, доска, «Выплаты», «Перемещения» (старый экран), история оборудования, две печатные формы (<a class="xref" href="#s-8-1">§8.1</a> «Где применяется»).</li>
+</ol>
+<p>Out-of-scope:</p>
+<ol>
+<li data-mdline="41"><a class="pnum" id="p-17" href="#p-17">17</a>Фильтр «период» в списке перемещений и границы дня по поясу — часть 4 <code>transfers-partners</code> (<a class="xref" href="#ds-034">DS-034</a>).</li>
+<li data-mdline="42"><a class="pnum" id="p-18" href="#p-18">18</a>Экран профиля пользователя — не заводится; достаточно select в сайдбаре (<a class="xref" href="#ds-033">DS-033</a>).</li>
+<li data-mdline="43"><a class="pnum" id="p-19" href="#p-19">19</a>Автоопределение пояса по браузеру — нет: умолчание фиксированное, Алматы (<a class="xref" href="#ds-033">DS-033</a>).</li>
+<li data-mdline="44"><a class="pnum" id="p-20" href="#p-20">20</a>Пояс склада или документа — нет: пояс принадлежит пользователю (<a class="xref" href="#ds-031">DS-031</a>).</li>
+<li data-mdline="45"><a class="pnum" id="p-21" href="#p-21">21</a>Поля-даты без времени (<code>tasks.due_date</code>) не сдвигаются: это календарная дата; по поясу считается только «сегодня» (<a class="xref" href="#ds-032">DS-032</a>).</li>
+</ol>
+<h2 id="s-2">§2. Интеграции и master-data</h2>
+<p>Не применимо: внешних систем нет. Справочник поясов — база IANA, встроенная в Go (<code>time.LoadLocation</code>); список значений select'а — фиксированный перечень в коде (первые два — «Алматы (UTC+5)», «Москва (UTC+3)»), валидатор принимает любое имя, которое распознаёт <code>time.LoadLocation</code> (<a class="xref" href="#ds-033">DS-033</a>).</p>
+<h2 id="s-3">§3. Нефункциональные требования</h2>
+<p><strong>Конкурентность (К-3 — по операциям):</strong></p>
+<ol>
+<li data-mdline="53"><a class="pnum" id="p-22" href="#p-22">22</a><strong>Смена своего пояса (<code class="k-e">PUT /api/v1/users/me/timezone</code>):</strong></li>
+<ul>
+<li data-mdline="54"><a class="pnum" id="p-23" href="#p-23">23</a>last-write-wins; версия пользователя (<code class="k-f">version</code>) не проверяется и не увеличивается — <a class="xref" href="#ds-033">DS-033</a></li>
+<li data-mdline="55"><a class="pnum" id="p-24" href="#p-24">24</a>as-built: <code class="k-f">updated_at</code> пользователя обновляется (<code>now()</code>) — D82</li>
+</ul>
+<li data-mdline="56"><a class="pnum" id="p-25" href="#p-25">25</a><strong>Правка сотрудника администратором (<code class="k-e">PUT /api/v1/users/:id</code>):</strong></li>
+<ul>
+<li data-mdline="57"><a class="pnum" id="p-26" href="#p-26">26</a>механизм как сейчас (as-is, не меняется); <code class="k-f">timezone</code> отсутствует в теле → колонка не трогается; передан → записывается — <a class="xref" href="#ds-056">DS-056</a></li>
+</ul>
+<li data-mdline="58"><a class="pnum" id="p-27" href="#p-27">27</a><strong>Одновременно сам пользователь и администратор меняют пояс:</strong> сохраняется последняя запись — <a class="xref" href="#ds-056">DS-056</a></li>
+</ol>
+<p><strong>Аудит:</strong></p>
+<ul>
+<li data-mdline="61"><a class="pnum" id="p-28" href="#p-28">28</a>отдельного аудита нет; slog: кто и кому сменил пояс (id, старое → новое значение) — <a class="xref" href="#ds-051">DS-051</a> (контекст, реализуется в <code>transfers-core</code>)</li>
+</ul>
+<p><strong>Время/таймзоны (К-13):</strong></p>
+<ul>
+<li data-mdline="64"><a class="pnum" id="p-29" href="#p-29">29</a>хранение: UTC, <code>timestamptz</code> — <a class="xref" href="#ds-031">DS-031</a></li>
+<li data-mdline="65"><a class="pnum" id="p-30" href="#p-30">30</a>показ: по <code class="k-f">timezone</code> смотрящего пользователя на всех экранах и в печати — <a class="xref" href="#ds-031">DS-031</a>, <a class="xref" href="#ds-032">DS-032</a></li>
+<li data-mdline="66"><a class="pnum" id="p-31" href="#p-31">31</a>текущая дата («сегодня») для подсветки сроков — в поясе пользователя — <a class="xref" href="#ds-032">DS-032</a></li>
+<li data-mdline="67"><a class="pnum" id="p-32" href="#p-32">32</a>источник времени: сервер БД (<code>now()</code>); дата печати — <code>time.Now()</code> сервера, переведённая в пояс пользователя</li>
+<li data-mdline="68"><a class="pnum" id="p-33" href="#p-33">33</a>диапазонов дат в фильтрах в этой части нет (появятся в <code>transfers-partners</code>, <a class="xref" href="#ds-034">DS-034</a>)</li>
+</ul>
+<p><strong>Метрики/таймстемпы:</strong></p>
+<ul>
+<li data-mdline="71"><a class="pnum" id="p-34" href="#p-34">34</a>новых нет</li>
+</ul>
+<p><strong>Offline / деградация / восстановление:</strong></p>
+<ul>
+<li data-mdline="74"><a class="pnum" id="p-35" href="#p-35">35</a>пояс читается с сервера при каждой загрузке страницы; неизвестное браузеру имя пояса → форматтер падает обратно на <code>Asia/Almaty</code>, страница не ломается</li>
+</ul>
+<p><strong>Логирование и чувствительные данные:</strong></p>
+<ul>
+<li data-mdline="77"><a class="pnum" id="p-36" href="#p-36">36</a>чувствительных данных нет</li>
+</ul>
+<p><strong>Формат ошибок:</strong></p>
+<ul>
+<li data-mdline="80"><a class="pnum" id="p-37" href="#p-37">37</a>только <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; 400 → <code>details.fields[]</code></li>
+</ul>
+<p><strong>Abuse cases (вход для adversarial E2E TD-4):</strong></p>
+<ol>
+<li data-mdline="83"><a class="pnum" id="p-38" href="#p-38">38</a>Исполнитель пытается сменить чужой пояс через <code class="k-e">PUT /api/v1/users/:id</code> → 403 (as-is admin-guard).</li>
+<li data-mdline="84"><a class="pnum" id="p-39" href="#p-39">39</a>В <code class="k-e">PUT /api/v1/users/me/timezone</code> передан <code>user_id</code> чужого пользователя → игнорируется, меняется пояс владельца сессии.</li>
+<li data-mdline="85"><a class="pnum" id="p-40" href="#p-40">40</a><code>timezone</code> = <code>../../etc/passwd</code>, строка в 10 000 символов, <code>Mars/Olympus</code> → 400, запись не изменена.</li>
+<li data-mdline="86"><a class="pnum" id="p-41" href="#p-41">41</a>Запрос без сессии → 401.</li>
+</ol>
+<p><strong>Применённые zap-дефолты</strong> (zap-list — стандарты проекта из CLAUDE.md, применяются автоматически, без вопросов; в <a class="xref" href="#s-9">§9</a> — источник <code>zap</code>):</p>
+<ul>
+<li data-mdline="89"><a class="pnum" id="p-42" href="#p-42">42</a>401 / 403 — стандартные статусы; ошибки только <code>pkg/errorspkg</code> (zap)</li>
+<li data-mdline="90"><a class="pnum" id="p-43" href="#p-43">43</a>миграции — только <code>make migrate-up</code> (zap)</li>
+</ul>
+<h2 id="s-4">§4. Данные</h2>
+<p>Легенда колонки «Обяз.»: <code>да</code> — клиент обязан передать при создании/правке; <code>нет</code> — опционально; <code>авто</code> — заполняет система (PK, дефолты, таймстемпы, значения из URL/сессии); <code>условно</code> — зависит от правила, оно указано в Описании. NULL — DDL-факт, Обяз. — семантика заполнения.</p>
+<h3 id="s-4-1">§4.1. <code class="k-t">users</code> (общая таблица, чужая — фича использует, не владеет)</h3>
+<p>Пользователи; владелец — фича <code>users</code>. Дельта: настройка часового пояса.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="100"><td><a class="pnum" id="p-44" href="#p-44">44</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="101"><td><a class="pnum" id="p-45" href="#p-45">45</a><code class="k-f">login</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>Логин, уникален без учёта регистра (as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="102"><td><a class="pnum" id="p-46" href="#p-46">46</a><code class="k-f">password_hash</code></td><td>text</td><td>нет</td><td>—</td><td>авто</td><td>(as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="103"><td><a class="pnum" id="p-47" href="#p-47">47</a><code class="k-f">name</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Имя (as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="104"><td><a class="pnum" id="p-48" href="#p-48">48</a><code class="k-f">is_active</code></td><td>boolean</td><td>нет</td><td><code>true</code></td><td>нет</td><td>(as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="105"><td><a class="pnum" id="p-49" href="#p-49">49</a><code class="k-f">role</code></td><td>text</td><td>нет</td><td><code>executor</code></td><td>да</td><td><code class="k-s">admin</code>, <code class="k-s">executor</code> (as-is)</td><td><a class="xref" href="#ds-018">DS-018</a></td></tr><tr data-mdline="106"><td><a class="pnum" id="p-50" href="#p-50">50</a><code class="k-f">phone</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Телефон — строка (as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="107"><td><a class="pnum" id="p-51" href="#p-51">51</a><code class="k-f">version</code></td><td>bigint</td><td>нет</td><td><code>1</code></td><td>авто</td><td>(as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="108"><td><a class="pnum" id="p-52" href="#p-52">52</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>(as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="109"><td><a class="pnum" id="p-53" href="#p-53">53</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>(as-is)</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="110"><td><a class="pnum" id="p-54" href="#p-54">54</a><strong><code class="k-f">timezone</code></strong></td><td>text</td><td>нет</td><td><code>Asia/Almaty</code></td><td>нет</td><td>НОВОЕ. Часовой пояс IANA (<code>Asia/Almaty</code>, <code>Europe/Moscow</code>), 1–64 символа; должен распознаваться <code>time.LoadLocation</code>, иначе 400. Меняет сам пользователь (<code class="k-e">PUT /api/v1/users/me/timezone</code>); умолчание <code>Asia/Almaty</code> для новых и существующих пользователей</td><td><a class="xref" href="#ds-031">DS-031</a>, <a class="xref" href="#ds-033">DS-033</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="113"><a class="pnum" id="p-55" href="#p-55">55</a>PK: <code class="k-f">id</code>; UNIQUE <code class="k-i">users_login_lower_uq</code> — as-is; новых индексов нет</li>
+</ul>
+<p>Используется в модулях (used by):</p>
+<table><thead><tr><th>Модуль</th><th>Ключ-дискриминатор (если есть)</th><th>Роль (writer/reader)</th><th>Что делает</th><th>Путь</th></tr></thead><tbody><tr data-mdline="118"><td><a class="pnum" id="p-56" href="#p-56">56</a>user-timezone (эта часть)</td><td>—</td><td>writer</td><td>добавляет и пишет <code class="k-f">timezone</code> (правки в пакетах <code>users</code> и <code>auth</code>)</td><td><code>internal/features/users</code>, <code>internal/features/auth</code></td></tr><tr data-mdline="119"><td><a class="pnum" id="p-57" href="#p-57">57</a>stocktransfers (после части 3 — <code>transfers</code>)</td><td>—</td><td>reader</td><td>имена пользователей; в части 4 — пояс для границ фильтра «период» (контекст, <code>transfers-partners</code>)</td><td><code>internal/features/stocktransfers</code></td></tr><tr data-mdline="120"><td><a class="pnum" id="p-58" href="#p-58">58</a>users</td><td>—</td><td>writer</td><td>CRUD сотрудников</td><td><code>internal/features/users</code></td></tr><tr data-mdline="121"><td><a class="pnum" id="p-59" href="#p-59">59</a>auth</td><td>—</td><td>reader</td><td>сессия; отдаёт <code class="k-f">timezone</code> в layout</td><td><code>internal/features/auth</code></td></tr><tr data-mdline="122"><td><a class="pnum" id="p-60" href="#p-60">60</a>board, executorpayouts, clients, catalog, warehouses</td><td>—</td><td>reader</td><td>имена пользователей, права</td><td><code>internal/features/*</code></td></tr></tbody></table>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="125"><a class="pnum" id="p-61" href="#p-61">61</a>Миграция: <code>ALTER TABLE users ADD COLUMN timezone text NOT NULL DEFAULT 'Asia/Almaty'</code> — существующие пользователи получают Алматы — <a class="xref" href="#ds-033">DS-033</a></li>
+<li data-mdline="126"><a class="pnum" id="p-62" href="#p-62">62</a>Создание сотрудника: <code class="k-f">timezone</code> не передан → <code>Asia/Almaty</code> — <a class="xref" href="#ds-056">DS-056</a></li>
+<li data-mdline="127"><a class="pnum" id="p-63" href="#p-63">63</a>Изменение: сам пользователь (<code class="k-e">PUT /api/v1/users/me/timezone</code>) либо администратор (<code class="k-e">PUT /api/v1/users/:id</code>) — <a class="xref" href="#ds-033">DS-033</a>, <a class="xref" href="#ds-056">DS-056</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="130"><a class="pnum" id="p-64" href="#p-64">64</a>значение — распознаваемое имя IANA → валидатор сервиса (<code>time.LoadLocation</code>), 400 <code>timezone: invalid</code>; CHECK в БД: <code>char_length(timezone) BETWEEN 1 AND 64</code> → <a class="xref" href="#ds-031">DS-031</a></li>
+<li data-mdline="131"><a class="pnum" id="p-65" href="#p-65">65</a>исполнитель не меняет чужой пояс → id берётся из сессии; <code class="k-e">PUT /api/v1/users/:id</code> — admin-guard → <a class="xref" href="#ds-056">DS-056</a></li>
+</ul>
+<h2 id="s-5">§5. Статусная модель</h2>
+<p>Не применимо: статусов нет.</p>
+<h2 id="s-6">§6. API</h2>
+<blockquote><p>Режим B «API + фронтенд». Базовый URL стенда: <code>http://localhost:8080</code>. Авторизация — сессионная cookie <code>sid</code> (плейсхолдер <code>&lt;SID&gt;</code>). Копируй curl в терминал или в Postman: Import → Raw text. Тело ошибки — формат <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; при 400 — <code>details.fields[]</code> с <code>name</code> и <code>message</code>. Ключи — snake_case, URL — kebab-case (CLAUDE.md §API-1).</p></blockquote>
+<h3 id="s-6-1">§6.1. <code class="k-e">PUT /api/v1/users/me/timezone</code></h3>
+<ul>
+<li data-mdline="140"><a class="pnum" id="p-66" href="#p-66">66</a>Назначение: пользователь меняет свой часовой пояс.</li>
+<li data-mdline="141"><a class="pnum" id="p-67" href="#p-67">67</a>Authz: любой авторизованный — только себе; id пользователя берётся из сессии, в теле не принимается — <a class="xref" href="#ds-033">DS-033</a>. Чужой пояс этим endpoint'ом не изменить; администратор меняет пояс любому пользователю через <code class="k-e">PUT /api/v1/users/:id</code> (<a class="xref" href="#s-6-2">§6.2</a>) — <a class="xref" href="#ds-056">DS-056</a>.</li>
+<li data-mdline="142"><a class="pnum" id="p-68" href="#p-68">68</a>Идемпотентность/повтор: безопасен; last-write-wins.</li>
+<li data-mdline="143"><a class="pnum" id="p-69" href="#p-69">69</a>Side effects: <code class="k-t">users.timezone</code> и <code class="k-t">users.updated_at</code> (as-built, D82; <code class="k-f">version</code> не меняется); <code class="k-e">GET /api/v1/auth/me</code> и SSR-layout начинают отдавать новое значение со следующего запроса (значение читается из БД/сессии на каждый запрос — устаревший пояс в кэше сессии недопустим).</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="149"><td><a class="pnum" id="p-70" href="#p-70">70</a><code class="k-f">timezone</code></td><td>body</td><td>string</td><td>да</td><td>имя IANA, 1–64 символа, паттерн <code>^[A-Za-z0-9_+\-/]+$</code>, распознаётся <code>time.LoadLocation</code>; иное → 400 <code>invalid</code></td></tr></tbody></table>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="155"><td><a class="pnum" id="p-71" href="#p-71">71</a><code class="k-f">timezone</code></td><td>string</td><td>сохранённый пояс</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="161"><td><a class="pnum" id="p-72" href="#p-72">72</a>400 <code>VALIDATION</code></td><td><code>timezone: required</code></td><td>«Выберите часовой пояс»</td></tr><tr data-mdline="162"><td><a class="pnum" id="p-73" href="#p-73">73</a>400 <code>VALIDATION</code></td><td><code>timezone: invalid</code></td><td>«Неизвестный часовой пояс»</td></tr><tr data-mdline="163"><td><a class="pnum" id="p-74" href="#p-74">74</a>401 <code>UNAUTHORIZED</code></td><td>нет сессии</td><td>переход на вход</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/users/me/timezone' -d '{"timezone":"Europe/Moscow"}'</code></pre>
+<pre><code>{ "timezone": "Europe/Moscow" }</code></pre>
+<p>Ошибка (VALIDATION → 400):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/users/me/timezone' -d '{"timezone":"Mars/Olympus"}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "Проверьте поля",
+  "details": { "fields": [ { "name": "timezone", "message": "invalid" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-031">DS-031</a>, <a class="xref" href="#ds-033">DS-033</a>, <a class="xref" href="#ds-056">DS-056</a>.</p>
+<h3 id="s-6-2">§6.2. Изменения существующих endpoints (дельта)</h3>
+<p>Формат каждой строки: endpoint — что меняется — ошибка — DS. As-is поля запросов сотрудника (<code>internal/features/users/dto.go:29-46</code>): <code>login</code>, <code>name</code>, <code>role</code>, <code>phone</code>, <code>password</code>, <code>is_active</code> — не меняются.</p>
+<table><thead><tr><th>Endpoint</th><th>Изменение</th><th>Новая ошибка</th><th>DS</th></tr></thead><tbody><tr data-mdline="190"><td><a class="pnum" id="p-75" href="#p-75">75</a><code class="k-e">POST /api/v1/users</code> (только admin, as-is)</td><td>новое необязательное поле <code class="k-f">timezone</code> (IANA, 1–64 символа, паттерн <code>^[A-Za-z0-9_+\-/]+$</code>, распознаётся <code>time.LoadLocation</code>); не передано → <code>Asia/Almaty</code>; в ответе — <code class="k-f">timezone</code></td><td>400 <code>VALIDATION</code> <code>timezone: invalid</code> «Неизвестный часовой пояс»</td><td><a class="xref" href="#ds-056">DS-056</a></td></tr><tr data-mdline="191"><td><a class="pnum" id="p-76" href="#p-76">76</a><code class="k-e">PUT /api/v1/users/:id</code> (только admin, as-is; executor → 403)</td><td>новое необязательное поле <code class="k-f">timezone</code> (правила те же); не передано → не меняется; в ответе — <code class="k-f">timezone</code></td><td>400 <code>VALIDATION</code> <code>timezone: invalid</code> «Неизвестный часовой пояс»</td><td><a class="xref" href="#ds-056">DS-056</a></td></tr><tr data-mdline="192"><td><a class="pnum" id="p-77" href="#p-77">77</a><code class="k-e">GET /api/v1/users</code>, <code class="k-e">GET /api/v1/users/:id</code></td><td>новое поле <code class="k-f">timezone</code> в элементах списка и в объекте</td><td>—</td><td><a class="xref" href="#ds-056">DS-056</a></td></tr><tr data-mdline="193"><td><a class="pnum" id="p-78" href="#p-78">78</a><code class="k-e">GET /api/v1/auth/me</code></td><td>новое поле <code class="k-f">timezone</code></td><td>—</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="194"><td><a class="pnum" id="p-79" href="#p-79">79</a>Печатные формы заказа (SSR <code>print-intake</code>, <code>print-handover</code>)</td><td>дата печати и дата оплаты — в поясе пользователя</td><td>—</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="195"><td><a class="pnum" id="p-80" href="#p-80">80</a>Страница истории оборудования (SSR)</td><td>даты заказов и записей журнала — в поясе пользователя</td><td>—</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr></tbody></table>
+<p>Успех (администратор меняет пояс сотруднику):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/users/7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f' -d '{"login":"petrov","name":"Петров Иван","role":"executor","phone":"+7 701 111 22 33","is_active":true,"timezone":"Europe/Moscow"}'</code></pre>
+<pre><code>{ "id": "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f", "login": "petrov", "name": "Петров Иван", "role": "executor", "phone": "+7 701 111 22 33", "is_active": true, "timezone": "Europe/Moscow", "created_at": "2026-09-01T04:00:00Z", "updated_at": "2026-10-07T06:00:00Z" }</code></pre>
+<p>Ошибка (FORBIDDEN → 403, исполнитель меняет чужой пояс):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/users/7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f' -d '{"timezone":"Europe/Moscow"}'</code></pre>
+<pre><code>{
+  "code": "FORBIDDEN",
+  "message": "admin only"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-031">DS-031</a>, <a class="xref" href="#ds-032">DS-032</a>, <a class="xref" href="#ds-056">DS-056</a>.</p>
+<h2 id="s-7">§7. UX/UI + API (сквозной флоу)</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 400" width="680" height="400" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="400" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="231.0" lengthAdjust="spacingAndGlyphs">Сценарий: смена часового пояса</text>
+<rect x="5" y="40" width="170" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="11.5" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="126.5" lengthAdjust="spacingAndGlyphs">Пользователь / админ</text>
+<path d="M90,70 L90,375" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="215" y="40" width="170" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="11.5" fill="#334155" text-anchor="middle" font-weight="bold" textLength="139.2" lengthAdjust="spacingAndGlyphs">Сайдбар / форма (§8.1)</text>
+<path d="M300,70 L300,375" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="455" y="40" width="170" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="11.5" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="50.6" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,375" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="207.9" lengthAdjust="spacingAndGlyphs">select в сайдбаре → «Москва (UTC+3)»</text>
+<path d="M300,127 L540,127" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="121" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="231.0" lengthAdjust="spacingAndGlyphs">PUT /api/v1/users/me/timezone {timezone}</text>
+<path d="M540,154 L300,154" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="148" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">200 {timezone:"Europe/Moscow"}</text>
+<path d="M300,181 L90,181" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="195.0" y="175" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="179.0" lengthAdjust="spacingAndGlyphs">reload: все даты в поясе Москвы</text>
+<path d="M90,208 L300,208" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="202" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">админ: Сотрудники → форма → пояс</text>
+<path d="M300,235 L540,235" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="229" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="202.1" lengthAdjust="spacingAndGlyphs">PUT /api/v1/users/:id {…, timezone}</text>
+<path d="M540,262 L300,262" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="256" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="98.2" lengthAdjust="spacingAndGlyphs">200 {…, timezone}</text>
+<path d="M300,289 L540,289" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="283" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="196.4" lengthAdjust="spacingAndGlyphs">PUT …/me/timezone {"Mars/Olympus"}</text>
+<path d="M540,316 L300,316" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="310" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">400 VALIDATION timezone: invalid</text>
+<path d="M300,343 L90,343" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="195.0" y="337" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">тост, select вернулся к прежнему</text>
+<text x="340" y="390" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветка</text>
+</svg></figure></p>
+<p>Полнота покрытия (endpoint → экраны <a class="xref" href="#s-8">§8</a>):</p>
+<table><thead><tr><th>Endpoint</th><th>Экраны</th></tr></thead><tbody><tr data-mdline="222"><td><a class="pnum" id="p-81" href="#p-81">81</a><code class="k-e">PUT /api/v1/users/me/timezone</code></td><td><a class="xref" href="#s-8-1">§8.1</a> (сайдбар)</td></tr><tr data-mdline="223"><td><a class="pnum" id="p-82" href="#p-82">82</a><code class="k-e">PUT /api/v1/users/:id</code></td><td><a class="xref" href="#s-8-1">§8.1</a> (форма сотрудника)</td></tr><tr data-mdline="224"><td><a class="pnum" id="p-83" href="#p-83">83</a><code class="k-e">POST /api/v1/users</code></td><td><a class="xref" href="#s-8-1">§8.1</a> (форма сотрудника)</td></tr><tr data-mdline="225"><td><a class="pnum" id="p-84" href="#p-84">84</a><code class="k-e">GET /api/v1/auth/me</code></td><td>потребитель — e2e-фикстуры и JS-клиенты; экраны берут пояс из <code>data-timezone</code> layout'а</td></tr></tbody></table>
+<p>Непокрытых endpoints и UI-действий без endpoint нет.</p>
+<h2 id="s-8">§8. UI-иерархия</h2>
+<ul>
+<li data-mdline="230"><a class="pnum" id="p-85" href="#p-85">85</a>Сайдбар всех страниц (низ, рядом с «Тема» и «Выйти») → <strong>Часовой пояс</strong> — <a class="xref" href="#s-8-1">§8.1</a></li>
+<li data-mdline="231"><a class="pnum" id="p-86" href="#p-86">86</a>Администрирование → Сотрудники → форма сотрудника → поле «Часовой пояс» — <a class="xref" href="#s-8-1">§8.1</a></li>
+</ul>
+<p>UI-конвенции (<a class="xref" href="#ds-052">DS-052</a> — контекст, реализуется в <code>transfers-core</code>; здесь применяются как есть): ошибка поля — красный текст под полем + красная рамка; глобальная ошибка — тост в правом верхнем углу, 5 секунд; на время запроса контрол заблокирован.</p>
+<h3 id="s-8-1">§8.1. Экран/форма «Часовой пояс»</h3>
+<ul>
+<li data-mdline="236"><a class="pnum" id="p-87" href="#p-87">87</a>Маршрут: сайдбар всех страниц (<code>web/ssr/_layout/templates/layouts/base.html</code>, блок с кнопками «Тема» и «Выйти»); форма сотрудника <code>/users/new</code>, <code>/users/:id</code></li>
+</ul>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="239"><a class="pnum" id="p-88" href="#p-88">88</a><strong>Путь:</strong> любой экран → низ сайдбара; admin — «Администрирование → Сотрудники» → форма</li>
+<li data-mdline="240"><a class="pnum" id="p-89" href="#p-89">89</a><strong>URL:</strong> любой; <code>/users/:id</code></li>
+<li data-mdline="241"><a class="pnum" id="p-90" href="#p-90">90</a><strong>Роли:</strong> сайдбар — admin, executor (свой пояс); форма сотрудника — только admin · <strong>Устройство:</strong> десктоп, телефон</li>
+<li data-mdline="242"><a class="pnum" id="p-91" href="#p-91">91</a><strong>При открытии:</strong> отдельного запроса нет — текущий пояс рендерит SSR-layout (атрибут <code>data-timezone</code> на <code>&lt;body&gt;</code>)</li>
+<li data-mdline="243"><a class="pnum" id="p-92" href="#p-92">92</a><strong>200:</strong> select показывает текущий пояс · <strong>Пусто:</strong> не применимо · <strong>4xx:</strong> не применимо</li>
+</ul>
+<p><strong>Что на странице (сверху вниз):</strong></p>
+<ol>
+<li data-mdline="246"><a class="pnum" id="p-93" href="#p-93">93</a>Сайдбар: select «Часовой пояс» над кнопкой «Тема»; значения — список IANA-поясов с подписью смещения («Алматы (UTC+5)», «Москва (UTC+3)», далее остальные по алфавиту).</li>
+<li data-mdline="247"><a class="pnum" id="p-94" href="#p-94">94</a>Форма сотрудника (admin): поле «Часовой пояс» (<code>timezone</code>) — select с тем же списком, после поля «Телефон»; по умолчанию «Алматы (UTC+5)».</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="250"><a class="pnum" id="p-95" href="#p-95">95</a><strong>Смена своего пояса</strong></li>
+<ul>
+<li data-mdline="251"><a class="pnum" id="p-96" href="#p-96">96</a><strong>Элемент:</strong> select в сайдбаре</li>
+<li data-mdline="252"><a class="pnum" id="p-97" href="#p-97">97</a><strong>UI:</strong> select заблокирован на время запроса</li>
+<li data-mdline="253"><a class="pnum" id="p-98" href="#p-98">98</a><strong>Вызов:</strong> <code>PUT <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/users/me/timezone</code>, body: <code>{ timezone }</code></li>
+<li data-mdline="254"><a class="pnum" id="p-99" href="#p-99">99</a><strong>200:</strong> <code>{ timezone }</code> → страница перезагружается, все даты показаны в новом поясе</li>
+<li data-mdline="255"><a class="pnum" id="p-100" href="#p-100">100</a><strong>400 (invalid):</strong> тост «Неизвестный часовой пояс», select возвращается к прежнему значению</li>
+</ul>
+<li data-mdline="256"><a class="pnum" id="p-101" href="#p-101">101</a><strong>Смена пояса сотруднику (admin)</strong></li>
+<ul>
+<li data-mdline="257"><a class="pnum" id="p-102" href="#p-102">102</a><strong>Элемент:</strong> select в форме сотрудника + существующая кнопка «Сохранить»</li>
+<li data-mdline="258"><a class="pnum" id="p-103" href="#p-103">103</a><strong>UI:</strong> как у формы сотрудника сейчас</li>
+<li data-mdline="259"><a class="pnum" id="p-104" href="#p-104">104</a><strong>Вызов:</strong> <code>PUT</code> → <code>/api/v1/users/&lt;uuid&gt;</code>, body: существующие поля + <code>timezone</code> (<a class="xref" href="#s-6-2">§6.2</a>)</li>
+<li data-mdline="260"><a class="pnum" id="p-105" href="#p-105">105</a><strong>200:</strong> пользователь сохранён; его экраны покажут новый пояс при следующей загрузке страницы</li>
+<li data-mdline="261"><a class="pnum" id="p-106" href="#p-106">106</a><strong>400 (timezone: invalid):</strong> под полем — «Неизвестный часовой пояс»</li>
+<li data-mdline="262"><a class="pnum" id="p-107" href="#p-107">107</a><strong>403 (executor):</strong> страница «Нет доступа» (as-is)</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> пояс изменён администратором, пока пользователь работает, — применится при следующей загрузке страницы.</p>
+<p><strong>Где применяется (все места показа даты/времени, найдены поиском по коду — <a class="xref" href="#ds-032">DS-032</a>):</strong></p>
+<table><thead><tr><th>Экран</th><th>Что показывается</th><th>Где в коде сейчас</th><th>Что меняется</th></tr></thead><tbody><tr data-mdline="270"><td><a class="pnum" id="p-108" href="#p-108">108</a>Карточка заказа</td><td>время записей журнала услуг, перемещений оборудования, дата оплаты исполнителю</td><td><code>web/ssr/_shared/js/task-card.js:529-533</code> (<code>fmtDateTime</code>), вызовы <code>:492</code>, <code>:567</code>, <code>:832</code></td><td>время по поясу пользователя</td></tr><tr data-mdline="271"><td><a class="pnum" id="p-109" href="#p-109">109</a>Карточка заказа</td><td>даты заказов в истории, дата записи журнала</td><td><code>web/ssr/_shared/js/task-card.js:627-633</code> (<code>fmtDate</code>), вызовы <code>:411</code>, <code>:578</code>, <code>:879</code></td><td>дата по поясу пользователя</td></tr><tr data-mdline="272"><td><a class="pnum" id="p-110" href="#p-110">110</a>Доска</td><td>метка срока «сегодня / завтра / просрочен»</td><td><code>web/ssr/_shared/js/board.js:385-387</code> (<code>new Date()</code> браузера)</td><td>«сегодня» — текущая дата в поясе пользователя</td></tr><tr data-mdline="273"><td><a class="pnum" id="p-111" href="#p-111">111</a>«Выплаты»</td><td>дата и время отметки выплаты</td><td><code>web/ssr/_shared/js/executor-payouts.js:148-152</code>, вызов <code>:186</code></td><td>время по поясу пользователя</td></tr><tr data-mdline="274"><td><a class="pnum" id="p-112" href="#p-112">112</a>«Перемещения» (старый экран)</td><td>создан / отправлен / получен / отменён</td><td><code>web/ssr/_shared/js/stock-transfers.js:118-122</code></td><td>время по поясу пользователя</td></tr><tr data-mdline="275"><td><a class="pnum" id="p-113" href="#p-113">113</a>История оборудования (SSR)</td><td>дата заказа; дата и время записи журнала</td><td><code>web/ssr/clients/templates/pages/equipment-history.html:27</code>, <code>:84</code></td><td>перевод в пояс перед <code>Format</code></td></tr><tr data-mdline="276"><td><a class="pnum" id="p-114" href="#p-114">114</a>Печать «Приём»</td><td>дата печати</td><td><code>web/ssr/board/templates/pages/print-intake.html:11</code>, <code>internal/features/board/print_ssr.go:52</code></td><td>дата в поясе пользователя</td></tr><tr data-mdline="277"><td><a class="pnum" id="p-115" href="#p-115">115</a>Печать «Выдача»</td><td>дата печати, дата оплаты</td><td><code>web/ssr/board/templates/pages/print-handover.html:12</code>, <code>:81</code>, <code>internal/features/board/card_service.go:231</code></td><td>даты в поясе пользователя</td></tr></tbody></table>
+<p>as-built (D81): дата со временем на всех экранах показывается в едином формате «ДД.ММ.ГГГГ ЧЧ:ММ» без запятой (в «Выплатах» и «Перемещениях» запятая после даты убрана); отдельных форматов по экранам нет. История единицы оборудования видна всем ролям (D83).</p>
+<h2 id="s-9">§9. Решения (DS-index)</h2>
+<table><thead><tr><th>DS</th><th>Формулировка</th><th>Источник</th><th>Статус</th></tr></thead><tbody><tr data-mdline="284"><td><a class="pnum" id="p-116" href="#p-116">116</a><a id="ds-031"></a><strong>DS-031</strong></td><td>Время храним в UTC, показываем по часовому поясу из настройки пользователя</td><td>мастер, батч 6</td><td>closed</td></tr><tr data-mdline="285"><td><a class="pnum" id="p-117" href="#p-117">117</a><a id="ds-032"></a><strong>DS-032</strong></td><td>Пояс пользователя применяется на всех экранах системы, где показывается дата или время</td><td>мастер, батч 6 (уточнение)</td><td>closed</td></tr><tr data-mdline="286"><td><a class="pnum" id="p-118" href="#p-118">118</a><a id="ds-033"></a><strong>DS-033</strong></td><td>Пояс меняет сам пользователь; умолчание — Алматы (<code>Asia/Almaty</code>) для новых и существующих</td><td>мастер, батч 6 (уточнение 2)</td><td>closed</td></tr><tr data-mdline="287"><td><a class="pnum" id="p-119" href="#p-119">119</a><a id="ds-056"></a><strong>DS-056</strong></td><td>Пояс любому пользователю может менять и администратор — поле в форме создания/правки в «Сотрудниках»; исполнитель чужой пояс не меняет</td><td>мастер, батч 6 (уточнение 4)</td><td>closed</td></tr><tr data-mdline="288"><td><a class="pnum" id="p-120" href="#p-120">120</a><a id="ds-034"></a><strong>DS-034</strong></td><td>Фильтр «период» в списке перемещений, границы дня по поясу пользователя</td><td>мастер, батч 6 (уточнение 3)</td><td>closed — контекст, реализуется в <code>transfers-partners</code></td></tr><tr data-mdline="289"><td><a class="pnum" id="p-121" href="#p-121">121</a><a id="ds-027"></a><strong>DS-027</strong></td><td>Совместимость — MVP</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="290"><td><a class="pnum" id="p-122" href="#p-122">122</a><a id="ds-028"></a><strong>DS-028</strong></td><td>UI-scope: swagger:no, adaptive:min, themes:both</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="291"><td><a class="pnum" id="p-123" href="#p-123">123</a><a id="ds-051"></a><strong>DS-051</strong></td><td>Отдельной таблицы аудита нет</td><td>мастер, zap</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="292"><td><a class="pnum" id="p-124" href="#p-124">124</a><a id="ds-052"></a><strong>DS-052</strong></td><td>UI-конвенции: ошибка под полем, тост справа вверху 5 с</td><td>мастер, inferred</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr></tbody></table>
+<h2 id="s-10">§10. Открытые вопросы (status: open)</h2>
+<p>Открытых вопросов нет.</p>
+<h2 id="s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</h2>
+<p>UI-scope: swagger-сценариев нет; адаптив — проверка overflow сайдбара с select'ом в составе TS-040; темы — select читаем в обеих темах, в составе TS-040.</p>
+<h3 id="h3-212">Unit / Integration (Go)</h3>
+<ul>
+<li data-mdline="301"><a class="pnum" id="p-125" href="#p-125">125</a><strong>TS-021.</strong> Часовой пояс, свой: <code class="k-e">PUT /api/v1/users/me/timezone</code> с <code>Europe/Moscow</code> → 200; <code>Mars/Olympus</code>, пустая строка, 65 символов, <code>../../etc/passwd</code> → 400 <code>timezone: invalid</code> / <code>required</code>; <code class="k-e">GET /api/v1/auth/me</code> отдаёт новое значение сразу следующим запросом; чужой <code>user_id</code> в теле игнорируется — <a class="xref" href="#ds-031">DS-031</a>, <a class="xref" href="#ds-033">DS-033</a></li>
+<ul>
+<li data-mdline="302"><a class="pnum" id="p-126" href="#p-126">126</a>негатив: без сессии → 401</li>
+</ul>
+<li data-mdline="303"><a class="pnum" id="p-127" href="#p-127">127</a><strong>TS-022.</strong> Часовой пояс, администратор другому: <code class="k-e">PUT /api/v1/users/:id</code> с <code>timezone</code> → 200, значение в ответе; без поля — пояс не меняется; <code class="k-e">POST /api/v1/users</code> без поля → <code>Asia/Almaty</code>; невалидный → 400 <code>details.fields[]</code> (<code>timezone: invalid</code>); <code class="k-e">GET /api/v1/users</code> и <code class="k-e">GET /api/v1/users/:id</code> содержат <code>timezone</code>; миграция: существующие пользователи получили <code>Asia/Almaty</code> — <a class="xref" href="#ds-056">DS-056</a>, <a class="xref" href="#ds-033">DS-033</a></li>
+<ul>
+<li data-mdline="304"><a class="pnum" id="p-128" href="#p-128">128</a>негатив: executor <code class="k-e">PUT /api/v1/users/:id</code> → 403</li>
+</ul>
+</ul>
+<h3 id="h3-223">E2E (Playwright)</h3>
+<ul>
+<li data-mdline="307"><a class="pnum" id="p-129" href="#p-129">129</a><strong>TS-040.</strong> Смена своего часового пояса — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-031">DS-031</a>, <a class="xref" href="#ds-033">DS-033</a></li>
+<ul>
+<li data-mdline="308"><a class="pnum" id="p-130" href="#p-130">130</a>шаги: войти исполнителем → сайдбар → «Москва (UTC+3)»; проверка: страница перезагрузилась, время одной и той же записи сдвинулось на −2 часа относительно пояса Алматы; после reload и повторного входа значение сохраняется; при вьюпорте 375×812 сайдбар без горизонтальной прокрутки; select читаем в светлой и тёмной теме; негатив: нет</li>
+</ul>
+<li data-mdline="309"><a class="pnum" id="p-131" href="#p-131">131</a><strong>TS-041.</strong> Пояс применяется во всей системе — экраны: карточка заказа (журнал услуг, дата оплаты исполнителю), «Выплаты», «Перемещения», история оборудования, печатные формы «Приём» и «Выдача» — <a class="xref" href="#ds-032">DS-032</a></li>
+<ul>
+<li data-mdline="310"><a class="pnum" id="p-132" href="#p-132">132</a>шаги: пользователь с поясом Москва открывает каждый экран; проверка: времена на 2 часа меньше, чем у пользователя с поясом Алматы для тех же записей (фикстура TS-F5); негатив: метка срока заказа «сегодня / просрочен» на доске считается по поясу пользователя, не браузера (браузер запущен с <code>timezoneId</code>, отличным от пояса пользователя)</li>
+</ul>
+<li data-mdline="311"><a class="pnum" id="p-133" href="#p-133">133</a><strong>TS-042.</strong> Администратор меняет пояс сотруднику — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-056">DS-056</a></li>
+<ul>
+<li data-mdline="312"><a class="pnum" id="p-134" href="#p-134">134</a>шаги: admin → «Администрирование → Сотрудники» → форма → «Часовой пояс» → «Сохранить» → вход этим сотрудником; проверка: даты в его поясе, select в сайдбаре показывает заданное значение; негатив: в форме создания по умолчанию «Алматы (UTC+5)»; невалидный пояс подменой значения → под полем «Неизвестный часовой пояс»</li>
+</ul>
+</ul>
+<h3 id="h3-238">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</h3>
+<ul>
+<li data-mdline="315"><a class="pnum" id="p-135" href="#p-135">135</a><strong>TS-F5.</strong> Фикстура времени: запись с моментом <code>2026-10-06T19:30:00Z</code> (00:30 7 октября по Алматы, 22:30 6 октября по Москве) и два пользователя с разными поясами (<code>Asia/Almaty</code>, <code>Europe/Moscow</code>) — для TS-040, TS-041; в части <code>transfers-partners</code> та же фикстура используется для TS-023 — <a class="xref" href="#ds-032">DS-032</a></li>
+<li data-mdline="316"><a class="pnum" id="p-136" href="#p-136">136</a>seed-demo (<code>internal/seeddemo/seeddemo.go</code>): админ — <code>Asia/Almaty</code>, один исполнитель — <code>Europe/Moscow</code>; обновить в той же фазе, что миграция (§TD-1)</li>
+<li data-mdline="317"><a class="pnum" id="p-137" href="#p-137">137</a>e2e (<code>e2e/fixtures/auth.ts</code>): wire-тип пользователя получает <code>timezone</code>; контексты Playwright запускать с явным <code>timezoneId</code>, отличным от пояса пользователя, чтобы тест ловил форматирование «по браузеру»; payload'ы типизировать wire-типами из исходников (§TD-6.2)</li>
+</ul>
+<h2 id="h2-244">§Impact — точки касания существующего кода</h2>
+<p>Источник: <code>impact_scan.py --sample internal/features/users,internal/features/auth --terms timezone,toLocaleString,PrintedAt,fmtDateTime</code> (114 находок, большинство — импорты <code>fixtures/auth</code> в e2e; значимые внесены ниже) + поиск мест форматирования времени (fff: <code>toLocaleString</code>, <code>fmtDate</code>, <code>fmtDateTime</code>, <code>.Format </code>, <code>PrintedAt</code>, <code>new Date(</code>).</p>
+<table><thead><tr><th>#</th><th>Класс</th><th>Что задеваем (file:line / объект)</th><th>Дельта фичи</th><th>Решение</th><th>DS</th></tr></thead><tbody><tr data-mdline="324"><td><a class="pnum" id="p-138" href="#p-138">138</a>1</td><td>SHARED-DEP</td><td><code>internal/features/users/dto.go:7-46</code>, <code>validate.go</code>, <code>repo.go</code>, <code>service.go</code>, <code>handler.go</code>, <code>ssr.go</code>, <code>web/ssr/users/templates/pages/form.html</code></td><td>поле <code>timezone</code> в запросах, ответах, форме</td><td>править</td><td><a class="xref" href="#ds-056">DS-056</a></td></tr><tr data-mdline="325"><td><a class="pnum" id="p-139" href="#p-139">139</a>2</td><td>ENUMERATION</td><td><code>internal/features/users/routes.go:12-16</code></td><td><code>/api/v1/users</code> целиком под admin-guard, а <code>PUT /users/me/timezone</code> нужен любому авторизованному — регистрировать вне admin-группы и раньше <code>/:id</code></td><td>править</td><td><a class="xref" href="#ds-033">DS-033</a></td></tr><tr data-mdline="326"><td><a class="pnum" id="p-140" href="#p-140">140</a>3</td><td>SHARED-DEP</td><td><code>internal/features/auth</code> (<code>/auth/me</code>, dto, repo)</td><td>поле <code>timezone</code></td><td>править</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="327"><td><a class="pnum" id="p-141" href="#p-141">141</a>4</td><td>SHARED-DEP</td><td><code>internal/server/middleware/auth.go:78</code> (<code>ssr.Viewer{Name, Role}</code>), <code>internal/ssr/shell.go</code> (<code>Viewer</code>, <code>Shell</code>)</td><td>пояс пользователя в <code>Viewer</code> → доступен layout'у и шаблонам</td><td>править</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="328"><td><a class="pnum" id="p-142" href="#p-142">142</a>5</td><td>SHARED-DEP</td><td><code>internal/ssr/render.go:88</code> (<code>Funcs</code>)</td><td>функция шаблонов «время в поясе пользователя»</td><td>добавить</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="329"><td><a class="pnum" id="p-143" href="#p-143">143</a>6</td><td>FRONTEND</td><td><code>web/ssr/_layout/templates/layouts/base.html:34-37</code></td><td>select пояса, <code>data-timezone</code> на <code>&lt;body&gt;</code></td><td>править</td><td><a class="xref" href="#ds-033">DS-033</a></td></tr><tr data-mdline="330"><td><a class="pnum" id="p-144" href="#p-144">144</a>7</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/task-card.js:529-533</code>, <code>:627-633</code> и вызовы <code>:411,492,567,578,832,879</code></td><td>общий форматтер с <code>timeZone</code></td><td>править</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="331"><td><a class="pnum" id="p-145" href="#p-145">145</a>8</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/executor-payouts.js:148-152,186</code></td><td>общий форматтер</td><td>править</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="332"><td><a class="pnum" id="p-146" href="#p-146">146</a>9</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/stock-transfers.js:118-122</code></td><td>общий форматтер (файл будет переписан в части 3 — форматтер уже общий)</td><td>править</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="333"><td><a class="pnum" id="p-147" href="#p-147">147</a>10</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/board.js:385-387</code></td><td>«сегодня» по поясу пользователя</td><td>править</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="334"><td><a class="pnum" id="p-148" href="#p-148">148</a>11</td><td>FRONTEND</td><td>новый общий модуль форматирования (сейчас четыре копии в строках 7–10)</td><td>один <code>KT.fmtDateTime</code> / <code>KT.fmtDate</code> / <code>KT.today</code> с <code>timeZone</code> из <code>data-timezone</code></td><td>добавить; подключить в <code>base.html</code></td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="335"><td><a class="pnum" id="p-149" href="#p-149">149</a>12</td><td>SHARED-DEP</td><td><code>web/ssr/clients/templates/pages/equipment-history.html:27,84</code> + хендлер <code>internal/features/clients/history.go</code></td><td>даты в поясе пользователя</td><td>править</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="336"><td><a class="pnum" id="p-150" href="#p-150">150</a>13</td><td>SHARED-DEP</td><td><code>web/ssr/board/templates/pages/print-intake.html:11</code>, <code>print-handover.html:12,81</code>, <code>internal/features/board/print_ssr.go:52</code>, <code>card_service.go:231</code></td><td>дата печати и оплаты в поясе пользователя</td><td>править</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="337"><td><a class="pnum" id="p-151" href="#p-151">151</a>14</td><td>ENUMERATION</td><td><code>internal/seeddemo/seeddemo.go</code>, <code>e2e/fixtures/auth.ts</code></td><td>пояса демо-пользователей, wire-тип</td><td>править</td><td><a class="xref" href="#ds-033">DS-033</a></td></tr><tr data-mdline="338"><td><a class="pnum" id="p-152" href="#p-152">152</a>15</td><td>FK</td><td><code>migrations/</code></td><td>новая миграция: <code>users.timezone</code> (номер — следующий свободный на момент мержа)</td><td>добавить</td><td><a class="xref" href="#ds-033">DS-033</a></td></tr><tr data-mdline="339"><td><a class="pnum" id="p-153" href="#p-153">153</a>18</td><td>ENUMERATION</td><td><code>project/.scaffold-lock.json:15-19,28</code> — хэши файлов каркаса <code>internal/features/auth/*</code>, <code>internal/server/middleware/auth.go</code></td><td>правка этих файлов расходится с lock-файлом каркаса <code>/project-bootstrap</code></td><td>при планировании решить: обновить lock либо вынести дельту в не-каркасные файлы</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="340"><td><a class="pnum" id="p-154" href="#p-154">154</a>19</td><td>ENUMERATION</td><td><code>e2e/tests/order-print.spec.ts</code>, <code>e2e/tests/executor-payouts.spec.ts</code>, <code>e2e/tests/stock-transfers.spec.ts</code>, <code>e2e/tests/order-card.spec.ts</code></td><td>существующие проверки дат могут зависеть от пояса браузера</td><td>прогнать и поправить ожидания под пояс пользователя</td><td><a class="xref" href="#ds-032">DS-032</a></td></tr><tr data-mdline="341"><td><a class="pnum" id="p-155" href="#p-155">155</a>16</td><td>CONFIG</td><td>env-ключи</td><td>не задеваются (пояс сервера и контейнера на показ больше не влияет)</td><td>—</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="342"><td><a class="pnum" id="p-156" href="#p-156">156</a>17</td><td>MONITORING</td><td>дашборды/алерты</td><td>не задеваются</td><td>—</td><td>—</td></tr></tbody></table>
+<p><strong>Вне каталога фичи:</strong> есть — internal/features/users, internal/features/auth, internal/features/board, internal/features/clients, internal/server/middleware, internal/ssr, internal/seeddemo, web/ssr/_layout, web/ssr/_shared/js, web/ssr/users, web/ssr/clients, web/ssr/board, migrations, e2e</p>
+</body>
+</html>

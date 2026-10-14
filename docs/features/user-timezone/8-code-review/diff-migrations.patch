@@ -1,0 +1,20 @@
+diff --git a/migrations/0013_user_timezone.down.sql b/migrations/0013_user_timezone.down.sql
+new file mode 100644
+index 0000000..7f09443
+--- /dev/null
++++ b/migrations/0013_user_timezone.down.sql
+@@ -0,0 +1,2 @@
++-- Откат часового пояса пользователя: настройки поясов теряются (CHECK уходит вместе с колонкой).
++ALTER TABLE users DROP COLUMN IF EXISTS timezone;
+diff --git a/migrations/0013_user_timezone.up.sql b/migrations/0013_user_timezone.up.sql
+new file mode 100644
+index 0000000..0531600
+--- /dev/null
++++ b/migrations/0013_user_timezone.up.sql
+@@ -0,0 +1,6 @@
++-- Часовой пояс пользователя (DS-031, DS-033): имя IANA; время хранится в UTC (timestamptz),
++-- пояс влияет только на показ. Существующие пользователи получают Алматы (DEFAULT).
++-- Распознаваемость имени проверяет сервис (time.LoadLocation); в БД — только длина.
++ALTER TABLE users
++    ADD COLUMN timezone text NOT NULL DEFAULT 'Asia/Almaty',
++    ADD CONSTRAINT users_timezone_len_chk CHECK (char_length(timezone) BETWEEN 1 AND 64);

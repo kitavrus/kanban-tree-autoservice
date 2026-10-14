@@ -1,0 +1,7 @@
+{"ts": "2026-09-26T23:01:11", "stage": "4-swimlane", "tool": "Read", "path": "docs/features/phase-3-clients/4-swimlane/design-swimlane.html", "action": "warn"}
+{"ts": "2026-09-26T23:04:53", "stage": "5-design-review", "tool": "Bash", "path": "docs/features/phase-5-board/2-spec-interview/output.md", "action": "warn"}
+{"ts": "2026-09-27T00:01:01", "stage": "7-executing", "tool": "Bash", "path": "docs/features/phase-5-board/3-design/design-tests.md", "action": "warn"}
+{"ts": "2026-09-27T00:01:04", "stage": "7-executing", "tool": "Read", "path": "docs/features/phase-5-board/3-design/design-tests.md", "action": "warn"}
+{"ts": "2026-09-27T01:14:28", "stage": "7-executing", "tool": "Read", "path": "docs/features/phase-5-board/3-design/design-tests.md", "action": "warn"}
+{"ts": "2026-09-27T02:22:51", "stage": "7-executing", "tool": "Bash", "path": "docs/features/phase-5-board/3-design/design-tests.md", "action": "warn"}
+{"ts": "2026-09-27T02:22:54", "stage": "7-executing", "tool": "Bash", "path": "docs/features/phase-5-board/3-design/design-tests.md", "action": "warn"}

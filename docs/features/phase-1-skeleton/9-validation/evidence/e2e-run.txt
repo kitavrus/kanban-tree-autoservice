@@ -1,0 +1,2 @@
+[2026-09-25 13:09:02] status=passed failedTests=0 counters=10 passed src=e2e/test-results/.last-run.json cmd="npx playwright test tests/shell.spec.ts --project=chromium --headed --workers=1 --reporter=list"
+[2026-09-25 13:18:23] status=passed failedTests=0 counters=11 passed src=e2e/test-results/.last-run.json cmd="npx playwright test --project=chromium --headed --workers=1 --retries=1 --reporter=list"

@@ -1,0 +1,44 @@
+# Класс 2 — регресс смежных фич (clients D26, catalog SERVICE_IN_USE/PRODUCT_IN_USE, RequireSSR no-store).
+# Фикстуры: qa-client-phase5 (11111111-...101), qa-equipment-phase5 (...102),
+# qa-product-phase5 (...103, stock=10 min=3), qa-service-phase5 (...104), task 675 в qa-col-new
+# с subtask (service=104, equipment=102) и subtask_products (product=103, qty=1), task_equipment(675,102).
+
+## D26: DELETE client с заказом
+$ curl -s -X DELETE http://localhost:8080/api/v1/clients/11111111-1111-1111-1111-111111111101
+{"code":"CLIENT_HAS_TASKS","message":"У клиента есть заказы — удалить нельзя"}
+HTTP:409
+
+## D26: DELETE equipment, бывшее в заказе (task_equipment + subtasks.equipment_id)
+$ curl -s -X DELETE http://localhost:8080/api/v1/equipment/11111111-1111-1111-1111-111111111102
+{"code":"EQUIPMENT_USED_IN_TASKS","message":"Оборудование было в заказе — удалить нельзя"}
+HTTP:409
+
+## catalog SERVICE_IN_USE: DELETE услуги, используемой в subtasks
+$ curl -s -X DELETE http://localhost:8080/api/v1/services/11111111-1111-1111-1111-111111111104
+{"code":"SERVICE_IN_USE","message":"Услуга используется в заказах — удалить нельзя, отправьте её в архив"}
+HTTP:409   (не 500 — FK subtasks_service_id_fkey замаплен корректно)
+
+## catalog PRODUCT_IN_USE: DELETE товара, используемого в subtask_products
+$ curl -s -X DELETE http://localhost:8080/api/v1/products/11111111-1111-1111-1111-111111111103
+{"code":"PRODUCT_IN_USE","message":"Товар используется в услугах, заказах или журнале склада — удалить нельзя, отправьте его в архив"}
+HTTP:409   (не 500)
+
+## RequireSSR no-store (internal/server/middleware/auth.go)
+$ curl -sI -b admin.jar http://localhost:8080/
+HTTP/1.1 200 OK
+Cache-Control: no-store, must-revalidate
+
+$ curl -sI -b admin.jar http://localhost:8080/stock
+HTTP/1.1 200 OK
+Cache-Control: no-store, must-revalidate
+
+## pkg/errorspkg — CSRF/сессия каркаса регресс (общие для всех фич)
+$ curl -s -b admin.jar -X POST http://localhost:8080/api/v1/columns -H "Origin: http://localhost:8080" -H "Content-Type: application/json" -d '{"name":"nocsrf","color":"#111111"}'   # без X-Csrf-Token
+{"code":"CSRF_INVALID","message":"csrf token missing or invalid"}
+HTTP:403
+
+$ curl -s http://localhost:8080/api/v1/tasks   # без сессии
+{"code":"UNAUTHORIZED","message":"no session"}
+HTTP:401
+
+Вывод: регрессий на clients/catalog/errorspkg/RequireSSR не найдено — все смежные фичи (D26, SERVICE_IN_USE/PRODUCT_IN_USE) работают согласно design-errors.md, ошибка типизирована, не 500.

@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fuzz_verdict_check.py --feature phase-7-attachments --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9
+(exit 0)
+
+FUZZ-VERDICT SKIP: tier=? risk=? — вердикт pw-fuzz не обязателен (не L и не irreversible/data-migration), строки нет

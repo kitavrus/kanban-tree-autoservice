@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/go_naming_check.py --feature phase-1-skeleton --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9 --paths internal/ssr internal/features/home internal/server
+(exit 0)
+
+go-naming internal/ssr,internal/features/home,internal/server: PASS (проблем: 0)

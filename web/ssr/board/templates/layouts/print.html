@@ -1,0 +1,21 @@
+{{/* print — layout печатных актов (design-go-layers.md §Handler Print, ADR-102): без
+     сайдбара/топбара/theme.js, светлый фон принудительно (data-bs-theme="light") независимо
+     от темы пользователя — печатная форма не должна зависеть от системной темы браузера. */}}
+{{ define "print" }}<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ if eq .Kind "intake" }}Акт приёма{{ else }}Акт выдачи{{ end }} №{{ .Card.Task.ID }} — Kanban-tree</title>
+<link rel="icon" href="/assets/ssr-shared/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/ssr-shared/vendor/bootstrap/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/ssr-shared/print.css">
+</head>
+<body data-bs-theme="light">
+<div class="print-page">
+  <button type="button" class="btn btn-sm btn-primary no-print" onclick="window.print()" data-testid="print-button">Печать</button>
+  {{ template "content" . }}
+</div>
+</body>
+</html>
+{{ end }}

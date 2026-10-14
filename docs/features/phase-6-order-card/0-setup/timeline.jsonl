@@ -1,0 +1,73 @@
+{"type": "stage_start", "stage": "0-setup", "ts": "2026-09-27T10:35:46+05:00"}
+{"type": "wait_start", "stage": "0-setup", "label": "стартовые вопросы", "ts": "2026-09-27T10:35:46+05:00"}
+{"type": "wait_end", "ts": "2026-09-27T10:36:30+05:00"}
+{"type": "stage_end", "stage": "0-setup", "status": "ok", "ts": "2026-09-27T10:36:30+05:00"}
+{"type": "stage_start", "stage": "1-research", "ts": "2026-09-27T10:36:30+05:00"}
+{"type": "handoff", "stage": "1-research", "kind": "bundle", "path": "1-research/input-bundle.md", "bytes": 1602, "rules": 1, "missing": 1, "passport_bytes": 1302, "ts": "2026-09-27T10:36:30+05:00"}
+{"type": "handoff", "stage": "1-research", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T10:36:30+05:00"}
+{"type": "handoff", "stage": "1-research", "kind": "contract-clear", "ts": "2026-09-27T10:49:02+05:00"}
+{"type": "stage_end", "stage": "1-research", "status": "ok", "ts": "2026-09-27T10:49:02+05:00"}
+{"type": "stage_start", "stage": "2-spec-interview", "ts": "2026-09-27T10:49:02+05:00"}
+{"type": "handoff", "stage": "2-spec-interview", "kind": "bundle", "path": "2-spec-interview/input-bundle.md", "bytes": 10224, "rules": 3, "missing": 2, "passport_bytes": 1364, "ts": "2026-09-27T10:49:02+05:00"}
+{"type": "handoff", "stage": "2-spec-interview", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T10:49:02+05:00"}
+{"type": "wait_start", "stage": "2-spec-interview", "label": "spec батч 1", "ts": "2026-09-27T10:50:46+05:00"}
+{"type": "wait_end", "ts": "2026-09-27T10:55:04+05:00"}
+{"type": "wait_start", "stage": "2-spec-interview", "label": "PRD review + батч 2", "ts": "2026-09-27T10:56:35+05:00"}
+{"type": "wait_end", "ts": "2026-09-27T10:59:47+05:00"}
+{"type": "handoff", "stage": "2-spec-interview", "kind": "contract-clear", "ts": "2026-09-27T11:01:54+05:00"}
+{"type": "stage_end", "stage": "2-spec-interview", "status": "ok", "ts": "2026-09-27T11:01:54+05:00"}
+{"type": "stage_start", "stage": "3-design", "ts": "2026-09-27T11:01:54+05:00"}
+{"type": "handoff", "stage": "3-design", "kind": "bundle", "path": "3-design/input-bundle.md", "bytes": 31801, "rules": 3, "missing": 0, "passport_bytes": 2570, "ts": "2026-09-27T11:01:54+05:00"}
+{"type": "handoff", "stage": "3-design", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T11:01:54+05:00"}
+{"type": "handoff", "stage": "3-design", "kind": "contract-clear", "ts": "2026-09-27T11:13:42+05:00"}
+{"type": "stage_end", "stage": "3-design", "status": "ok", "ts": "2026-09-27T11:13:42+05:00"}
+{"type": "stage_start", "stage": "4-swimlane", "ts": "2026-09-27T11:13:42+05:00"}
+{"type": "handoff", "stage": "4-swimlane", "kind": "bundle", "path": "4-swimlane/input-bundle.md", "bytes": 32039, "rules": 1, "missing": 0, "passport_bytes": 2793, "ts": "2026-09-27T11:13:42+05:00"}
+{"type": "handoff", "stage": "4-swimlane", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T11:13:42+05:00"}
+{"type": "handoff", "stage": "4-swimlane", "kind": "contract-clear", "ts": "2026-09-27T11:16:27+05:00"}
+{"type": "stage_end", "stage": "4-swimlane", "status": "ok", "ts": "2026-09-27T11:16:27+05:00"}
+{"type": "stage_start", "stage": "5-design-review", "ts": "2026-09-27T11:16:27+05:00"}
+{"type": "handoff", "stage": "5-design-review", "kind": "bundle", "path": "5-design-review/input-bundle.md", "bytes": 3704, "rules": 3, "missing": 0, "passport_bytes": 2793, "ts": "2026-09-27T11:16:27+05:00"}
+{"type": "handoff", "stage": "5-design-review", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T11:16:27+05:00"}
+{"type": "event_start", "stage": "5-design-review", "label": "fix-loop #1: swimlane DTO + mobile H-01 self-race + backfill position", "kind": "fix-loop", "ts": "2026-09-27T11:25:19+05:00"}
+{"type": "event_end", "stage": "5-design-review", "label": "fix-loop #1: swimlane DTO + mobile H-01 self-race + backfill position", "status": "ok", "ts": "2026-09-27T11:31:51+05:00"}
+{"type": "handoff", "stage": "5-design-review", "kind": "contract-clear", "ts": "2026-09-27T11:31:52+05:00"}
+{"type": "stage_end", "stage": "5-design-review", "status": "ok", "ts": "2026-09-27T11:31:52+05:00"}
+{"type": "stage_start", "stage": "6-plan", "ts": "2026-09-27T11:31:52+05:00"}
+{"type": "handoff", "stage": "6-plan", "kind": "bundle", "path": "6-plan/input-bundle.md", "bytes": 4949, "rules": 3, "missing": 1, "passport_bytes": 2865, "ts": "2026-09-27T11:31:52+05:00"}
+{"type": "handoff", "stage": "6-plan", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T11:31:52+05:00"}
+{"type": "handoff", "stage": "6-plan", "kind": "contract-clear", "ts": "2026-09-27T11:38:30+05:00"}
+{"type": "stage_end", "stage": "6-plan", "status": "ok", "ts": "2026-09-27T11:38:30+05:00"}
+{"type": "stage_start", "stage": "7-executing", "ts": "2026-09-27T11:38:30+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "01", "layer": "backend", "path": "6-plan/phase-bundles/phase-01-input.md", "bytes": 55509, "phase_source": "ok", "ts": "2026-09-27T11:38:30+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T11:38:37+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "02", "layer": "backend", "path": "6-plan/phase-bundles/phase-02-input.md", "bytes": 61013, "phase_source": "ok", "ts": "2026-09-27T11:47:09+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "03", "layer": "frontend", "path": "6-plan/phase-bundles/phase-03-input.md", "bytes": 36594, "phase_source": "ok", "ts": "2026-09-27T12:12:24+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "04", "layer": "backend", "path": "6-plan/phase-bundles/phase-04-input.md", "bytes": 56623, "phase_source": "ok", "ts": "2026-09-27T13:02:25+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "05", "layer": "frontend", "path": "6-plan/phase-bundles/phase-05-input.md", "bytes": 31435, "phase_source": "ok", "ts": "2026-09-27T13:18:33+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "phase-bundle", "phase": "06", "layer": "frontend", "path": "6-plan/phase-bundles/phase-06-input.md", "bytes": 29543, "phase_source": "ok", "ts": "2026-09-27T14:29:07+05:00"}
+{"type": "mark", "stage": "7-executing", "label": "полный E2E #1: 104/110, catalog/users — изоляция от объёма dev-БД", "kind": "e2e-fail", "ts": "2026-09-27T15:04:53+05:00"}
+{"type": "event_start", "stage": "7-executing", "label": "fix-loop: изоляция catalog/users E2E", "kind": "fix-loop", "ts": "2026-09-27T15:04:53+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-27T15:23:51+05:00"}
+{"type": "event_end", "stage": "7-executing", "label": "fix-loop: изоляция catalog/users E2E", "status": "ok", "ts": "2026-09-27T15:25:02+05:00"}
+{"type": "handoff", "stage": "7-executing", "kind": "contract-clear", "ts": "2026-09-27T15:25:02+05:00"}
+{"type": "stage_end", "stage": "7-executing", "status": "ok", "ts": "2026-09-27T15:25:02+05:00"}
+{"type": "stage_start", "stage": "8-code-review", "ts": "2026-09-27T15:25:02+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 18419, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 434811, "ts": "2026-09-27T15:25:03+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.6, "steps": [{"name": "go_naming", "s": 0.1}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.1}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-27T15:25:03+05:00"}
+{"type": "event_start", "stage": "8-code-review", "label": "fix-loop #1: спаны, generation/order в task-card.js, шапка, коды 404", "kind": "fix-loop", "ts": "2026-09-27T15:30:19+05:00"}
+{"type": "event_end", "stage": "8-code-review", "label": "fix-loop #1: спаны, generation/order в task-card.js, шапка, коды 404", "status": "ok", "ts": "2026-09-27T15:59:18+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 19555, "checkers": {"pass": 8, "fail": 0, "skip": 1}, "patches_bytes": 457696, "ts": "2026-09-27T15:59:19+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "PASS", "total_s": 0.3, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.0}, {"name": "contract", "s": 0.0}, {"name": "date_bound", "s": 0.1}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 0.0}], "ts": "2026-09-27T15:59:19+05:00"}
+{"type": "stage_end", "stage": "8-code-review", "status": "ok", "ts": "2026-09-27T16:07:22+05:00"}
+{"type": "stage_start", "stage": "9-validation", "ts": "2026-09-27T16:07:22+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-09-27T16:11:20+05:00"}
+{"type": "stage_end", "stage": "9-validation", "status": "ok", "ts": "2026-09-27T16:11:42+05:00"}
+{"type": "stage_start", "stage": "10-qa", "ts": "2026-09-27T16:11:42+05:00"}
+{"type": "handoff", "stage": "10-qa", "kind": "bundle", "path": "10-qa/input-bundle.md", "bytes": 67172, "rules": 10, "missing": 1, "passport_bytes": 3381, "ts": "2026-09-27T16:11:42+05:00"}
+{"type": "handoff", "stage": "10-qa", "kind": "contract-emit", "mode": "warn", "ts": "2026-09-27T16:11:42+05:00"}
+{"type": "handoff", "stage": "10-qa", "kind": "contract-clear", "ts": "2026-09-27T16:24:44+05:00"}
+{"type": "stage_end", "stage": "10-qa", "status": "ok", "ts": "2026-09-27T16:24:44+05:00"}
+{"type": "stage_start", "stage": "11-report", "ts": "2026-09-27T16:24:44+05:00"}
+{"type": "handoff", "stage": "11-report", "kind": "bundle", "path": "11-report/input-bundle.md", "bytes": 36900, "rules": 9, "missing": 0, "passport_bytes": 3437, "ts": "2026-09-27T16:24:44+05:00"}
+{"type": "stage_end", "stage": "11-report", "status": "ok", "ts": "2026-09-27T16:27:22+05:00"}

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" width="680" height="420" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="420" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="346.5" lengthAdjust="spacingAndGlyphs">Сценарий: создание и архивирование поставщика</text>
+<rect x="5" y="40" width="170" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="11.5" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="82.2" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<path d="M90,70 L90,395" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="215" y="40" width="170" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="11.5" fill="#334155" text-anchor="middle" font-weight="bold" textLength="158.1" lengthAdjust="spacingAndGlyphs">Экран «Поставщики» (§8.1)</text>
+<path d="M300,70 L300,395" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="455" y="40" width="170" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="11.5" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="50.6" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,395" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="207.9" lengthAdjust="spacingAndGlyphs">открывает «Справочники → Поставщики»</text>
+<path d="M300,127 L540,127" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="121" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="207.9" lengthAdjust="spacingAndGlyphs">GET /api/v1/suppliers?is_active=true</text>
+<path d="M540,154 L300,154" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="148" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">200 {items,total,limit,offset}</text>
+<path d="M90,181 L300,181" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="175" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">«Добавить» → форма → «Сохранить»</text>
+<path d="M300,208 L540,208" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="202" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="225.2" lengthAdjust="spacingAndGlyphs">POST /api/v1/suppliers {name, phone, …}</text>
+<path d="M540,235 L300,235" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="229" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">201 {id, name, is_active:true}</text>
+<path d="M90,262 L300,262" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="256" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="52.0" lengthAdjust="spacingAndGlyphs">«В архив»</text>
+<path d="M300,289 L540,289" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="283" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="265.7" lengthAdjust="spacingAndGlyphs">PUT /api/v1/suppliers/:id {…, is_active:false}</text>
+<path d="M540,316 L300,316" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="310" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="231.0" lengthAdjust="spacingAndGlyphs">200 {is_active:false} → бейдж «в архиве»</text>
+<path d="M300,343 L540,343" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="337" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="132.8" lengthAdjust="spacingAndGlyphs">POST с тем же названием</text>
+<path d="M540,370 L300,370" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="364" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="277.2" lengthAdjust="spacingAndGlyphs">400 VALIDATION name: duplicate → текст под полем</text>
+<text x="340" y="410" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветка</text>
+</svg>

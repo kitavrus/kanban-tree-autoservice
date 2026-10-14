@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 740" width="680" height="740" font-family="Helvetica Neue, Arial, sans-serif">
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<rect width="680" height="740" fill="#ffffff"/>
+<text x="340" y="24" font-size="15" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="520.8" lengthAdjust="spacingAndGlyphs">Сценарий: удалить и восстановить документ; заказ с документами</text>
+<rect x="15" y="40" width="150" height="30" rx="6" fill="#e0f2fe" stroke="#0369a1"/>
+<text x="90" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="87.4" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<line x1="90" y1="70" x2="90" y2="700" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="265" y="40" width="150" height="30" rx="6" fill="#ede9fe" stroke="#6d28d9"/>
+<text x="340" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="67.2" lengthAdjust="spacingAndGlyphs">Экран (§8)</text>
+<line x1="340" y1="70" x2="340" y2="700" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="515" y="40" width="150" height="30" rx="6" fill="#dcfce7" stroke="#15803d"/>
+<text x="590" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="53.8" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<line x1="590" y1="70" x2="590" y2="700" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<line x1="90" y1="100" x2="340" y2="100" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="94" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="212.8" lengthAdjust="spacingAndGlyphs">«Удалить» у заявки #15 (§8.1), причина</text>
+<line x1="340" y1="128" x2="590" y2="128" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="122" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="291.2" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/transfers/15 {reason, version} (§6.1)</text>
+<text x="465.0" y="141" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="138.3" lengthAdjust="spacingAndGlyphs">единицы заявки освобождены</text>
+<line x1="590" y1="168" x2="340" y2="168" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="162" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">200 {id, deleted_at}</text>
+<line x1="340" y1="196" x2="90" y2="196" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="215.0" y="190" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="134.4" lengthAdjust="spacingAndGlyphs">документ исчез из списка</text>
+<rect x="20" y="206" width="640" height="78" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-dasharray="5 4"/>
+<text x="28" y="220" font-size="10" fill="#7f1d1d" text-anchor="start" font-weight="bold" textLength="128.8" lengthAdjust="spacingAndGlyphs">ошибка: документ в пути</text>
+<line x1="340" y1="242" x2="590" y2="242" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#r)"/>
+<text x="465.0" y="236" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="252.0" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/transfers/14 {reason, version}</text>
+<line x1="590" y1="270" x2="340" y2="270" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#r)"/>
+<text x="465.0" y="264" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="156.8" lengthAdjust="spacingAndGlyphs">409 TRANSFER_STATUS_CONFLICT</text>
+<line x1="90" y1="312" x2="340" y2="312" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="306" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="235.2" lengthAdjust="spacingAndGlyphs">«Удалённые» → вкладка «Перемещения» (§8.2)</text>
+<line x1="340" y1="340" x2="590" y2="340" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="334" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="229.6" lengthAdjust="spacingAndGlyphs">GET /api/v1/deleted?kind=transfers (§6.3)</text>
+<line x1="590" y1="368" x2="340" y2="368" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="362" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">200 {items, total, limit, offset}</text>
+<line x1="90" y1="396" x2="340" y2="396" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="390" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="78.4" lengthAdjust="spacingAndGlyphs">«Восстановить»</text>
+<line x1="340" y1="424" x2="590" y2="424" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="418" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="224.0" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/15/restore (§6.2)</text>
+<text x="465.0" y="437" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="143.6" lengthAdjust="spacingAndGlyphs">единицы заявки заняты снова</text>
+<line x1="590" y1="464" x2="340" y2="464" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="458" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="44.8" lengthAdjust="spacingAndGlyphs">200 {id}</text>
+<line x1="90" y1="502" x2="340" y2="502" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="496" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="263.2" lengthAdjust="spacingAndGlyphs">«Удалить заказ» #128 с документом в пути (§8.3)</text>
+<line x1="340" y1="530" x2="590" y2="530" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="524" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/tasks/128 {reason}</text>
+<text x="465.0" y="543" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="111.7" lengthAdjust="spacingAndGlyphs">документы не меняются</text>
+<line x1="590" y1="570" x2="340" y2="570" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="564" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="168.0" lengthAdjust="spacingAndGlyphs">200 {id, deleted_at, warnings}</text>
+<line x1="90" y1="598" x2="340" y2="598" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="592" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="168.0" lengthAdjust="spacingAndGlyphs">открывает «Перемещения» (§8.1)</text>
+<line x1="340" y1="626" x2="590" y2="626" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="620" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="156.8" lengthAdjust="spacingAndGlyphs">GET /api/v1/transfers (§6.3)</text>
+<line x1="590" y1="654" x2="340" y2="654" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="648" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="151.2" lengthAdjust="spacingAndGlyphs">200 … task_is_deleted: true</text>
+<line x1="340" y1="682" x2="90" y2="682" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="215.0" y="676" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="224.0" lengthAdjust="spacingAndGlyphs">бейдж «заказ удалён», «Принять» доступно</text>
+<text x="20" y="728" font-size="10" fill="#334155" text-anchor="start" font-weight="normal" textLength="408.8" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос, пунктир — ответ, красная рамка — ветка ошибки.</text>
+</svg>

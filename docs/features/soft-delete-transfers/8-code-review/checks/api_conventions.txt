@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature soft-delete-transfers --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a --paths internal/features/board internal/features/clients internal/features/softdelete internal/features/transfers
+(exit 0)
+
+api-conventions internal/features/board,internal/features/clients,internal/features/softdelete,internal/features/transfers: PASS (проблем: 0)

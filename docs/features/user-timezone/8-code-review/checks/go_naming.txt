@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/go_naming_check.py --feature user-timezone --repo /Users/igorpotema/mycode/kanban-tree --paths internal/features/users internal/features/auth internal/features/board pkg/timezone internal/ssr internal/server/middleware
+(exit 0)
+
+go-naming internal/features/users,internal/features/auth,internal/features/board,pkg/timezone,internal/ssr,internal/server/middleware: PASS (проблем: 0)

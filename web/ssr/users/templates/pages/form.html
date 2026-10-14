@@ -1,0 +1,58 @@
+{{ define "content" }}
+<form class="card mw-760" method="post" action="{{ if .IsNew }}/users{{ else }}/users/{{ .ID }}{{ end }}" data-testid="user-form" novalidate>
+  <div class="card-body">
+    <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+    {{ if .Error }}<div class="alert alert-danger py-2" role="alert" data-testid="form-error">{{ .Error }}</div>{{ end }}
+    <div class="mb-3">
+      <label for="name" class="form-label">ФИО *</label>
+      <input id="name" name="name" class="form-control{{ if index .Errors "name" }} is-invalid{{ end }}" value="{{ .Name }}" maxlength="200" autocomplete="off">
+      {{ with index .Errors "name" }}<div class="invalid-feedback" data-testid="error-name">{{ . }}</div>{{ end }}
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-sm-6">
+        <label for="login" class="form-label">Логин *</label>
+        <input id="login" name="login" class="form-control{{ if index .Errors "login" }} is-invalid{{ end }}" value="{{ .Login }}" maxlength="50" autocomplete="off" autocapitalize="none" spellcheck="false">
+        {{ with index .Errors "login" }}<div class="invalid-feedback" data-testid="error-login">{{ . }}</div>{{ end }}
+      </div>
+      <div class="col-sm-6">
+        <label for="role" class="form-label">Роль</label>
+        <select id="role" name="role" class="form-select{{ if index .Errors "role" }} is-invalid{{ end }}" data-testid="role">
+          <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
+          <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
+        </select>
+        {{ with index .Errors "role" }}<div class="invalid-feedback d-block" data-testid="error-role">{{ . }}</div>{{ end }}
+      </div>
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-sm-6">
+        <label for="phone" class="form-label">Телефон</label>
+        <input id="phone" name="phone" class="form-control{{ if index .Errors "phone" }} is-invalid{{ end }}" value="{{ .Phone }}" maxlength="50" inputmode="tel" autocomplete="off">
+        {{ with index .Errors "phone" }}<div class="invalid-feedback" data-testid="error-phone">{{ . }}</div>{{ end }}
+      </div>
+      <div class="col-sm-6">
+        <label for="password" class="form-label">{{ if .IsNew }}Пароль *{{ else }}Новый пароль (пусто — не менять){{ end }}</label>
+        <input id="password" name="password" type="password" class="form-control{{ if index .Errors "password" }} is-invalid{{ end }}" maxlength="72" autocomplete="new-password">
+        {{ with index .Errors "password" }}<div class="invalid-feedback" data-testid="error-password">{{ . }}</div>{{ end }}
+      </div>
+    </div>
+    <div class="row g-3 mb-3">
+      <div class="col-sm-6">
+        <label for="timezone" class="form-label">Часовой пояс</label>
+        <select id="timezone" name="timezone" class="form-select{{ if index .Errors "timezone" }} is-invalid{{ end }}" data-testid="user-timezone">
+          {{ range .Timezones }}<option value="{{ .Value }}"{{ if eq .Value $.Timezone }} selected{{ end }}>{{ .Label }}</option>
+          {{ end }}
+        </select>
+        {{ with index .Errors "timezone" }}<div class="invalid-feedback d-block" data-testid="error-timezone">{{ . }}</div>{{ end }}
+      </div>
+    </div>
+    <div class="form-check mb-4">
+      <input class="form-check-input" type="checkbox" id="is_active" name="is_active"{{ if .IsActive }} checked{{ end }}>
+      <label class="form-check-label" for="is_active">Активен (может входить в систему)</label>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-primary" data-testid="user-save">Сохранить</button>
+      <a href="/users" class="btn btn-outline-secondary">Отмена</a>
+    </div>
+  </div>
+</form>
+{{ end }}

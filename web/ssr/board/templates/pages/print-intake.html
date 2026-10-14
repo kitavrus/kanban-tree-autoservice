@@ -1,0 +1,49 @@
+{{/* print-intake — акт приёма (AC-015). Каждый реквизит фирмы — свой `{{ if }}` (не
+     единый блок): пустая переменная окружения не должна прятать заполненные соседние. */}}
+{{ define "content" }}
+<header class="print-firm" data-testid="print-firm">
+  {{ if .Firm.Name }}<div class="print-firm-name">{{ .Firm.Name }}</div>{{ end }}
+  {{ if .Firm.Address }}<div class="print-firm-address">{{ .Firm.Address }}</div>{{ end }}
+  {{ if .Firm.Phone }}<div class="print-firm-phone">{{ .Firm.Phone }}</div>{{ end }}
+</header>
+
+<h1 data-testid="print-title">Акт приёма №{{ .Card.Task.ID }}</h1>
+<p class="print-date" data-testid="print-date">Дата: {{ timeIn .Timezone "02.01.2006" .PrintedAt }}</p>
+
+<section class="print-section">
+  <h2>Клиент</h2>
+  <p data-testid="print-client">{{ .ClientName }}{{ if .ContactName }}, {{ .ContactName }}{{ end }}</p>
+  {{ if .Phones }}<p data-testid="print-phones">Телефон: {{ .Phones }}</p>{{ end }}
+</section>
+
+<section class="print-section">
+  <h2>Оборудование</h2>
+  {{ if .Card.Equipment }}
+  <table class="table table-bordered table-sm" data-testid="print-equipment">
+    <thead><tr><th>Тип</th><th>Бренд</th><th>Модель</th><th>Серийный №</th><th>Комплектность</th><th>Состояние</th></tr></thead>
+    <tbody>
+    {{ range .Card.Equipment }}
+    <tr>
+      <td>{{ .TypeName }}</td><td>{{ .Brand }}</td><td>{{ .Model }}</td><td>{{ .Serial }}</td>
+      <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
+    </tr>
+    {{ end }}
+    </tbody>
+  </table>
+  {{ else }}
+  <p class="text-body-secondary">Оборудование не указано.</p>
+  {{ end }}
+</section>
+
+{{ if .Description }}
+<section class="print-section">
+  <h2>Описание</h2>
+  <div class="print-description" data-testid="print-description">{{ .Description }}</div>
+</section>
+{{ end }}
+
+<section class="print-signatures">
+  <div class="print-signature" data-testid="print-signature-give">Сдал: ______________________</div>
+  <div class="print-signature" data-testid="print-signature-take">Принял: ______________________</div>
+</section>
+{{ end }}

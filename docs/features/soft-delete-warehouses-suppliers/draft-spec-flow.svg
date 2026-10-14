@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 642" width="680" height="642" font-family="Helvetica Neue, Arial, sans-serif">
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<rect width="680" height="642" fill="#ffffff"/>
+<text x="340" y="24" font-size="15" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="420.0" lengthAdjust="spacingAndGlyphs">Сценарий: удалить склад и поставщика, восстановить</text>
+<rect x="15" y="40" width="150" height="30" rx="6" fill="#e0f2fe" stroke="#0369a1"/>
+<text x="90" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="87.4" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<line x1="90" y1="70" x2="90" y2="602" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="265" y="40" width="150" height="30" rx="6" fill="#ede9fe" stroke="#6d28d9"/>
+<text x="340" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="67.2" lengthAdjust="spacingAndGlyphs">Экран (§8)</text>
+<line x1="340" y1="70" x2="340" y2="602" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<rect x="515" y="40" width="150" height="30" rx="6" fill="#dcfce7" stroke="#15803d"/>
+<text x="590" y="60" font-size="12" fill="#0f172a" text-anchor="middle" font-weight="bold" textLength="53.8" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<line x1="590" y1="70" x2="590" y2="602" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+<line x1="90" y1="100" x2="340" y2="100" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="94" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="246.4" lengthAdjust="spacingAndGlyphs">«Удалить» у склада с товаром (§8.1), причина</text>
+<rect x="20" y="110" width="640" height="78" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-dasharray="5 4"/>
+<text x="28" y="124" font-size="10" fill="#7f1d1d" text-anchor="start" font-weight="bold" textLength="156.8" lengthAdjust="spacingAndGlyphs">ошибка: на складе есть товар</text>
+<line x1="340" y1="146" x2="590" y2="146" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#r)"/>
+<text x="465.0" y="140" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="257.6" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/warehouses/{id} {reason} (§6.1)</text>
+<line x1="590" y1="174" x2="340" y2="174" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#r)"/>
+<text x="465.0" y="168" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">409 WAREHOUSE_IN_USE</text>
+<line x1="90" y1="216" x2="340" y2="216" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="210" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">перемещает остаток, удаляет снова</text>
+<line x1="340" y1="244" x2="590" y2="244" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="238" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="257.6" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/warehouses/{id} {reason} (§6.1)</text>
+<line x1="590" y1="272" x2="340" y2="272" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="266" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">200 {id, deleted_at}</text>
+<line x1="340" y1="300" x2="90" y2="300" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="215.0" y="294" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="196.0" lengthAdjust="spacingAndGlyphs">склада нет в справочнике и в выборе</text>
+<line x1="90" y1="338" x2="340" y2="338" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="332" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="291.2" lengthAdjust="spacingAndGlyphs">«Удалить» у поставщика с документами (§8.1), причина</text>
+<line x1="340" y1="366" x2="590" y2="366" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="360" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="252.0" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/suppliers/{id} {reason} (§6.3)</text>
+<text x="465.0" y="379" font-size="9.5" fill="#64748b" text-anchor="middle" font-weight="normal" textLength="154.3" lengthAdjust="spacingAndGlyphs">документы поставщика остаются</text>
+<line x1="590" y1="406" x2="340" y2="406" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="400" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="112.0" lengthAdjust="spacingAndGlyphs">200 {id, deleted_at}</text>
+<line x1="90" y1="434" x2="340" y2="434" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="428" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="201.6" lengthAdjust="spacingAndGlyphs">открывает документ поставщика (§8.3)</text>
+<line x1="340" y1="462" x2="590" y2="462" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="456" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">GET /api/v1/transfers/{id} (§6.5)</text>
+<line x1="590" y1="490" x2="340" y2="490" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="484" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="173.6" lengthAdjust="spacingAndGlyphs">200 … supplier_is_deleted: true</text>
+<line x1="90" y1="528" x2="340" y2="528" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="215.0" y="522" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="280.0" lengthAdjust="spacingAndGlyphs">«Удалённые» → «Поставщики» → «Восстановить» (§8.2)</text>
+<line x1="340" y1="556" x2="590" y2="556" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="465.0" y="550" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="235.2" lengthAdjust="spacingAndGlyphs">POST /api/v1/suppliers/{id}/restore (§6.4)</text>
+<line x1="590" y1="584" x2="340" y2="584" stroke="#475569" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<text x="465.0" y="578" font-size="10" fill="#1f2937" text-anchor="middle" font-weight="normal" textLength="44.8" lengthAdjust="spacingAndGlyphs">200 {id}</text>
+<text x="20" y="630" font-size="10" fill="#334155" text-anchor="start" font-weight="normal" textLength="408.8" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос, пунктир — ответ, красная рамка — ветка ошибки.</text>
+</svg>

@@ -1,0 +1,1779 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index a38a3e6..c0c4996 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -226,6 +226,85 @@ export class AdminApi {
+     return res.json();
+   }
+ 
++  // ---- board (internal/features/board/*_dto.go, §TD-6.2 — типы в board-types.ts) ----
++
++  async createColumn(c: import('./board-types').NewColumn): Promise<import('./board-types').ColumnMutationResponse> {
++    const res = await this.ctx.post('/api/v1/columns', { data: c, headers: await this.headers() });
++    expect(res.status(), `создание колонки ${c.name}: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
++  async updateColumn(id: string, c: import('./board-types').NewColumn): Promise<import('./board-types').ColumnMutationResponse> {
++    const res = await this.ctx.put(`/api/v1/columns/${id}`, { data: c, headers: await this.headers() });
++    expect(res.status(), `правка колонки ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async deleteColumn(id: string): Promise<void> {
++    const res = await this.ctx.delete(`/api/v1/columns/${id}`, { headers: await this.headers() });
++    expect(res.status(), `удаление колонки ${id}: ${await res.text()}`).toBe(204);
++  }
++
++  async listColumns(): Promise<{ items: import('./board-types').Column[] }> {
++    const res = await this.ctx.get('/api/v1/columns?limit=100');
++    expect(res.status()).toBe(200);
++    return res.json();
++  }
++
++  async createTask(t: import('./board-types').NewTask): Promise<import('./board-types').Task> {
++    const res = await this.ctx.post('/api/v1/tasks', { data: t, headers: await this.headers() });
++    expect(res.status(), `создание заказа ${t.title}: ${await res.text()}`).toBe(201);
++    const body: import('./board-types').TaskMutationResponse = await res.json();
++    return body.task;
++  }
++
++  /** Не проверяет статус — BD-010 (конфликт версии) ждёт 409, а не 200. */
++  async updateTask(id: number, t: import('./board-types').UpdateTask): Promise<{ status: number; body: import('./board-types').TaskMutationResponse }> {
++    const res = await this.ctx.put(`/api/v1/tasks/${id}`, { data: t, headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  async getTask(id: number): Promise<import('./board-types').Task> {
++    const res = await this.ctx.get(`/api/v1/tasks/${id}`);
++    expect(res.status(), `заказ ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async moveTask(id: number, m: import('./board-types').MoveTask): Promise<{ status: number; body: import('./board-types').TaskMutationResponse }> {
++    const res = await this.ctx.post(`/api/v1/tasks/${id}/move`, { data: m, headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  async deleteTask(id: number): Promise<import('./board-types').TaskDeleteResponse> {
++    const res = await this.ctx.delete(`/api/v1/tasks/${id}`, { headers: await this.headers() });
++    expect(res.status(), `удаление заказа ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  // ---- stock (internal/features/board/stock_dto.go, §TD-6.2 — типы в board-types.ts) ----
++
++  async getStockSummary(): Promise<import('./board-types').StockSummaryResponse> {
++    const res = await this.ctx.get('/api/v1/stock/summary');
++    expect(res.status(), `stock summary: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async getStock(params: { scope?: import('./board-types').StockScope; q?: string; limit?: number } = {}): Promise<import('./board-types').StockListResponse> {
++    const p = new URLSearchParams();
++    if (params.scope) p.set('scope', params.scope);
++    if (params.q) p.set('q', params.q);
++    p.set('limit', String(params.limit ?? 1000));
++    const res = await this.ctx.get(`/api/v1/stock?${p.toString()}`);
++    expect(res.status(), `stock list: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async adjustStock(productId: string, stock: number): Promise<import('./board-types').StockRow> {
++    const res = await this.ctx.put(`/api/v1/stock/${productId}`, { data: { stock }, headers: await this.headers() });
++    expect(res.status(), `правка остатка ${productId}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
+   async findByLogin(login: string): Promise<User> {
+     const res = await this.ctx.get(`/api/v1/users?q=${encodeURIComponent(login)}`);
+     expect(res.status()).toBe(200);
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+new file mode 100644
+index 0000000..d502cef
+--- /dev/null
++++ b/e2e/fixtures/board-types.ts
+@@ -0,0 +1,100 @@
++// Wire-типы доски — 1:1 по json-тегам DTO (source: internal/features/board/*_dto.go,
++// §TD-6.2). Amount-поля (StockWarning.stock/min_stock) — numeric.Amount, в TS number|string.
++
++export type StockWarning = {
++  product_id: string;
++  name: string;
++  stock: number | string;
++  min_stock: number | string;
++  kind: 'negative' | 'below_min';
++};
++
++export type Column = {
++  id: string;
++  name: string;
++  color: string;
++  is_final: boolean;
++  consumes_stock: boolean;
++  position: number;
++  tasks_count: number;
++};
++
++export type NewColumn = {
++  name: string;
++  color: string;
++  is_final: boolean;
++  consumes_stock: boolean;
++  position?: number | null;
++};
++
++export type ColumnMutationResponse = { column: Column; warnings: StockWarning[] };
++
++export type TaskCard = {
++  id: number;
++  column_id: string;
++  client_id: string;
++  client_name: string;
++  title: string;
++  assignee_id: string | null;
++  assignee_name: string | null;
++  due_date: string | null;
++  is_paid: boolean;
++  position: string;
++  version: number;
++  subtasks_total: number;
++  subtasks_done: number;
++  subtasks_late: number;
++};
++
++export type Task = TaskCard & {
++  paid_at: string | null;
++  created_at: string;
++  updated_at: string;
++};
++
++export type NewTask = {
++  title: string;
++  client_id: string;
++  column_id: string;
++  assignee_id?: string | null;
++  due_date?: string | null;
++  is_paid?: boolean | null;
++};
++
++export type UpdateTask = NewTask & { version: number };
++
++export type MoveTask = { column_id: string; prev_id?: number | null; next_id?: number | null };
++
++export type TaskMutationResponse = { task: Task; warnings: StockWarning[] };
++export type TaskDeleteResponse = { warnings: StockWarning[] };
++
++export type ApiErrorSubtask = { id: string; service_name: string; status: 'new' | 'in_progress' | 'done' };
++export type ApiErrorSubtasks = { code: 'SUBTASKS_NOT_DONE'; message: string; details: { subtasks: ApiErrorSubtask[] } };
++
++// Wire-типы экрана «Остатки» (internal/features/board/stock_dto.go, §TD-6.2). Amount-поля
++// (stock/min_stock/pending/forecast) — numeric.Amount, на wire JSON-число без кавычек.
++export type StockScope = 'risky' | 'all';
++export type StockState = 'out' | 'low' | 'will_low' | 'ok';
++
++export type StockRow = {
++  product_id: string;
++  name: string;
++  unit: string;
++  box: string;
++  place: string;
++  stock: number;
++  min_stock: number;
++  pending: number;
++  forecast: number;
++  state: StockState;
++};
++
++export type StockListResponse = { items: StockRow[]; total: number; limit: number; offset: number };
++
++export type StockSummaryResponse = {
++  products_total: number;
++  low_count: number;
++  out_count: number;
++  will_low_count: number;
++  risk_count: number;
++};
+diff --git a/e2e/fixtures/board.ts b/e2e/fixtures/board.ts
+new file mode 100644
+index 0000000..b7a1d50
+--- /dev/null
++++ b/e2e/fixtures/board.ts
+@@ -0,0 +1,82 @@
++import { Pool } from 'pg';
++import { test as base } from './test';
++import type { Column } from './board-types';
++
++// pg-хелпер доски (ADR-103): подзадачи (услуги в заказе) и принятое оборудование заказа
++// у доски фазы 6 нет собственного API создания/правки (это фаза 7+) — единственный способ
++// завести их для E2E-фикстур (BD-003/BD-018) без тестового HTTP-эндпоинта в сервере —
++// прямая вставка в БД для заказа, созданного через настоящий API (AdminApi.createTask).
++// Подключение — E2E_DATABASE_URL, иначе тот же дефолт стенда, что и scripts/dev/env.sh.
++const DATABASE_URL = process.env.E2E_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgres://admin:dev@127.0.0.1:5432/app?sslmode=disable';
++
++export type SubtaskStatus = 'new' | 'in_progress' | 'done';
++
++export type NewSubtask = {
++  taskId: number;
++  serviceId: string;
++  status?: SubtaskStatus;
++  dueDate?: string | null;
++  products?: Array<{ productId: string; qty: number }>;
++};
++
++type BoardFixtures = {
++  /** Вставляет подзадачу (услугу заказа) напрямую в БД — возвращает id подзадачи. */
++  insertSubtask: (s: NewSubtask) => Promise<string>;
++  /** Меняет статус подзадачи (у доски фазы 6 нет API редактирования подзадач). */
++  setSubtaskStatus: (subtaskId: string, status: SubtaskStatus) => Promise<void>;
++  /** Отмечает оборудование клиента как принятое в заказе (task_equipment). */
++  insertTaskEquipment: (taskId: number, equipmentId: string) => Promise<void>;
++};
++
++type BoardWorkerFixtures = {
++  boardPool: Pool;
++};
++
++export const test = base.extend<BoardFixtures, BoardWorkerFixtures>({
++  boardPool: [
++    async ({}, use) => {
++      const pool = new Pool({ connectionString: DATABASE_URL });
++      await use(pool);
++      await pool.end();
++    },
++    { scope: 'worker' },
++  ],
++
++  insertSubtask: async ({ boardPool }, use) => {
++    await use(async (s) => {
++      const res = await boardPool.query<{ id: string }>(
++        `INSERT INTO subtasks (task_id, service_id, status, due_date) VALUES ($1, $2, $3, $4) RETURNING id`,
++        [s.taskId, s.serviceId, s.status ?? 'new', s.dueDate ?? null],
++      );
++      const subtaskId = res.rows[0].id;
++      for (const p of s.products ?? []) {
++        await boardPool.query(`INSERT INTO subtask_products (subtask_id, product_id, qty) VALUES ($1, $2, $3)`, [subtaskId, p.productId, p.qty]);
++      }
++      return subtaskId;
++    });
++  },
++
++  setSubtaskStatus: async ({ boardPool }, use) => {
++    await use(async (subtaskId, status) => {
++      await boardPool.query(`UPDATE subtasks SET status = $2, updated_at = now() WHERE id = $1`, [subtaskId, status]);
++    });
++  },
++
++  insertTaskEquipment: async ({ boardPool }, use) => {
++    await use(async (taskId, equipmentId) => {
++      await boardPool.query(
++        `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2) ON CONFLICT (task_id, equipment_id) DO NOTHING`,
++        [taskId, equipmentId],
++      );
++    });
++  },
++});
++
++/** Колонка сида D32 по названию (AC-008) — колонки создаются миграцией, id непредсказуем. */
++export function columnByName(columns: Column[], name: string): Column {
++  const c = columns.find((x) => x.name === name);
++  if (!c) throw new Error(`колонка «${name}» не найдена среди: ${columns.map((x) => x.name).join(', ')}`);
++  return c;
++}
++
++export { expect } from './test';
+diff --git a/e2e/package-lock.json b/e2e/package-lock.json
+index f6dc2c3..f7c9d52 100644
+--- a/e2e/package-lock.json
++++ b/e2e/package-lock.json
+@@ -8,6 +8,8 @@
+       "devDependencies": {
+         "@playwright/test": "^1.55.0",
+         "@types/node": "^24.0.0",
++        "@types/pg": "^8.11.0",
++        "pg": "^8.13.0",
+         "typescript": "^5.9.0"
+       }
+     },
+@@ -37,6 +39,115 @@
+         "undici-types": "~7.18.0"
+       }
+     },
++    "node_modules/@types/pg": {
++      "version": "8.23.1",
++      "resolved": "https://registry.npmjs.org/@types/pg/-/pg-8.23.1.tgz",
++      "integrity": "sha512-fKVHpikPdg4GKks3JuLEhvwSyvwzF23hnabPy6DD8ljVbC7+6J5dQzdv4arV6jqq57djnMgs1HKBxX4P8aBI3A==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/node": "*",
++        "pg-protocol": "*",
++        "pg-types": "^2.2.0"
++      }
++    },
++    "node_modules/pg": {
++      "version": "8.23.0",
++      "resolved": "https://registry.npmjs.org/pg/-/pg-8.23.0.tgz",
++      "integrity": "sha512-Ip2EQCngowJLGOfCwkFhPXU7/ljlhn6Rxlmy4XYfL2Y+vyRM59+8uR2xqRWKdYmbXmxCFOAmKxBuSUCdF34qLg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "pg-connection-string": "^2.14.0",
++        "pg-pool": "^3.14.0",
++        "pg-protocol": "^1.16.0",
++        "pg-types": "2.2.0",
++        "pgpass": "1.0.5"
++      },
++      "engines": {
++        "node": ">= 16.0.0"
++      },
++      "optionalDependencies": {
++        "pg-cloudflare": "^1.4.0"
++      },
++      "peerDependencies": {
++        "pg-native": ">=3.0.1"
++      },
++      "peerDependenciesMeta": {
++        "pg-native": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/pg-cloudflare": {
++      "version": "1.4.0",
++      "resolved": "https://registry.npmjs.org/pg-cloudflare/-/pg-cloudflare-1.4.0.tgz",
++      "integrity": "sha512-Vo7z/6rrQYxpNRylp4Tlob2elzbh+N/MOQbxFVWCxS7oEx6jF53GTJFxK2WWpKuBRkmiin4Mt+xofFDjx09R0A==",
++      "dev": true,
++      "license": "MIT",
++      "optional": true
++    },
++    "node_modules/pg-connection-string": {
++      "version": "2.14.0",
++      "resolved": "https://registry.npmjs.org/pg-connection-string/-/pg-connection-string-2.14.0.tgz",
++      "integrity": "sha512-XwWDGcLRGCXAR8F/AM5bG7Q+A3Wm2s6QeEjlOKZLlH3UYcguiqCWKyWXVag5TLTIjR7oOJUY8kcADaZgWPyLeg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/pg-int8": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/pg-int8/-/pg-int8-1.0.1.tgz",
++      "integrity": "sha512-WCtabS6t3c8SkpDBUlb1kjOs7l66xsGdKpIPZsg4wR+B3+u9UAum2odSsF9tnvxg80h4ZxLWMy4pRjOsFIqQpw==",
++      "dev": true,
++      "license": "ISC",
++      "engines": {
++        "node": ">=4.0.0"
++      }
++    },
++    "node_modules/pg-pool": {
++      "version": "3.14.0",
++      "resolved": "https://registry.npmjs.org/pg-pool/-/pg-pool-3.14.0.tgz",
++      "integrity": "sha512-gKtPkFdQPU3DksooVLi9LsjZxrsBUZIpa+7aVx+LV5pNh0KzP4Zleud2po+ConrxbuXGBJ6Hfer6hdgpIBpBaw==",
++      "dev": true,
++      "license": "MIT",
++      "peerDependencies": {
++        "pg": ">=8.0"
++      }
++    },
++    "node_modules/pg-protocol": {
++      "version": "1.16.0",
++      "resolved": "https://registry.npmjs.org/pg-protocol/-/pg-protocol-1.16.0.tgz",
++      "integrity": "sha512-sILXutLVjCLjcDuOmvhX5e2Z4cS5qG/6Bu3VkpFwdf/633ElGLpEh9bgmuI5I4sqKqkifQiGyiCcx1HdtrK7tg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/pg-types": {
++      "version": "2.2.0",
++      "resolved": "https://registry.npmjs.org/pg-types/-/pg-types-2.2.0.tgz",
++      "integrity": "sha512-qTAAlrEsl8s4OiEQY69wDvcMIdQN6wdz5ojQiOy6YRMuynxenON0O5oCpJI6lshc6scgAY8qvJ2On/p+CXY0GA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "pg-int8": "1.0.1",
++        "postgres-array": "~2.0.0",
++        "postgres-bytea": "~1.0.0",
++        "postgres-date": "~1.0.4",
++        "postgres-interval": "^1.1.0"
++      },
++      "engines": {
++        "node": ">=4"
++      }
++    },
++    "node_modules/pgpass": {
++      "version": "1.0.5",
++      "resolved": "https://registry.npmjs.org/pgpass/-/pgpass-1.0.5.tgz",
++      "integrity": "sha512-FdW9r/jQZhSeohs1Z3sI1yxFQNFvMcnmfuj4WBMUTxOrAyLMaTcE1aAMBiTlbMNaXvBCQuVi0R7hd8udDSP7ug==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "split2": "^4.1.0"
++      }
++    },
+     "node_modules/playwright": {
+       "version": "1.63.0",
+       "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.63.0.tgz",
+@@ -66,6 +177,59 @@
+         "node": ">=20"
+       }
+     },
++    "node_modules/postgres-array": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/postgres-array/-/postgres-array-2.0.0.tgz",
++      "integrity": "sha512-VpZrUqU5A69eQyW2c5CA1jtLecCsN2U/bD6VilrFDWq5+5UIEVO7nazS3TEcHf1zuPYO/sqGvUvW62g86RXZuA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=4"
++      }
++    },
++    "node_modules/postgres-bytea": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/postgres-bytea/-/postgres-bytea-1.0.1.tgz",
++      "integrity": "sha512-5+5HqXnsZPE65IJZSMkZtURARZelel2oXUEO8rH83VS/hxH5vv1uHquPg5wZs8yMAfdv971IU+kcPUczi7NVBQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/postgres-date": {
++      "version": "1.0.7",
++      "resolved": "https://registry.npmjs.org/postgres-date/-/postgres-date-1.0.7.tgz",
++      "integrity": "sha512-suDmjLVQg78nMK2UZ454hAG+OAW+HQPZ6n++TNDUX+L0+uUlLywnoxJKDou51Zm+zTCjrCl0Nq6J9C5hP9vK/Q==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/postgres-interval": {
++      "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/postgres-interval/-/postgres-interval-1.2.0.tgz",
++      "integrity": "sha512-9ZhXKM/rw350N1ovuWHbGxnGh/SNJ4cnxHiM0rxE4VN41wsg8P8zWn9hv/buK00RP4WvlOyr/RBDiptyxVbkZQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "xtend": "^4.0.0"
++      },
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/split2": {
++      "version": "4.2.0",
++      "resolved": "https://registry.npmjs.org/split2/-/split2-4.2.0.tgz",
++      "integrity": "sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==",
++      "dev": true,
++      "license": "ISC",
++      "engines": {
++        "node": ">= 10.x"
++      }
++    },
+     "node_modules/typescript": {
+       "version": "5.9.3",
+       "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+@@ -86,6 +250,16 @@
+       "integrity": "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==",
+       "dev": true,
+       "license": "MIT"
++    },
++    "node_modules/xtend": {
++      "version": "4.0.2",
++      "resolved": "https://registry.npmjs.org/xtend/-/xtend-4.0.2.tgz",
++      "integrity": "sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.4"
++      }
+     }
+   }
+ }
+diff --git a/e2e/package.json b/e2e/package.json
+index 386c2ac..f254c31 100644
+--- a/e2e/package.json
++++ b/e2e/package.json
+@@ -11,6 +11,8 @@
+   "devDependencies": {
+     "@playwright/test": "^1.55.0",
+     "@types/node": "^24.0.0",
++    "@types/pg": "^8.11.0",
++    "pg": "^8.13.0",
+     "typescript": "^5.9.0"
+   }
+ }
+diff --git a/e2e/pages/BoardPage.ts b/e2e/pages/BoardPage.ts
+new file mode 100644
+index 0000000..a40d0a6
+--- /dev/null
++++ b/e2e/pages/BoardPage.ts
+@@ -0,0 +1,258 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM доски заказов «/» (design-go-layers.md §Frontend Modules testid-контракт,
++// эталон структуры — e2e/pages/ClientsPage.ts). Комбобоксы (client/column/assignee)
++// переносят data-testid на видимую кнопку (js/combobox.js) — выбор через клик по кнопке
++// и затем по `.cb-opt` в `combobox-dropdown` (selectOption с исходным <select> не работает).
++export class BoardPage {
++  readonly root: Locator;
++  readonly filters: Locator;
++  readonly filterClient: Locator;
++  readonly filterQ: Locator;
++  readonly filterCategory: Locator;
++  readonly filterPaid: Locator;
++  readonly filterAssignee: Locator;
++  readonly filterDue: Locator;
++  readonly filterReset: Locator;
++  readonly found: Locator;
++
++  readonly taskAddBtn: Locator;
++  readonly columnAddBtn: Locator;
++
++  readonly taskForm: Locator;
++  readonly taskTitle: Locator;
++  readonly taskClient: Locator;
++  readonly taskColumn: Locator;
++  readonly taskAssignee: Locator;
++  readonly taskDue: Locator;
++  readonly taskPaid: Locator;
++  readonly taskSave: Locator;
++  readonly taskDelete: Locator;
++  readonly taskError: Locator;
++
++  readonly columnForm: Locator;
++  readonly columnName: Locator;
++  readonly columnColor: Locator;
++  readonly columnPosition: Locator;
++  readonly columnFinal: Locator;
++  readonly columnConsumes: Locator;
++  readonly columnSave: Locator;
++  readonly columnDelete: Locator;
++  readonly columnError: Locator;
++
++  readonly toastWarnings: Locator;
++  readonly dropdown: Locator;
++
++  constructor(readonly page: Page) {
++    this.root = page.getByTestId('board-root');
++    this.filters = page.getByTestId('board-filters');
++    this.filterClient = page.getByTestId('filter-client');
++    this.filterQ = page.getByTestId('filter-q');
++    this.filterCategory = page.getByTestId('filter-category');
++    this.filterPaid = page.getByTestId('filter-paid');
++    this.filterAssignee = page.getByTestId('filter-assignee');
++    this.filterDue = page.getByTestId('filter-due');
++    this.filterReset = page.getByTestId('filter-reset');
++    this.found = page.getByTestId('board-found');
++
++    this.taskAddBtn = page.getByTestId('task-add');
++    this.columnAddBtn = page.getByTestId('column-add');
++
++    this.taskForm = page.getByTestId('task-form');
++    this.taskTitle = page.getByTestId('task-title');
++    this.taskClient = page.getByTestId('task-client');
++    this.taskColumn = page.getByTestId('task-column');
++    this.taskAssignee = page.getByTestId('task-assignee');
++    this.taskDue = page.getByTestId('task-due');
++    this.taskPaid = page.getByTestId('task-paid');
++    this.taskSave = page.getByTestId('task-save');
++    this.taskDelete = page.getByTestId('task-delete');
++    this.taskError = page.getByTestId('task-error');
++
++    this.columnForm = page.getByTestId('column-form');
++    this.columnName = page.getByTestId('column-name');
++    this.columnColor = page.getByTestId('column-color');
++    this.columnPosition = page.getByTestId('column-position');
++    this.columnFinal = page.getByTestId('column-final');
++    this.columnConsumes = page.getByTestId('column-consumes');
++    this.columnSave = page.getByTestId('column-save');
++    this.columnDelete = page.getByTestId('column-delete');
++    this.columnError = page.getByTestId('column-error');
++
++    this.toastWarnings = page.getByTestId('toast-warnings');
++    this.dropdown = page.getByTestId('combobox-dropdown');
++  }
++
++  async goto(query = '') {
++    await this.page.goto(`/${query}`);
++    await expect(this.root).toBeVisible();
++    // ждём реального рендера колонок — не пустого/loading-состояния (данные грузит JS).
++    await expect(this.page.locator('[data-testid^="board-column-"]').first()).toBeVisible();
++  }
++
++  column(id: string): Locator {
++    return this.page.getByTestId(`board-column-${id}`);
++  }
++
++  /** Колонка по названию — сид D32/новые колонки не имеют предсказуемого id заранее. */
++  columnByName(name: string): Locator {
++    return this.page.locator('[data-testid^="board-column-"]').filter({ has: this.page.locator('.name', { hasText: name }) });
++  }
++
++  async columnIdByName(name: string): Promise<string> {
++    const testid = await this.columnByName(name).getAttribute('data-testid');
++    if (!testid) throw new Error(`колонка «${name}» не найдена на доске`);
++    return testid.replace('board-column-', '');
++  }
++
++  columnBody(id: string): Locator {
++    return this.page.getByTestId(`column-body-${id}`);
++  }
++
++  card(id: number | string): Locator {
++    return this.page.getByTestId(`task-card-${id}`);
++  }
++
++  cardMenu(id: number | string): Locator {
++    return this.page.getByTestId(`task-card-menu-${id}`);
++  }
++
++  moveToOption(id: number | string, columnId: string): Locator {
++    return this.page.getByTestId(`task-move-to-${columnId}`);
++  }
++
++  columnMenu(id: string): Locator {
++    return this.page.getByTestId(`column-menu-${id}`);
++  }
++
++  columnEditLink(id: string): Locator {
++    return this.page.getByTestId(`column-edit-${id}`);
++  }
++
++  columnDeleteLink(id: string): Locator {
++    return this.page.getByTestId(`column-delete-${id}`);
++  }
++
++  columnAddTaskBtn(id: string): Locator {
++    return this.page.getByTestId(`column-add-task-${id}`);
++  }
++
++  /** Переносит карточку через меню «⋯ → Переместить в…» (ADR-106, работает и на мобильном). */
++  async moveViaMenu(taskId: number | string, targetColumnId: string) {
++    await this.cardMenu(taskId).click();
++    await this.moveToOption(taskId, targetColumnId).click();
++  }
++
++  /** Нативный HTML5 DnD — перетаскивает карточку в конец колонки.
++   *
++   * `locator.dragTo()` (реальные мышиные события) в этом проекте ненадёжен для колонок,
++   * требующих горизонтальной прокрутки `.board-columns` (5-я+ колонка, особенно когда на
++   * общей dev-БД накопились колонки от прошлых прогонов) — drop иногда не долетает до
++   * цели. Вместо этого — ручной синтетический dispatch dragstart/dragover/drop с общим
++   * DataTransfer (board.js слушает именно эти события, реальная мышь не нужна); board.js
++   * сам вычисляет prev_id/next_id по clientY внутри dragover, поэтому координаты в evaluate
++   * должны соответствовать логике «после последней карточки» / «перед target».
++   */
++  async dragCardToColumn(taskId: number | string, targetColumnId: string) {
++    await this.dispatchDrag(`[data-testid="task-card-${taskId}"]`, `[data-testid="column-body-${targetColumnId}"]`, 'end');
++  }
++
++  /** Перетаскивает карточку перед другой карточкой той же/другой колонки. */
++  async dragCardBefore(taskId: number | string, beforeTaskId: number | string) {
++    await this.dispatchDrag(`[data-testid="task-card-${taskId}"]`, `[data-testid="task-card-${beforeTaskId}"]`, 'before');
++  }
++
++  private async dispatchDrag(cardSelector: string, targetSelector: string, position: 'end' | 'before') {
++    await this.page.evaluate(
++      ([cardSel, targetSel, pos]) => {
++        const card = document.querySelector(cardSel) as HTMLElement | null;
++        const target = document.querySelector(targetSel) as HTMLElement | null;
++        if (!card || !target) throw new Error(`drag: не найден card=${cardSel} target=${targetSel}`);
++        card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
++        target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
++
++        const dt = new DataTransfer();
++        let x: number;
++        let y: number;
++        let dropEl: Element;
++        if (pos === 'end') {
++          const r = target.getBoundingClientRect();
++          x = r.left + r.width / 2;
++          y = r.bottom - 4; // ниже середины любой карточки → вставка в конец
++          dropEl = target;
++        } else {
++          const r = target.getBoundingClientRect();
++          x = r.left + r.width / 2;
++          y = r.top + 2; // выше середины target-карточки → вставка перед ней
++          dropEl = target.closest('[data-testid^="column-body-"]') ?? (target.parentElement as Element);
++        }
++        const cardRect = card.getBoundingClientRect();
++
++        function fire(el: Element, type: string, clientX: number, clientY: number) {
++          const ev = new DragEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
++          Object.defineProperty(ev, 'dataTransfer', { value: dt });
++          el.dispatchEvent(ev);
++        }
++        fire(card, 'dragstart', cardRect.left + cardRect.width / 2, cardRect.top + cardRect.height / 2);
++        fire(dropEl, 'dragover', x, y);
++        fire(dropEl, 'drop', x, y);
++        fire(card, 'dragend', x, y);
++      },
++      [cardSelector, targetSelector, position] as const,
++    );
++  }
++
++  /** Выбор опции в комбобоксе по видимому тексту (js/combobox.js — testid уходит на кнопку). */
++  async chooseCombobox(button: Locator, optionText: string) {
++    await button.click();
++    await expect(this.dropdown).toBeVisible();
++    await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
++  }
++
++  async openTaskAdd() {
++    await this.taskAddBtn.click();
++    await expect(this.taskForm).toBeVisible();
++  }
++
++  async openTaskEdit(taskId: number | string) {
++    await this.card(taskId).click();
++    await expect(this.taskForm).toBeVisible();
++  }
++
++  async openColumnAdd() {
++    await this.columnAddBtn.click();
++    await expect(this.columnForm).toBeVisible();
++  }
++
++  async openColumnEdit(columnId: string) {
++    await this.columnMenu(columnId).click();
++    await this.columnEditLink(columnId).click();
++    await expect(this.columnForm).toBeVisible();
++  }
++
++  async fillTask(t: { title?: string; client?: string; column?: string; assignee?: string; due?: string }) {
++    if (t.title !== undefined) await this.taskTitle.fill(t.title);
++    if (t.client !== undefined) await this.chooseCombobox(this.taskClient, t.client);
++    if (t.column !== undefined) await this.chooseCombobox(this.taskColumn, t.column);
++    if (t.assignee !== undefined) await this.chooseCombobox(this.taskAssignee, t.assignee);
++    if (t.due !== undefined) await this.taskDue.fill(t.due);
++  }
++
++  async fillColumn(c: { name?: string; color?: string; position?: number; isFinal?: boolean; consumes?: boolean }) {
++    if (c.name !== undefined) await this.columnName.fill(c.name);
++    if (c.color !== undefined) await this.columnColor.fill(c.color);
++    if (c.position !== undefined) await this.columnPosition.fill(String(c.position));
++    if (c.isFinal !== undefined) {
++      if ((await this.columnFinal.isChecked()) !== c.isFinal) await this.columnFinal.click();
++    }
++    if (c.consumes !== undefined) {
++      if ((await this.columnConsumes.isChecked()) !== c.consumes) await this.columnConsumes.click();
++    }
++  }
++
++  async confirmDeleteTask() {
++    await this.taskDelete.click();
++    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
++    await this.page.getByTestId('ui-dialog-ok').click();
++  }
++}
+diff --git a/e2e/pages/StockPage.ts b/e2e/pages/StockPage.ts
+new file mode 100644
+index 0000000..5a7e2a9
+--- /dev/null
++++ b/e2e/pages/StockPage.ts
+@@ -0,0 +1,71 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM экрана «Остатки» «/stock» (design-go-layers.md §Frontend Modules testid-контракт,
++// эталон структуры — e2e/pages/BoardPage.ts). Переключатель scope — обычный <select>,
++// превращённый js/combobox.js в комбобокс: testid уходит на видимую кнопку, выбор — клик
++// по кнопке и затем по `.cb-opt` в `combobox-dropdown` (как у фильтров доски).
++export class StockPage {
++  readonly root: Locator;
++  readonly kpiTotal: Locator;
++  readonly kpiLow: Locator;
++  readonly kpiOut: Locator;
++  readonly kpiWillLow: Locator;
++  readonly scope: Locator;
++  readonly q: Locator;
++  readonly table: Locator;
++  readonly empty: Locator;
++  readonly dropdown: Locator;
++
++  readonly form: Locator;
++  readonly value: Locator;
++  readonly save: Locator;
++  readonly error: Locator;
++
++  constructor(readonly page: Page) {
++    this.root = page.getByTestId('stock-root');
++    this.kpiTotal = page.getByTestId('stock-kpi-total');
++    this.kpiLow = page.getByTestId('stock-kpi-low');
++    this.kpiOut = page.getByTestId('stock-kpi-out');
++    this.kpiWillLow = page.getByTestId('stock-kpi-will-low');
++    this.scope = page.getByTestId('stock-scope');
++    this.q = page.getByTestId('stock-q');
++    this.table = page.getByTestId('stock-table');
++    this.empty = page.getByTestId('stock-empty');
++    this.dropdown = page.getByTestId('combobox-dropdown');
++
++    this.form = page.getByTestId('stock-form');
++    this.value = page.getByTestId('stock-value');
++    this.save = page.getByTestId('stock-save');
++    this.error = page.getByTestId('stock-error');
++  }
++
++  async goto() {
++    await this.page.goto('/stock');
++    await expect(this.root).toBeVisible();
++  }
++
++  row(productId: string): Locator {
++    return this.page.getByTestId(`stock-row-${productId}`);
++  }
++
++  editBtn(productId: string): Locator {
++    return this.page.getByTestId(`stock-edit-${productId}`);
++  }
++
++  /** Выбор опции в комбобоксе переключателя scope по видимому тексту. */
++  async chooseScope(optionText: string) {
++    await this.scope.click();
++    await expect(this.dropdown).toBeVisible();
++    await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
++  }
++
++  async openEdit(productId: string) {
++    await this.editBtn(productId).click();
++    await expect(this.form).toBeVisible();
++  }
++
++  async submitValue(value: string | number) {
++    await this.value.fill(String(value));
++    await this.save.click();
++  }
++}
+diff --git a/e2e/tests/board-guards.spec.ts b/e2e/tests/board-guards.spec.ts
+new file mode 100644
+index 0000000..ad1da13
+--- /dev/null
++++ b/e2e/tests/board-guards.spec.ts
+@@ -0,0 +1,129 @@
++import { test, expect } from '../fixtures/board';
++import { ClientsPage } from '../pages/ClientsPage';
++import { EquipmentPage } from '../pages/EquipmentPage';
++import { CatalogPage } from '../pages/CatalogPage';
++
++// Фаза 8 (D26): E2E-гарды поверх backend-гардов фазы 01 — удаление клиента/оборудования/
++// товара/услуги, на которые ссылается заказ, отклоняется (409), сущность остаётся на месте,
++// форма показывает понятное сообщение вместо голого JSON (эталон CT-005 catalog.spec.ts —
++// там уже проверен PRODUCT_IN_USE через комплект услуги; здесь — через реальный заказ,
++// design-errors.md §Codes 01-15 #07/#08/#09/#15).
++test.use({ colorScheme: 'light' });
++
++test.describe('BD: нельзя удалить клиента с заказами (AC-017)', () => {
++  test('BD-017: удаление клиента с заказом — сообщение, клиент остаётся', async ({ adminPage: page, adminApi, uniq, allowHttpErrors }) => {
++    const company = uniq('BD-017 клиент с заказом');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990001111', note: '' }] });
++    const columns = (await adminApi.listColumns()).items;
++    await adminApi.createTask({ title: uniq('BD-017 заказ'), client_id: client.id, column_id: columns[0].id });
++
++    allowHttpErrors((url, status) => url.endsWith(`/clients/${client.id}/delete`) && status === 409);
++
++    const clients = new ClientsPage(page);
++    await clients.goto(`?q=${company}`);
++    await clients.open(company);
++    await clients.confirmDelete();
++
++    // карточка перерисована с сообщением (POST не редиректит на список — форма остаётся
++    // с данными клиента, не голый JSON из FiberErrorHandler).
++    await expect(clients.formError).toContainText('заказы');
++    await expect(clients.companyName).toHaveValue(company);
++
++    // клиент по-прежнему присутствует в списке.
++    await clients.goto(`?q=${company}`);
++    await expect(clients.row(company)).toBeVisible();
++  });
++});
++
++test.describe('BD: нельзя удалить оборудование, бывшее в заказе (AC-018)', () => {
++  test('BD-018: удаление оборудования из заказа — сообщение, оборудование остаётся', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++    insertTaskEquipment,
++  }) => {
++    const company = uniq('BD-018 клиент оборудования');
++    const client = await adminApi.createClient({ company_name: company, phones: [{ phone: '9990002222', note: '' }] });
++    const type = await adminApi.createEquipmentType({ name: uniq('BD-018 тип') });
++    const equipment = await adminApi.createEquipment(client.id, { type_id: type.id, model: uniq('BD-018 модель') });
++    const columns = (await adminApi.listColumns()).items;
++    const task = await adminApi.createTask({ title: uniq('BD-018 заказ'), client_id: client.id, column_id: columns[0].id });
++    await insertTaskEquipment(task.id, equipment.id);
++
++    allowHttpErrors((url, status) => url.endsWith(`/equipment/${equipment.id}/delete`) && status === 409);
++
++    const eq = new EquipmentPage(page);
++    await eq.gotoEdit(equipment.id);
++    await eq.confirmDelete();
++
++    // оборудование остаётся на карточке — форма показывает сообщение.
++    await expect(eq.formError).toContainText('заказе');
++
++    // оборудование по-прежнему присутствует у клиента.
++    const clients = new ClientsPage(page);
++    await clients.goto(`?q=${company}`);
++    await clients.open(company);
++    await expect(page.getByTestId('equipment-table')).toContainText(equipment.model);
++  });
++});
++
++test.describe('BD: нельзя удалить товар, использованный в заказе (PRODUCT_IN_USE)', () => {
++  test('BD-019a: товар в subtask_products действующего заказа — сообщение, не 500', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++    insertSubtask,
++  }) => {
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-019a категория товаров') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-019a товар') });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-019a категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-019a услуга') });
++    const client = await adminApi.createClient({ company_name: uniq('BD-019a клиент'), phones: [{ phone: '9990003333', note: '' }] });
++    const columns = (await adminApi.listColumns()).items;
++    const task = await adminApi.createTask({ title: uniq('BD-019a заказ'), client_id: client.id, column_id: columns[0].id });
++    await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 1 }] });
++
++    allowHttpErrors((url, status) => url.includes(`/catalog/products/${product.id}/delete`) && status === 409);
++
++    const catalog = new CatalogPage(page);
++    await catalog.gotoProducts();
++    await catalog.open(product.name);
++    await catalog.confirmDelete();
++
++    // не 500 — форма показывает понятное сообщение (design-errors.md #15), товар остаётся.
++    await expect(catalog.formError).toContainText('используется в услугах, заказах или журнале склада');
++    await catalog.gotoProducts();
++    await expect(catalog.row(product.name)).toBeVisible();
++  });
++});
++
++test.describe('BD: нельзя удалить услугу, использованную в заказе (SERVICE_IN_USE)', () => {
++  test('BD-019b: услуга в subtasks действующего заказа — сообщение, не 500', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++    insertSubtask,
++  }) => {
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-019b категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-019b услуга') });
++    const client = await adminApi.createClient({ company_name: uniq('BD-019b клиент'), phones: [{ phone: '9990004444', note: '' }] });
++    const columns = (await adminApi.listColumns()).items;
++    const task = await adminApi.createTask({ title: uniq('BD-019b заказ'), client_id: client.id, column_id: columns[0].id });
++    await insertSubtask({ taskId: task.id, serviceId: svc.id });
++
++    allowHttpErrors((url, status) => url.includes(`/catalog/services/${svc.id}/delete`) && status === 409);
++
++    const catalog = new CatalogPage(page);
++    await catalog.gotoServices();
++    await catalog.openService(svc.name);
++    await catalog.confirmServiceDelete();
++
++    // не 500 — форма показывает сообщение (design-errors.md §Codes 01-15 #09), услуга остаётся.
++    await expect(catalog.formError).toContainText('используется в заказах');
++    await catalog.gotoServices();
++    await expect(catalog.serviceRow(svc.name)).toBeVisible();
++  });
++});
+diff --git a/e2e/tests/board.spec.ts b/e2e/tests/board.spec.ts
+new file mode 100644
+index 0000000..0187765
+--- /dev/null
++++ b/e2e/tests/board.spec.ts
+@@ -0,0 +1,589 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { BoardPage } from '../pages/BoardPage';
++import { ShellPage } from '../pages/ShellPage';
++import { StockPage } from '../pages/StockPage';
++import { loginContext, type AdminApi } from '../fixtures/auth';
++
++// Фаза 6: доска заказов «/» — DnD, формы, фильтры (BD-001…BD-014, design-tests.md).
++// Каждый тест независим от состояния БД стенда (§TD-6.2): своя связка клиент/категория/
++// товар/услуга заводится через uniq()+adminApi, доска открывается отфильтрованной по
++// собственному ?client_id= там, где нужна изоляция от чужих заказов на общей БД.
++test.use({ colorScheme: 'light' });
++
++// label различает клиентов между тестами файла: testInfo.testId у Playwright не гарантирует
++// уникальность первых символов среза (uniq() режет testId.slice(0,6)) между разными test()
++// в одном файле — при общем литерале 'BD клиент' у всех тестов, вызывающих setup() первым
++// же uniq(), результат мог совпасть текстуально (разные id, одинаковое company_name),
++// а комбобокс клиента в форме заказа ищет строго по видимому тексту (BD-009: обнаружено
++// на живом стенде — форма выбирала ЧУЖОГО клиента с тем же именем, заказ уходил не туда,
++// доска, отфильтрованная по ?client_id= СВОЕГО клиента, показывала 0 заказов).
++async function setup(adminApi: AdminApi, uniq: (s: string) => string, label: string) {
++  const client = await adminApi.createClient({ company_name: uniq(`BD клиент ${label}`), phones: [{ phone: '9990000001', note: '' }] });
++  const columns = (await adminApi.listColumns()).items;
++  return { client, columns };
++}
++
++test.describe('BD: карточка и цвет колонки', () => {
++  test('BD-001: карточка с #N, названием, клиентом, ответственным, сроком, оплатой; цвет полосы = цвет колонки', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++  }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-001');
++    const assignee = await makeUser({ login: uniq('exec-bd001'), name: 'Исполнитель BD-001' });
++    const newCol = columnByName(columns, 'Новые');
++    const title = uniq('Заказ BD-001');
++    const task = await adminApi.createTask({
++      title,
++      client_id: client.id,
++      column_id: newCol.id,
++      assignee_id: assignee.id,
++      due_date: '2030-01-15',
++      is_paid: true,
++    });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    const card = board.card(task.id);
++    await expect(card).toBeVisible();
++    await expect(card).toContainText(`#${task.id}`);
++    await expect(card).toContainText(title);
++    await expect(card).toContainText(client.company_name);
++    await expect(card).toContainText('15.01.2030');
++    await expect(card).toContainText('Оплачен');
++    await expect(card).toHaveAttribute('style', new RegExp(newCol.color, 'i'));
++  });
++});
++
++test.describe('BD: DnD между колонками', () => {
++  test('BD-002: перенос между колонками и перестановка внутри — reload сохраняет положение', async ({ adminPage: page, adminApi, uniq }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-002');
++    const from = columnByName(columns, 'Новые');
++    const to = columnByName(columns, 'Согласование');
++    const t1 = await adminApi.createTask({ title: uniq('BD-002 первый'), client_id: client.id, column_id: from.id });
++    const t2 = await adminApi.createTask({ title: uniq('BD-002 второй'), client_id: client.id, column_id: from.id });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    await board.dragCardToColumn(t1.id, to.id);
++    await expect(board.columnBody(to.id).getByTestId(`task-card-${t1.id}`)).toBeVisible();
++    await expect.poll(async () => (await adminApi.getTask(t1.id)).column_id).toBe(to.id);
++    await expect(page.getByRole('status')).toContainText('«Согласование»');
++
++    // t2 переносится и встаёт перед t1 в целевой колонке — проверка вычисления prev_id/next_id.
++    await board.dragCardBefore(t2.id, t1.id);
++    await expect.poll(async () => (await adminApi.getTask(t2.id)).column_id).toBe(to.id);
++
++    const orderBefore = await board.columnBody(to.id).locator('.task-card').evaluateAll((els) => els.map((e) => e.getAttribute('data-id')));
++    await page.reload();
++    await expect(board.card(t1.id)).toBeVisible();
++    const orderAfter = await board.columnBody(to.id).locator('.task-card').evaluateAll((els) => els.map((e) => e.getAttribute('data-id')));
++    expect(orderAfter).toEqual(orderBefore);
++  });
++});
++
++test.describe('BD: финальная колонка блокирует незавершённые услуги', () => {
++  test('BD-003: перенос в «Готово» с открытой услугой отклонён, после завершения — проходит', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++    setSubtaskStatus,
++    allowHttpErrors,
++  }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-003');
++    const from = columnByName(columns, 'Новые');
++    const done = columnByName(columns, 'Готово');
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-003 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-003 услуга') });
++    const task = await adminApi.createTask({ title: uniq('BD-003 заказ'), client_id: client.id, column_id: from.id });
++    const subtaskId = await insertSubtask({ taskId: task.id, serviceId: svc.id, status: 'new' });
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}/move`) && status === 409);
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    await board.dragCardToColumn(task.id, done.id);
++    // отклонено — карточка вернулась в исходную колонку, диалог со списком услуг.
++    await expect(page.getByTestId('ui-dialog')).toBeVisible();
++    await expect(page.getByTestId('ui-dialog-text')).toContainText(svc.name);
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(board.columnBody(from.id).getByTestId(`task-card-${task.id}`)).toBeVisible();
++    await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(from.id);
++
++    await setSubtaskStatus(subtaskId, 'done');
++    await board.dragCardToColumn(task.id, done.id);
++    await expect(board.columnBody(done.id).getByTestId(`task-card-${task.id}`)).toBeVisible();
++    await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(done.id);
++  });
++});
++
++test.describe('BD: списание товаров', () => {
++  test('BD-004: перенос в списывающую колонку уменьшает остаток; возврат — восстанавливает', async ({ adminPage: page, adminApi, uniq, insertSubtask }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-004');
++    const from = columnByName(columns, 'Новые');
++    const work = columnByName(columns, 'В работе'); // consumes_stock=true (сид D32)
++    const waitParts = columnByName(columns, 'Ждёт запчасти'); // тоже consumes_stock=true (сид D32)
++
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-004 категория товаров') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-004 товар'), stock: 5 });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-004 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-004 услуга') });
++    const task = await adminApi.createTask({ title: uniq('BD-004 заказ'), client_id: client.id, column_id: from.id });
++    await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 2 }] });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    await board.dragCardToColumn(task.id, work.id);
++    await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(work.id);
++    await expect.poll(() => stockOf(page, product.id)).toBe(3);
++
++    // «В работе» → «Ждёт запчасти»: обе списывающие — 0 новых движений, остаток не меняется.
++    await board.dragCardToColumn(task.id, waitParts.id);
++    await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(waitParts.id);
++    await expect.poll(() => stockOf(page, product.id)).toBe(3);
++
++    // назад в несписывающую «Новые» — товары возвращаются.
++    await board.dragCardToColumn(task.id, from.id);
++    await expect.poll(() => stockOf(page, product.id)).toBe(5);
++  });
++});
++
++test.describe('BD: минус на складе предупреждает, не блокирует', () => {
++  test('BD-005: недостаточный остаток — перенос проходит, toast со ссылкой на «Остатки»', async ({ adminPage: page, adminApi, uniq, insertSubtask }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-005');
++    const from = columnByName(columns, 'Новые');
++    const work = columnByName(columns, 'В работе');
++
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-005 категория товаров') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-005 товар'), stock: 1 });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-005 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-005 услуга') });
++    const task = await adminApi.createTask({ title: uniq('BD-005 заказ'), client_id: client.id, column_id: from.id });
++    await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 3 }] });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    await board.dragCardToColumn(task.id, work.id);
++    await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(work.id);
++    await expect(board.toastWarnings).toBeVisible();
++    await expect(board.toastWarnings).toContainText(product.name);
++    await expect(board.toastWarnings.locator('a[href="/stock"]')).toBeVisible();
++    await expect.poll(() => stockOf(page, product.id)).toBe(-2);
++  });
++});
++
++test.describe('BD: управление колонками (admin)', () => {
++  test('BD-006: admin создаёт/переименовывает/красит/двигает/удаляет колонку; executor не видит управление', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const board = new BoardPage(page);
++    await board.goto();
++
++    const name = uniq('BD-006 колонка');
++    await board.openColumnAdd();
++    await board.fillColumn({ name, color: '#112233', isFinal: false, consumes: false });
++    await board.columnSave.click();
++    await expect(board.columnForm).toBeHidden();
++    const colId = await board.columnIdByName(name);
++    await expect(board.column(colId)).toBeVisible();
++
++    const renamed = uniq('BD-006 переименована');
++    await board.openColumnEdit(colId);
++    await board.fillColumn({ name: renamed, color: '#445566' });
++    await board.columnSave.click();
++    await expect(board.columnForm).toBeHidden();
++    await expect(board.columnByName(renamed)).toBeVisible();
++
++    // удаление пустой колонки — проходит.
++    await board.openColumnEdit(colId);
++    await board.columnDelete.click();
++    await expect(page.getByTestId('ui-dialog')).toBeVisible();
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(board.columnByName(renamed)).toHaveCount(0);
++
++    // удаление непустой — сообщение, колонка на месте.
++    const busyName = uniq('BD-006 занятая');
++    await board.openColumnAdd();
++    await board.fillColumn({ name: busyName, color: '#667788' });
++    await board.columnSave.click();
++    await expect(board.columnForm).toBeHidden();
++    const busyId = await board.columnIdByName(busyName);
++    const client = await adminApi.createClient({ company_name: uniq('BD-006 клиент'), phones: [{ phone: '9990000002', note: '' }] });
++    await adminApi.createTask({ title: uniq('BD-006 заказ'), client_id: client.id, column_id: busyId });
++    await page.reload();
++    allowHttpErrors((url, status) => url.includes(`/api/v1/columns/${busyId}`) && status === 409);
++
++    // из меню колонки — реальная попытка удаления (сервер отклоняет 409 COLUMN_NOT_EMPTY):
++    // сначала KT.uiConfirm («Удалить колонку…?»), после подтверждения — KT.uiAlert с
++    // сообщением сервера (два последовательных диалога).
++    await board.columnMenu(busyId).click();
++    await board.columnDeleteLink(busyId).click();
++    await expect(page.getByTestId('ui-dialog')).toBeVisible();
++    await page.getByTestId('ui-dialog-ok').click(); // подтвердили попытку удаления
++    await expect(page.getByTestId('ui-dialog-text')).toContainText('заказы'); // сообщение об ошибке
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(board.column(busyId)).toBeVisible();
++
++    // модалка колонки — кнопка «Удалить» тоже заблокирована клиентской проверкой.
++    await board.openColumnEdit(busyId);
++    await expect(board.columnDelete).toBeDisabled();
++
++    // executor не видит управление колонками.
++    const login = uniq('exec-bd006');
++    await adminApi.createUser({ login, name: 'Исполнитель BD-006', role: 'executor', password: 'password1' });
++    await page.context().clearCookies();
++    const shell = new ShellPage(page);
++    await loginContext(page.context(), login, 'password1');
++    await shell.goto('/');
++    await expect(board.columnAddBtn).toHaveCount(0);
++    await expect(board.columnMenu(busyId)).toHaveCount(0);
++  });
++});
++
++test.describe('BD: списывать товары у колонки', () => {
++  test('BD-007: включение «списывать» у колонки с заказом уменьшает остаток; выключение — возвращает', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++  }) => {
++    const { client } = await setup(adminApi, uniq, 'BD-007');
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-007 категория товаров') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-007 товар'), stock: 10 });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-007 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-007 услуга') });
++
++    const col = (await adminApi.createColumn({ name: uniq('BD-007 колонка'), color: '#123123', is_final: false, consumes_stock: false })).column;
++    const task = await adminApi.createTask({ title: uniq('BD-007 заказ'), client_id: client.id, column_id: col.id });
++    await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 4 }] });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    await board.openColumnEdit(col.id);
++    await board.fillColumn({ consumes: true });
++    await board.columnSave.click();
++    await expect(board.columnForm).toBeHidden();
++    await expect.poll(() => stockOf(page, product.id)).toBe(6);
++
++    await board.openColumnEdit(col.id);
++    await board.fillColumn({ consumes: false });
++    await board.columnSave.click();
++    await expect(board.columnForm).toBeHidden();
++    await expect.poll(() => stockOf(page, product.id)).toBe(10);
++  });
++});
++
++test.describe('BD: дефолтные колонки D32', () => {
++  test('BD-008: сид-колонки присутствуют с ожидаемыми именами и флагами', async ({ adminPage: page }) => {
++    const board = new BoardPage(page);
++    await board.goto();
++    const expected: Array<[string, boolean, boolean]> = [
++      ['Новые', false, false],
++      ['Согласование', false, false],
++      ['В работе', false, true],
++      ['Ждёт запчасти', false, true],
++      ['Готово', true, true],
++    ];
++    for (const [name, isFinal, consumes] of expected) {
++      const id = await board.columnIdByName(name);
++      await board.openColumnEdit(id);
++      await expect(board.columnName).toHaveValue(name);
++      expect(await board.columnFinal.isChecked()).toBe(isFinal);
++      expect(await board.columnConsumes.isChecked()).toBe(consumes);
++      await board.page.getByTestId('column-form').getByRole('button', { name: 'Отмена' }).click();
++      await expect(board.columnForm).toBeHidden();
++    }
++  });
++});
++
++test.describe('BD: форма заказа', () => {
++  test('BD-009: создание формой, правка, двойной клик «Сохранить» — один запрос', async ({ adminPage: page, adminApi, uniq }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-009');
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    let createCalls = 0;
++    page.on('request', (r) => {
++      if (r.method() === 'POST' && r.url().endsWith('/api/v1/tasks')) createCalls++;
++    });
++
++    const title = uniq('BD-009 заказ');
++    await board.openTaskAdd();
++    await board.fillTask({ title, client: client.company_name, column: columnByName(columns, 'Новые').name });
++    // Два клика синхронно в одном browser-тике (а не Playwright dblclick — реальные мышиные
++    // события дают гонку между вкладом браузера в обработку disabled и таймингом теста):
++    // taskSaving-флаг выставляется синхронно первым же кликом ДО await fetch, поэтому второй
++    // click() из того же скрипта детерминированно видит форму уже заблокированной.
++    await page.evaluate(() => {
++      const btn = document.querySelector('[data-testid="task-save"]') as HTMLButtonElement;
++      btn.click();
++      btn.click();
++    });
++    await expect(board.taskForm).toBeHidden();
++    expect(createCalls).toBe(1);
++
++    const cardTitle = board.root.locator('.task-card', { hasText: title });
++    await expect(cardTitle).toBeVisible();
++    const idAttr = await cardTitle.first().getAttribute('data-id');
++    const taskId = Number(idAttr);
++
++    // правка той же формой.
++    await board.openTaskEdit(taskId);
++    const newTitle = uniq('BD-009 переименован');
++    await board.fillTask({ title: newTitle });
++    await board.taskSave.click();
++    await expect(board.taskForm).toBeHidden();
++    await expect(board.card(taskId)).toContainText(newTitle);
++  });
++});
++
++test.describe('BD: конфликт версии', () => {
++  test('BD-010: конкурентная правка — форма показывает «Заказ уже изменён»', async ({ adminPage: page, adminApi, uniq, allowHttpErrors }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-010');
++    const task = await adminApi.createTask({ title: uniq('BD-010 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 409);
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++
++    // «второй пользователь» правит заказ через API, пока форма первого открыта — версия в форме устаревает.
++    await adminApi.updateTask(task.id, {
++      title: task.title,
++      client_id: task.client_id,
++      column_id: task.column_id,
++      assignee_id: task.assignee_id,
++      due_date: task.due_date,
++      is_paid: task.is_paid,
++      version: task.version,
++    });
++
++    await board.fillTask({ title: uniq('BD-010 попытка правки') });
++    await board.taskSave.click();
++    await expect(page.getByTestId('ui-dialog-text')).toContainText('уже изменён');
++    await page.getByTestId('ui-dialog-ok').click();
++  });
++});
++
++test.describe('BD: оплата — только администратор', () => {
++  test('BD-011: admin отмечает оплату; у executor переключатель disabled, прямой PUT — 403', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-011');
++    const task = await adminApi.createTask({ title: uniq('BD-011 заказ'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await expect(board.taskPaid).not.toBeDisabled();
++    await board.taskPaid.check();
++    await board.taskSave.click();
++    await expect(board.taskForm).toBeHidden();
++    await expect.poll(async () => (await adminApi.getTask(task.id)).is_paid).toBe(true);
++
++    const login = uniq('exec-bd011');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++    await board.goto(`?client_id=${client.id}`);
++    // заказ без ответственного — под дефолтным «Мои» (AC-014) исполнитель его не видит.
++    await board.chooseCombobox(board.filterAssignee, 'Все исполнители');
++    await board.openTaskEdit(task.id);
++    await expect(board.taskPaid).toBeDisabled();
++    await expect(board.taskPaid).toBeChecked();
++
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 403);
++    // Актуальная версия: с устаревшей сервер сначала отвечает 409 TASK_VERSION_CONFLICT (AC-010).
++    const current = await adminApi.getTask(task.id);
++    const res = await page.request.put(`/api/v1/tasks/${task.id}`, {
++      data: { title: current.title, client_id: current.client_id, column_id: current.column_id, is_paid: false, version: current.version },
++      headers: { 'X-Csrf-Token': await csrfToken(page) },
++      failOnStatusCode: false,
++    });
++    expect(res.status()).toBe(403);
++    const body = await res.json();
++    expect(body.error?.code ?? body.code).toBe('PAID_ADMIN_ONLY');
++  });
++});
++
++test.describe('BD: удаление заказа', () => {
++  test('BD-012: admin удаляет заказ с подтверждением — товары возвращаются; у executor кнопки нет', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++    makeUser,
++    loginAs,
++  }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-012');
++    const from = columnByName(columns, 'Новые');
++    const work = columnByName(columns, 'В работе');
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-012 категория товаров') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-012 товар'), stock: 5 });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-012 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-012 услуга') });
++    // создаём заказ в несписывающей колонке — Reconcile пересчитывает списание только на
++    // Create/Move; подзадача сидит в БД без него (raw insert, ADR-103), поэтому списание
++    // происходит именно при move в «В работе» ниже, а не при создании заказа.
++    const task = await adminApi.createTask({ title: uniq('BD-012 заказ'), client_id: client.id, column_id: from.id });
++    await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 2 }] });
++    await adminApi.moveTask(task.id, { column_id: work.id });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await expect.poll(() => stockOf(page, product.id)).toBe(3);
++
++    await board.openTaskEdit(task.id);
++    await board.confirmDeleteTask();
++    await expect(board.taskForm).toBeHidden();
++    await expect(board.card(task.id)).toHaveCount(0);
++    await expect.poll(() => stockOf(page, product.id)).toBe(5);
++
++    const login = uniq('exec-bd012');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++    const task2 = await adminApi.createTask({ title: uniq('BD-012 заказ 2'), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++    await board.goto(`?client_id=${client.id}`);
++    // заказ без ответственного — под дефолтным «Мои» (AC-014) исполнитель его не видит.
++    await board.chooseCombobox(board.filterAssignee, 'Все исполнители');
++    await board.openTaskEdit(task2.id);
++    await expect(board.taskDelete).toHaveCount(0);
++  });
++});
++
++test.describe('BD: фильтры доски', () => {
++  test('BD-013: фильтры сочетаются, отражены в URL, reload сохраняет, «Сбросить» очищает', async ({ adminPage: page, adminApi, uniq }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-013');
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-013 категория') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-013 услуга') });
++    const matching = await adminApi.createTask({ title: uniq('BD-013 подходит'), client_id: client.id, column_id: columnByName(columns, 'Новые').id, is_paid: true });
++    const other = await adminApi.createTask({ title: uniq('BD-013 не подходит'), client_id: client.id, column_id: columnByName(columns, 'Новые').id, is_paid: false });
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    await board.chooseCombobox(board.filterPaid, 'Оплачен');
++    await expect.poll(() => new URL(page.url()).searchParams.get('paid')).toBe('paid');
++    await expect(board.card(matching.id)).toBeVisible();
++    await expect(board.card(other.id)).toHaveCount(0);
++
++    await board.filterQ.fill(String(matching.id));
++    // debounce фильтра q (250мс) — web-first: expect.poll сам переопрашивает URL, без waitForTimeout.
++    await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe(String(matching.id));
++
++    const url = page.url();
++    await page.reload();
++    await expect(page).toHaveURL(url);
++    await expect(board.filterPaid).toContainText('Оплачен');
++    await expect(board.card(matching.id)).toBeVisible();
++
++    await board.filterReset.click();
++    await expect.poll(() => new URL(page.url()).search).toBe('');
++    await expect(board.card(matching.id)).toBeVisible();
++    await expect(board.card(other.id)).toBeVisible();
++  });
++});
++
++test.describe('BD: «Мои» по умолчанию для исполнителя', () => {
++  test('BD-014: executor по умолчанию видит только свои заказы, «Все» показывает чужие', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++  }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-014');
++    const col = columnByName(columns, 'Новые');
++    const login = uniq('exec-bd014');
++    const executor = await makeUser({ login });
++
++    const mine = await adminApi.createTask({ title: uniq('BD-014 моя'), client_id: client.id, column_id: col.id, assignee_id: executor.id });
++    const foreign = await adminApi.createTask({ title: uniq('BD-014 чужая'), client_id: client.id, column_id: col.id });
++
++    await loginAs(page, login, executor.password);
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++
++    await expect(board.card(mine.id)).toBeVisible();
++    await expect(board.card(foreign.id)).toHaveCount(0);
++    expect(new URL(page.url()).searchParams.get('assignee')).toBeNull();
++
++    await board.chooseCombobox(board.filterAssignee, 'Все исполнители');
++    await expect.poll(() => new URL(page.url()).searchParams.get('assignee')).toBe('all');
++    await expect(board.card(mine.id)).toBeVisible();
++    await expect(board.card(foreign.id)).toBeVisible();
++  });
++});
++
++test.describe('BD: адаптив 360px и тёмная тема', () => {
++  test('BD-020: доска/форма заказа/«Остатки» без overflow страницы на 360×800 в обеих темах; перенос через меню без DnD', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-020');
++    const from = columnByName(columns, 'Новые');
++    const to = columnByName(columns, 'Согласование');
++    const task = await adminApi.createTask({ title: uniq('BD-020 заказ'), client_id: client.id, column_id: from.id });
++
++    const board = new BoardPage(page);
++    const stock = new StockPage(page);
++    const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
++
++    for (const theme of ['light', 'dark'] as const) {
++      if (theme === 'dark') await page.addInitScript(() => localStorage.setItem('kt-theme', 'dark'));
++      await page.setViewportSize({ width: 360, height: 800 });
++
++      await board.goto(`?client_id=${client.id}`);
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      // страница целиком НЕ скроллится вбок (US-1 adaptive:min) — только .board-columns
++      // внутри себя (её собственный scrollWidth больше вьюпорта, т.к. колонок больше одной
++      // 85vw-ширины на 360px).
++      expect(await noOverflow()).toBe(false);
++      const boardScrolls = await board.root.evaluate((el) => el.scrollWidth > el.clientWidth);
++      expect(boardScrolls).toBe(true);
++
++      await board.openTaskAdd();
++      expect(await noOverflow()).toBe(false);
++      await board.taskForm.getByRole('button', { name: 'Отмена' }).click();
++      await expect(board.taskForm).toBeHidden();
++
++      await stock.goto();
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      expect(await noOverflow()).toBe(false);
++    }
++
++    // ADR-106: перенос карточки через меню «⋯ → Переместить в…» работает без DnD — на
++    // мобильном экране это единственный способ переноса.
++    await board.goto(`?client_id=${client.id}`);
++    await board.moveViaMenu(task.id, to.id);
++    await expect(board.columnBody(to.id).getByTestId(`task-card-${task.id}`)).toBeVisible();
++    await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(to.id);
++  });
++});
++
++// ---------- утилиты ----------
++async function stockOf(page: import('@playwright/test').Page, productId: string): Promise<number> {
++  const res = await page.request.get(`/api/v1/stock?scope=all&limit=1000`);
++  const body: { items: Array<{ product_id: string; stock: number | string }> } = await res.json();
++  const row = body.items.find((r) => r.product_id === productId);
++  return row ? Number(row.stock) : NaN;
++}
++
++async function csrfToken(page: import('@playwright/test').Page): Promise<string> {
++  return (await page.locator('meta[name="csrf-token"]').getAttribute('content')) ?? '';
++}
+diff --git a/e2e/tests/catalog.spec.ts b/e2e/tests/catalog.spec.ts
+index 9855312..a211a21 100644
+--- a/e2e/tests/catalog.spec.ts
++++ b/e2e/tests/catalog.spec.ts
+@@ -188,7 +188,8 @@ test.describe('CT: удаление и архив', () => {
+     await catalog.gotoProducts();
+     await catalog.open(usedName);
+     await catalog.confirmDelete();
+-    await expect(catalog.formError).toContainText('используется в комплекте');
++    // Текст PRODUCT_IN_USE расширен в фазе 5 (design-errors #15): услуги, заказы, журнал склада.
++    await expect(catalog.formError).toContainText('используется в услугах');
+ 
+     // вместо удаления — архивирование, оно работает.
+     await catalog.archiveButton.click();
+diff --git a/e2e/tests/shell.spec.ts b/e2e/tests/shell.spec.ts
+index 2f05b9e..298035a 100644
+--- a/e2e/tests/shell.spec.ts
++++ b/e2e/tests/shell.spec.ts
+@@ -14,10 +14,11 @@ test.describe('SH: каркас приложения', () => {
+     await expect(page).toHaveTitle('Доска заказов — Kanban-tree');
+     await expect(shell.title).toHaveText('Доска заказов');
+     await expect(shell.navLink('Доска')).toHaveAttribute('aria-current', 'page');
+-    // реализованные разделы admin видит; нереализованные («Остатки» — фаза 5) скрыты
+-    for (const title of ['Доска', 'Сотрудники']) await expect(shell.navLink(title)).toBeVisible();
+-    await expect(shell.navLink('Остатки')).toHaveCount(0);
+-    await expect(page.getByTestId('home-placeholder')).toBeVisible();
++    // реализованные разделы admin видит, включая «Остатки» (фаза 5); бейдж риск-товаров
++    // рендерится всегда (hidden при 0, ADR-004) — конкретное число не проверяем.
++    for (const title of ['Доска', 'Остатки', 'Сотрудники']) await expect(shell.navLink(title)).toBeVisible();
++    await expect(shell.navLink('Остатки').getByTestId('nav-badge-stock')).toBeAttached();
++    await expect(page.getByTestId('board-root')).toBeVisible();
+     await expect(page.locator('meta[name="csrf-token"]')).toHaveCount(1);
+   });
+ 
+diff --git a/e2e/tests/stock.spec.ts b/e2e/tests/stock.spec.ts
+new file mode 100644
+index 0000000..9b434ee
+--- /dev/null
++++ b/e2e/tests/stock.spec.ts
+@@ -0,0 +1,152 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { StockPage } from '../pages/StockPage';
++import { BoardPage } from '../pages/BoardPage';
++import { loginContext, type AdminApi } from '../fixtures/auth';
++
++// Фаза 7: экран «Остатки» «/stock» — KPI, таблица рисковых с прогнозом, правка остатка
++// (BD-015, BD-016, design-tests.md). Изоляция — своя связка категория/товар/клиент/заказ
++// через uniq()+adminApi на общей dev-БД (§TD-6.2); проверки KPI — дельтой до/после,
++// не абсолютными числами (накопленные данные прошлых прогонов).
++test.use({ colorScheme: 'light' });
++
++async function setup(adminApi: AdminApi, uniq: (s: string) => string, label: string) {
++  const client = await adminApi.createClient({ company_name: uniq(`ST клиент ${label}`), phones: [{ phone: '9990000009', note: '' }] });
++  const columns = (await adminApi.listColumns()).items;
++  return { client, columns };
++}
++
++function csrfToken(page: import('@playwright/test').Page): Promise<string> {
++  return page.locator('meta[name="csrf-token"]').getAttribute('content').then((v) => v ?? '');
++}
++
++test.describe('BD: экран «Остатки»', () => {
++  test('BD-015: KPI, таблица рисковых с прогнозом; admin правит остаток; executor — без кнопки правки', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    insertSubtask,
++    allowHttpErrors,
++  }) => {
++    const willLowBefore = (await adminApi.getStockSummary()).will_low_count;
++
++    const { client, columns } = await setup(adminApi, uniq, 'BD-015');
++    const from = columnByName(columns, 'Новые'); // не списывающая — товар считается "в новых заказах" (pending)
++
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-015 категория товаров') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-015 товар'), stock: 10, min_stock: 5, box: 'A1', place: 'Стеллаж 1' });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-015 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-015 услуга') });
++    const task = await adminApi.createTask({ title: uniq('BD-015 заказ'), client_id: client.id, column_id: from.id });
++    // потребность 7 при остатке 10 и минимуме 5 → прогноз 3 (≤ минимума) — «станет минимумом после заказов».
++    await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 7 }] });
++
++    const willLowAfterSetup = (await adminApi.getStockSummary()).will_low_count;
++    expect(willLowAfterSetup).toBe(willLowBefore + 1);
++
++    const stock = new StockPage(page);
++    await stock.goto();
++
++    // KPI-плитка отражает свежую сумму (перезагружена JS'ом при заходе на страницу).
++    await expect(stock.kpiWillLow).toHaveText(String(willLowAfterSetup));
++
++    // scope=risky (дефолт) — товар виден с корректными «в новых заказах»/«прогноз».
++    const row = stock.row(product.id);
++    await expect(row).toBeVisible();
++    await expect(row).toContainText(product.name);
++    await expect(row).toContainText('10'); // в наличии
++    await expect(row).toContainText('5'); // минимум
++    await expect(row).toContainText('7'); // в новых заказах
++    await expect(row).toContainText('3'); // прогноз
++    await expect(row).toContainText('станет минимумом после заказов');
++
++    // admin правит остаток — увеличивает так, что товар выходит из риска.
++    await stock.openEdit(product.id);
++    await stock.submitValue(20);
++    await expect(stock.form).toBeHidden();
++
++    // ушёл из риска — на scope=risky больше не отображается.
++    await expect(stock.row(product.id)).toHaveCount(0);
++    const willLowAfterEdit = (await adminApi.getStockSummary()).will_low_count;
++    expect(willLowAfterEdit).toBe(willLowBefore);
++
++    // scope=all — товар виден с новым остатком, состояние «норма».
++    await stock.chooseScope('Все товары');
++    await expect(stock.row(product.id)).toBeVisible();
++    await expect(stock.row(product.id)).toContainText('20');
++    await expect(stock.row(product.id)).toContainText('норма');
++    await expect.poll(async () => (await adminApi.getStock({ scope: 'all', q: product.name })).items[0]?.stock).toBe(20);
++
++    // executor: без кнопки правки (testid отсутствует), прямой PUT — 403.
++    const login = uniq('exec-bd015');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++    await stock.goto();
++    await stock.chooseScope('Все товары');
++    await expect(stock.row(product.id)).toBeVisible();
++    await expect(stock.editBtn(product.id)).toHaveCount(0);
++
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/stock/${product.id}`) && status === 403);
++    const res = await page.request.put(`/api/v1/stock/${product.id}`, {
++      data: { stock: 1 },
++      headers: { 'X-Csrf-Token': await csrfToken(page) },
++      failOnStatusCode: false,
++    });
++    expect(res.status()).toBe(403);
++    const body = await res.json();
++    expect(body.error?.code ?? body.code).toBe('FORBIDDEN');
++  });
++});
++
++test.describe('BD: бейдж «Остатков» живой', () => {
++  test('BD-016: бейдж виден executor и admin; после move с уходом в минимум — +1 без перезагрузки', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    insertSubtask,
++  }) => {
++    const { client, columns } = await setup(adminApi, uniq, 'BD-016');
++    const from = columnByName(columns, 'Новые');
++    const work = columnByName(columns, 'В работе'); // consumes_stock=true (сид D32)
++
++    const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq('BD-016 категория товаров') });
++    const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq('BD-016 товар'), stock: 6, min_stock: 5 });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('BD-016 категория услуг') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('BD-016 услуга') });
++    const task = await adminApi.createTask({ title: uniq('BD-016 заказ'), client_id: client.id, column_id: from.id });
++
++    // baseline — из API (не из DOM: сразу после goto() фоновый fetch бейджа ещё может
++    // не завершиться, чтение textContent() без retry гонялось бы с ним).
++    const before = (await adminApi.getStockSummary()).risk_count;
++
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    const badge = page.getByTestId('nav-badge-stock');
++
++    // подзадача заводится ПОСЛЕ открытия доски (raw pg-фикстура, ADR-103) — открытая
++    // страница ничего не знает об этом изменении до следующего вызова KT.refreshNavBadge().
++    // остаток 6, минимум 5, потребность 2 → после списания 4 (≤ минимума) — уходит в риск.
++    await insertSubtask({ taskId: task.id, serviceId: svc.id, products: [{ productId: product.id, qty: 2 }] });
++
++    // перенос в списывающую колонку через UI — board.js вызывает KT.refreshNavBadge()
++    // после успешного move (design-go-layers.md §Frontend Modules) без перезагрузки страницы.
++    await board.dragCardToColumn(task.id, work.id);
++    await expect.poll(async () => (await adminApi.getTask(task.id)).column_id).toBe(work.id);
++
++    const after = (await adminApi.getStockSummary()).risk_count;
++    expect(after).toBe(before + 1);
++    await expect.poll(async () => Number((await badge.textContent()) || '0')).toBe(after);
++    await expect(badge).toBeVisible();
++
++    // executor тоже видит бейдж (риск уже есть — гарантирован нашим товаром).
++    const login = uniq('exec-bd016');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++    await page.goto('/stock');
++    await expect(page.getByTestId('nav-badge-stock')).toBeVisible();
++    await expect(page.getByTestId('nav-badge-stock')).toHaveText(String(after));
++  });
++});
+diff --git a/e2e/tests/users.spec.ts b/e2e/tests/users.spec.ts
+index 5dcff4c..f25e13e 100644
+--- a/e2e/tests/users.spec.ts
++++ b/e2e/tests/users.spec.ts
+@@ -87,6 +87,8 @@ test.describe('US: создание и правка', () => {
+     await users.chooseRole('Администратор');
+     await users.save.click();
+     await expect(users.flash).toHaveText('Изменения сохранены');
++    // Список без фильтра показывает не больше 200 строк — на наполненной БД ищем свою через ?q.
++    await users.goto(`?q=${u.login}`);
+     await expect(users.row(u.login)).toContainText('Новое Имя');
+     await expect(users.row(u.login)).toContainText('Администратор');
+ 

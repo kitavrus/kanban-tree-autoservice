@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/go_naming_check.py --feature phase-3-clients --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9 --paths internal/features/clients internal/features/equipmenttypes internal/ssr internal/server pkg/sqlutil
+(exit 0)
+
+go-naming internal/features/clients,internal/features/equipmenttypes,internal/ssr,internal/server,pkg/sqlutil: PASS (проблем: 0)

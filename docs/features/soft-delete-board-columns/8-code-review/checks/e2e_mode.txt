@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature soft-delete-board-columns --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/agitated-fermat-76a73a
+(exit 0)
+
+E2E-MODE SKIP-NO-EVIDENCE: нет docs/features/soft-delete-board-columns/9-validation/evidence/e2e-run.txt — прогонов E2E не зафиксировано (фича без фронта либо улика не сохранялась)

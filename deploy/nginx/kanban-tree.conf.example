@@ -1,0 +1,71 @@
+# Пример server-блока nginx перед kanban-tree (прод). В репо — только образец:
+# скопировать в /etc/nginx/sites-available/, поправить server_name/сертификаты/upstream.
+# Если прод-инфра появится через /infra-bootstrap — перенести эти location в её nginx-шаблон.
+#
+# Зачем отдельный location: загрузка вложений (фаза 7, D21) принимает видео до 500 МБ,
+# тело читается потоком (fiber StreamRequestBody). Лимит тела приложения —
+# AttachmentUploadMaxBody = 500 МБ + 1 МБ (internal/features/board/attachments_validate.go),
+# поэтому здесь 501m. Всем прочим роутам приложение режет тело на 4 МБ
+# (middleware.BodyLimit) — nginx оставляем на дефолте, большие тела туда не пропускаем.
+
+upstream kanban_tree {
+    server 127.0.0.1:8080;   # PORT из .env
+    keepalive 16;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name kanban.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/kanban.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kanban.example.com/privkey.pem;
+
+    # Дефолт для всех роутов (nginx default = 1m; приложение само держит 4 МБ).
+    client_max_body_size 4m;
+
+    proxy_http_version 1.1;
+    proxy_set_header Connection        "";
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-ID      $request_id;
+
+    # Загрузка вложения: POST /api/v1/tasks/:id/attachments.
+    # ~* и «/?» — без регистра и с хвостовым «/», как предикат board.IsAttachmentUpload.
+    # Метод nginx не различает: GET сюда тоже попадёт — тело ему приложение режет само.
+    location ~* ^/api/v1/tasks/[^/]+/attachments/?$ {
+        client_max_body_size 501m;
+
+        # Отдаём тело в приложение потоком, без буферизации на диск nginx:
+        # ранний 413 по Content-Length и валидация вида файла срабатывают сразу,
+        # а не после того, как клиент прокачал 500 МБ во временный файл nginx.
+        proxy_request_buffering off;
+
+        # Медленный аплинк: 500 МБ на ~5 Мбит/с ≈ 15 мин. Таймауты — между
+        # операциями чтения/записи, не на весь запрос, так что это запас на паузы.
+        client_body_timeout 120s;
+        proxy_send_timeout  300s;
+        proxy_read_timeout  300s;   # запись в FileStore + ответ после последнего байта
+
+        proxy_pass http://kanban_tree;
+    }
+
+    # Отдача файла вложения (видео тоже крупное) — не копить ответ в буфере nginx.
+    location ~* ^/api/v1/attachments/[^/]+/file/?$ {
+        proxy_buffering    off;
+        proxy_read_timeout 300s;
+        proxy_pass http://kanban_tree;
+    }
+
+    location / {
+        proxy_pass http://kanban_tree;
+    }
+}
+
+server {
+    listen 80;
+    server_name kanban.example.com;
+    return 301 https://$host$request_uri;
+}

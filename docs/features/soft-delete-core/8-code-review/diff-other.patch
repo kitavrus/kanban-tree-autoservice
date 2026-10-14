@@ -1,0 +1,1619 @@
+diff --git a/.env.example b/.env.example
+index f637a78..f534fc9 100644
+--- a/.env.example
++++ b/.env.example
+@@ -23,3 +23,8 @@ UPLOADS_DIR=./uploads
+ # проходов (0 — выключить, иначе ≥ 1s) и минимальный возраст файла (≥ 1m; моложе — идущая загрузка)
+ UPLOADS_GC_INTERVAL=6h
+ UPLOADS_GC_MIN_AGE=1h
++# Служебная ФИЗИЧЕСКАЯ уборка тестовых данных автотестами (DELETE /api/v1/test/purge/:kind/:id,
++# soft-delete-core DS-027). По умолчанию выключена — адреса нет (404). Раскомментировать ТОЛЬКО
++# на локальном/тестовом стенде, по которому гоняют E2E (make e2e); на рабочем стенде не
++# включать. Изолированный стенд (make e2e-isolated) включает её сам — scripts/e2e/run.sh.
++# TEST_PURGE_ENABLED=true
+diff --git a/docker-compose.e2e.yml b/docker-compose.e2e.yml
+index c8153dc..59a5665 100644
+--- a/docker-compose.e2e.yml
++++ b/docker-compose.e2e.yml
+@@ -6,6 +6,8 @@
+ # не задан (имена от проекта), host-порты по умолчанию — случайные свободные (пустой
+ # E2E_PG_PORT/E2E_REDIS_PORT → «127.0.0.1::5432»), фактический порт скрипт читает через
+ # `docker compose port`. Явный порт — env E2E_PG_PORT / E2E_REDIS_PORT.
++# Сервер приложения в compose не входит — его env (включая TEST_PURGE_ENABLED=true: служебная
++# уборка тестовых заказов, soft-delete-core DS-027) задаёт scripts/e2e/run.sh.
+ name: kanban-tree-e2e
+ 
+ services:
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 5996ddd..a147495 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -582,10 +582,15 @@ export class AdminApi {
+   }
+ 
+   /**
+-   * Уборка заказа вместе с его документами «Перемещение» (transfers-revert DS-025): заказ с
+-   * неотменённым документом не удаляется (409 TASK_HAS_TRANSFERS), поэтому сначала каждый
+-   * документ заказа приводится к «Отменён» и удаляется (новые — первыми: откат в обратном
+-   * порядке), затем удаляется заказ. Бросает только финальное удаление заказа (как deleteTask).
++   * ФИЗИЧЕСКАЯ уборка заказа вместе с его документами «Перемещение» — служебный адрес
++   * DELETE /api/v1/test/purge/tasks/:id (soft-delete-core §6.5, DS-027, DS-036; стенд обязан
++   * быть запущен с TEST_PURGE_ENABLED=true). Обычный DELETE заказа теперь мягкий — тестовые
++   * заказы копились бы в разделе «Удалённые». Работает и для действующего, и для мягко
++   * удалённого заказа. Заказ с неотменённым документом не убирается (409 TASK_HAS_TRANSFERS),
++   * поэтому сначала каждый документ заказа приводится к «Отменён» и удаляется (новые — первыми:
++   * откат в обратном порядке). Бросает только финальное удаление: 404 «Не найдено» — заказа
++   * уже нет (сообщение содержит TASK_NOT_FOUND — _boardCleanup его не логирует); любой другой
++   * 404 — адрес не зарегистрирован, уборка выключена на стенде (ошибка с подсказкой).
+    */
+   async purgeTask(id: number): Promise<void> {
+     const res = await this.ctx.get('/api/v1/transfers', { params: { task_id: String(id), limit: '500' } }).catch(() => null);
+@@ -594,7 +599,53 @@ export class AdminApi {
+       const guard = newTransferCleanupGuard(); // один лимит попыток на все документы заказа
+       for (const t of [...list.items].sort((a, b) => b.id - a.id)) await this.removeTransferForCleanup(t.id, guard);
+     }
+-    await this.deleteTask(id);
++    const del = await this.ctx.delete(`/api/v1/test/purge/tasks/${id}`, { headers: await this.headers() });
++    if (del.status() === 200) return;
++    const text = await del.text();
++    if (del.status() === 404) {
++      const body = (() => { try { return JSON.parse(text) as { code?: string; message?: string }; } catch { return null; } })();
++      if (body?.code === 'NOT_FOUND' && body.message === 'Не найдено') throw new Error(`purgeTask #${id}: TASK_NOT_FOUND — заказа уже нет`);
++      throw new Error(`purgeTask #${id}: служебная уборка выключена — запустите стенд с TEST_PURGE_ENABLED=true (ответ: ${text})`);
++    }
++    throw new Error(`purgeTask #${id}: HTTP ${del.status()} ${text}`);
++  }
++
++  // ---- мягкое удаление (soft-delete-core §6.1–§6.4; типы — board-types.ts, §TD-6.2) ----
++
++  /** Адрес ресурса вида kind. В части 1 мягко удаляются только заказы. */
++  private softDeletePath(kind: import('./board-types').DeletedKind, id: number | string): string {
++    if (kind !== 'tasks') throw new Error(`softDelete: вид ${kind} подключается своей частью мастер-спеки soft-delete`);
++    return `/api/v1/tasks/${id}`;
++  }
++
++  /** Мягкое удаление записи с причиной: DELETE /api/v1/{ресурс}/:id, тело {reason}. */
++  async softDelete(kind: import('./board-types').DeletedKind, id: number | string, reason = 'e2e: создан по ошибке'): Promise<import('./board-types').TaskDeleteResponse> {
++    const data: import('./board-types').DeleteBody = { reason };
++    const res = await this.ctx.delete(this.softDeletePath(kind, id), { data, headers: await this.headers() });
++    expect(res.status(), `мягкое удаление ${kind} ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  /** Восстановление записи: POST /api/v1/{ресурс}/:id/restore. Статус не проверяется — повтор ждёт 409. */
++  async restore(kind: import('./board-types').DeletedKind, id: number | string): Promise<{ status: number; body: import('./board-types').TaskRestoreResponse }> {
++    const res = await this.ctx.post(`${this.softDeletePath(kind, id)}/restore`, { headers: await this.headers() });
++    return { status: res.status(), body: await res.json() };
++  }
++
++  /** Список удалённого одного вида: GET /api/v1/deleted?kind=… */
++  async listDeleted(kind: import('./board-types').DeletedKind, filters: import('./board-types').DeletedListQuery = {}): Promise<import('./board-types').DeletedListResponse> {
++    const params: Record<string, string> = { kind };
++    for (const [k, v] of Object.entries(filters)) if (v !== undefined && v !== '') params[k] = String(v);
++    const res = await this.ctx.get('/api/v1/deleted', { params });
++    expect(res.status(), `список удалённого ${kind}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  /** Счётчики вкладок раздела «Удалённые»: GET /api/v1/deleted/summary. */
++  async deletedSummary(): Promise<import('./board-types').DeletedSummaryResponse> {
++    const res = await this.ctx.get('/api/v1/deleted/summary');
++    expect(res.status(), `счётчики удалённого: ${await res.text()}`).toBe(200);
++    return res.json();
+   }
+ 
+   /** Поиск единиц оборудования по всем клиентам (transfers-core §6.8). */
+@@ -667,15 +718,15 @@ export class AdminApi {
+     return { status: res.status(), body: await res.json() };
+   }
+ 
+-  /** HTTP-статус GET заказа: 200 — на месте, 404 — удалён (проверки удаления заказа). */
++  /** HTTP-статус GET заказа: 200 — на месте, 404 — удалён, в т.ч. мягко (проверки удаления заказа). */
+   async taskHttpStatus(id: number): Promise<number> {
+     return (await this.ctx.get(`/api/v1/tasks/${id}`)).status();
+   }
+ 
+-  async deleteTask(id: number): Promise<import('./board-types').TaskDeleteResponse> {
+-    const res = await this.ctx.delete(`/api/v1/tasks/${id}`, { headers: await this.headers() });
+-    expect(res.status(), `удаление заказа ${id}: ${await res.text()}`).toBe(200);
+-    return res.json();
++  /** Мягкое удаление заказа с причиной (soft-delete-core §6.1) — заказ уходит в «Удалённые»;
++   *  физическая уборка тестовых данных — purgeTask. */
++  async deleteTask(id: number, reason = 'e2e: создан по ошибке'): Promise<import('./board-types').TaskDeleteResponse> {
++    return this.softDelete('tasks', id, reason);
+   }
+ 
+   // ---- order card: услуги/товары/оборудование заказа (internal/features/board/card_dto.go,
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 9f61f83..e53287e 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -85,7 +85,40 @@ export type UpdateTask = NewTask & { version: number };
+ export type MoveTask = { column_id: string; prev_id?: number | null; next_id?: number | null };
+ 
+ export type TaskMutationResponse = { task: Task; warnings: StockWarning[] };
+-export type TaskDeleteResponse = { warnings: StockWarning[] };
++/** 200 DELETE /api/v1/tasks/:id (soft-delete-core §6.1): удаление мягкое — номер заказа и момент
++ *  удаления (RFC 3339, UTC); warnings — после возврата товаров на склад. */
++export type TaskDeleteResponse = { id: number; deleted_at: string; warnings: StockWarning[] };
++/** Тело DELETE /api/v1/{ресурс}/:id (soft-delete DS-028): причина 1–500 символов. */
++export type DeleteBody = { reason: string };
++/** 200 POST /api/v1/tasks/:id/restore (soft-delete-core §6.2). */
++export type RestoreNotice = { code: 'column_replaced' | 'client_deleted' | 'equipment_deleted'; message: string };
++export type TaskRestoreResponse = { id: number; warnings: StockWarning[]; notices: RestoreNotice[] };
++/** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
++export type PurgeResponse = { id: string };
++
++// ---- раздел «Удалённые» (internal/features/softdelete/dto.go, §6.3, §6.4) ----
++export type DeletedKind =
++  | 'tasks' | 'transfers' | 'columns' | 'clients' | 'equipment' | 'products' | 'services'
++  | 'catalog-categories' | 'equipment-types' | 'warehouses' | 'suppliers';
++export type DeletedItem = {
++  kind: DeletedKind;
++  id: string;
++  title: string;
++  subtitle: string;
++  deleted_at: string;
++  deleted_by: { id: string; name: string };
++  delete_reason: string;
++  deleted_with: 'client' | null;
++  is_archived: boolean;
++};
++export type DeletedListResponse = { items: DeletedItem[]; total: number; limit: number; offset: number };
++export type DeletedListQuery = { q?: string; deleted_from?: string; deleted_to?: string; deleted_by?: string; limit?: number; offset?: number };
++export type DeletedSummaryResponse = {
++  counts: {
++    tasks: number; transfers: number; columns: number; clients: number; equipment: number; products: number;
++    services: number; catalog_categories: number; equipment_types: number; warehouses: number; suppliers: number;
++  };
++};
+ /** 409 DELETE /api/v1/tasks/:id (transfers-revert §6.3): у заказа есть документы «Перемещение»
+  *  в requested / in_transit / received; transfer_ids — их номера по возрастанию. */
+ export type ApiErrorTaskHasTransfers = { code: 'TASK_HAS_TRANSFERS'; message: string; details: { transfer_ids: number[] } };
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index 7c1b522..b6fd3cc 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -105,15 +105,17 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+ 
+       adminApi.createTask = origCreateTask;
+       adminApi.createColumn = origCreateColumn;
+-      // Заказ с документами «Перемещение» (части transfers-partners / transfers-sales) простым
+-      // DELETE не удаляется — 409 TASK_HAS_TRANSFERS; раньше этот 409 глотался, и заказы
+-      // копились в БД (BD-013, EW-004 падали на «грязной» базе). purgeTask сначала убирает
+-      // документы заказа (отмена проведения → отмена → удаление), потом сам заказ. 404 —
+-      // тест удалил заказ сам; всё остальное (включая 409) — неожиданно и идёт в console.warn.
++      // Уборка — ФИЗИЧЕСКАЯ, служебным адресом DELETE /api/v1/test/purge/tasks/:id
++      // (soft-delete-core DS-027; стенд — с TEST_PURGE_ENABLED=true): обычный DELETE заказа
++      // теперь мягкий, и тестовые заказы копились бы в разделе «Удалённые» (а мягко удалённый
++      // заказ по-прежнему держит колонку — 409 COLUMN_NOT_EMPTY ниже). purgeTask сначала убирает
++      // документы заказа (отмена проведения → отмена → удаление), потом сам заказ — и
++      // действующий, и мягко удалённый тестом. Заказа уже нет (TASK_NOT_FOUND) — молча; всё
++      // остальное (409, выключенная на стенде уборка) — неожиданно и идёт в console.warn.
+       for (const id of createdTasks) {
+         await adminApi.purgeTask(id).catch((e) => {
+           const msg = e instanceof Error ? e.message : String(e);
+-          const notFound = /TASK_NOT_FOUND/.test(msg) || /Received:\s*404/.test(msg.replace(/\x1b\[[0-9;]*m/g, ''));
++          const notFound = /TASK_NOT_FOUND/.test(msg);
+           if (!notFound) console.warn(`_boardCleanup: не удалось удалить заказ #${id}: ${msg}`);
+         });
+       }
+diff --git a/e2e/pages/BoardPage.ts b/e2e/pages/BoardPage.ts
+index fdec363..5bf36d6 100644
+--- a/e2e/pages/BoardPage.ts
++++ b/e2e/pages/BoardPage.ts
+@@ -283,9 +283,11 @@ export class BoardPage {
+     }
+   }
+ 
+-  async confirmDeleteTask() {
++  /** «Удалить» заказ → окно «Удаление» с обязательной причиной (soft-delete-core §8.2) → «Удалить». */
++  async confirmDeleteTask(reason = 'e2e: создан по ошибке') {
+     await this.taskDelete.click();
+     await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
++    await this.page.getByTestId('delete-reason').fill(reason);
+     await this.page.getByTestId('ui-dialog-ok').click();
+   }
+ }
+diff --git a/e2e/pages/DeletedPage.ts b/e2e/pages/DeletedPage.ts
+new file mode 100644
+index 0000000..0cdb2b7
+--- /dev/null
++++ b/e2e/pages/DeletedPage.ts
+@@ -0,0 +1,118 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++import type { DeletedKind } from '../fixtures/board-types';
++
++// Экран «Удалённые» «/deleted» (soft-delete-core §8.1): вкладки по видам записей со счётчиками,
++// фильтры (поиск, период, кто удалил), таблица, «Восстановить», жёлтый блок предупреждений,
++// пагинация. Разметка — web/ssr/softdelete/templates/pages/list.html + js/deleted.js.
++export class DeletedPage {
++  readonly root: Locator;
++  readonly tabs: Locator;
++  readonly filterQ: Locator;
++  readonly filterQError: Locator;
++  readonly filterFrom: Locator;
++  readonly filterTo: Locator;
++  readonly filterPeriodError: Locator;
++  readonly filterBy: Locator;
++  readonly filterReset: Locator;
++  readonly table: Locator;
++  readonly rows: Locator;
++  readonly empty: Locator;
++  readonly pager: Locator;
++  readonly prev: Locator;
++  readonly next: Locator;
++  readonly shown: Locator;
++  readonly warnings: Locator;
++  readonly warningLines: Locator;
++  readonly warningOpen: Locator;
++  readonly warningsClose: Locator;
++  readonly toast: Locator;
++  readonly toastError: Locator;
++  readonly dialog: Locator;
++  readonly dialogText: Locator;
++  readonly dialogOk: Locator;
++  readonly dialogCancel: Locator;
++
++  constructor(readonly page: Page) {
++    this.root = page.getByTestId('deleted-root');
++    this.tabs = page.getByTestId('deleted-tabs');
++    this.filterQ = page.getByTestId('deleted-filter-q');
++    this.filterQError = page.getByTestId('deleted-filter-q-error');
++    this.filterFrom = page.getByTestId('deleted-filter-from');
++    this.filterTo = page.getByTestId('deleted-filter-to');
++    this.filterPeriodError = page.getByTestId('deleted-filter-period-error');
++    this.filterBy = page.getByTestId('deleted-filter-by');
++    this.filterReset = page.getByTestId('deleted-filter-reset');
++    this.table = page.getByTestId('deleted-table');
++    this.rows = page.getByTestId('deleted-row');
++    this.empty = page.getByTestId('deleted-empty');
++    this.pager = page.getByTestId('deleted-pager');
++    this.prev = page.getByTestId('deleted-prev');
++    this.next = page.getByTestId('deleted-next');
++    this.shown = page.getByTestId('deleted-shown');
++    this.warnings = page.getByTestId('deleted-warnings');
++    this.warningLines = page.getByTestId('deleted-warning-line');
++    this.warningOpen = page.getByTestId('deleted-warning-open');
++    this.warningsClose = page.getByTestId('deleted-warnings-close');
++    this.toast = page.getByTestId('toast');
++    this.toastError = page.getByTestId('toast-error');
++    this.dialog = page.getByTestId('ui-dialog');
++    this.dialogText = page.getByTestId('ui-dialog-text');
++    this.dialogOk = page.getByTestId('ui-dialog-ok');
++    this.dialogCancel = page.getByTestId('ui-dialog-cancel');
++  }
++
++  /** Открыть экран; query — без «?», напр. `kind=tasks&q=…`. Ждёт первой загрузки списка. */
++  async goto(query = '') {
++    await this.page.goto(`/deleted${query ? `?${query}` : ''}`);
++    await expect(this.root).toBeVisible();
++    await this.loaded();
++  }
++
++  /** Список загружен: видна таблица либо пустое состояние. Оба узла всегда есть в DOM (один
++   *  скрыт d-none), поэтому ждём именно ВИДИМЫЙ: `.or().first()` брал бы первый по порядку в
++   *  DOM — таблицу, скрытую при пустом списке. */
++  async loaded() {
++    await expect(this.page.locator('[data-testid="deleted-table"]:visible, [data-testid="deleted-empty"]:visible').first()).toBeVisible();
++  }
++
++  tab(kind: DeletedKind): Locator {
++    return this.page.getByTestId(`deleted-tab-${kind}`);
++  }
++
++  tabCount(kind: DeletedKind): Locator {
++    return this.page.getByTestId(`deleted-tab-count-${kind}`);
++  }
++
++  row(id: number | string): Locator {
++    return this.page.locator(`[data-testid="deleted-row"][data-id="${id}"]`);
++  }
++
++  rowTitle(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-title'); }
++  rowSubtitle(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-subtitle'); }
++  rowReason(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-reason'); }
++  rowBy(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-by'); }
++  rowAt(id: number | string): Locator { return this.row(id).getByTestId('deleted-row-at'); }
++  restoreBtn(id: number | string): Locator { return this.row(id).getByTestId('deleted-restore'); }
++
++  /** «Восстановить» в строке → подтверждение → «Восстановить». */
++  async restore(id: number | string) {
++    await this.restoreBtn(id).click();
++    await expect(this.dialog).toBeVisible();
++    await this.dialogOk.click();
++  }
++
++  /** Поиск: ввод + ожидание debounce-запроса списка. */
++  async search(text: string) {
++    const loaded = this.page.waitForResponse((r) => r.url().includes('/api/v1/deleted?') && r.request().method() === 'GET');
++    await this.filterQ.fill(text);
++    await loaded;
++  }
++
++  async expectNoHorizontalScroll() {
++    const overflow = await this.page.evaluate(() => {
++      const el = document.documentElement;
++      return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth };
++    });
++    expect(overflow.scrollWidth, 'горизонтальная прокрутка страницы').toBeLessThanOrEqual(overflow.clientWidth);
++  }
++}
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 6f343b4..4aa10b8 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -360,17 +360,32 @@ export class OrderCardPage {
+     return this.error.getByTestId('task-error-transfer-link');
+   }
+ 
+-  /** «Удалить» заказ → диалог подтверждения открыт (текст — ui-dialog-text). */
++  // ---- окно «Удаление» с причиной (soft-delete-core §8.2) ----
++  get deleteDialog(): Locator { return this.page.getByTestId('ui-dialog'); }
++  get deleteDialogTitle(): Locator { return this.page.getByTestId('delete-dialog-title'); }
++  get deleteReason(): Locator { return this.page.getByTestId('delete-reason'); }
++  get deleteReasonError(): Locator { return this.page.getByTestId('delete-reason-error'); }
++  get deleteReasonCounter(): Locator { return this.page.getByTestId('delete-reason-counter'); }
++  /** Красный блок над кнопками: отказ 409 (напр. «Сначала отмените перемещения: #N»). */
++  get deleteDialogError(): Locator { return this.page.getByTestId('delete-dialog-error'); }
++  get deleteDialogOk(): Locator { return this.page.getByTestId('ui-dialog-ok'); }
++
++  /** «Удалить» заказ → окно «Удаление» открыто (пояснение — ui-dialog-text). */
+   async openDeleteTask(): Promise<Locator> {
+     await this.deleteBtn.click();
+-    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
++    await expect(this.deleteDialog).toBeVisible();
+     return this.page.getByTestId('ui-dialog-text');
+   }
+ 
+-  async confirmDeleteTask() {
+-    await this.deleteBtn.click();
+-    await expect(this.page.getByTestId('ui-dialog')).toBeVisible();
+-    await this.page.getByTestId('ui-dialog-ok').click();
++  /** Ввести причину в открытом окне «Удаление» и нажать «Удалить». */
++  async submitDelete(reason: string) {
++    await this.deleteReason.fill(reason);
++    await this.deleteDialogOk.click();
++  }
++
++  async confirmDeleteTask(reason = 'e2e: создан по ошибке') {
++    await this.openDeleteTask();
++    await this.submitDelete(reason);
+   }
+ 
+   async confirmUiDialog() {
+diff --git a/e2e/tests/soft-delete-core.spec.ts b/e2e/tests/soft-delete-core.spec.ts
+new file mode 100644
+index 0000000..b4c8770
+--- /dev/null
++++ b/e2e/tests/soft-delete-core.spec.ts
+@@ -0,0 +1,491 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { AdminApi } from '../fixtures/auth';
++import { contrastOf } from '../fixtures/contrast';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { DeletedPage } from '../pages/DeletedPage';
++import { ShellPage } from '../pages/ShellPage';
++
++// Мягкое удаление — ядро (docs/features/soft-delete-core/draft-spec.md §8.1–§8.3, §11):
++// удаление заказа с причиной (TS-034), раздел «Удалённые» (TS-035), восстановление (TS-036,
++// TS-037), фильтры (TS-038), прямые ссылки на удалённый заказ (TS-039), адаптив (TS-046),
++// темы (TS-047). Общая dev-БД (§TD-6.2): свои клиенты, заказы, товары через uniq()+adminApi;
++// заказы (и действующие, и мягко удалённые) физически убирает _boardCleanup (purgeTask —
++// служебный адрес, стенд с TEST_PURGE_ENABLED=true).
++test.use({ colorScheme: 'light' });
++
++const THEMES = ['light', 'dark'] as const;
++const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
++const TOAST_DELETED = 'Удалено. Восстановить можно в разделе «Удалённые»';
++const PNG_1X1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
++
++type Uniq = (s: string) => string;
++
++/** Клиент + заказ в колонке columnName. */
++async function order(adminApi: AdminApi, uniq: Uniq, tag: string, columnName = 'Новые') {
++  const client = await adminApi.createClient({ company_name: uniq(`${tag} клиент`), phones: [{ phone: '9990000701', note: '' }] });
++  const columns = (await adminApi.listColumns()).items;
++  const column = columnByName(columns, columnName);
++  const task = await adminApi.createTask({ title: uniq(`${tag} заказ`), client_id: client.id, column_id: column.id });
++  return { client, columns, column, task };
++}
++
++/** Товар с остатком stock на складе по умолчанию («Алматы») + услуга каталога. */
++async function goods(adminApi: AdminApi, uniq: Uniq, tag: string, stock: number) {
++  const prodCat = await adminApi.createCategory({ kind: 'product', name: uniq(`${tag} категория товаров`) });
++  const product = await adminApi.createProduct({ category_id: prodCat.id, name: uniq(`${tag} товар`), stock });
++  const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq(`${tag} категория услуг`) });
++  const service = await adminApi.createService({ category_id: svcCat.id, name: uniq(`${tag} услуга`) });
++  return { product, service };
++}
++
++async function stockOf(adminApi: AdminApi, productName: string): Promise<number> {
++  const list = await adminApi.getStock({ q: productName, scope: 'all' });
++  return Number(list.items[0]?.stock ?? NaN);
++}
++
++/** «Сегодня» (ГГГГ-ММ-ДД) в поясе zone, сдвиг в днях. */
++function dayIn(zone: string, shiftDays = 0): string {
++  const now = new Date(Date.now() + shiftDays * 86_400_000);
++  return new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
++}
++
++test.describe('SD: мягкое удаление заказа и раздел «Удалённые»', () => {
++  test('SD-001 (TS-034): «Удалить» в карточке → окно «Удаление»: пустая причина → «Укажите причину удаления», заказ на месте; «Отмена» причину не сохраняет; с причиной → карточка закрылась, заказа нет на доске, тост «Удалено…», заказ в «Удалённых»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const { client, task } = await order(adminApi, uniq, 'SD-001');
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++
++    // окно: заголовок с номером и названием, пояснение, счётчик символов.
++    const text = await card.openDeleteTask();
++    await expect(card.deleteDialogTitle).toHaveText(`Удалить «#${task.id} ${task.title}»?`);
++    await expect(text).toHaveText('Товары заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».');
++    await expect(card.deleteReasonCounter).toHaveText('0 / 500');
++
++    // негатив: пустая причина и причина из пробелов — проверяет сервер, окно остаётся.
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 400);
++    await card.deleteDialogOk.click();
++    await expect(card.deleteReasonError).toHaveText('Укажите причину удаления');
++    await expect(card.deleteReason).toHaveClass(/is-invalid/);
++    await card.submitDelete('   ');
++    await expect(card.deleteReasonError).toHaveText('Укажите причину удаления');
++    await expect(card.deleteDialog).toBeVisible();
++    expect(await adminApi.taskHttpStatus(task.id), 'заказ на месте').toBe(200);
++
++    // ввод снимает ошибку; длиннее 500 символов — отказ сервера под полем.
++    await card.deleteReason.fill('я'.repeat(501));
++    await expect(card.deleteReasonCounter).toHaveText('501 / 500');
++    await expect(card.deleteReason).not.toHaveClass(/is-invalid/);
++    await card.deleteDialogOk.click();
++    await expect(card.deleteReasonError).toHaveText('Причина — не длиннее 500 символов');
++
++    // «Отмена» — окно закрылось, причина не сохранена, заказ на месте.
++    await card.cancelUiDialog();
++    await expect(card.deleteDialog).toBeHidden();
++    await expect(card.modal).toBeVisible();
++    await card.openDeleteTask();
++    await expect(card.deleteReason).toHaveValue('');
++    expect(await adminApi.taskHttpStatus(task.id)).toBe(200);
++
++    // с причиной — заказ удалён.
++    await card.submitDelete('  Создан по ошибке  ');
++    await expect(card.deleteDialog).toBeHidden();
++    await expect(card.modal).toBeHidden();
++    await expect(page.getByTestId('toast')).toHaveText(TOAST_DELETED);
++    await expect(board.card(task.id)).toHaveCount(0);
++    expect(await adminApi.taskHttpStatus(task.id), 'заказ удалён').toBe(404);
++
++    const deleted = await adminApi.listDeleted('tasks', { q: `#${task.id}` });
++    expect(deleted.items.map((i) => i.id)).toEqual([String(task.id)]);
++    expect(deleted.items[0].delete_reason, 'крайние пробелы обрезаны').toBe('Создан по ошибке');
++  });
++
++  test('SD-002 (TS-035): меню «Удалённые» → вкладка «Заказы» со счётчиком; строка — «#N название», клиент, причина, кто удалил, время «ДД.ММ.ГГГГ ЧЧ:ММ»; негатив: исполнителю — «Нет доступа» и пункта меню нет', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const { client, task } = await order(adminApi, uniq, 'SD-002');
++    const reason = uniq('SD-002 причина: дубль заказа');
++    await adminApi.deleteTask(task.id, reason);
++
++    const shell = new ShellPage(page);
++    const del = new DeletedPage(page);
++    await shell.goto('/');
++    await shell.navLink('Удалённые').click();
++    await expect(page).toHaveURL(/\/deleted(\?|$)/);
++    await expect(del.root).toBeVisible();
++    await del.loaded();
++    await expect(shell.navLink('Удалённые')).toHaveAttribute('aria-current', 'page');
++    await expect(page).toHaveURL(/kind=tasks/);
++
++    // вкладка «Заказы» активна, счётчик совпадает с API.
++    await expect(del.tab('tasks')).toHaveClass(/active/);
++    await expect(del.tab('tasks')).toContainText('Заказы');
++    const summary = await adminApi.deletedSummary();
++    await expect(del.tabCount('tasks')).toHaveText(String(summary.counts.tasks));
++    expect(summary.counts.tasks).toBeGreaterThan(0);
++
++    // строка заказа (поиск по номеру — на общей БД в разделе бывают чужие записи).
++    await del.search(`#${task.id}`);
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.rowTitle(task.id)).toHaveText(`#${task.id} ${task.title}`);
++    await expect(del.rowSubtitle(task.id)).toHaveText(client.company_name);
++    await expect(del.rowReason(task.id)).toHaveText(reason);
++    await expect(del.rowBy(task.id)).toHaveText('Админ Прогона');
++    await expect(del.rowAt(task.id)).toHaveText(DATE_TIME);
++    await expect(del.restoreBtn(task.id)).toHaveText('Восстановить');
++    await expect(del.shown).toHaveText('Показано 1–1 из 1');
++
++    // негатив: исполнитель — страница отказа, пункта меню нет.
++    const login = uniq('sd002-exec');
++    const exec = await makeUser({ login });
++    await loginAs(page, login, exec.password);
++    allowHttpErrors((url, status) => url.includes('/deleted') && status === 403);
++    const res = await page.goto('/deleted');
++    expect(res?.status()).toBe(403);
++    await expect(page.locator('body')).toContainText('Нет доступа');
++    await expect(del.root).toHaveCount(0);
++    await shell.goto('/');
++    await expect(shell.navLink('Удалённые')).toHaveCount(0);
++    for (const path of ['/api/v1/deleted?kind=tasks', '/api/v1/deleted/summary']) {
++      const api = await page.request.get(path);
++      expect(api.status(), path).toBe(403);
++      expect((await api.json()).message, path).toBe('Нет доступа');
++    }
++  });
++
++  test('SD-003 (TS-036): «Восстановить» → подтверждение → строка исчезла, счётчик уменьшился, тост «Восстановлено», заказ снова на доске в своей колонке, остатки как до удаления; негатив: повтор во второй вкладке → «Запись уже восстановлена»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++  }) => {
++    const { client, columns, task } = await order(adminApi, uniq, 'SD-003');
++    const work = columnByName(columns, 'В работе');
++    const { product, service } = await goods(adminApi, uniq, 'SD-003', 5);
++    await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 2 }] });
++    await adminApi.moveTask(task.id, { column_id: work.id });
++    expect(await stockOf(adminApi, product.name), 'товар списан').toBe(3);
++    await adminApi.deleteTask(task.id, uniq('SD-003 причина'));
++    expect(await stockOf(adminApi, product.name), 'удаление вернуло товар').toBe(5);
++
++    const del = new DeletedPage(page);
++    await del.goto(`kind=tasks&q=${encodeURIComponent(`#${task.id}`)}`);
++    await expect(del.row(task.id)).toBeVisible();
++    const countBefore = Number(await del.tabCount('tasks').textContent());
++
++    // вторая вкладка открыта ДО восстановления — у неё строка ещё в списке.
++    const second = await page.context().newPage();
++    const del2 = new DeletedPage(second);
++    await del2.goto(`kind=tasks&q=${encodeURIComponent(`#${task.id}`)}`);
++    await expect(del2.row(task.id)).toBeVisible();
++
++    // «Отмена» в подтверждении ничего не делает.
++    await del.restoreBtn(task.id).click();
++    await expect(del.dialogText).toHaveText(`Восстановить «#${task.id} ${task.title}»?`);
++    await del.dialogCancel.click();
++    await expect(del.dialog).toBeHidden();
++    await expect(del.row(task.id)).toBeVisible();
++
++    await del.restore(task.id);
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.row(task.id)).toHaveCount(0);
++    await expect(del.empty).toHaveText('Ничего не найдено');
++    await expect(del.tabCount('tasks')).toHaveText(String(countBefore - 1));
++    await expect(del.warnings).toBeHidden(); // товара хватает — предупреждений нет
++
++    expect((await adminApi.getTask(task.id)).column_id, 'заказ в своей колонке').toBe(work.id);
++    expect(await stockOf(adminApi, product.name), 'товар списан снова').toBe(3);
++    const board = new BoardPage(page);
++    await board.goto(`?client_id=${client.id}`);
++    await expect(board.column(work.id).getByTestId(`task-card-${task.id}`)).toBeVisible();
++
++    // негатив: повторное восстановление во второй вкладке — 409, строка исчезает.
++    await del2.restore(task.id);
++    await expect(del2.toastError).toHaveText('Запись уже восстановлена');
++    await expect(del2.row(task.id)).toHaveCount(0);
++    expect(await stockOf(adminApi, product.name), 'повтор остаток не меняет').toBe(3);
++    await second.close();
++  });
++
++  test('SD-004 (TS-037): восстановление при нехватке товара — жёлтый блок с товаром, складом и остатком, ссылка «Открыть заказ #N»; блок не исчезает сам и закрывается крестиком; негатив: заказ всё равно восстановлен', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++  }) => {
++    const { columns, task } = await order(adminApi, uniq, 'SD-004');
++    const { product, service } = await goods(adminApi, uniq, 'SD-004', 5);
++    await insertSubtask({ taskId: task.id, serviceId: service.id, products: [{ productId: product.id, qty: 2 }] });
++    await adminApi.moveTask(task.id, { column_id: columnByName(columns, 'В работе').id });
++    await adminApi.deleteTask(task.id, uniq('SD-004 причина'));
++    await adminApi.adjustStock(product.id, 0); // товар ушёл со склада, пока заказ был удалён
++
++    const del = new DeletedPage(page);
++    await del.goto(`kind=tasks&q=${encodeURIComponent(`#${task.id}`)}`);
++    await del.restore(task.id);
++    await expect(del.toast).toHaveText('Восстановлено');
++    await expect(del.row(task.id)).toHaveCount(0);
++
++    await expect(del.warnings).toBeVisible();
++    await expect(del.warnings).toContainText(`Восстановлено: #${task.id} ${task.title}`);
++    await expect(del.warningLines).toHaveCount(1);
++    await expect(del.warningLines).toHaveText(`Не хватает товара «${product.name}» на складе «Алматы»: остаток −2`);
++    await expect(del.warningOpen).toHaveText(`Открыть заказ #${task.id}`);
++    await expect(del.warningOpen).toHaveAttribute('href', `/?task=${task.id}`);
++
++    // негатив: восстановление не отклонено — заказ действует, остаток ушёл в минус.
++    expect(await adminApi.taskHttpStatus(task.id), 'заказ восстановлен').toBe(200);
++    expect(await stockOf(adminApi, product.name)).toBe(-2);
++
++    // блок не исчезает сам (тост живёт 5 секунд) и закрывается крестиком.
++    await expect(del.toast).toHaveCount(0, { timeout: 8000 });
++    await expect(del.warnings).toBeVisible();
++    await del.warningsClose.click();
++    await expect(del.warnings).toBeHidden();
++
++    // ссылка из блока открывает карточку восстановленного заказа.
++    await del.goto(`kind=tasks&q=${encodeURIComponent(`#${task.id}`)}`);
++    await page.goto(`/?task=${task.id}`);
++    await new OrderCardPage(page).waitOpen();
++  });
++
++  test('SD-005 (TS-038): фильтры — поиск по причине, период, «Кто удалил», «Сбросить»; список сужается и возвращается, фильтры в адресной строке и переживают перезагрузку; негатив: «по» раньше «с» → «Проверьте период»', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    allowHttpErrors,
++  }) => {
++    const { client, columns } = await order(adminApi, uniq, 'SD-005');
++    const col = columnByName(columns, 'Новые').id;
++    const mark = uniq('sd005');
++    const mine = await adminApi.createTask({ title: uniq('SD-005 мой'), client_id: client.id, column_id: col });
++    const dup = await adminApi.createTask({ title: uniq('SD-005 дубль'), client_id: client.id, column_id: col });
++    const other = await adminApi.createTask({ title: uniq('SD-005 чужой'), client_id: client.id, column_id: col });
++    await adminApi.deleteTask(mine.id, `${mark} создан по ошибке`);
++    await adminApi.deleteTask(dup.id, `${mark} ДУБЛЬ заказа`);
++
++    // третий заказ удаляет другой администратор.
++    const otherLogin = uniq('sd005-admin');
++    const otherAdmin = await makeUser({ login: otherLogin, name: uniq('Второй Админ SD-005'), role: 'admin' });
++    const otherApi = await AdminApi.login(otherLogin, otherAdmin.password);
++    await otherApi.deleteTask(other.id, `${mark} клиент отказался`);
++    await otherApi.dispose();
++
++    const del = new DeletedPage(page);
++    await del.goto('kind=tasks');
++    for (const t of [mine, dup, other]) await expect(del.row(t.id)).toBeVisible();
++
++    // поиск по причине (без учёта регистра) — в адресной строке.
++    await del.search(`${mark} дубль`);
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.row(dup.id)).toBeVisible();
++    await expect(page).toHaveURL(new RegExp(`q=${encodeURIComponent(`${mark} дубль`).replace(/%20/g, '(%20|\\+)')}`));
++    await del.search(mark);
++    await expect(del.rows).toHaveCount(3);
++
++    // период по поясу пользователя (Asia/Almaty): сегодня — все три; вчера — ничего.
++    const today = dayIn('Asia/Almaty');
++    const yesterday = dayIn('Asia/Almaty', -1);
++    await del.filterFrom.fill(today);
++    await del.filterTo.fill(today);
++    await expect(page).toHaveURL(new RegExp(`deleted_from=${today}.*deleted_to=${today}`));
++    await expect(del.rows).toHaveCount(3);
++    await del.filterFrom.fill(yesterday);
++    await del.filterTo.fill(yesterday);
++    await expect(del.empty).toHaveText('Ничего не найдено');
++    await expect(del.rows).toHaveCount(0);
++
++    // негатив: «по» раньше «с» → текст под полями, таблица пустая.
++    allowHttpErrors((url, status) => url.includes('/api/v1/deleted?') && status === 400);
++    await del.filterFrom.fill(today);
++    await expect(del.filterPeriodError).toHaveText('Проверьте период');
++    await expect(del.filterTo).toHaveClass(/is-invalid/);
++    await del.filterTo.fill(today);
++    await expect(del.filterPeriodError).toBeHidden();
++    await expect(del.rows).toHaveCount(3);
++
++    // «Кто удалил» — второй администратор; сочетание с поиском и периодом — по «И».
++    await del.filterBy.selectOption({ label: otherAdmin.name });
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.row(other.id)).toBeVisible();
++    await expect(del.rowBy(other.id)).toHaveText(otherAdmin.name);
++    await expect(page).toHaveURL(new RegExp(`deleted_by=${otherAdmin.id}`));
++
++    // перезагрузка: вкладка и все фильтры восстановлены из адресной строки.
++    await page.reload();
++    await del.loaded();
++    await expect(del.filterQ).toHaveValue(mark);
++    await expect(del.filterFrom).toHaveValue(today);
++    await expect(del.filterTo).toHaveValue(today);
++    await expect(del.filterBy).toHaveValue(otherAdmin.id);
++    await expect(del.rows).toHaveCount(1);
++    await expect(del.row(other.id)).toBeVisible();
++
++    // «Сбросить» — четыре фильтра очищены, список вернулся.
++    await del.filterReset.click();
++    await expect(del.filterQ).toHaveValue('');
++    await expect(del.filterFrom).toHaveValue('');
++    await expect(del.filterTo).toHaveValue('');
++    await expect(del.filterBy).toHaveValue('');
++    await expect(page).not.toHaveURL(/q=|deleted_from=|deleted_to=|deleted_by=/);
++    for (const t of [mine, dup, other]) await expect(del.row(t.id)).toBeVisible();
++
++    // слишком длинная строка поиска — текст под полем.
++    await del.search('я'.repeat(101));
++    await expect(del.filterQError).toHaveText('Строка поиска — не длиннее 100 символов');
++  });
++
++  test('SD-006 (TS-039): прямые ссылки на удалённый заказ — /?task=N → «Заказ не найден», печатная форма и вложение → 404 (и администратору, и исполнителю); негатив: после восстановления все три открываются', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const { task } = await order(adminApi, uniq, 'SD-006');
++    const uploaded = await adminApi.uploadAttachment(task.id, { name: `${uniq('sd006')}.png`, mimeType: 'image/png', buffer: PNG_1X1 });
++    const fileUrl = uploaded.card.attachments[0].url;
++    const printUrl = `/tasks/${task.id}/print/intake`;
++    expect((await page.request.get(fileUrl)).status(), 'до удаления файл отдаётся').toBe(200);
++    await adminApi.deleteTask(task.id, uniq('SD-006 причина'));
++
++    allowHttpErrors((url, status) => status === 404 && (url.includes(`/api/v1/tasks/${task.id}`) || url.includes(printUrl) || url.includes(fileUrl)));
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++
++    const expectGone = async (who: string) => {
++      await board.goto(`?task=${task.id}`);
++      await expect(page.getByTestId('ui-dialog-text'), `${who}: карточка`).toHaveText('Заказ не найден');
++      await page.getByTestId('ui-dialog-ok').click();
++      await expect(card.modal).toBeHidden();
++      await expect(page).not.toHaveURL(/task=/);
++      const print = await page.goto(printUrl);
++      expect(print?.status(), `${who}: печатная форма`).toBe(404);
++      expect((await page.request.get(fileUrl)).status(), `${who}: вложение`).toBe(404);
++    };
++    await expectGone('администратор');
++
++    const login = uniq('sd006-exec');
++    const exec = await makeUser({ login });
++    await loginAs(page, login, exec.password);
++    await expectGone('исполнитель');
++
++    // негатив: после восстановления все три ссылки открываются (исполнителю тоже).
++    expect((await adminApi.restore('tasks', task.id)).status).toBe(200);
++    await board.goto(`?task=${task.id}`);
++    await card.waitOpen();
++    const print = await page.goto(printUrl);
++    expect(print?.status()).toBe(200);
++    await expect(page.locator('body')).toContainText(`Акт приёма №${task.id}`);
++    expect((await page.request.get(fileUrl)).status()).toBe(200);
++  });
++
++  test('SD-007 (TS-046): адаптив — «/deleted» на 360×640 без горизонтальной прокрутки страницы (таблица прокручивается в своём блоке); окно «Удаление» помещается в экран', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { client, task } = await order(adminApi, uniq, 'SD-007');
++    const gone = await adminApi.createTask({ title: uniq('SD-007 удалённый заказ с длинным названием для проверки переноса строки'), client_id: client.id, column_id: task.column_id });
++    await adminApi.deleteTask(gone.id, uniq('SD-007 ' + 'оченьдлиннаяпричинабезпробелов'.repeat(6)));
++
++    await page.setViewportSize({ width: 360, height: 640 });
++    const del = new DeletedPage(page);
++    await del.goto(`kind=tasks&q=${encodeURIComponent(`#${gone.id}`)}`);
++    await expect(del.row(gone.id)).toBeVisible();
++    await del.expectNoHorizontalScroll();
++
++    // подтверждение восстановления помещается.
++    await del.restoreBtn(gone.id).scrollIntoViewIfNeeded();
++    await del.restoreBtn(gone.id).click();
++    await expect(del.dialog).toBeVisible();
++    await del.expectNoHorizontalScroll();
++    await del.dialogCancel.click();
++    await expect(del.dialog).toBeHidden();
++
++    // окно «Удаление» из карточки заказа помещается в экран по ширине, кнопки доступны.
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await card.openDeleteTask();
++    const box = await card.deleteDialog.locator('.modal-content').boundingBox();
++    expect(box, 'окно отрисовано').not.toBeNull();
++    expect(box!.x, 'левый край окна в экране').toBeGreaterThanOrEqual(0);
++    expect(box!.x + box!.width, 'правый край окна в экране').toBeLessThanOrEqual(360);
++    await expect(card.deleteReason).toBeVisible();
++    await expect(card.deleteDialogOk).toBeInViewport();
++    await del.expectNoHorizontalScroll();
++    await card.cancelUiDialog();
++  });
++
++  test('SD-008 (TS-047): темы — «/deleted» (вкладка со счётчиком, строка, кнопка, жёлтый блок) и окно «Удаление» (пояснение, ошибка поля, красная кнопка) читаемы в светлой и тёмной теме', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    insertSubtask,
++    allowHttpErrors,
++  }) => {
++    const { client, columns, task } = await order(adminApi, uniq, 'SD-008');
++    const work = columnByName(columns, 'В работе').id;
++    const { product, service } = await goods(adminApi, uniq, 'SD-008', 5);
++    allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 400);
++
++    const del = new DeletedPage(page);
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    for (const theme of THEMES) {
++      // свой удалённый заказ с нехваткой товара на каждую тему — жёлтый блок после восстановления.
++      const short = await adminApi.createTask({ title: uniq(`SD-008 ${theme}`), client_id: client.id, column_id: columnByName(columns, 'Новые').id });
++      await insertSubtask({ taskId: short.id, serviceId: service.id, products: [{ productId: product.id, qty: 2 }] });
++      await adminApi.adjustStock(product.id, 5);
++      await adminApi.moveTask(short.id, { column_id: work });
++      await adminApi.deleteTask(short.id, uniq(`SD-008 причина ${theme}`));
++      await adminApi.adjustStock(product.id, 0);
++
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      await del.goto(`kind=tasks&q=${encodeURIComponent(`#${short.id}`)}`);
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++
++      expect(await contrastOf(del.tab('tasks')), `${theme}: вкладка со счётчиком`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.rowTitle(short.id)), `${theme}: что удалено`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.rowSubtitle(short.id)), `${theme}: клиент`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.rowReason(short.id)), `${theme}: причина`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.restoreBtn(short.id)), `${theme}: «Восстановить»`).toBeGreaterThanOrEqual(3);
++
++      await del.restore(short.id);
++      await expect(del.warnings).toBeVisible();
++      expect(await contrastOf(del.warningLines.first()), `${theme}: жёлтый блок`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(del.warningOpen), `${theme}: ссылка в жёлтом блоке`).toBeGreaterThanOrEqual(4.5);
++
++      // окно «Удаление»: пояснение, текст ошибки поля, красная кнопка.
++      await board.goto(`?client_id=${client.id}&task=${task.id}`);
++      await card.waitOpen();
++      const text = await card.openDeleteTask();
++      expect(await contrastOf(card.deleteDialogTitle), `${theme}: заголовок окна`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(text), `${theme}: пояснение`).toBeGreaterThanOrEqual(4.5);
++      await card.deleteDialogOk.click();
++      await expect(card.deleteReasonError).toHaveText('Укажите причину удаления');
++      expect(await contrastOf(card.deleteReasonError), `${theme}: ошибка поля`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(card.deleteDialogOk), `${theme}: красная «Удалить»`).toBeGreaterThanOrEqual(3);
++      await card.cancelUiDialog();
++      await expect(card.deleteDialog).toBeHidden();
++    }
++    expect(await adminApi.taskHttpStatus(task.id), 'заказ на месте').toBe(200);
++  });
++});
+diff --git a/e2e/tests/transfers-revert.spec.ts b/e2e/tests/transfers-revert.spec.ts
+index 8639583..17b340d 100644
+--- a/e2e/tests/transfers-revert.spec.ts
++++ b/e2e/tests/transfers-revert.spec.ts
+@@ -177,7 +177,7 @@ test.describe('TR: перемещения — отмена проведения
+     expect((await adminApi.getTransfer(first.id)).status).toBe('in_transit');
+   });
+ 
+-  test('TR-024 (TS-037): удаление заказа с проведённым документом — сообщение «Сначала отмените перемещения: #N» со ссылкой, заказ на месте; после отката и отмены документа заказ удаляется вместе с отменёнными документами', async ({
++  test('TR-024 (TS-037; soft-delete-core DS-034): удаление заказа с проведённым документом — в окне «Удаление» отказ «Сначала отмените перемещения: #N», заказ на месте; после отката и отмены документа заказ удаляется мягко, отменённые документы остаются', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+@@ -197,37 +197,39 @@ test.describe('TR: перемещения — отмена проведения
+     await card.waitOpen();
+     await expect(card.transferRows).toHaveCount(2);
+ 
+-    // диалог подтверждения предупреждает об отменённых документах; отказ — 409 со ссылкой.
++    // окно «Удаление» об отменённых документах больше не предупреждает (они остаются, DS-034);
++    // отказ 409 — красным блоком в окне, окно и карточка остаются открытыми.
+     allowHttpErrors((url, status) => url.endsWith(`/api/v1/tasks/${task.id}`) && status === 409);
+     const dialogText = await card.openDeleteTask();
+-    await expect(dialogText).toContainText(`Удалить заказ #${task.id}?`);
+-    await expect(dialogText).toContainText(`Отменённые перемещения (#${cancelled.id}) будут удалены вместе с заказом`);
+-    await card.confirmUiDialog();
+-    await expect(card.error).toHaveText(`Сначала отмените перемещения: #${received.id}`);
+-    await expect(card.errorTransferLinks).toHaveCount(1); // отменённый документ не мешает
+-    await expect(card.errorTransferLinks).toHaveText(`#${received.id}`);
+-    await expect(card.errorTransferLinks).toHaveAttribute('href', `/transfers?id=${received.id}`);
++    await expect(card.deleteDialogTitle).toContainText(`#${task.id}`);
++    await expect(dialogText).toContainText('Товары заказа вернутся на склад');
++    await expect(dialogText).not.toContainText('будут удалены вместе с заказом');
++    await card.submitDelete('удаляем заказ с документами');
++    await expect(card.deleteDialogError).toHaveText(`Сначала отмените перемещения: #${received.id}`); // отменённый документ не мешает
++    await expect(card.deleteDialog).toBeVisible();
++    await expect(card.deleteReason).toHaveValue('удаляем заказ с документами');
++    await card.cancelUiDialog();
++    await expect(card.deleteDialog).toBeHidden();
+     await expect(card.modal).toBeVisible();
+     expect(await adminApi.taskHttpStatus(task.id), 'заказ на месте').toBe(200);
+     expect((await adminApi.getTransfer(received.id)).status).toBe('received');
+     expect((await adminApi.listTransfers({ task_id: task.id })).total).toBe(2);
+ 
+-    // после отката и отмены документа заказ удаляется; отменённые документы уходят с ним.
++    // после отката и отмены документа заказ удаляется мягко; отменённые документы остаются.
+     await adminApi.unreceiveTransfer(received.id, 'удаляем заказ');
+     await adminApi.transferAction(received.id, 'cancel');
+     await board.goto(`?client_id=${client.id}&task=${task.id}`);
+     await card.waitOpen();
+-    const text = await card.openDeleteTask();
+-    await expect(text).toContainText(`Отменённые перемещения (#${received.id}, #${cancelled.id}) будут удалены вместе с заказом`);
+-    await card.confirmUiDialog();
++    await card.confirmDeleteTask('документы отменены');
+     await expect(card.modal).toBeHidden();
+     expect(await adminApi.taskHttpStatus(task.id), 'заказ удалён').toBe(404);
+-    expect((await adminApi.listTransfers({ task_id: task.id })).total).toBe(0);
++    expect((await adminApi.listTransfers({ task_id: task.id })).total, 'отменённые документы остались у удалённого заказа').toBe(2);
++    expect((await adminApi.listDeleted('tasks', { q: `#${task.id}` })).items.map((i) => i.id)).toEqual([String(task.id)]);
+ 
+     await tr.goto();
+     await expect(tr.list).toBeVisible();
+-    await expect(tr.row(received.id)).toHaveCount(0);
+-    await expect(tr.row(cancelled.id)).toHaveCount(0);
++    await expect(tr.row(received.id)).toHaveCount(1);
++    await expect(tr.row(cancelled.id)).toHaveCount(1);
+   });
+ 
+   test('TR-025 (TS-038): «Удалить» у заявки — подтверждение, строка исчезла, тост «Удалено», единица снова свободна; у «В пути» и «Получено» кнопки нет; у «Отменён» — есть; красная кнопка читаема в обеих темах', async ({
+diff --git a/web/ssr/_shared/js/api.js b/web/ssr/_shared/js/api.js
+index 19938e8..cae2e4a 100644
+--- a/web/ssr/_shared/js/api.js
++++ b/web/ssr/_shared/js/api.js
+@@ -49,6 +49,8 @@
+     post: function (url, body, opts) { return request('POST', url, body, opts); },
+     put: function (url, body, opts) { return request('PUT', url, body, opts); },
+     patch: function (url, body, opts) { return request('PATCH', url, body, opts); },
+-    del: function (url, opts) { return request('DELETE', url, undefined, opts); }
++    del: function (url, opts) { return request('DELETE', url, undefined, opts); },
++    // DELETE с JSON-телом — мягкое удаление с причиной {reason} (soft-delete-core DS-028).
++    delWith: function (url, body, opts) { return request('DELETE', url, body, opts); }
+   };
+ })();
+diff --git a/web/ssr/_shared/js/deleted.js b/web/ssr/_shared/js/deleted.js
+new file mode 100644
+index 0000000..1779466
+--- /dev/null
++++ b/web/ssr/_shared/js/deleted.js
+@@ -0,0 +1,380 @@
++/* KT.deleted — экран «Удалённые» «/deleted» (admin, soft-delete-core §8.1, DS-011) поверх
++   JSON API /api/v1/deleted и /api/v1/deleted/summary.
++
++   Вкладки по видам записей со счётчиками (TABS — реестр; части 2–6 мастер-спеки добавляют
++   свои строки), фильтры «Поиск» (debounce 300 мс), «Удалено с / по», «Кто удалил», кнопка
++   «Сбросить», таблица, пагинация по 50. Вкладка, фильтры и страница списка живут в адресной
++   строке (?kind=&q=&deleted_from=&deleted_to=&deleted_by=&offset=) и переживают перезагрузку.
++   «Восстановить» — подтверждение KT.uiDialog → POST restore-адреса вида; предупреждения по
++   остатку и notices — жёлтый блок над таблицей (не исчезает сам). Время — KT.time (пояс
++   пользователя, «ДД.ММ.ГГГГ ЧЧ:ММ»). Весь текст — через textContent. */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  var API = '/api/v1/deleted';
++  var PAGE_LIMIT = 50;
++  var DEBOUNCE_MS = 300;
++
++  // Реестр вкладок: вид записей → подпись, ключ счётчика summary, адрес восстановления,
++  // текст 404 и (если у записи есть экран) ссылка «Открыть».
++  var TABS = [
++    {
++      kind: 'tasks', label: 'Заказы', countKey: 'tasks',
++      restoreUrl: function (id) { return '/api/v1/tasks/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Заказ не найден',
++      openLink: function (id) { return { href: '/?task=' + encodeURIComponent(id), text: 'Открыть заказ #' + id }; }
++    }
++  ];
++
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function el(tag, cls, text) {
++    var n = document.createElement(tag);
++    if (cls) n.className = cls;
++    if (text != null) n.textContent = text;
++    return n;
++  }
++  function tabOf(kind) {
++    for (var i = 0; i < TABS.length; i++) if (TABS[i].kind === kind) return TABS[i];
++    return null;
++  }
++
++  var state = {
++    kind: TABS[0].kind,
++    q: '', from: '', to: '', by: '',
++    offset: 0,
++    items: [], total: 0,
++    counts: {},
++    seq: 0
++  };
++
++  // ---------- адресная строка ----------
++  function readUrl() {
++    var p = new URLSearchParams(window.location.search);
++    // неизвестный вид из адреса уходит на сервер как есть → 400 «Неизвестный вид записей»
++    state.kind = p.get('kind') || TABS[0].kind;
++    state.q = p.get('q') || '';
++    state.from = p.get('deleted_from') || '';
++    state.to = p.get('deleted_to') || '';
++    state.by = p.get('deleted_by') || '';
++    var off = parseInt(p.get('offset'), 10);
++    state.offset = off > 0 ? off : 0;
++  }
++  function writeUrl() {
++    var p = new URLSearchParams();
++    p.set('kind', state.kind);
++    if (state.q) p.set('q', state.q);
++    if (state.from) p.set('deleted_from', state.from);
++    if (state.to) p.set('deleted_to', state.to);
++    if (state.by) p.set('deleted_by', state.by);
++    if (state.offset) p.set('offset', String(state.offset));
++    window.history.replaceState(null, '', window.location.pathname + '?' + p.toString());
++  }
++  function listUrl() {
++    var p = new URLSearchParams();
++    p.set('kind', state.kind);
++    if (state.q) p.set('q', state.q);
++    if (state.from) p.set('deleted_from', state.from);
++    if (state.to) p.set('deleted_to', state.to);
++    if (state.by) p.set('deleted_by', state.by);
++    p.set('limit', String(PAGE_LIMIT));
++    p.set('offset', String(state.offset));
++    return API + '?' + p.toString();
++  }
++  function hasFilters() { return !!(state.q || state.from || state.to || state.by); }
++
++  // ---------- ошибки ----------
++  var FIELD_TOAST = {
++    kind: { required: 'Выберите вкладку', '*': 'Неизвестный вид записей' },
++    deleted_by: { '*': 'Проверьте фильтр «Кто удалил»' },
++    limit: { '*': 'Обновите страницу' },
++    offset: { '*': 'Обновите страницу' }
++  };
++  function clearFilterErrors() {
++    $('#del-q').classList.remove('is-invalid');
++    $('#del-q-error').textContent = '';
++    $('#del-from').classList.remove('is-invalid');
++    $('#del-to').classList.remove('is-invalid');
++    $('#del-period-error').classList.add('d-none');
++    $('#del-period-error').textContent = '';
++  }
++  // failure — ошибка запроса списка/счётчиков: поле фильтра → текст под ним, остальное → тост.
++  function failure(err) {
++    if (!(err instanceof KT.ApiError)) { KT.uiToast('Нет связи с сервером', true); return; }
++    if (err.status === 403) { KT.uiToast('Нет доступа', true); return; }
++    if (err.status === 400 && err.fields.length) {
++      var toasted = {};
++      err.fields.forEach(function (f) {
++        if (f.name === 'q') {
++          $('#del-q').classList.add('is-invalid');
++          $('#del-q-error').textContent = 'Строка поиска — не длиннее 100 символов';
++        } else if (f.name === 'deleted_from' || f.name === 'deleted_to') {
++          $(f.name === 'deleted_from' ? '#del-from' : '#del-to').classList.add('is-invalid');
++          $('#del-period-error').textContent = 'Проверьте период';
++          $('#del-period-error').classList.remove('d-none');
++        } else {
++          var map = FIELD_TOAST[f.name] || {};
++          var text = map[f.message] || map['*'] || err.message;
++          if (!toasted[text]) { toasted[text] = true; KT.uiToast(text, true); }
++        }
++      });
++      return;
++    }
++    KT.uiToast(err.message, true);
++  }
++
++  // ---------- вкладки ----------
++  function renderTabs() {
++    var host = $('#del-tabs');
++    host.textContent = '';
++    TABS.forEach(function (t) {
++      var li = el('li', 'nav-item');
++      li.setAttribute('role', 'presentation');
++      var b = el('button', 'nav-link' + (t.kind === state.kind ? ' active' : ''));
++      b.type = 'button';
++      b.setAttribute('role', 'tab');
++      b.setAttribute('aria-selected', t.kind === state.kind ? 'true' : 'false');
++      b.setAttribute('data-testid', 'deleted-tab-' + t.kind);
++      b.append(document.createTextNode(t.label + ' ('));
++      var n = el('span', null, String(state.counts[t.countKey] || 0));
++      n.setAttribute('data-testid', 'deleted-tab-count-' + t.kind);
++      b.append(n, document.createTextNode(')'));
++      b.addEventListener('click', function () {
++        if (state.kind === t.kind) return;
++        state.kind = t.kind;
++        state.offset = 0; // фильтры сохраняются
++        renderTabs();
++        writeUrl();
++        loadList();
++      });
++      li.append(b);
++      host.append(li);
++    });
++  }
++  function loadSummary() {
++    return KT.api.get(API + '/summary').then(function (r) {
++      state.counts = r.counts || {};
++      renderTabs();
++    });
++  }
++
++  // ---------- таблица ----------
++  function renderList() {
++    var tbody = $('#del-tbody');
++    tbody.textContent = '';
++    var tab = tabOf(state.kind);
++    state.items.forEach(function (it) {
++      var tr = el('tr');
++      tr.setAttribute('data-testid', 'deleted-row');
++      tr.setAttribute('data-id', it.id);
++
++      var what = el('td');
++      var title = el('div', 'fw-medium', it.title);
++      title.style.overflowWrap = 'anywhere';
++      title.setAttribute('data-testid', 'deleted-row-title');
++      what.append(title);
++      if (it.subtitle) {
++        var sub = el('div', 'small text-body-secondary', it.subtitle);
++        sub.style.overflowWrap = 'anywhere';
++        sub.setAttribute('data-testid', 'deleted-row-subtitle');
++        what.append(sub);
++      }
++
++      var reason = el('td', null, it.delete_reason);
++      reason.style.whiteSpace = 'pre-wrap';
++      reason.style.overflowWrap = 'anywhere';
++      reason.style.minWidth = '160px';
++      reason.setAttribute('data-testid', 'deleted-row-reason');
++
++      var who = el('td', null, it.deleted_by ? it.deleted_by.name : '');
++      who.setAttribute('data-testid', 'deleted-row-by');
++      var when = el('td', 'text-nowrap', KT.time.fmtDateTime(it.deleted_at));
++      when.setAttribute('data-testid', 'deleted-row-at');
++
++      var act = el('td', 'text-end');
++      if (tab) {
++        var btn = el('button', 'btn btn-outline-secondary btn-sm', 'Восстановить');
++        btn.type = 'button';
++        btn.setAttribute('data-testid', 'deleted-restore');
++        btn.addEventListener('click', function () { restore(tab, it, btn); });
++        act.append(btn);
++      }
++      tr.append(what, reason, who, when, act);
++      tbody.append(tr);
++    });
++
++    var empty = state.total === 0;
++    $('#del-table-wrap').classList.toggle('d-none', empty);
++    $('#del-empty').classList.toggle('d-none', !empty);
++    $('#del-empty').textContent = hasFilters() ? 'Ничего не найдено' : 'Удалённых записей нет';
++
++    $('#del-pager').classList.toggle('d-none', empty);
++    var first = state.items.length ? state.offset + 1 : 0;
++    var last = state.offset + state.items.length;
++    $('#del-shown').textContent = 'Показано ' + first + '–' + last + ' из ' + state.total;
++    $('#del-prev').disabled = state.offset <= 0;
++    $('#del-next').disabled = last >= state.total;
++  }
++
++  // loadList — список текущей вкладки. Ответы приходят не по порядку (debounce поиска) —
++  // применяется только последний запрошенный (seq). При ошибке таблица остаётся прежней,
++  // кроме 4xx — там по спецификации таблица пустая.
++  function loadList() {
++    var seq = ++state.seq;
++    clearFilterErrors();
++    $('#del-loading').classList.remove('d-none');
++    return KT.api.get(listUrl()).then(function (r) {
++      if (seq !== state.seq) return;
++      $('#del-loading').classList.add('d-none');
++      state.items = r.items || [];
++      state.total = r.total || 0;
++      // страница за пределами выдачи (записи восстановили) — вернуться на последнюю
++      if (!state.items.length && state.total > 0 && state.offset > 0) {
++        state.offset = Math.max(0, Math.floor((state.total - 1) / PAGE_LIMIT) * PAGE_LIMIT);
++        writeUrl();
++        return loadList();
++      }
++      renderList();
++    }).catch(function (err) {
++      if (seq !== state.seq) return;
++      $('#del-loading').classList.add('d-none');
++      failure(err);
++      if (err instanceof KT.ApiError) { state.items = []; state.total = 0; renderList(); }
++    });
++  }
++
++  // ---------- восстановление ----------
++  function showWarnings(tab, it, resp) {
++    var lines = [];
++    (resp.warnings || []).forEach(function (w) {
++      var stock = String(w.stock).replace(/^-/, '−');
++      lines.push(w.kind === 'negative'
++        ? 'Не хватает товара «' + w.name + '» на складе «' + w.warehouse_name + '»: остаток ' + stock
++        : 'Товар «' + w.name + '» на складе «' + w.warehouse_name + '» на минимуме: остаток ' + stock);
++    });
++    (resp.notices || []).forEach(function (n) { lines.push(n.message); });
++    if (!lines.length) return;
++
++    var body = $('#del-warnings-body');
++    body.textContent = '';
++    var head = el('div', 'fw-medium', 'Восстановлено: ' + it.title);
++    head.style.overflowWrap = 'anywhere';
++    body.append(head);
++    lines.forEach(function (text) {
++      var line = el('div', null, text);
++      line.setAttribute('data-testid', 'deleted-warning-line');
++      body.append(line);
++    });
++    var link = tab.openLink && tab.openLink(it.id);
++    if (link) {
++      var a = el('a', 'alert-link text-warning-emphasis', link.text);
++      a.href = link.href;
++      a.setAttribute('data-testid', 'deleted-warning-open');
++      body.append(a);
++    }
++    $('#del-warnings').classList.remove('d-none');
++  }
++
++  // dropRow — запись ушла из списка (восстановлена здесь либо другим администратором).
++  function dropRow() {
++    loadSummary().catch(function () {});
++    loadList();
++  }
++
++  function restore(tab, it, btn) {
++    KT.uiDialog({ title: 'Восстановление', text: 'Восстановить «' + it.title + '»?', ok: 'Восстановить' }).then(function (ok) {
++      if (!ok) return;
++      btn.disabled = true;
++      KT.api.post(tab.restoreUrl(it.id)).then(function (resp) {
++        KT.uiToast('Восстановлено');
++        showWarnings(tab, it, resp);
++        dropRow();
++      }).catch(function (err) {
++        btn.disabled = false;
++        if (!(err instanceof KT.ApiError)) { KT.uiToast('Нет связи с сервером', true); return; }
++        if (err.status === 409 && err.code === 'NOT_DELETED') { KT.uiToast('Запись уже восстановлена', true); dropRow(); return; }
++        if (err.status === 404) { KT.uiToast(tab.notFound, true); dropRow(); return; }
++        if (err.status === 403) { KT.uiToast('Нет доступа', true); return; }
++        KT.uiToast(err.message, true);
++      });
++    });
++  }
++
++  // ---------- фильтры ----------
++  function applyFiltersToForm() {
++    $('#del-q').value = state.q;
++    $('#del-from').value = state.from;
++    $('#del-to').value = state.to;
++    $('#del-by').value = state.by;
++  }
++  function filtersChanged() {
++    state.offset = 0;
++    writeUrl();
++    loadList();
++  }
++  function bindFilters() {
++    var timer = null;
++    $('#del-q').addEventListener('input', function () {
++      clearTimeout(timer);
++      timer = setTimeout(function () {
++        state.q = $('#del-q').value.trim();
++        filtersChanged();
++      }, DEBOUNCE_MS);
++    });
++    $('#del-from').addEventListener('change', function () { state.from = $('#del-from').value; filtersChanged(); });
++    $('#del-to').addEventListener('change', function () { state.to = $('#del-to').value; filtersChanged(); });
++    $('#del-by').addEventListener('change', function () { state.by = $('#del-by').value; filtersChanged(); });
++    $('#del-reset').addEventListener('click', function () {
++      clearTimeout(timer);
++      state.q = ''; state.from = ''; state.to = ''; state.by = '';
++      applyFiltersToForm();
++      filtersChanged();
++    });
++    $('#del-prev').addEventListener('click', function () {
++      state.offset = Math.max(0, state.offset - PAGE_LIMIT);
++      writeUrl();
++      loadList();
++    });
++    $('#del-next').addEventListener('click', function () {
++      state.offset += PAGE_LIMIT;
++      writeUrl();
++      loadList();
++    });
++    $('#del-warnings-close').addEventListener('click', function () { $('#del-warnings').classList.add('d-none'); });
++  }
++
++  // «Кто удалил» — активные администраторы (GET /api/v1/assignees); значение из адресной
++  // строки, которого нет в списке (сотрудник деактивирован), остаётся отдельным пунктом.
++  function loadAdmins() {
++    return KT.api.get('/api/v1/assignees?limit=200').then(function (r) {
++      var sel = $('#del-by');
++      (r.items || []).filter(function (u) { return u.role === 'admin'; }).forEach(function (u) {
++        var o = el('option', null, u.name);
++        o.value = u.id;
++        sel.append(o);
++      });
++    }).catch(function () { /* фильтр остаётся с одним пунктом «все» */ }).then(function () {
++      var sel = $('#del-by');
++      if (state.by && ![].some.call(sel.options, function (o) { return o.value === state.by; })) {
++        var o = el('option', null, 'Сотрудник не в списке');
++        o.value = state.by;
++        sel.append(o);
++      }
++      sel.value = state.by;
++    });
++  }
++
++  function init() {
++    if (!$('#del')) return;
++    readUrl();
++    renderTabs();
++    applyFiltersToForm();
++    bindFilters();
++    writeUrl();
++    loadAdmins();
++    loadSummary().catch(failure).then(loadList);
++  }
++
++  KT.deleted = { init: init };
++  document.addEventListener('DOMContentLoaded', init);
++})();
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 994a748..31003b4 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -1449,22 +1449,32 @@
+     $('#task-delete-btn').addEventListener('click', function () {
+       if (!taskId) return;
+       var id = taskId;
+-      // отменённые документы заказа удаляются вместе с ним (transfers-revert DS-050)
+-      var cancelled = ((card && card.transfers) || []).filter(function (t) { return t.status === 'cancelled'; })
+-        .map(function (t) { return t.id; }).sort(function (a, b) { return a - b; })
+-        .map(function (n) { return '#' + n; });
+-      var extra = cancelled.length ? '\nОтменённые перемещения (' + cancelled.join(', ') + ') будут удалены вместе с заказом.' : '';
+-      KT.uiConfirm('Удалить заказ #' + id + '? Товары вернутся на склад.' + extra).then(function (ok) {
+-        if (!ok) return;
+-        KT.api.del('/api/v1/tasks/' + id).then(function (resp) {
+-          close();
+-          host.onChanged();
+-          if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
+-        }).catch(function (err) {
+-          var ids = err && err.code === 'TASK_HAS_TRANSFERS' && err.details && err.details.transfer_ids;
+-          if (ids && ids.length) { showTransfersError(ids); return; }
+-          showHeaderError((err && err.message) || 'Не удалось удалить заказ');
+-        });
++      // Мягкое удаление с причиной (soft-delete-core §8.2, §8.3): окно «Удаление» само
++      // показывает ошибку причины (400) и отказ TASK_HAS_TRANSFERS (409) и остаётся открытым;
++      // отменённые документы заказа с ним не удаляются (DS-034).
++      var title = (card && card.task && card.task.title) || '';
++      KT.uiDeleteDialog({
++        title: 'Удалить «#' + id + (title ? ' ' + title : '') + '»?',
++        text: 'Товары заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».',
++        submit: function (reason) { return KT.api.delWith('/api/v1/tasks/' + id, { reason: reason }); },
++        onOffline: function () { KT.uiToast('Нет связи с сервером', true); }
++      }).then(function (out) {
++        if (!out) return; // отмена — причина не сохраняется
++        if (out.error) {
++          var err = out.error;
++          if (err.status === 404) { // заказ удалил другой администратор
++            close();
++            host.onChanged();
++            KT.uiToast('Заказ не найден', true);
++            return;
++          }
++          KT.uiToast(err.status === 403 ? 'Нет доступа' : (err.message || 'Не удалось удалить заказ'), true);
++          return;
++        }
++        close();
++        host.onChanged();
++        KT.uiToast('Удалено. Восстановить можно в разделе «Удалённые»');
++        if (out.result.warnings && out.result.warnings.length) toastWarningsHost(out.result.warnings);
+       });
+     });
+ 
+diff --git a/web/ssr/_shared/js/ui-dialog.js b/web/ssr/_shared/js/ui-dialog.js
+index 6919b5a..361fa22 100644
+--- a/web/ssr/_shared/js/ui-dialog.js
++++ b/web/ssr/_shared/js/ui-dialog.js
+@@ -103,6 +103,151 @@
+     });
+   }
+ 
++  /* Окно «Удаление» с обязательной причиной (soft-delete-core §8.2, DS-020) — общее для всех
++     видов записей:
++       KT.uiDeleteDialog({title, text, submit(reason) → Promise, onOffline()}) → Promise
++         → null                — отмена (кнопка, крестик, Esc);
++         → {result: ответ}     — submit выполнен, окно закрыто;
++         → {error: ApiError}   — отказ, после которого окно закрывается (404, 403, прочее).
++     Окно остаётся открытым: 400 по полю reason — красный текст под полем; 409 — красный блок
++     над кнопками с текстом сервера; потеря связи — onOffline() (тост), причина сохраняется.
++     Пустая причина на клиенте не проверяется — проверяет сервер. */
++  var REASON_MAX = 500;
++  var REASON_ERRORS = {
++    required: 'Укажите причину удаления',
++    too_long: 'Причина — не длиннее 500 символов',
++    invalid_text: 'Недопустимые символы в причине'
++  };
++
++  function uiDeleteDialog(opts) {
++    var run = queue.then(function () { return showDeleteDialog(opts); });
++    queue = run.then(function () {}, function () {});
++    return run;
++  }
++
++  function showDeleteDialog(opts) {
++    return new Promise(function (resolve) {
++      var root = el('div', 'modal fade');
++      root.tabIndex = -1;
++      root.setAttribute('data-testid', 'ui-dialog');
++      root.setAttribute('data-dialog-kind', 'delete');
++      var dialog = el('div', 'modal-dialog modal-dialog-centered');
++      var content = el('div', 'modal-content');
++      var head = el('div', 'modal-header');
++      var h = el('h2', 'modal-title fs-5', opts.title);
++      h.style.overflowWrap = 'anywhere';
++      h.setAttribute('data-testid', 'delete-dialog-title');
++      head.append(h);
++      var x = el('button', 'btn-close');
++      x.type = 'button';
++      x.setAttribute('data-bs-dismiss', 'modal');
++      x.setAttribute('aria-label', 'Закрыть');
++      head.append(x);
++
++      var body = el('div', 'modal-body');
++      if (opts.text) {
++        var p = el('p', null, opts.text);
++        p.setAttribute('data-testid', 'ui-dialog-text');
++        body.append(p);
++      }
++      var label = el('label', 'form-label', 'Причина *');
++      label.htmlFor = 'kt-delete-reason';
++      var ta = el('textarea', 'form-control');
++      ta.id = 'kt-delete-reason';
++      ta.rows = 3;
++      ta.setAttribute('data-testid', 'delete-reason');
++      var fieldErr = el('div', 'invalid-feedback');
++      fieldErr.setAttribute('data-testid', 'delete-reason-error');
++      var counter = el('div', 'form-text text-end', '0 / ' + REASON_MAX);
++      counter.setAttribute('data-testid', 'delete-reason-counter');
++      var blockErr = el('div', 'alert alert-danger d-none mt-3 mb-0');
++      blockErr.setAttribute('role', 'alert');
++      blockErr.setAttribute('data-testid', 'delete-dialog-error');
++      body.append(label, ta, fieldErr, counter, blockErr);
++
++      var foot = el('div', 'modal-footer');
++      var c = el('button', 'btn btn-outline-secondary', 'Отмена');
++      c.type = 'button';
++      c.setAttribute('data-bs-dismiss', 'modal');
++      c.setAttribute('data-testid', 'ui-dialog-cancel');
++      var ok = el('button', 'btn btn-danger', opts.ok || 'Удалить');
++      ok.type = 'button';
++      ok.setAttribute('data-testid', 'ui-dialog-ok');
++      foot.append(c, ok);
++
++      content.append(head, body, foot);
++      dialog.append(content);
++      root.append(dialog);
++      document.body.append(root);
++
++      var outcome = null;
++      var modal = new bootstrap.Modal(root);
++      function clearErrors() {
++        ta.classList.remove('is-invalid');
++        fieldErr.textContent = '';
++        blockErr.classList.add('d-none');
++        blockErr.textContent = '';
++      }
++      ta.addEventListener('input', function () {
++        counter.textContent = Array.from(ta.value).length + ' / ' + REASON_MAX;
++        ta.classList.remove('is-invalid');
++        fieldErr.textContent = '';
++      });
++      ok.addEventListener('click', function () {
++        if (ok.disabled) return;
++        ok.disabled = true;
++        clearErrors();
++        Promise.resolve().then(function () { return opts.submit(ta.value); }).then(function (resp) {
++          outcome = { result: resp };
++          modal.hide();
++        }).catch(function (err) {
++          ok.disabled = false;
++          var api = KT.ApiError && err instanceof KT.ApiError;
++          if (!api) { if (opts.onOffline) opts.onOffline(err); return; }
++          var field = err.status === 400 && (err.fields || []).filter(function (f) { return f.name === 'reason'; })[0];
++          if (field) {
++            fieldErr.textContent = REASON_ERRORS[field.message] || field.message;
++            ta.classList.add('is-invalid');
++            ta.focus();
++            return;
++          }
++          if (err.status === 409) {
++            blockErr.textContent = err.message;
++            blockErr.classList.remove('d-none');
++            return;
++          }
++          outcome = { error: err };
++          modal.hide();
++        });
++      });
++      root.addEventListener('shown.bs.modal', function () { ta.focus(); });
++      root.addEventListener('hidden.bs.modal', function () { modal.dispose(); root.remove(); resolve(outcome); });
++      if (KT.closeCombobox) KT.closeCombobox();
++      modal.show();
++    });
++  }
++
++  /* KT.uiToast(text, isError) — тост в правом верхнем углу, 5 секунд (UI-конвенции DS-033);
++     текст — через textContent. */
++  function uiToast(text, isError) {
++    var host = document.getElementById('kt-toasts');
++    if (!host) {
++      host = el('div', 'toast-container position-fixed top-0 end-0 p-3');
++      host.id = 'kt-toasts';
++      host.style.zIndex = '1090';
++      host.style.maxWidth = 'min(380px, 100vw)';
++      host.setAttribute('aria-live', 'polite');
++      document.body.append(host);
++    }
++    var t = el('div', 'alert shadow mb-2 ' + (isError ? 'alert-danger' : 'alert-success'), text);
++    t.setAttribute('role', isError ? 'alert' : 'status');
++    t.setAttribute('data-testid', isError ? 'toast-error' : 'toast');
++    host.append(t);
++    setTimeout(function () { t.remove(); }, 5000);
++  }
++
++  KT.uiDeleteDialog = uiDeleteDialog;
++  KT.uiToast = uiToast;
+   KT.uiDialog = uiDialog;
+   KT.uiPrompt = function (title, value) { return uiDialog({ title: title, input: value == null ? '' : String(value) }); };
+   KT.uiConfirm = function (text, ok) { return uiDialog({ title: 'Подтверждение', text: text, ok: ok || 'Удалить', danger: true }); };
+diff --git a/web/ssr/softdelete/templates/pages/list.html b/web/ssr/softdelete/templates/pages/list.html
+new file mode 100644
+index 0000000..11ebc8d
+--- /dev/null
++++ b/web/ssr/softdelete/templates/pages/list.html
+@@ -0,0 +1,55 @@
++{{ define "content" }}
++<div id="del" data-testid="deleted-root" style="min-width:0">
++  <!-- Вкладки по видам записей со счётчиками (рисует js/deleted.js; в части 1 — «Заказы») -->
++  <ul class="nav nav-tabs mb-3" id="del-tabs" data-testid="deleted-tabs" role="tablist"></ul>
++
++  <!-- Фильтры: сочетание по «И», значения — в адресной строке -->
++  <div class="d-flex flex-wrap align-items-start gap-2 mb-3" data-testid="deleted-filters">
++    <div style="flex:1 1 220px;max-width:320px;min-width:0">
++      <input type="search" class="form-control form-control-sm" id="del-q" placeholder="Поиск" aria-label="Поиск" autocomplete="off" data-testid="deleted-filter-q">
++      <div class="invalid-feedback" id="del-q-error" data-testid="deleted-filter-q-error"></div>
++    </div>
++    <div style="min-width:0">
++      <div class="d-flex flex-wrap align-items-center gap-2">
++        <label class="small text-body-secondary mb-0" for="del-from">Удалено с</label>
++        <input type="date" class="form-control form-control-sm" id="del-from" style="max-width:150px" data-testid="deleted-filter-from">
++        <label class="small text-body-secondary mb-0" for="del-to">по</label>
++        <input type="date" class="form-control form-control-sm" id="del-to" style="max-width:150px" data-testid="deleted-filter-to">
++      </div>
++      <div class="text-danger small d-none" id="del-period-error" data-testid="deleted-filter-period-error"></div>
++    </div>
++    <select class="form-select form-select-sm" id="del-by" data-native="1" style="max-width:220px" aria-label="Кто удалил" data-testid="deleted-filter-by">
++      <option value="">Кто удалил: все</option>
++    </select>
++    <button type="button" class="btn btn-link btn-sm ms-auto" id="del-reset" data-testid="deleted-filter-reset">Сбросить</button>
++  </div>
++
++  <!-- Предупреждения после восстановления: не исчезает сам, закрывается крестиком.
++       Жёлтый блок (DS-033): app.css перекрашивает .alert-warning в нейтральный серо-синий
++       (--bs-secondary; в тёмной теме контраст ниже 4.5), поэтому цвета заданы родными
++       warning-токенами Bootstrap — как блок предупреждений экрана «Перемещения». -->
++  <div class="alert alert-warning bg-warning-subtle text-warning-emphasis border-warning-subtle d-none" id="del-warnings" data-testid="deleted-warnings" role="alert">
++    <button type="button" class="btn-close float-end" id="del-warnings-close" aria-label="Закрыть" data-testid="deleted-warnings-close"></button>
++    <div id="del-warnings-body"></div>
++  </div>
++
++  <div class="text-body-secondary small d-none mb-2" id="del-loading" data-testid="deleted-loading" role="status">Загрузка…</div>
++  <div class="table-responsive d-none" id="del-table-wrap">
++    <table class="table table-hover align-middle" data-testid="deleted-table">
++      <thead><tr><th>Что удалено</th><th>Причина</th><th>Кто удалил</th><th>Когда</th><th></th></tr></thead>
++      <tbody id="del-tbody"></tbody>
++    </table>
++  </div>
++  <div class="empty-state d-none" id="del-empty" data-testid="deleted-empty"></div>
++
++  <div class="d-flex flex-wrap align-items-center gap-2 mt-2 d-none" id="del-pager" data-testid="deleted-pager">
++    <button type="button" class="btn btn-outline-secondary btn-sm" id="del-prev" data-testid="deleted-prev">Назад</button>
++    <button type="button" class="btn btn-outline-secondary btn-sm" id="del-next" data-testid="deleted-next">Вперёд</button>
++    <span class="text-body-secondary small" id="del-shown" data-testid="deleted-shown"></span>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/deleted.js"></script>
++{{ end }}

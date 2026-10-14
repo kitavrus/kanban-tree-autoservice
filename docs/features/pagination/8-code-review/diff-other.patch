@@ -1,0 +1,433 @@
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index 2b33b85..fb2430a 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -263,6 +263,8 @@ body { background: var(--bs-body-bg); }
+ .board-col-body { padding: 0 8px 8px; overflow-y: auto; min-height: 60px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+ .board-col-body.drag-over { background: rgba(var(--bs-primary-rgb), .08); border-radius: 6px; }
+ .board-add-task { margin: 0 8px 8px; border-style: dashed; }
++/* pagination DS-001: «показаны N из M» + «Показать ещё» внизу колонки */
++.board-col-more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin: 0 8px 8px; }
+ .task-card { background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-left: 4px solid var(--c, var(--bs-border-color));
+   border-radius: var(--kt-radius); padding: 8px 10px; cursor: grab; min-width: 0; }
+ .task-card.dragging { opacity: .4; }
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index e3d2709..9579ee7 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -43,9 +43,30 @@
+     filters: null,
+     editingTaskId: null,
+     editingColumnId: null,
+-    lastKnownTasks: null // снапшот для отката DnD
++    lastKnownTasks: null, // снапшот для отката DnD
++    // pagination DS-001/DS-004: columnTotals — M по колонке (column_total сервера, число
++    // заказов колонки под фильтрами; при переносе карточки пересчитывается локально);
++    // colLoaded — сколько карточек колонки получено С СЕРВЕРА в её порядке (offset
++    // «Показать ещё»; перенесённые сюда локально карточки не считаются — дубли по id
++    // отсекаются при догрузке); listsCapped — справочник упёрся в страховочный потолок (DS-003).
++    columnTotals: {},
++    colLoaded: {},
++    tasksTotal: 0,
++    listsCapped: false,
++    // loadGen — поколение загрузки доски (ревью MEDIUM-1): растёт в каждом loadTasks;
++    // ответ «Показать ещё», отправленный при старом поколении, игнорируется.
++    loadGen: 0,
++    // tasksTruncated — первичная выдача обрезана limit=1000 ПОСЛЕ окна per_column (ревью
++    // MEDIUM-2): у хвостовых колонок может не прийти ни одной карточки — для колонок без
++    // записи в columnTotals тогда показывается «Показать заказы» (догрузка с offset 0).
++    tasksTruncated: false
+   };
+ 
++  // pagination DS-001: окно первичной загрузки и размер догрузки на колонку.
++  var PER_COLUMN = 50;
++  // pagination DS-003: страховочный потолок постраничной загрузки справочников.
++  var MAX_LIST_PAGES = 20;
++
+   // boardAbort — все фоновые GET доски (loadStatic/loadTasks/поиск клиента) уходят с этим
+   // signal. Отменяем их, как только страница реально начинает уходить — иначе фоновый
+   // GET (напр. loadTasks доски), отправленный ДО клика «Выйти», успевает получить ответ
+@@ -107,14 +128,26 @@
+     if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
+     p.set('assignee', f.assignee || assigneeDefault());
+     if (f.due && f.due !== 'all') p.set('due', f.due);
+-    // Верхняя граница сервера — 1000 (tasks_dto.go §TaskListResponse); было 500 — на общей
+-    // dev-БД, растущей с каждым прогоном e2e (851 заказов на момент фазы 6/05), «Сбросить»
+-    // без client_id снимал матч по всем клиентам, и заказ мог не попасть в первые 500 (BD-013,
+-    // найдено этой фазой на живом стенде). 1000 — временный запас, не постраничная выдача.
++    // pagination DS-001: окно per_column — не более PER_COLUMN первых (position,id)
++    // карточек каждой колонки ОДНИМ запросом (глобальная постраничность по колонкам слева
++    // направо оставляла бы правые колонки пустыми); остальное — «Показать ещё» по колонке.
++    // limit=1000 — верхняя граница сервера (tasks_dto.go §TaskListResponse), применяется
++    // ПОСЛЕ окна.
++    p.set('per_column', String(PER_COLUMN));
+     p.set('limit', '1000');
+     return '?' + p.toString();
+   }
+ 
++  // columnMoreQuery — «Показать ещё» (DS-001): те же фильтры + column_id, следующая порция.
++  function columnMoreQuery(f, columnId, offset) {
++    var p = new URLSearchParams(tasksQuery(f).slice(1));
++    p.delete('per_column');
++    p.set('column_id', columnId);
++    p.set('limit', String(PER_COLUMN));
++    p.set('offset', String(offset));
++    return '?' + p.toString();
++  }
++
+   function pushFiltersToUrl() {
+     var q = filtersSearch(state.filters);
+     history.replaceState(null, '', location.pathname + q);
+@@ -129,32 +162,108 @@
+   // здесь была догрузка ВСЕХ клиентов постранично (до 25 запросов) — она грузила доску
+   // десятками фоновых запросов, росла с числом клиентов и стала причиной гонки с logout
+   // (BD-021): запрос второй страницы получал 401 уже после разлогина.
++  // loadAllPages — pagination DS-003: справочник целиком, страницами limit=<max сервера>
++  // до offset >= total. Страховочный потолок MAX_LIST_PAGES — при его достижении
++  // console.warn и пометка в тулбаре (state.listsCapped), доска рендерится с тем, что есть.
++  function loadAllPages(url, pageSize) {
++    var items = [];
++    var sep = url.indexOf('?') >= 0 ? '&' : '?';
++    function page(n) {
++      return KT.api.get(url + sep + 'limit=' + pageSize + '&offset=' + (n * pageSize), reqOpts()).then(function (r) {
++        items = items.concat(r.items || []);
++        var more = (r.items || []).length > 0 && items.length < r.total;
++        if (!more) return items;
++        if (n + 1 >= MAX_LIST_PAGES) {
++          console.warn('board: ' + url + ' — достигнут потолок ' + MAX_LIST_PAGES + ' страниц, загружено ' + items.length + ' из ' + r.total);
++          state.listsCapped = true;
++          return items;
++        }
++        return page(n + 1);
++      });
++    }
++    return page(0);
++  }
++
+   function loadStatic() {
++    state.listsCapped = false;
+     return Promise.all([
+-      // limit=1000 — верхняя граница сервера (columns_service.go columnsMaxLimit); было 100 —
+-      // на общей dev-БД, растущей с каждым прогоном BD-006 (тест намеренно оставляет
+-      // непустую колонку неудалённой), общее число колонок перевалило за 100 — новые
+-      // колонки (position > 100) отрезались лимитом и не появлялись на доске вовсе
+-      // (найдено фикс-лупом фазы 05 на живом стенде через прямой запрос API: total=102).
+-      KT.api.get('/api/v1/columns?limit=1000', reqOpts()),
+-      KT.api.get('/api/v1/assignees?limit=1000', reqOpts()),
++      // pagination DS-003: колонки/исполнители/категории — ВСЕ страницы (лимиты сервера не
++      // меняются: columnsMaxLimit/assigneesMaxLimit=1000, catalog maxLimit=2000). Раньше —
++      // одна страница limit=1000/200: на общей dev-БД колонок уже бывало >100 (BD-006) —
++      // хвост отрезался молча.
++      loadAllPages('/api/v1/columns', 1000),
++      loadAllPages('/api/v1/assignees', 1000),
+       KT.api.get('/api/v1/clients?limit=200', reqOpts()),
+-      KT.api.get('/api/v1/catalog-categories?kind=service&limit=200', reqOpts())
++      loadAllPages('/api/v1/catalog-categories?kind=service', 2000)
+     ]).then(function (r) {
+-      state.columns = r[0].items;
+-      state.assignees = r[1].items;
++      state.columns = r[0];
++      state.assignees = r[1];
+       state.clients = r[2].items;
+-      state.categories = r[3].items;
++      state.categories = r[3];
+     });
+   }
+ 
+   function loadTasks() {
++    var gen = ++state.loadGen;
++    moreInFlight = {}; // догрузки старого поколения больше не блокируют кнопки
+     return KT.api.get('/api/v1/tasks' + tasksQuery(state.filters), reqOpts()).then(function (r) {
++      if (gen !== state.loadGen) return; // перекрыт более свежим loadTasks
+       state.tasks = r.items;
+       state.tasksTotal = r.total;
++      // pagination DS-001/DS-002: column_total одинаков у всех карточек колонки.
++      state.columnTotals = {};
++      state.colLoaded = {};
++      state.tasks.forEach(function (t) {
++        state.columnTotals[t.column_id] = t.column_total;
++        state.colLoaded[t.column_id] = (state.colLoaded[t.column_id] || 0) + 1;
++        t._srvCol = t.column_id;
++      });
++      state.tasksTruncated = state.tasks.length < state.tasksTotal;
++    });
++  }
++
++  // loadMoreColumn — «Показать ещё» (DS-001): следующая порция колонки, дописывается в
++  // конец колонки. offset = colLoaded (только карточки, пришедшие с сервера для этой
++  // колонки); уже известные по id карточки (перенесённые сюда локально) отбрасываются.
++  var moreInFlight = {};
++  function loadMoreColumn(columnId) {
++    if (moreInFlight[columnId]) return Promise.resolve();
++    moreInFlight[columnId] = true;
++    var gen = state.loadGen;
++    var offset = state.colLoaded[columnId] || 0;
++    return KT.api.get('/api/v1/tasks' + columnMoreQuery(state.filters, columnId, offset), reqOpts()).then(function (r) {
++      // ревью MEDIUM-1: доска перезагружена (фильтр/конфликт версии), пока шла догрузка —
++      // ответ относится к старому набору, в новый state.tasks его не подмешиваем.
++      if (gen !== state.loadGen) return;
++      var known = {};
++      state.tasks.forEach(function (t) { known[t.id] = true; });
++      // вставка — сразу за последней карточкой колонки (порядок state.tasks = порядок доски).
++      var lastIdx = -1;
++      state.tasks.forEach(function (t, i) { if (t.column_id === columnId) lastIdx = i; });
++      var fresh = r.items.filter(function (t) { return !known[t.id]; });
++      fresh.forEach(function (t) { t._srvCol = columnId; });
++      if (lastIdx < 0) state.tasks = state.tasks.concat(fresh);
++      else state.tasks.splice.apply(state.tasks, [lastIdx + 1, 0].concat(fresh));
++      state.colLoaded[columnId] = offset + r.items.length;
++      if (r.items.length) state.columnTotals[columnId] = r.items[0].column_total;
++      else state.columnTotals[columnId] = columnShown(columnId); // за хвостом ничего нет
++      renderBoard();
++    }).catch(function (err) {
++      if (isAbortError(err) || gen !== state.loadGen) return;
++      KT.uiAlert((err && err.message) || 'Не удалось загрузить заказы колонки', 'Ошибка');
++    }).then(function () {
++      if (gen !== state.loadGen) return; // moreInFlight уже сброшен новым loadTasks
++      moreInFlight[columnId] = false;
++      // ревью LOW-1: после ошибки кнопка снова активна (успех перерисовал доску сам).
++      var btn = $('.board-more-btn[data-column-id="' + columnId + '"]');
++      if (btn) btn.disabled = false;
+     });
+   }
+ 
++  function columnShown(columnId) {
++    return state.tasks.filter(function (t) { return t.column_id === columnId; }).length;
++  }
++
+   // remoteClientSearch — серверный поиск клиента по вводу (GET /api/v1/clients?q=…,
+   // ADR-003: ищет и по названию, и по телефону). Найденные клиенты добавляются в
+   // state.clients (dedup по id), чтобы пережить следующий fillFilterOptions/
+@@ -328,6 +437,11 @@
+ 
+     board.innerHTML = state.columns.map(function (col) {
+       var tasks = tasksByColumn[col.id] || [];
++      // pagination DS-001: M — заказов колонки под фильтрами (сервер + локальные переносы),
++      // N — показано; при N < M — «показаны N из M» и «Показать ещё».
++      var colM = Math.max(state.columnTotals[col.id] || 0, tasks.length);
++      // ревью MEDIUM-2: колонка не попала в обрезанную первичную выдачу — M неизвестен.
++      var colUnknown = state.tasksTruncated && !Object.prototype.hasOwnProperty.call(state.columnTotals, col.id);
+       // column-total (ADR-005) — сумма total_amount ВИДИМЫХ карточек колонки (после
+       // клиентских фильтров, не серверный агрегат): считается тут же, из уже загруженного
+       // state.tasks, без расширения конверта GET /tasks {items,total,limit,offset}.
+@@ -335,7 +449,7 @@
+       return '' +
+         '<section class="board-col" data-column-id="' + col.id + '" data-testid="board-column-' + col.id + '" style="--c:' + esc(col.color) + '">' +
+         '  <div class="board-col-head">' +
+-        '    <i class="dot"></i><span class="name">' + esc(col.name) + '</span><span class="count">' + tasks.length + '</span>' +
++        '    <i class="dot"></i><span class="name">' + esc(col.name) + '</span><span class="count">' + colM + '</span>' +
+         (colTotalCents > 0 ? '<span class="column-total" data-testid="column-total">' + fmtMoneyCents(colTotalCents) + '</span>' : '') +
+         (col.is_final ? '<span class="final-mark" title="Финальная колонка">✓</span>' : '') +
+         (state.isAdmin ? '<div class="dropdown"><button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" data-testid="column-menu-' + col.id + '">⋯</button>' +
+@@ -347,12 +461,27 @@
+         '  <div class="board-col-body" data-column-id="' + col.id + '" data-testid="column-body-' + col.id + '">' +
+         tasks.map(cardHTML).join('') +
+         '  </div>' +
++        (colUnknown ?
++          '  <div class="board-col-more">' +
++          '    <span class="text-body-secondary small" data-testid="column-shown-' + col.id + '">' + (tasks.length ? 'показаны ' + tasks.length : 'заказы колонки не загружены') + '</span>' +
++          '    <button type="button" class="btn btn-sm btn-outline-secondary board-more-btn" data-column-id="' + col.id + '" data-testid="column-more-' + col.id + '">Показать заказы</button>' +
++          '  </div>' :
++        tasks.length < colM ?
++          '  <div class="board-col-more">' +
++          '    <span class="text-body-secondary small" data-testid="column-shown-' + col.id + '">показаны ' + tasks.length + ' из ' + colM + '</span>' +
++          '    <button type="button" class="btn btn-sm btn-outline-secondary board-more-btn" data-column-id="' + col.id + '" data-testid="column-more-' + col.id + '">Показать ещё</button>' +
++          '  </div>' : '') +
+         '  <button type="button" class="btn btn-sm board-add-task" data-column-id="' + col.id + '" data-testid="column-add-task-' + col.id + '">+ Добавить заказ</button>' +
+         '</section>';
+     }).join('') + (state.isAdmin ? '<button type="button" class="board-add-column" id="board-add-column-btn" data-testid="board-add-column">+ Добавить колонку</button>' : '');
+ 
++    // pagination DS-004: «Заказов: M», а если на доске видно меньше — «Заказов: M · показаны N».
+     var shown = state.tasks.length;
+-    $('#board-found') && ($('#board-found').textContent = shown === state.tasksTotal ? 'Заказов: ' + state.tasksTotal : 'Показаны первые ' + shown + ' из ' + state.tasksTotal);
++    var totalEl = $('#board-total');
++    if (totalEl) {
++      totalEl.textContent = 'Заказов: ' + state.tasksTotal + (shown < state.tasksTotal ? ' · показаны ' + shown : '') +
++        (state.listsCapped ? ' · справочники доски загружены не полностью' : '');
++    }
+ 
+     bindColumnMenus();
+     bindTaskCards();
+@@ -398,6 +527,13 @@
+       if (ul) ul.innerHTML = moveMenuItemsHTML(t);
+     });
+     board.addEventListener('click', function (e) {
++      var more = e.target.closest('.board-more-btn');
++      if (more) {
++        if (moreInFlight[more.dataset.columnId]) return; // ревью LOW-1: не гасим кнопку повторным кликом
++        more.disabled = true;
++        loadMoreColumn(more.dataset.columnId);
++        return;
++      }
+       var a = e.target.closest('.task-move-link');
+       if (!a) return;
+       e.preventDefault();
+@@ -471,13 +607,22 @@
+     // (не в dragstart/moveTaskToEnd) — иначе два быстрых move подряд затирают снапшот друг
+     // друга: rollback первого отката откатывал бы к состоянию ПОСЛЕ оптимистичной правки
+     // второго (баг из code review LOW-4).
+-    state.lastKnownTasks = JSON.parse(JSON.stringify(state.tasks));
++    state.lastKnownTasks = JSON.parse(JSON.stringify({ tasks: state.tasks, columnTotals: state.columnTotals, colLoaded: state.colLoaded }));
+     // оптимистичный перенос — локально переносим карточку сразу.
+     var idx = state.tasks.findIndex(function (t) { return t.id === taskId; });
+     if (idx >= 0) {
+       var t = state.tasks[idx];
+       var fromColumn = t.column_id;
+       t.column_id = columnId;
++      // pagination DS-004: локальный пересчёт M колонок и серверного префикса (colLoaded).
++      if (fromColumn !== columnId) {
++        // колонка без записи (не попала в обрезанную выдачу, MEDIUM-2) остаётся «неизвестной» —
++        // иначе +1 создал бы запись и спрятал «Показать заказы».
++        if (Object.prototype.hasOwnProperty.call(state.columnTotals, fromColumn)) state.columnTotals[fromColumn] = Math.max(0, state.columnTotals[fromColumn] - 1);
++        if (Object.prototype.hasOwnProperty.call(state.columnTotals, columnId)) state.columnTotals[columnId] += 1;
++        if (t._srvCol === fromColumn) state.colLoaded[fromColumn] = Math.max(0, (state.colLoaded[fromColumn] || 0) - 1);
++        t._srvCol = null;
++      }
+       state.tasks.splice(idx, 1);
+       var insertAt = state.tasks.length;
+       if (nextId != null) {
+@@ -507,13 +652,19 @@
+ 
+   function applyTaskPatch(task) {
+     var idx = state.tasks.findIndex(function (t) { return t.id === task.id; });
+-    if (idx >= 0) state.tasks[idx] = Object.assign({}, state.tasks[idx], task);
++    // ревью LOW-2: TaskResponse мутаций несёт column_total=0 (не вычисляется) — не
++    // затираем им значение из GET /tasks.
++    var patch = Object.assign({}, task);
++    delete patch.column_total;
++    if (idx >= 0) state.tasks[idx] = Object.assign({}, state.tasks[idx], patch);
+     renderBoard();
+   }
+ 
+   function rollback() {
+     if (state.lastKnownTasks) {
+-      state.tasks = state.lastKnownTasks;
++      state.tasks = state.lastKnownTasks.tasks;
++      state.columnTotals = state.lastKnownTasks.columnTotals;
++      state.colLoaded = state.lastKnownTasks.colLoaded;
+       state.lastKnownTasks = null;
+     }
+     renderBoard();
+diff --git a/web/ssr/board/templates/pages/board.html b/web/ssr/board/templates/pages/board.html
+index fe03272..6c88002 100644
+--- a/web/ssr/board/templates/pages/board.html
++++ b/web/ssr/board/templates/pages/board.html
+@@ -30,7 +30,7 @@
+     <option value="overdue">Только просроченные</option>
+   </select>
+   <button type="button" class="btn btn-outline-secondary btn-sm" id="filter-reset" data-testid="filter-reset">Сбросить</button>
+-  <span class="text-body-secondary small ms-auto" data-testid="board-found"></span>
++  <span class="text-body-secondary small ms-auto" id="board-total" data-testid="board-total"></span>{{/* pagination DS-004 */}}
+ </div>
+ 
+ <div id="board" class="board-columns" data-testid="board-root"
+diff --git a/web/ssr/catalog/templates/pages/products-form.html b/web/ssr/catalog/templates/pages/products-form.html
+index d80baf7..d747a61 100644
+--- a/web/ssr/catalog/templates/pages/products-form.html
++++ b/web/ssr/catalog/templates/pages/products-form.html
+@@ -20,6 +20,7 @@
+         <select id="category_id" name="category_id" class="form-select{{ if index .Errors "category_id" }} is-invalid{{ end }}" data-testid="product-category">
+           {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
+         </select>
++        {{ template "categoriesTruncated" .CatTrunc }}
+         {{ with index .Errors "category_id" }}<div class="invalid-feedback" data-testid="error-category_id">{{ . }}</div>{{ end }}
+       </div>
+     </div>
+diff --git a/web/ssr/catalog/templates/pages/products-list.html b/web/ssr/catalog/templates/pages/products-list.html
+index b995530..3fa6d67 100644
+--- a/web/ssr/catalog/templates/pages/products-list.html
++++ b/web/ssr/catalog/templates/pages/products-list.html
+@@ -43,6 +43,7 @@
+       </div>
+     </div>
+     {{ end }}
++    {{ template "categoriesTruncated" .CatTrunc }}
+     <form method="post" action="/catalog/categories" class="d-flex gap-1 mt-2">
+       <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+       <input type="hidden" name="kind" value="product">
+@@ -86,6 +87,7 @@
+   {{ else }}
+   <div class="empty-state" data-testid="products-empty">{{ if or .Q .Archived .ActiveCategory }}Ничего не нашли по фильтру.{{ else }}Товаров пока нет.{{ end }}</div>
+   {{ end }}
++  {{ template "catalogPager" .Pager }}
+   </div>
+ </div>
+ {{ end }}
+diff --git a/web/ssr/catalog/templates/pages/services-form.html b/web/ssr/catalog/templates/pages/services-form.html
+index 63cc35f..11a0a5e 100644
+--- a/web/ssr/catalog/templates/pages/services-form.html
++++ b/web/ssr/catalog/templates/pages/services-form.html
+@@ -15,6 +15,7 @@
+         <select id="category_id" name="category_id" class="form-select{{ if index .Errors "category_id" }} is-invalid{{ end }}" data-testid="service-category">
+           {{ range .Categories }}<option value="{{ .ID }}"{{ if eq .ID $.CategoryID }} selected{{ end }}>{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}
+         </select>
++        {{ template "categoriesTruncated" .CatTrunc }}
+         {{ with index .Errors "category_id" }}<div class="invalid-feedback" data-testid="error-category_id">{{ . }}</div>{{ end }}
+       </div>
+       <div class="col-md-6">
+@@ -80,6 +81,27 @@
+ {{ define "scripts" }}
+ <script src="/assets/ssr-shared/js/row-list.js"></script>
+ <script>
++/* pagination DS-007: комбобокс товара в строке комплекта ищет на сервере
++   (GET /api/v1/products?q=&limit=50 — только активные), чтобы товар за пределами
++   предзагруженных опций (первые 2000 активных) находился вводом. Эталон — task-card.js
++   card-product-add: combobox.js зовёт sel._cbFetchOptions(q), когда в поле ввода есть текст.
++   Новые строки (row-list.js из <template>) подхватываются MutationObserver'ом. */
++(function () {
++  var rows = document.getElementById('products-rows');
++  if (!rows) return;
++  function fetchProducts(q) {
++    return KT.api.get('/api/v1/products?q=' + encodeURIComponent(q) + '&limit=50').then(function (r) {
++      return r.items.map(function (p) { return { value: p.id, text: p.name }; });
++    });
++  }
++  function wire() {
++    rows.querySelectorAll('select[name="product_id"]').forEach(function (sel) { sel._cbFetchOptions = fetchProducts; });
++  }
++  wire();
++  new MutationObserver(wire).observe(rows, { childList: true, subtree: true });
++})();
++</script>
++<script>
+ /* data-once на самой форме — маркер для читателя разметки; глобальный делегированный
+    обработчик (ui-dialog.js) слушает НАСТОЯЩЕЕ событие 'submit', которое form.submit()
+    ниже НЕ создаёт (WHATWG: HTMLFormElement.submit() событие submit не генерирует — этим
+diff --git a/web/ssr/catalog/templates/pages/services-list.html b/web/ssr/catalog/templates/pages/services-list.html
+index c250cf4..9d79c14 100644
+--- a/web/ssr/catalog/templates/pages/services-list.html
++++ b/web/ssr/catalog/templates/pages/services-list.html
+@@ -43,6 +43,7 @@
+       </div>
+     </div>
+     {{ end }}
++    {{ template "categoriesTruncated" .CatTrunc }}
+     <form method="post" action="/catalog/categories" class="d-flex gap-1 mt-2">
+       <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
+       <input type="hidden" name="kind" value="service">
+@@ -79,6 +80,7 @@
+   {{ else }}
+   <div class="empty-state" data-testid="services-empty">{{ if or .Q .Archived .ActiveCategory }}Ничего не нашли по фильтру.{{ else }}Услуг пока нет.{{ end }}</div>
+   {{ end }}
++  {{ template "catalogPager" .Pager }}
+   </div>
+ </div>
+ {{ end }}
+diff --git a/web/ssr/catalog/templates/partials/catalog-pager.html b/web/ssr/catalog/templates/partials/catalog-pager.html
+new file mode 100644
+index 0000000..2950150
+--- /dev/null
++++ b/web/ssr/catalog/templates/partials/catalog-pager.html
+@@ -0,0 +1,12 @@
++{{/* pagination DS-005: пейджер SSR-списков каталога (PagerVM, internal/features/catalog/ssr_pager.go). */}}
++{{ define "catalogPager" }}{{ if .Show }}
++<nav class="d-flex flex-wrap align-items-center gap-2 mt-2" aria-label="Страницы списка" data-testid="catalog-pager">
++  <span class="text-body-secondary small" data-testid="catalog-shown">{{ if .From }}Показаны {{ .From }}–{{ .To }} из {{ .Total }}{{ else }}На этой странице ничего нет · всего {{ .Total }}{{ end }}</span>
++  <ul class="pagination pagination-sm mb-0 ms-auto">
++    <li class="page-item{{ if not .PrevURL }} disabled{{ end }}">{{ if .PrevURL }}<a class="page-link" href="{{ .PrevURL }}" rel="prev" data-testid="catalog-prev">‹ Назад</a>{{ else }}<span class="page-link" aria-disabled="true">‹ Назад</span>{{ end }}</li>
++    <li class="page-item{{ if not .NextURL }} disabled{{ end }}">{{ if .NextURL }}<a class="page-link" href="{{ .NextURL }}" rel="next" data-testid="catalog-next">Вперёд ›</a>{{ else }}<span class="page-link" aria-disabled="true">Вперёд ›</span>{{ end }}</li>
++  </ul>
++</nav>
++{{ end }}{{ end }}
++{{/* pagination DS-006: пометка усечённого lookup'а категорий (TruncVM). */}}
++{{ define "categoriesTruncated" }}{{ if .Truncated }}<div class="form-text text-warning-emphasis" data-testid="categories-truncated">показаны {{ .Shown }} из {{ .Total }}</div>{{ end }}{{ end }}

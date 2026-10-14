@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Spec: Справочник «Поставщики»</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #24241f; --muted: #5f5e5a;
+  --border: #d3d1c7; --border-soft: #e4e2d9;
+  --surface: #f1efe8; --surface-soft: #fafaf7; --pre-bg: #f6f5f0;
+  --link: #185fa5; --open: #a32d2d;
+  --asis: #2e7d4f; --tobe: #b06000;
+  --kt: #dde9f8; --kf: #f6ecc8; --ki: #e8e6df; --ks: #dff0e2; --ke: #ece2f4; --kx: #f6dcda;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+    --border: #4c4c47; --border-soft: #3a3a36;
+    --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+    --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+  --border: #4c4c47; --border-soft: #3a3a36;
+  --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+  --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+}
+#themeBtn { position: fixed; top: 14px; right: 16px; z-index: 10;
+  width: 38px; height: 38px; border-radius: 50%; cursor: pointer; font-size: 17px;
+  background: var(--surface); color: var(--fg); border: 1px solid var(--border); }
+pre { position: relative; }
+.copyBtn { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 9px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; }
+.copyBtn:hover { color: var(--fg); border-color: var(--border); }
+a.pnum { color: var(--muted); font-size: .72em; display: inline-block; min-width: 2.2em;
+  vertical-align: baseline; opacity: .6; text-decoration: none; margin-right: .3em; }
+a.pnum:hover { opacity: 1; }
+li:has(> a.pnum:target) { background: var(--surface); border-radius: 4px; }
+tr:has(a.pnum:target) td { background: var(--surface) !important; }
+html { background: var(--bg); }
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+       color: var(--fg); background: var(--bg);
+       max-width: 920px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.55; }
+h1 { font-size: 1.7rem; border-bottom: 2px solid var(--border); padding-bottom: .4rem; }
+h2 { font-size: 1.3rem; margin-top: 2.2rem; border-bottom: 1px solid var(--border-soft); padding-bottom: .25rem; }
+h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+table { border-collapse: collapse; margin: .8rem 0; width: 100%; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+tr:nth-child(even) td { background: var(--surface-soft); }
+code { background: var(--surface); border-radius: 4px; padding: .1rem .35rem; font-size: .88em;
+       font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+pre { background: var(--pre-bg); border: 1px solid var(--border-soft); border-radius: 8px;
+      padding: .8rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid var(--border); margin: .8rem 0; padding: .2rem 1rem;
+             color: var(--muted); background: var(--surface-soft); }
+figure { margin: 1rem 0; text-align: center; }
+figure svg { max-width: 100%; height: auto; border-radius: 8px; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: .15rem 0; }
+nav.toc { background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 8px;
+          padding: .8rem 1.2rem; font-size: .92rem; }
+nav.toc ul { margin: .3rem 0; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc > ul > li { font-weight: 600; margin: .3rem 0; break-inside: avoid; }
+nav.toc ul ul { font-weight: 400; font-size: .9em; margin: .1rem 0 .25rem; }
+nav.toc ul ul li { margin: .05rem 0; }
+@media (min-width: 700px) { nav.toc > ul { column-count: 2; column-gap: 2.5rem; } }
+a { color: var(--link); }
+a.xref { text-decoration: none; border-bottom: 1px dotted var(--link); }
+a.xref:hover { border-bottom-style: solid; }
+h1, h2, h3, a[id^="ds-"] { scroll-margin-top: 14px; }
+tr:has(a:target) td { background: var(--surface) !important; }
+h2:target, h3:target { background: var(--surface-soft); }
+.badge-open { color: var(--open); font-weight: 600; }
+.badge-asis, .badge-tobe { font-weight: 600; font-size: .85em; padding: 0 .45em; border-radius: .7em; border: 1px solid currentColor; white-space: nowrap; }
+.badge-asis { color: var(--asis); }
+.badge-tobe { color: var(--tobe); }
+code.k-t { background: var(--kt); font-weight: 700; }
+code.k-f { background: var(--kf); }
+code.k-i { background: var(--ki); font-style: italic; }
+code.k-s { background: var(--ks); font-weight: 600; }
+code.k-e { background: var(--ke); }
+code.k-x { background: var(--kx); text-decoration: line-through; }
+.klegend { font-size: .85em; color: var(--muted); }
+@media print { body { max-width: none; } }
+</style>
+</head>
+<body>
+<button id="themeBtn" title="Тема: авто / тёмная / светлая">◐</button>
+<script>
+const r=document.documentElement,k='draft-spec-theme';
+const apply=v=>{v?r.setAttribute('data-theme',v):r.removeAttribute('data-theme')};
+apply(localStorage.getItem(k)||'');
+document.getElementById('themeBtn').onclick=()=>{
+  const cur=r.getAttribute('data-theme')||'';
+  const next=cur===''?'dark':cur==='dark'?'light':'';
+  next?localStorage.setItem(k,next):localStorage.removeItem(k);apply(next);
+};
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('pre').forEach(p=>{
+    const b=document.createElement('button');b.className='copyBtn';b.textContent='копировать';
+    b.onclick=()=>{navigator.clipboard.writeText(p.querySelector('code').innerText)
+      .then(()=>{b.textContent='✓ скопировано';setTimeout(()=>b.textContent='копировать',1500);});};
+    p.appendChild(b);
+  });
+});
+</script>
+<h1 id="h1-0">Draft Spec: Справочник «Поставщики»</h1>
+<nav class="toc"><strong>Содержание</strong><ul><li><a href="#s-1">§1. Суть задачи</a></li><li><a href="#s-2">§2. Интеграции и master-data</a></li><li><a href="#s-3">§3. Нефункциональные требования</a></li><li><a href="#s-4">§4. Данные</a><ul><li><a href="#s-4-1">§4.1. suppliers</a></li></ul></li><li><a href="#s-5">§5. Статусная модель</a></li><li><a href="#s-6">§6. API</a><ul><li><a href="#s-6-1">§6.1. GET /api/v1/suppliers</a></li><li><a href="#s-6-2">§6.2. POST /api/v1/suppliers</a></li><li><a href="#s-6-3">§6.3. PUT /api/v1/suppliers/:id</a></li></ul></li><li><a href="#s-7">§7. UX/UI + API (сквозной флоу)</a></li><li><a href="#s-8">§8. UI-иерархия</a><ul><li><a href="#s-8-1">§8.1. Экран/форма «Поставщики»</a></li></ul></li><li><a href="#s-9">§9. Решения (DS-index)</a></li><li><a href="#s-10">§10. Открытые вопросы (status: open)</a></li><li><a href="#s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</a><ul><li><a href="#h3-255">Unit / Integration (Go)</a></li><li><a href="#h3-263">E2E (Playwright)</a></li><li><a href="#h3-271">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</a></li></ul></li><li><a href="#h2-276">§Impact — точки касания существующего кода</a></li></ul></nav>
+<p class="klegend">Обозначения: <code class="k-t">таблица</code> <code class="k-f">поле</code> <code class="k-i">индекс</code> <code class="k-s">статус</code> <code class="k-e">endpoint</code> <code class="k-x">удаляется</code></p>
+<p><strong>Tier:</strong> S · <strong>Совместимость:</strong> MVP · <strong>Режим:</strong> new</p>
+<p><strong>Дата:</strong> 2026-10-07 | <strong>Статус:</strong> draft → final (после подтверждения пользователя) | <strong>Tier:</strong> S <strong>Совместимость:</strong> MVP (<a class="xref" href="#ds-027">DS-027</a> — контекст, реализуется в <code>transfers-core</code>) — живых данных нет <strong>UI-scope:</strong> swagger:no | adaptive:min | themes:both (<a class="xref" href="#ds-028">DS-028</a> — контекст, реализуется в <code>transfers-core</code>) <strong>Источник:</strong> мастер-спека <code>docs/features/transfers/draft-spec.md</code> (<a class="xref" href="#s-4-3">§4.3</a>, <a class="xref" href="#s-6-10">§6.10</a>–<a class="xref" href="#s-6-12">§6.12</a>, <a class="xref" href="#s-8-2">§8.2</a>) + её журнал <code>docs/features/transfers/draft-spec-decisions.md</code> <strong>Часть 1 из 6 мастер-спеки <code>transfers</code>; зависит от: —</strong> (независима). Номера DS и TS — мастер-идентификаторы, не перенумерованы.</p>
+<blockquote><p>После мержа этой части: справочник «Поставщики» работает (список, создание, правка, архив), но нигде не используется — документы «поставщик → склад» появятся в части 4 <code>transfers-partners</code>.</p></blockquote>
+<h2 id="s-1">§1. Суть задачи</h2>
+<p>Справочник поставщиков для будущих документов «поставщик → склад». Для администратора.</p>
+<p><strong>Бизнес (что делает пользователь/процесс):</strong></p>
+<ol>
+<li data-mdline="17"><a class="pnum" id="p-1" href="#p-1">1</a>Администратор заводит поставщика: название, контактное лицо, телефон, адрес, примечание (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-007">DS-007</a>.</li>
+<li data-mdline="18"><a class="pnum" id="p-2" href="#p-2">2</a>Отправляет поставщика в архив и возвращает из архива; удаления нет (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-007">DS-007</a>.</li>
+</ol>
+<p><strong>Логика (правила системы):</strong></p>
+<ol>
+<li data-mdline="21"><a class="pnum" id="p-3" href="#p-3">3</a>Название обязательно и уникально без учёта регистра, включая архивные — <a class="xref" href="#ds-007">DS-007</a>.</li>
+<li data-mdline="22"><a class="pnum" id="p-4" href="#p-4">4</a>Время: <code class="k-f">created_at</code>, <code class="k-f">updated_at</code> хранятся в UTC (<code>timestamptz</code>); на экране справочника даты не показываются — <a class="xref" href="#ds-031">DS-031</a> (контекст, реализуется в <code>user-timezone</code>).</li>
+<li data-mdline="23"><a class="pnum" id="p-5" href="#p-5">5</a>Конкурентный доступ: правка поставщика → last-write-wins, версии нет (как <code class="k-t">warehouses</code>); создание с тем же названием → второй запрос получает 400 <code>name: duplicate</code> (уникальный индекс) — <a class="xref" href="#ds-043">DS-043</a>.</li>
+</ol>
+<p><strong>Техника (API/данные/интеграции):</strong></p>
+<ol>
+<li data-mdline="26"><a class="pnum" id="p-6" href="#p-6">6</a>Таблица <code class="k-t">suppliers</code> (<a class="xref" href="#s-4-1">§4.1</a>), своя миграция.</li>
+<li data-mdline="27"><a class="pnum" id="p-7" href="#p-7">7</a>API <code class="k-e">/api/v1/suppliers</code>: список, создание, правка (<a class="xref" href="#s-6-1">§6.1</a>–<a class="xref" href="#s-6-3">§6.3</a>).</li>
+<li data-mdline="28"><a class="pnum" id="p-8" href="#p-8">8</a>Новый пакет <code>internal/features/suppliers</code>; внешних систем нет.</li>
+</ol>
+<p><strong>UI (графическая часть):</strong></p>
+<ol>
+<li data-mdline="31"><a class="pnum" id="p-9" href="#p-9">9</a>Пункт меню «Справочники → Поставщики» (<code>/suppliers</code>), только администратор: таблица, поиск, toggle архивных, форма (<a class="xref" href="#s-8-1">§8.1</a>).</li>
+</ol>
+<p>Out-of-scope:</p>
+<ol>
+<li data-mdline="34"><a class="pnum" id="p-10" href="#p-10">10</a>Использование поставщика в документах перемещения (<code class="k-f">supplier_id</code>, запрет архивного в новом документе) — часть 4 <code>transfers-partners</code>.</li>
+<li data-mdline="35"><a class="pnum" id="p-11" href="#p-11">11</a>Удаление поставщика — нет, только архив (<a class="xref" href="#ds-007">DS-007</a>).</li>
+<li data-mdline="36"><a class="pnum" id="p-12" href="#p-12">12</a>Закупочные цены, договоры, реквизиты — не ведём (<a class="xref" href="#ds-016">DS-016</a> — контекст, реализуется в <code>transfers-partners</code>).</li>
+<li data-mdline="37"><a class="pnum" id="p-13" href="#p-13">13</a>Демо-поставщики в seed-demo — добавляются в части <code>transfers-partners</code> вместе с документами от поставщика.</li>
+</ol>
+<h2 id="s-2">§2. Интеграции и master-data</h2>
+<p>Не применимо: внешних систем нет; <code class="k-t">suppliers</code> сам является справочником, источник правды — эта фича, ведёт администратор (<a class="xref" href="#ds-007">DS-007</a>).</p>
+<h2 id="s-3">§3. Нефункциональные требования</h2>
+<p><strong>Конкурентность (К-3 — по операциям):</strong></p>
+<ol>
+<li data-mdline="45"><a class="pnum" id="p-14" href="#p-14">14</a><strong>Правка поставщика (<code class="k-e">PUT /api/v1/suppliers/:id</code>):</strong></li>
+<ul>
+<li data-mdline="46"><a class="pnum" id="p-15" href="#p-15">15</a>last-write-wins, колонки версии нет — <a class="xref" href="#ds-043">DS-043</a></li>
+<li data-mdline="47"><a class="pnum" id="p-16" href="#p-16">16</a>конкурент ничего не получает: сохраняется последняя запись</li>
+</ul>
+<li data-mdline="48"><a class="pnum" id="p-17" href="#p-17">17</a><strong>Создание (<code class="k-e">POST /api/v1/suppliers</code>):</strong></li>
+<ul>
+<li data-mdline="49"><a class="pnum" id="p-18" href="#p-18">18</a>уникальность названия держит индекс <code class="k-i">suppliers_name_lower_uq</code>; проигравший параллельный запрос → 400 <code>name: duplicate</code> — <a class="xref" href="#ds-007">DS-007</a></li>
+</ul>
+<li data-mdline="50"><a class="pnum" id="p-19" href="#p-19">19</a><strong>Архивирование:</strong> тот же <code class="k-e">PUT</code>, last-write-wins — <a class="xref" href="#ds-043">DS-043</a></li>
+</ol>
+<p><strong>Аудит:</strong></p>
+<ul>
+<li data-mdline="53"><a class="pnum" id="p-20" href="#p-20">20</a>отдельного аудита нет; slog мутаций (id поставщика, пользователь) — <a class="xref" href="#ds-051">DS-051</a> (контекст, реализуется в <code>transfers-core</code>)</li>
+</ul>
+<p><strong>Время/таймзоны (К-13):</strong></p>
+<ul>
+<li data-mdline="56"><a class="pnum" id="p-21" href="#p-21">21</a>хранение: UTC, <code>timestamptz</code></li>
+<li data-mdline="57"><a class="pnum" id="p-22" href="#p-22">22</a>на экране даты не показываются; диапазонов дат и отчётов нет</li>
+</ul>
+<p><strong>Метрики/таймстемпы:</strong></p>
+<ul>
+<li data-mdline="60"><a class="pnum" id="p-23" href="#p-23">23</a><code class="k-f">created_at</code>, <code class="k-f">updated_at</code>; метрик и алертов нет</li>
+</ul>
+<p><strong>Offline / деградация / восстановление:</strong></p>
+<ul>
+<li data-mdline="63"><a class="pnum" id="p-24" href="#p-24">24</a>offline-режима нет; после reload список читается с сервера, несохранённая форма теряется</li>
+</ul>
+<p><strong>Логирование и чувствительные данные:</strong></p>
+<ul>
+<li data-mdline="66"><a class="pnum" id="p-25" href="#p-25">25</a>телефон и контактное лицо поставщика — служебные данные, доступны только администратору; в slog пишется только id</li>
+</ul>
+<p><strong>Формат ошибок:</strong></p>
+<ul>
+<li data-mdline="69"><a class="pnum" id="p-26" href="#p-26">26</a>только <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; 400 → <code>details.fields[]</code></li>
+</ul>
+<p><strong>Abuse cases (вход для adversarial E2E TD-4):</strong></p>
+<ol>
+<li data-mdline="72"><a class="pnum" id="p-27" href="#p-27">27</a>Исполнитель вызывает любой <code class="k-e">/api/v1/suppliers</code> → 403; открывает <code>/suppliers</code> → страница «Нет доступа».</li>
+<li data-mdline="73"><a class="pnum" id="p-28" href="#p-28">28</a>Название из 201 символа, примечание из 1001 символа → 400, запись не создана.</li>
+<li data-mdline="74"><a class="pnum" id="p-29" href="#p-29">29</a>Дубль названия в другом регистре и с пробелами по краям → 400 <code>name: duplicate</code>.</li>
+<li data-mdline="75"><a class="pnum" id="p-30" href="#p-30">30</a>Правка несуществующего id → 404, не 500.</li>
+</ol>
+<p><strong>Применённые zap-дефолты</strong> (zap-list — стандарты проекта из CLAUDE.md, применяются автоматически, без вопросов; в <a class="xref" href="#s-9">§9</a> — источник <code>zap</code>):</p>
+<ul>
+<li data-mdline="78"><a class="pnum" id="p-31" href="#p-31">31</a>404 / 403 — стандартные статусы; ошибки только <code>pkg/errorspkg</code> (zap)</li>
+<li data-mdline="79"><a class="pnum" id="p-32" href="#p-32">32</a>синхронная обработка (zap)</li>
+<li data-mdline="80"><a class="pnum" id="p-33" href="#p-33">33</a>миграции — только <code>make migrate-up</code> (zap)</li>
+</ul>
+<h2 id="s-4">§4. Данные</h2>
+<p>Легенда колонки «Обяз.»: <code>да</code> — клиент обязан передать при создании/правке; <code>нет</code> — опционально; <code>авто</code> — заполняет система (PK, дефолты, таймстемпы, значения из URL/сессии); <code>условно</code> — зависит от правила, оно указано в Описании. NULL — DDL-факт, Обяз. — семантика заполнения.</p>
+<h3 id="s-4-1">§4.1. <code class="k-t">suppliers</code></h3>
+<p>Справочник поставщиков.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="90"><td><a class="pnum" id="p-34" href="#p-34">34</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="91"><td><a class="pnum" id="p-35" href="#p-35">35</a><code class="k-f">name</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td>Название, 1–200 символов после trim; уникально без учёта регистра, включая архивные</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="92"><td><a class="pnum" id="p-36" href="#p-36">36</a><code class="k-f">contact_name</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Контактное лицо, 0–200 символов</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="93"><td><a class="pnum" id="p-37" href="#p-37">37</a><code class="k-f">phone</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Телефон — строка (не число), 0–50 символов; если непустой — содержит хотя бы одну цифру</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="94"><td><a class="pnum" id="p-38" href="#p-38">38</a><code class="k-f">address</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Адрес, 0–500 символов</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="95"><td><a class="pnum" id="p-39" href="#p-39">39</a><code class="k-f">note</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Примечание, 0–1000 символов</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="96"><td><a class="pnum" id="p-40" href="#p-40">40</a><code class="k-f">is_active</code></td><td>boolean</td><td>нет</td><td><code>true</code></td><td>нет</td><td><code>false</code> — в архиве: не выбирается в новых документах, в существующих остаётся</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="97"><td><a class="pnum" id="p-41" href="#p-41">41</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>—</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr><tr data-mdline="98"><td><a class="pnum" id="p-42" href="#p-42">42</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>—</td><td><a class="xref" href="#ds-031">DS-031</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="101"><a class="pnum" id="p-43" href="#p-43">43</a>PK: <code class="k-f">id</code></li>
+<li data-mdline="102"><a class="pnum" id="p-44" href="#p-44">44</a>UNIQUE <code class="k-i">suppliers_name_lower_uq</code> (<code>lower(btrim(name))</code>) — уникальность названия, включая архивные</li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="105"><a class="pnum" id="p-45" href="#p-45">45</a>связей в этой части нет; в части <code>transfers-partners</code> появится 1→N <code class="k-t">transfers</code> (<code class="k-f">supplier_id</code>) — RESTRICT (контекст)</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="108"><a class="pnum" id="p-46" href="#p-46">46</a>Создание/изменение: только admin — <a class="xref" href="#ds-007">DS-007</a></li>
+<li data-mdline="109"><a class="pnum" id="p-47" href="#p-47">47</a>Удаление: запрещено; архивирование через <code class="k-f">is_active = false</code>, свободное (в части <code>transfers-partners</code>: открытые документы поставщика дорабатываются) — <a class="xref" href="#ds-007">DS-007</a>, <a class="xref" href="#ds-043">DS-043</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="112"><a class="pnum" id="p-48" href="#p-48">48</a>название уникально → <code class="k-i">suppliers_name_lower_uq</code> (400 <code>name: duplicate</code>) → <a class="xref" href="#ds-007">DS-007</a></li>
+<li data-mdline="113"><a class="pnum" id="p-49" href="#p-49">49</a>архивный не выбирается в новых документах → валидатор сервиса документа (400 <code>supplier_id: archived</code>) → <a class="xref" href="#ds-007">DS-007</a> — контекст, реализуется в <code>transfers-partners</code></li>
+</ul>
+<h2 id="s-5">§5. Статусная модель</h2>
+<p>Не применимо: статусов нет. Единственный признак состояния — <code class="k-f">is_active</code> (<code>true</code> — действующий, <code>false</code> — в архиве), переключается в обе стороны администратором через <code class="k-e">PUT /api/v1/suppliers/:id</code> без ограничений (<a class="xref" href="#ds-007">DS-007</a>, <a class="xref" href="#ds-043">DS-043</a>).</p>
+<h2 id="s-6">§6. API</h2>
+<blockquote><p>Режим B «API + фронтенд». Базовый URL стенда: <code>http://localhost:8080</code>. Авторизация — сессионная cookie <code>sid</code> (плейсхолдер <code>&lt;SID&gt;</code>). Копируй curl в терминал или в Postman: Import → Raw text. Тело ошибки — формат <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; при 400 — <code>details.fields[]</code> с <code>name</code> и <code>message</code>. Ключи — snake_case, URL — kebab-case (CLAUDE.md §API-1).</p></blockquote>
+<h3 id="s-6-1">§6.1. <code class="k-e">GET /api/v1/suppliers</code></h3>
+<ul>
+<li data-mdline="122"><a class="pnum" id="p-50" href="#p-50">50</a>Назначение: список поставщиков (экран справочника; выбор в документе — контекст, появится в <code>transfers-partners</code>).</li>
+<li data-mdline="123"><a class="pnum" id="p-51" href="#p-51">51</a>Authz: только admin; executor → 403 — <a class="xref" href="#ds-007">DS-007</a>.</li>
+<li data-mdline="124"><a class="pnum" id="p-52" href="#p-52">52</a>Идемпотентность/повтор: чтение, безопасно.</li>
+<li data-mdline="125"><a class="pnum" id="p-53" href="#p-53">53</a>Side effects: нет.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="131"><td><a class="pnum" id="p-54" href="#p-54">54</a><code class="k-f">is_active</code></td><td>query</td><td>boolean</td><td>нет</td><td><code>true</code> / <code>false</code>; не задан — все; иное → 400</td></tr><tr data-mdline="132"><td><a class="pnum" id="p-55" href="#p-55">55</a><code class="k-f">q</code></td><td>query</td><td>string</td><td>нет</td><td>поиск по названию (подстрока, без учёта регистра), 0–200 символов</td></tr><tr data-mdline="133"><td><a class="pnum" id="p-56" href="#p-56">56</a><code class="k-f">limit</code></td><td>query</td><td>integer</td><td>нет</td><td>1–500, по умолчанию 50</td></tr><tr data-mdline="134"><td><a class="pnum" id="p-57" href="#p-57">57</a><code class="k-f">offset</code></td><td>query</td><td>integer</td><td>нет</td><td>≥ 0, по умолчанию 0</td></tr></tbody></table>
+<p>Сортировка: активные раньше архивных, затем по названию.</p>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="142"><td><a class="pnum" id="p-58" href="#p-58">58</a><code class="k-f">items</code></td><td>array</td><td>поставщики</td></tr><tr data-mdline="143"><td><a class="pnum" id="p-59" href="#p-59">59</a><code class="k-f">items[].id</code></td><td>uuid</td><td>id</td></tr><tr data-mdline="144"><td><a class="pnum" id="p-60" href="#p-60">60</a><code class="k-f">items[].name</code></td><td>string</td><td>название</td></tr><tr data-mdline="145"><td><a class="pnum" id="p-61" href="#p-61">61</a><code class="k-f">items[].contact_name</code></td><td>string</td><td>контактное лицо</td></tr><tr data-mdline="146"><td><a class="pnum" id="p-62" href="#p-62">62</a><code class="k-f">items[].phone</code></td><td>string</td><td>телефон</td></tr><tr data-mdline="147"><td><a class="pnum" id="p-63" href="#p-63">63</a><code class="k-f">items[].address</code></td><td>string</td><td>адрес</td></tr><tr data-mdline="148"><td><a class="pnum" id="p-64" href="#p-64">64</a><code class="k-f">items[].note</code></td><td>string</td><td>примечание</td></tr><tr data-mdline="149"><td><a class="pnum" id="p-65" href="#p-65">65</a><code class="k-f">items[].is_active</code></td><td>boolean</td><td>не в архиве</td></tr><tr data-mdline="150"><td><a class="pnum" id="p-66" href="#p-66">66</a><code class="k-f">items[].created_at</code></td><td>datetime</td><td>создан</td></tr><tr data-mdline="151"><td><a class="pnum" id="p-67" href="#p-67">67</a><code class="k-f">items[].updated_at</code></td><td>datetime</td><td>изменён</td></tr><tr data-mdline="152"><td><a class="pnum" id="p-68" href="#p-68">68</a><code class="k-f">total</code></td><td>integer</td><td>всего под фильтрами</td></tr><tr data-mdline="153"><td><a class="pnum" id="p-69" href="#p-69">69</a><code class="k-f">limit</code></td><td>integer</td><td>лимит</td></tr><tr data-mdline="154"><td><a class="pnum" id="p-70" href="#p-70">70</a><code class="k-f">offset</code></td><td>integer</td><td>смещение</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="160"><td><a class="pnum" id="p-71" href="#p-71">71</a>400 <code>VALIDATION</code></td><td><code>is_active: invalid</code></td><td>«Некорректный фильтр»</td></tr><tr data-mdline="161"><td><a class="pnum" id="p-72" href="#p-72">72</a>403 <code>FORBIDDEN</code></td><td>executor</td><td><code>admin only</code></td></tr></tbody></table>
+<p>as-built: <code class="k-f">is_active</code> — строго <code>true</code> / <code>false</code>; <code class="k-f">q</code> длиннее 200 символов либо с недопустимыми символами → 400 (<code>q: too_long</code> / <code>q: invalid_text</code>); <code class="k-f">limit</code> вне 1–500 не даёт 400: ≤ 0 → 50, больше 500 → 500; отрицательный <code class="k-f">offset</code> → 0.</p>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' 'http://localhost:8080/api/v1/suppliers?is_active=true'</code></pre>
+<pre><code>{
+  "items": [ { "id": "d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f", "name": "ТОО «Картридж-Опт»", "contact_name": "Айдар", "phone": "+7 701 000 00 00", "address": "Алматы, ул. Абая 1", "note": "", "is_active": true, "created_at": "2026-10-07T05:00:00Z", "updated_at": "2026-10-07T05:00:00Z" } ],
+  "total": 1, "limit": 50, "offset": 0
+}</code></pre>
+<p>Ошибка (FORBIDDEN → 403):</p>
+<pre><code>curl -s -b 'sid=&lt;SID_EXECUTOR&gt;' 'http://localhost:8080/api/v1/suppliers'</code></pre>
+<pre><code>{
+  "code": "FORBIDDEN",
+  "message": "admin only"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-007">DS-007</a>.</p>
+<h3 id="s-6-2">§6.2. <code class="k-e">POST /api/v1/suppliers</code></h3>
+<ul>
+<li data-mdline="188"><a class="pnum" id="p-73" href="#p-73">73</a>Назначение: создать поставщика.</li>
+<li data-mdline="189"><a class="pnum" id="p-74" href="#p-74">74</a>Authz: только admin.</li>
+<li data-mdline="190"><a class="pnum" id="p-75" href="#p-75">75</a>Идемпотентность/повтор: повтор с тем же названием → 400 <code>name: duplicate</code> (дубль не создаётся).</li>
+<li data-mdline="191"><a class="pnum" id="p-76" href="#p-76">76</a>Side effects: вставка в <code class="k-t">suppliers</code>.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="197"><td><a class="pnum" id="p-77" href="#p-77">77</a><code class="k-f">name</code></td><td>body</td><td>string</td><td>да</td><td>1–200 символов после trim; уникально без учёта регистра, включая архивные</td></tr><tr data-mdline="198"><td><a class="pnum" id="p-78" href="#p-78">78</a><code class="k-f">contact_name</code></td><td>body</td><td>string</td><td>нет</td><td>0–200 символов</td></tr><tr data-mdline="199"><td><a class="pnum" id="p-79" href="#p-79">79</a><code class="k-f">phone</code></td><td>body</td><td>string</td><td>нет</td><td>0–50 символов; непустой — содержит цифру</td></tr><tr data-mdline="200"><td><a class="pnum" id="p-80" href="#p-80">80</a><code class="k-f">address</code></td><td>body</td><td>string</td><td>нет</td><td>0–500 символов</td></tr><tr data-mdline="201"><td><a class="pnum" id="p-81" href="#p-81">81</a><code class="k-f">note</code></td><td>body</td><td>string</td><td>нет</td><td>0–1000 символов</td></tr></tbody></table>
+<p>Response 201 — объект поставщика:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="207"><td><a class="pnum" id="p-82" href="#p-82">82</a><code class="k-f">id</code></td><td>uuid</td><td>id</td></tr><tr data-mdline="208"><td><a class="pnum" id="p-83" href="#p-83">83</a><code class="k-f">name</code></td><td>string</td><td>название</td></tr><tr data-mdline="209"><td><a class="pnum" id="p-84" href="#p-84">84</a><code class="k-f">contact_name</code></td><td>string</td><td>контактное лицо</td></tr><tr data-mdline="210"><td><a class="pnum" id="p-85" href="#p-85">85</a><code class="k-f">phone</code></td><td>string</td><td>телефон</td></tr><tr data-mdline="211"><td><a class="pnum" id="p-86" href="#p-86">86</a><code class="k-f">address</code></td><td>string</td><td>адрес</td></tr><tr data-mdline="212"><td><a class="pnum" id="p-87" href="#p-87">87</a><code class="k-f">note</code></td><td>string</td><td>примечание</td></tr><tr data-mdline="213"><td><a class="pnum" id="p-88" href="#p-88">88</a><code class="k-f">is_active</code></td><td>boolean</td><td><code>true</code></td></tr><tr data-mdline="214"><td><a class="pnum" id="p-89" href="#p-89">89</a><code class="k-f">created_at</code></td><td>datetime</td><td>создан</td></tr><tr data-mdline="215"><td><a class="pnum" id="p-90" href="#p-90">90</a><code class="k-f">updated_at</code></td><td>datetime</td><td>изменён</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="221"><td><a class="pnum" id="p-91" href="#p-91">91</a>400 <code>VALIDATION</code></td><td><code>name: required</code> / <code>too_long</code></td><td>«Укажите название (до 200 символов)»</td></tr><tr data-mdline="222"><td><a class="pnum" id="p-92" href="#p-92">92</a>400 <code>VALIDATION</code></td><td><code>name: duplicate</code></td><td>«Поставщик с таким названием уже есть»</td></tr><tr data-mdline="223"><td><a class="pnum" id="p-93" href="#p-93">93</a>400 <code>VALIDATION</code></td><td><code>contact_name: too_long</code></td><td>«Слишком длинное имя контакта»</td></tr><tr data-mdline="224"><td><a class="pnum" id="p-94" href="#p-94">94</a>400 <code>VALIDATION</code></td><td><code>phone: invalid</code> / <code>too_long</code></td><td>«Проверьте телефон»</td></tr><tr data-mdline="225"><td><a class="pnum" id="p-95" href="#p-95">95</a>400 <code>VALIDATION</code></td><td><code>address: too_long</code></td><td>«Слишком длинный адрес»</td></tr><tr data-mdline="226"><td><a class="pnum" id="p-96" href="#p-96">96</a>400 <code>VALIDATION</code></td><td><code>note: too_long</code></td><td>«Слишком длинное примечание»</td></tr><tr data-mdline="227"><td><a class="pnum" id="p-97" href="#p-97">97</a>400 <code>VALIDATION</code></td><td><code>name</code> / <code>contact_name</code> / <code>phone</code> / <code>address</code> / <code>note</code>: <code>invalid_text</code> (as-built: недопустимые символы, например NUL)</td><td>по полю</td></tr><tr data-mdline="228"><td><a class="pnum" id="p-98" href="#p-98">98</a>403 <code>FORBIDDEN</code></td><td>executor</td><td><code>admin only</code></td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/suppliers' -d '{"name":"ТОО «Картридж-Опт»","contact_name":"Айдар","phone":"+7 701 000 00 00","address":"Алматы, ул. Абая 1","note":""}'</code></pre>
+<pre><code>{ "id": "d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f", "name": "ТОО «Картридж-Опт»", "contact_name": "Айдар", "phone": "+7 701 000 00 00", "address": "Алматы, ул. Абая 1", "note": "", "is_active": true, "created_at": "2026-10-07T05:00:00Z", "updated_at": "2026-10-07T05:00:00Z" }</code></pre>
+<p>Ошибка (VALIDATION → 400):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/suppliers' -d '{"name":"тоо «картридж-опт»"}'</code></pre>
+<pre><code>{
+  "code": "VALIDATION",
+  "message": "Проверьте поля",
+  "details": { "fields": [ { "name": "name", "message": "duplicate" } ] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-007">DS-007</a>.</p>
+<h3 id="s-6-3">§6.3. <code class="k-e">PUT /api/v1/suppliers/:id</code></h3>
+<ul>
+<li data-mdline="251"><a class="pnum" id="p-99" href="#p-99">99</a>Назначение: изменить поставщика, отправить в архив или вернуть из архива.</li>
+<li data-mdline="252"><a class="pnum" id="p-100" href="#p-100">100</a>Authz: только admin.</li>
+<li data-mdline="253"><a class="pnum" id="p-101" href="#p-101">101</a>Идемпотентность/повтор: повтор безопасен (то же итоговое состояние); конкурентная правка — last-write-wins (<a class="xref" href="#ds-043">DS-043</a>).</li>
+<li data-mdline="254"><a class="pnum" id="p-102" href="#p-102">102</a>Side effects: обновление <code class="k-t">suppliers</code>.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="260"><td><a class="pnum" id="p-103" href="#p-103">103</a><code class="k-f">id</code></td><td>path</td><td>uuid</td><td>да</td><td>существующий поставщик; не uuid → 404</td></tr><tr data-mdline="261"><td><a class="pnum" id="p-104" href="#p-104">104</a><code class="k-f">name</code></td><td>body</td><td>string</td><td>да</td><td>1–200 символов после trim; уникально без учёта регистра, включая архивные (кроме самого себя)</td></tr><tr data-mdline="262"><td><a class="pnum" id="p-105" href="#p-105">105</a><code class="k-f">contact_name</code></td><td>body</td><td>string</td><td>нет</td><td>0–200 символов</td></tr><tr data-mdline="263"><td><a class="pnum" id="p-106" href="#p-106">106</a><code class="k-f">phone</code></td><td>body</td><td>string</td><td>нет</td><td>0–50 символов; непустой — содержит цифру</td></tr><tr data-mdline="264"><td><a class="pnum" id="p-107" href="#p-107">107</a><code class="k-f">address</code></td><td>body</td><td>string</td><td>нет</td><td>0–500 символов</td></tr><tr data-mdline="265"><td><a class="pnum" id="p-108" href="#p-108">108</a><code class="k-f">note</code></td><td>body</td><td>string</td><td>нет</td><td>0–1000 символов</td></tr><tr data-mdline="266"><td><a class="pnum" id="p-109" href="#p-109">109</a><code class="k-f">is_active</code></td><td>body</td><td>boolean</td><td>да</td><td><code>false</code> — в архив, <code>true</code> — из архива</td></tr></tbody></table>
+<p>Response 200 — объект поставщика (поля — таблица «Response 201» <a class="xref" href="#s-6-2">§6.2</a>).</p>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="274"><td><a class="pnum" id="p-110" href="#p-110">110</a>400 <code>VALIDATION</code></td><td><code>name</code>: <code>required</code>, <code>too_long</code>, <code>duplicate</code></td><td>по полю, тексты <a class="xref" href="#s-6-2">§6.2</a></td></tr><tr data-mdline="275"><td><a class="pnum" id="p-111" href="#p-111">111</a>400 <code>VALIDATION</code></td><td><code>contact_name: too_long</code>, <code>phone: invalid</code>, <code>phone: too_long</code>, <code>address: too_long</code>, <code>note: too_long</code>; <code>invalid_text</code> у любого текстового поля (as-built)</td><td>по полю, тексты <a class="xref" href="#s-6-2">§6.2</a></td></tr><tr data-mdline="276"><td><a class="pnum" id="p-112" href="#p-112">112</a>400 <code>VALIDATION</code></td><td><code>is_active: required</code></td><td>«Обновите страницу»</td></tr><tr data-mdline="277"><td><a class="pnum" id="p-113" href="#p-113">113</a>403 <code>FORBIDDEN</code></td><td>executor</td><td><code>admin only</code></td></tr><tr data-mdline="278"><td><a class="pnum" id="p-114" href="#p-114">114</a>404 <code>SUPPLIER_NOT_FOUND</code></td><td>нет поставщика</td><td>«Поставщик не найден»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/suppliers/d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f' -d '{"name":"ТОО «Картридж-Опт»","contact_name":"Айдар","phone":"+7 701 000 00 00","address":"Алматы, ул. Абая 1","note":"","is_active":false}'</code></pre>
+<pre><code>{ "id": "d4e5f6a7-b8c9-4d01-8e2f-3a4b5c6d7e8f", "name": "ТОО «Картридж-Опт»", "contact_name": "Айдар", "phone": "+7 701 000 00 00", "address": "Алматы, ул. Абая 1", "note": "", "is_active": false, "created_at": "2026-10-07T05:00:00Z", "updated_at": "2026-10-07T11:00:00Z" }</code></pre>
+<p>Ошибка (SUPPLIER_NOT_FOUND → 404):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X PUT 'http://localhost:8080/api/v1/suppliers/00000000-0000-4000-8000-000000000000' -d '{"name":"X","is_active":true}'</code></pre>
+<pre><code>{
+  "code": "SUPPLIER_NOT_FOUND",
+  "message": "Поставщик не найден"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-007">DS-007</a>, <a class="xref" href="#ds-043">DS-043</a>.</p>
+<h2 id="s-7">§7. UX/UI + API (сквозной флоу)</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" width="680" height="420" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="420" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="346.5" lengthAdjust="spacingAndGlyphs">Сценарий: создание и архивирование поставщика</text>
+<rect x="5" y="40" width="170" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="11.5" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="82.2" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<path d="M90,70 L90,395" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="215" y="40" width="170" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="11.5" fill="#334155" text-anchor="middle" font-weight="bold" textLength="158.1" lengthAdjust="spacingAndGlyphs">Экран «Поставщики» (§8.1)</text>
+<path d="M300,70 L300,395" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="455" y="40" width="170" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="11.5" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="50.6" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,395" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="207.9" lengthAdjust="spacingAndGlyphs">открывает «Справочники → Поставщики»</text>
+<path d="M300,127 L540,127" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="121" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="207.9" lengthAdjust="spacingAndGlyphs">GET /api/v1/suppliers?is_active=true</text>
+<path d="M540,154 L300,154" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="148" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">200 {items,total,limit,offset}</text>
+<path d="M90,181 L300,181" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="175" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="184.8" lengthAdjust="spacingAndGlyphs">«Добавить» → форма → «Сохранить»</text>
+<path d="M300,208 L540,208" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="202" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="225.2" lengthAdjust="spacingAndGlyphs">POST /api/v1/suppliers {name, phone, …}</text>
+<path d="M540,235 L300,235" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="229" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="173.2" lengthAdjust="spacingAndGlyphs">201 {id, name, is_active:true}</text>
+<path d="M90,262 L300,262" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="256" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="52.0" lengthAdjust="spacingAndGlyphs">«В архив»</text>
+<path d="M300,289 L540,289" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="283" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="265.7" lengthAdjust="spacingAndGlyphs">PUT /api/v1/suppliers/:id {…, is_active:false}</text>
+<path d="M540,316 L300,316" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="310" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="231.0" lengthAdjust="spacingAndGlyphs">200 {is_active:false} → бейдж «в архиве»</text>
+<path d="M300,343 L540,343" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="337" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="132.8" lengthAdjust="spacingAndGlyphs">POST с тем же названием</text>
+<path d="M540,370 L300,370" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="364" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="277.2" lengthAdjust="spacingAndGlyphs">400 VALIDATION name: duplicate → текст под полем</text>
+<text x="340" y="410" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветка</text>
+</svg></figure></p>
+<p>Полнота покрытия (endpoint → экраны <a class="xref" href="#s-8">§8</a>):</p>
+<table><thead><tr><th>Endpoint</th><th>Экраны</th></tr></thead><tbody><tr data-mdline="305"><td><a class="pnum" id="p-115" href="#p-115">115</a><code class="k-e">GET /api/v1/suppliers</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="306"><td><a class="pnum" id="p-116" href="#p-116">116</a><code class="k-e">POST /api/v1/suppliers</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="307"><td><a class="pnum" id="p-117" href="#p-117">117</a><code class="k-e">PUT /api/v1/suppliers/:id</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr></tbody></table>
+<p>Непокрытых endpoints и UI-действий без endpoint нет.</p>
+<h2 id="s-8">§8. UI-иерархия</h2>
+<ul>
+<li data-mdline="312"><a class="pnum" id="p-118" href="#p-118">118</a>Справочники → <strong>Поставщики</strong> (<code>/suppliers</code>) → список → форма — <a class="xref" href="#s-8-1">§8.1</a></li>
+</ul>
+<p>UI-конвенции (<a class="xref" href="#ds-052">DS-052</a> — контекст, реализуется в <code>transfers-core</code>; здесь применяются как есть на экранах проекта): ошибка поля — красный текст под полем + красная рамка (<code>is-invalid</code> Bootstrap), текст из <code>details.fields[]</code>; глобальная ошибка и успех — тост в правом верхнем углу, 5 секунд; на время запроса кнопка действия заблокирована. Адаптив — минимальный: нет горизонтальной прокрутки страницы.</p>
+<h3 id="s-8-1">§8.1. Экран/форма «Поставщики»</h3>
+<ul>
+<li data-mdline="317"><a class="pnum" id="p-119" href="#p-119">119</a>Маршрут: <code>/suppliers</code> (список), <code>/suppliers?id=&lt;uuid&gt;</code> (форма правки), <code>/suppliers?new=1</code> (форма создания)</li>
+</ul>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="320"><a class="pnum" id="p-120" href="#p-120">120</a><strong>Путь:</strong> меню «Справочники → Поставщики»</li>
+<li data-mdline="321"><a class="pnum" id="p-121" href="#p-121">121</a><strong>URL:</strong> <code>/suppliers</code></li>
+<li data-mdline="322"><a class="pnum" id="p-122" href="#p-122">122</a><strong>Роли:</strong> admin (executor — пункта меню нет, прямой URL → страница «Нет доступа») · <strong>Устройство:</strong> десктоп; телефон — без горизонтальной прокрутки</li>
+<li data-mdline="323"><a class="pnum" id="p-123" href="#p-123">123</a><strong>При открытии:</strong> <code>GET <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/suppliers?limit=50&amp;offset=0</code></li>
+<li data-mdline="324"><a class="pnum" id="p-124" href="#p-124">124</a><strong>200:</strong> таблица поставщиков · <strong>Пусто:</strong> «Поставщиков нет» + кнопка «Добавить» · <strong>4xx:</strong> 403 — страница «Нет доступа»</li>
+</ul>
+<p><strong>Что на странице (сверху вниз):</strong></p>
+<ol>
+<li data-mdline="327"><a class="pnum" id="p-125" href="#p-125">125</a>Заголовок «Поставщики», кнопка «Добавить» (основная, справа).</li>
+<li data-mdline="328"><a class="pnum" id="p-126" href="#p-126">126</a>Панель фильтров; комбинация — «И»:</li>
+</ol>
+<table><thead><tr><th>Фильтр</th><th>Контрол</th><th>Источник значений</th><th>API-параметр <a class="xref" href="#s-6-1">§6.1</a></th><th>Пример</th></tr></thead><tbody><tr data-mdline="332"><td><a class="pnum" id="p-127" href="#p-127">127</a>Поиск</td><td>текстовый инпут</td><td>ввод</td><td><code>q</code></td><td><code>картридж</code></td></tr><tr data-mdline="333"><td><a class="pnum" id="p-128" href="#p-128">128</a>Показать архивные</td><td>toggle</td><td>выкл → <code>is_active=true</code>; вкл → параметр не передаётся</td><td><code>is_active</code></td><td><code>true</code></td></tr></tbody></table>
+<ol>
+<li data-mdline="334"><a class="pnum" id="p-129" href="#p-129">129</a>Таблица: «Название», «Контактное лицо», «Телефон», «Адрес», бейдж «в архиве»; клик по строке — форма.</li>
+<li data-mdline="335"><a class="pnum" id="p-130" href="#p-130">130</a>Форма (справа либо модалка), поля сверху вниз:</li>
+<ol>
+<li data-mdline="336"><a class="pnum" id="p-131" href="#p-131">131</a>Название (<code>name</code>) — текстовый инпут, обязательное.</li>
+<li data-mdline="337"><a class="pnum" id="p-132" href="#p-132">132</a>Контактное лицо (<code>contact_name</code>) — текстовый инпут.</li>
+<li data-mdline="338"><a class="pnum" id="p-133" href="#p-133">133</a>Телефон (<code>phone</code>) — текстовый инпут.</li>
+<li data-mdline="339"><a class="pnum" id="p-134" href="#p-134">134</a>Адрес (<code>address</code>) — текстовый инпут.</li>
+<li data-mdline="340"><a class="pnum" id="p-135" href="#p-135">135</a>Примечание (<code>note</code>) — textarea.</li>
+</ol>
+<li data-mdline="341"><a class="pnum" id="p-136" href="#p-136">136</a>Кнопки формы (внизу справа): «Сохранить» (основная), «В архив» / «Вернуть из архива» (второстепенная, только у существующего), «Отмена».</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="344"><a class="pnum" id="p-137" href="#p-137">137</a><strong>Поиск / toggle архивных</strong></li>
+<ul>
+<li data-mdline="345"><a class="pnum" id="p-138" href="#p-138">138</a><strong>Элемент:</strong> текстовый инпут, toggle в панели фильтров</li>
+<li data-mdline="346"><a class="pnum" id="p-139" href="#p-139">139</a><strong>UI:</strong> debounce 300 мс</li>
+<li data-mdline="347"><a class="pnum" id="p-140" href="#p-140">140</a><strong>Вызов:</strong> <code>GET <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/suppliers?q=…&amp;is_active=true&amp;limit=50&amp;offset=0</code></li>
+<li data-mdline="348"><a class="pnum" id="p-141" href="#p-141">141</a><strong>200:</strong> <code>{ items, total, limit, offset }</code> → таблица перерисована</li>
+<li data-mdline="349"><a class="pnum" id="p-142" href="#p-142">142</a><strong>400:</strong> тост «Некорректный фильтр»</li>
+</ul>
+<li data-mdline="350"><a class="pnum" id="p-143" href="#p-143">143</a><strong>«Сохранить» (новый)</strong></li>
+<ul>
+<li data-mdline="351"><a class="pnum" id="p-144" href="#p-144">144</a><strong>Элемент:</strong> кнопка основная, внизу справа</li>
+<li data-mdline="352"><a class="pnum" id="p-145" href="#p-145">145</a><strong>UI:</strong> кнопка заблокирована</li>
+<li data-mdline="353"><a class="pnum" id="p-146" href="#p-146">146</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/suppliers</code>, body: <code>{ name, contact_name, phone, address, note }</code></li>
+<li data-mdline="354"><a class="pnum" id="p-147" href="#p-147">147</a><strong>201:</strong> <code>{ id, name, … }</code> → строка в таблице, тост «Сохранено»</li>
+<li data-mdline="355"><a class="pnum" id="p-148" href="#p-148">148</a><strong>400 (name: required / too_long):</strong> под полем «Название» — «Укажите название (до 200 символов)»</li>
+<li data-mdline="356"><a class="pnum" id="p-149" href="#p-149">149</a><strong>400 (name: duplicate):</strong> под полем «Название» — «Поставщик с таким названием уже есть»</li>
+<li data-mdline="357"><a class="pnum" id="p-150" href="#p-150">150</a><strong>400 (phone):</strong> под полем «Телефон» — «Проверьте телефон»</li>
+<li data-mdline="358"><a class="pnum" id="p-151" href="#p-151">151</a><strong>400 (contact_name / address / note: too_long):</strong> под соответствующим полем</li>
+</ul>
+<li data-mdline="359"><a class="pnum" id="p-152" href="#p-152">152</a><strong>«Сохранить» (правка), «В архив», «Вернуть из архива»</strong></li>
+<ul>
+<li data-mdline="360"><a class="pnum" id="p-153" href="#p-153">153</a><strong>Элемент:</strong> кнопки формы</li>
+<li data-mdline="361"><a class="pnum" id="p-154" href="#p-154">154</a><strong>UI:</strong> кнопки заблокированы</li>
+<li data-mdline="362"><a class="pnum" id="p-155" href="#p-155">155</a><strong>Вызов:</strong> <code>PUT <a class="xref" href="#s-6-3">§6.3</a></code> → <code>/api/v1/suppliers/&lt;uuid&gt;</code>, body: <code>{ name, contact_name, phone, address, note, is_active }</code></li>
+<li data-mdline="363"><a class="pnum" id="p-156" href="#p-156">156</a><strong>200:</strong> <code>{ id, is_active, … }</code> → строка обновлена, бейдж «в архиве» появился/исчез (под названием в строке таблицы)</li>
+<li data-mdline="364"><a class="pnum" id="p-157" href="#p-157">157</a><strong>400 (поля):</strong> под соответствующим полем, тексты как при создании</li>
+<li data-mdline="365"><a class="pnum" id="p-158" href="#p-158">158</a><strong>404:</strong> тост «Поставщик не найден», таблица перезапрашивается</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> потеря связи — тост «Нет связи»; reload — список с сервера; одновременная правка двумя администраторами — сохраняется последняя (<a class="xref" href="#ds-043">DS-043</a>).</p>
+<h2 id="s-9">§9. Решения (DS-index)</h2>
+<table><thead><tr><th>DS</th><th>Формулировка</th><th>Источник</th><th>Статус</th></tr></thead><tbody><tr data-mdline="372"><td><a class="pnum" id="p-159" href="#p-159">159</a><a id="ds-007"></a><strong>DS-007</strong></td><td>Справочник «Поставщики»: название (обязательное, уникальное), контактное лицо, телефон, адрес, примечание; только администратор; без удаления — архивирование</td><td>мастер, батч 1</td><td>closed</td></tr><tr data-mdline="373"><td><a class="pnum" id="p-160" href="#p-160">160</a><a id="ds-043"></a><strong>DS-043</strong></td><td>Поставщики: last-write-wins без версии; архивирование свободное</td><td>мастер, inferred (по образцу складов)</td><td>closed</td></tr><tr data-mdline="374"><td><a class="pnum" id="p-161" href="#p-161">161</a><a id="ds-016"></a><strong>DS-016</strong></td><td>В документе от поставщика цен нет; товары только из каталога</td><td>мастер, батч 3</td><td>closed — контекст, реализуется в <code>transfers-partners</code></td></tr><tr data-mdline="375"><td><a class="pnum" id="p-162" href="#p-162">162</a><a id="ds-027"></a><strong>DS-027</strong></td><td>Совместимость — MVP</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="376"><td><a class="pnum" id="p-163" href="#p-163">163</a><a id="ds-028"></a><strong>DS-028</strong></td><td>UI-scope: swagger:no, adaptive:min, themes:both</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="377"><td><a class="pnum" id="p-164" href="#p-164">164</a><a id="ds-031"></a><strong>DS-031</strong></td><td>Время храним в UTC, показываем по поясу пользователя</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>user-timezone</code></td></tr><tr data-mdline="378"><td><a class="pnum" id="p-165" href="#p-165">165</a><a id="ds-051"></a><strong>DS-051</strong></td><td>Отдельной таблицы аудита нет</td><td>мастер, zap</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="379"><td><a class="pnum" id="p-166" href="#p-166">166</a><a id="ds-052"></a><strong>DS-052</strong></td><td>UI-конвенции: ошибка под полем, тост справа вверху 5 с, блокировка кнопки</td><td>мастер, inferred</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr></tbody></table>
+<h2 id="s-10">§10. Открытые вопросы (status: open)</h2>
+<p>Открытых вопросов нет.</p>
+<h2 id="s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</h2>
+<p>UI-scope: swagger-сценариев нет; адаптив и темы — проверяются общими сценариями TS-045, TS-046 части <code>transfers-core</code>; здесь — одна проверка overflow в составе TS-035.</p>
+<h3 id="h3-255">Unit / Integration (Go)</h3>
+<ul>
+<li data-mdline="388"><a class="pnum" id="p-167" href="#p-167">167</a><strong>TS-020.</strong> Поставщики: <code>name</code> required / 200 символов / уникальность без регистра и с пробелами по краям, включая архивные; <code>phone</code> без цифр → 400, 51 символ → 400; длины <code>contact_name</code> (200), <code>address</code> (500), <code>note</code> (1000); <code>is_active</code> обязателен в <code>PUT</code>; параллельное создание с одним названием → ровно один 201; executor → 403 на все три endpoint'а; фильтры списка <code>q</code>, <code>is_active</code>, конверт <code>{items,total,limit,offset}</code> — <a class="xref" href="#ds-007">DS-007</a>, <a class="xref" href="#ds-043">DS-043</a></li>
+<ul>
+<li data-mdline="389"><a class="pnum" id="p-168" href="#p-168">168</a>негатив: несуществующий id → 404 <code>SUPPLIER_NOT_FOUND</code>; <code>is_active=maybe</code> → 400</li>
+<li data-mdline="390"><a class="pnum" id="p-169" href="#p-169">169</a>не входит в эту часть: «архивный поставщик в новом документе → 400 <code>supplier_id: archived</code>» — проверяется в <code>transfers-partners</code></li>
+</ul>
+</ul>
+<h3 id="h3-263">E2E (Playwright)</h3>
+<ul>
+<li data-mdline="393"><a class="pnum" id="p-170" href="#p-170">170</a><strong>TS-035.</strong> Справочник «Поставщики» — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-007">DS-007</a></li>
+<ul>
+<li data-mdline="394"><a class="pnum" id="p-171" href="#p-171">171</a>шаги: admin → «Справочники → Поставщики» → «Добавить» → заполнить → «Сохранить» → открыть → «В архив» → включить «Показать архивные» → «Вернуть из архива»; проверка: строка в таблице, бейдж «в архиве» появляется и исчезает, при вьюпорте 375×812 нет горизонтальной прокрутки; негатив: дубль названия → под полем «Поставщик с таким названием уже есть»; executor: пункта меню нет, прямой URL <code>/suppliers</code> → «Нет доступа»</li>
+<li data-mdline="395"><a class="pnum" id="p-172" href="#p-172">172</a>не входит в эту часть: «архивного поставщика нет в select нового документа» — проверяется в <code>transfers-partners</code></li>
+</ul>
+</ul>
+<h3 id="h3-271">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</h3>
+<ul>
+<li data-mdline="398"><a class="pnum" id="p-173" href="#p-173">173</a>Новый page-object <code>e2e/pages/SuppliersPage.ts</code>; payload'ы e2e-хелперов типизировать wire-типами из исходников, не сырыми ключами (§TD-6.2).</li>
+<li data-mdline="399"><a class="pnum" id="p-174" href="#p-174">174</a>seed-demo в этой части не меняется; демо-поставщики — в <code>transfers-partners</code> (TS-F1 — контекст, реализуется в <code>transfers-core</code>).</li>
+</ul>
+<h2 id="h2-276">§Impact — точки касания существующего кода</h2>
+<p>Источник: <code>impact_scan.py --sample internal/features/suppliers --terms suppliers,supplier_id,/suppliers</code> → NO-FINDINGS (каталога образца ещё нет, термы в репозитории не встречаются); строки ниже — реестры, куда новая фича обязана вписаться.</p>
+<table><thead><tr><th>#</th><th>Класс</th><th>Что задеваем (file:line / объект)</th><th>Дельта фичи</th><th>Решение</th><th>DS</th></tr></thead><tbody><tr data-mdline="406"><td><a class="pnum" id="p-175" href="#p-175">175</a>1</td><td>ENUMERATION</td><td><code>internal/server/router.go</code></td><td>регистрация пакета <code>suppliers</code></td><td>добавить</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="407"><td><a class="pnum" id="p-176" href="#p-176">176</a>2</td><td>ENUMERATION</td><td><code>internal/ssr/menu.go:27-31</code> (группа «Справочники»)</td><td>пункт «Поставщики», <code>/suppliers</code>, <code>AdminOnly: true</code></td><td>добавить</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="408"><td><a class="pnum" id="p-177" href="#p-177">177</a>3</td><td>FK</td><td><code>migrations/</code></td><td>новая миграция с <code class="k-t">suppliers</code> (номер — следующий свободный на момент мержа)</td><td>добавить</td><td><a class="xref" href="#ds-007">DS-007</a></td></tr><tr data-mdline="409"><td><a class="pnum" id="p-178" href="#p-178">178</a>4</td><td>CONFIG</td><td>env-ключи</td><td>не задеваются</td><td>—</td><td>—</td></tr><tr data-mdline="410"><td><a class="pnum" id="p-179" href="#p-179">179</a>5</td><td>MONITORING</td><td>дашборды/алерты</td><td>не задеваются</td><td>—</td><td>—</td></tr></tbody></table>
+<p><strong>Вне каталога фичи:</strong> есть — internal/server/router.go, internal/ssr/menu.go, migrations, e2e</p>
+</body>
+</html>

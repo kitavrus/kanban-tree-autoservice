@@ -1,0 +1,14 @@
+diff --git a/scripts/e2e/run.sh b/scripts/e2e/run.sh
+index 8afdc81..0ccf130 100755
+--- a/scripts/e2e/run.sh
++++ b/scripts/e2e/run.sh
+@@ -112,6 +112,9 @@ export LOGIN_FAILURE_WINDOW="15m"
+ export FIRM_NAME="" FIRM_ADDRESS="" FIRM_PHONE=""
+ export UPLOADS_DIR
+ export UPLOADS_GC_INTERVAL="6h" UPLOADS_GC_MIN_AGE="1h"
++# Служебная физическая уборка тестовых данных (DELETE /api/v1/test/purge/:kind/:id,
++# soft-delete-core DS-027): фикстуры E2E убирают заказы через неё. Только тестовый стенд.
++export TEST_PURGE_ENABLED="true"
+ 
+ go run ./cmd/migrate up
+ go run ./cmd/seed

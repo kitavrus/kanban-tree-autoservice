@@ -1,0 +1,22 @@
+Класс 10 — supply chain & dependency audit.
+
+$ git diff 9580596..HEAD -- go.mod go.sum
+(пусто — новых Go-зависимостей фаза не вносит)
+
+$ git diff 9580596..HEAD -- e2e/package.json
+-    "@types/pg": "^8.11.0",
+-    "pg": "^8.13.0",
+(pg/@types/pg УДАЛЕНЫ из e2e/package.json — ADR-101, fixtures переведены на API вместо
+ прямых pg-запросов; attack surface уменьшена, новых зависимостей не добавлено)
+
+$ govulncheck ./internal/features/board/...
+=== Symbol Results ===
+No vulnerabilities found.
+Your code is affected by 0 vulnerabilities.
+This scan also found 0 vulnerabilities in packages you import and 1 vulnerability in
+modules you require, but your code doesn't appear to call these vulnerabilities.
+
+Итог: изменённый код (internal/features/board) — 0 reachable vulnerabilities; go.mod/go.sum
+не менялись фазой 6; e2e/package.json — только удаление зависимости. npm audit не запускался
+(e2e/package.json не добавляет новых пакетов, только убирает pg) — MEDIUM-uncovered отмечен
+в отчёте как advisory, не блокер.

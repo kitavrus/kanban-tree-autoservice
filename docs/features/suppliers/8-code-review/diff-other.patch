@@ -1,0 +1,1010 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index d2f7136..dd04563 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -124,6 +124,22 @@ export type Product = {
+ export type Warehouse = { id: string; name: string; position: number; is_active: boolean };
+ export type WarehouseList = { items: Warehouse[]; total: number; limit: number; offset: number };
+ 
++// Wire-типы поставщиков (internal/features/suppliers/dto.go, §TD-6.2).
++export type NewSupplier = { name: string; contact_name?: string; phone?: string; address?: string; note?: string };
++export type SupplierUpdate = NewSupplier & { is_active: boolean };
++export type Supplier = {
++  id: string;
++  name: string;
++  contact_name: string;
++  phone: string;
++  address: string;
++  note: string;
++  is_active: boolean;
++  created_at: string;
++  updated_at: string;
++};
++export type SupplierList = { items: Supplier[]; total: number; limit: number; offset: number };
++
+ // Wire-типы перемещений товаров (internal/features/stocktransfers/dto.go, §TD-6.2).
+ export type StockTransferStatus = 'requested' | 'in_transit' | 'received' | 'cancelled';
+ export type NewStockTransfer = {
+@@ -313,6 +329,37 @@ export class AdminApi {
+     return res.json();
+   }
+ 
++  // ---- suppliers (internal/features/suppliers, DS-007) ----
++
++  /** Список поставщиков: isActive не задан — все, включая архивных. */
++  async listSuppliers(f: { q?: string; isActive?: boolean } = {}): Promise<SupplierList> {
++    const p = new URLSearchParams({ limit: '500' });
++    if (f.q) p.set('q', f.q);
++    if (f.isActive !== undefined) p.set('is_active', String(f.isActive));
++    const res = await this.ctx.get(`/api/v1/suppliers?${p}`);
++    expect(res.status(), `поставщики: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
++  async supplierByName(name: string): Promise<Supplier> {
++    const list = await this.listSuppliers({ q: name });
++    const s = list.items.find((x) => x.name === name);
++    expect(s, `поставщик ${name}`).toBeTruthy();
++    return s!;
++  }
++
++  async createSupplier(s: NewSupplier): Promise<Supplier> {
++    const res = await this.ctx.post('/api/v1/suppliers', { data: s, headers: await this.headers() });
++    expect(res.status(), `создание поставщика ${s.name}: ${await res.text()}`).toBe(201);
++    return res.json();
++  }
++
++  async updateSupplier(id: string, s: SupplierUpdate): Promise<Supplier> {
++    const res = await this.ctx.put(`/api/v1/suppliers/${id}`, { data: s, headers: await this.headers() });
++    expect(res.status(), `правка поставщика ${id}: ${await res.text()}`).toBe(200);
++    return res.json();
++  }
++
+   // ---- stock transfers (internal/features/stocktransfers, DS-006/DS-011) ----
+ 
+   async createStockTransfer(t: NewStockTransfer): Promise<StockTransfer> {
+diff --git a/e2e/pages/SuppliersPage.ts b/e2e/pages/SuppliersPage.ts
+new file mode 100644
+index 0000000..2ac5c47
+--- /dev/null
++++ b/e2e/pages/SuppliersPage.ts
+@@ -0,0 +1,114 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++import type { NewSupplier } from '../fixtures/auth';
++
++// POM экрана «Поставщики» «/suppliers» (suppliers DS-007, draft-spec §8.1,
++// web/ssr/_shared/js/suppliers.js): таблица с поиском и toggle архивных + форма справа
++// (?new=1 — создание, ?id=<uuid> — правка). Все действия — через JSON API, результат —
++// тост справа вверху.
++export class SuppliersPage {
++  readonly root: Locator;
++  readonly addButton: Locator;
++  readonly search: Locator;
++  readonly archivedToggle: Locator;
++  readonly table: Locator;
++  readonly rows: Locator;
++  readonly empty: Locator;
++  readonly emptyAdd: Locator;
++  // форма
++  readonly form: Locator;
++  readonly formTitle: Locator;
++  readonly name: Locator;
++  readonly contactName: Locator;
++  readonly phone: Locator;
++  readonly address: Locator;
++  readonly note: Locator;
++  readonly save: Locator;
++  readonly toggleActive: Locator;
++  readonly cancel: Locator;
++  readonly archivedNote: Locator;
++  // тосты
++  readonly toast: Locator;
++  readonly toastError: Locator;
++
++  constructor(readonly page: Page) {
++    this.root = page.getByTestId('suppliers-root');
++    this.addButton = page.getByTestId('supplier-add');
++    this.search = page.getByTestId('supplier-search');
++    this.archivedToggle = page.getByTestId('supplier-filter-archived');
++    this.table = page.getByTestId('suppliers-table');
++    this.rows = page.getByTestId('supplier-row');
++    this.empty = page.getByTestId('suppliers-empty');
++    this.emptyAdd = page.getByTestId('supplier-empty-add');
++    this.form = page.getByTestId('supplier-form');
++    this.formTitle = page.getByTestId('supplier-form-title');
++    this.name = page.getByTestId('supplier-name');
++    this.contactName = page.getByTestId('supplier-contact-name');
++    this.phone = page.getByTestId('supplier-phone');
++    this.address = page.getByTestId('supplier-address');
++    this.note = page.getByTestId('supplier-note');
++    this.save = page.getByTestId('supplier-save');
++    this.toggleActive = page.getByTestId('supplier-toggle-active');
++    this.cancel = page.getByTestId('supplier-cancel');
++    this.archivedNote = page.getByTestId('supplier-archived-note');
++    this.toast = page.getByTestId('toast');
++    this.toastError = page.getByTestId('toast-error');
++  }
++
++  async goto(query = '') {
++    await this.page.goto(`/suppliers${query}`);
++    await expect(this.root).toBeVisible();
++  }
++
++  /** Строка таблицы по точному названию. */
++  row(name: string): Locator {
++    return this.page.locator(`[data-testid="supplier-row"][data-name="${name}"]`);
++  }
++
++  archivedBadge(name: string): Locator {
++    return this.row(name).getByTestId('supplier-archived-badge');
++  }
++
++  /** Текст ошибки под полем формы (ключ — wire-имя поля). */
++  fieldError(field: keyof NewSupplier): Locator {
++    return this.page.getByTestId(`error-${field.replace('_', '-')}`);
++  }
++
++  async openNew() {
++    await this.addButton.click();
++    await expect(this.form).toBeVisible();
++    await expect(this.toggleActive).toBeHidden();
++  }
++
++  async openRow(name: string) {
++    await this.row(name).click();
++    await expect(this.form).toBeVisible();
++    await expect(this.name).toHaveValue(name);
++  }
++
++  /** Заполняет поля формы wire-значениями поставщика (незаданные — не трогает). */
++  async fill(s: Partial<NewSupplier>) {
++    if (s.name !== undefined) await this.name.fill(s.name);
++    if (s.contact_name !== undefined) await this.contactName.fill(s.contact_name);
++    if (s.phone !== undefined) await this.phone.fill(s.phone);
++    if (s.address !== undefined) await this.address.fill(s.address);
++    if (s.note !== undefined) await this.note.fill(s.note);
++  }
++
++  /** Поиск по названию (debounce 300 мс — ждём по результату, не по времени). */
++  async searchFor(q: string) {
++    await this.search.fill(q);
++  }
++
++  async showArchived(on: boolean) {
++    await this.archivedToggle.setChecked(on);
++  }
++
++  async expectSaved() {
++    await expect(this.toast.last()).toHaveText('Сохранено');
++    await expect(this.form).toBeHidden();
++  }
++
++  async hasHorizontalOverflow(): Promise<number> {
++    return this.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
++  }
++}
+diff --git a/e2e/tests/suppliers.spec.ts b/e2e/tests/suppliers.spec.ts
+new file mode 100644
+index 0000000..d3bd6e0
+--- /dev/null
++++ b/e2e/tests/suppliers.spec.ts
+@@ -0,0 +1,438 @@
++import { test, expect } from '../fixtures/test';
++import { ShellPage } from '../pages/ShellPage';
++import { SuppliersPage } from '../pages/SuppliersPage';
++import { loginContext, type AdminApi, type NewSupplier, type Supplier } from '../fixtures/auth';
++import type { Page } from '@playwright/test';
++
++// Справочник «Поставщики» (docs/features/suppliers/draft-spec.md §8.1, DS-007/DS-043) —
++// TS-035: admin заводит, правит, архивирует и возвращает поставщика; дубль названия — под
++// полем; executor — без пункта меню и с 403; вьюпорт 375×812 без горизонтальной прокрутки.
++// Общая dev-БД (§TD-6.2): свои поставщики через uniq(); удаления у поставщика нет, поэтому
++// созданные тестом записи в конце отправляются в архив (не засоряют список по умолчанию).
++test.use({ colorScheme: 'light' });
++
++const THEMES = ['light', 'dark'] as const;
++
++function csrfToken(page: Page): Promise<string> {
++  return page.locator('meta[name="csrf-token"]').getAttribute('content').then((v) => v ?? '');
++}
++
++async function archiveAll(adminApi: AdminApi, prefix: string) {
++  const list = await adminApi.listSuppliers({ q: prefix, isActive: true });
++  for (const s of list.items) {
++    await adminApi.updateSupplier(s.id, {
++      name: s.name,
++      contact_name: s.contact_name,
++      phone: s.phone,
++      address: s.address,
++      note: s.note,
++      is_active: false,
++    });
++  }
++}
++
++async function expectNoPageOverflow(sup: SuppliersPage, where: string) {
++  await expect
++    .poll(() => sup.hasHorizontalOverflow(), { message: `горизонтальный overflow страницы: ${where}` })
++    .toBeLessThanOrEqual(0);
++}
++
++test.describe('SUP: справочник «Поставщики»', () => {
++  test('SUP-001 (TS-035): admin — меню «Поставщики», добавить, открыть, в архив, показать архивные, вернуть из архива', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const prefix = uniq('sup-001');
++    const data: Required<NewSupplier> = {
++      name: `${prefix} ооо картридж`,
++      contact_name: 'Иван Петров',
++      phone: '+7 700 123-45-67',
++      address: 'Алматы, пр. Абая 1',
++      note: 'оптовые поставки',
++    };
++    const sup = new SuppliersPage(page);
++    const shell = new ShellPage(page);
++    try {
++      // «Справочники → Поставщики».
++      await shell.goto('/');
++      await shell.navLink('Поставщики').click();
++      await expect(page).toHaveURL(/\/suppliers$/);
++      await expect(shell.title).toHaveText('Поставщики');
++      await expect(sup.root).toBeVisible();
++
++      // «Добавить» → заполнить → «Сохранить».
++      await sup.openNew();
++      await expect(page).toHaveURL(/\/suppliers\?new=1$/);
++      await sup.fill(data);
++      await sup.save.click();
++      await sup.expectSaved();
++      await expect(page).toHaveURL(/\/suppliers$/);
++
++      // строка в таблице со всеми колонками, без бейджа архива (поиск — чтобы не зависеть
++      // от числа чужих поставщиков на общем стенде: страница списка — 50 строк).
++      await sup.searchFor(prefix);
++      const row = sup.row(data.name);
++      await expect(row).toBeVisible();
++      await expect(row).toContainText(data.contact_name);
++      await expect(row).toContainText(data.phone);
++      await expect(row).toContainText(data.address);
++      await expect(sup.archivedBadge(data.name)).toHaveCount(0);
++      const created = await adminApi.supplierByName(data.name);
++      expect(created).toMatchObject({ ...data, is_active: true } satisfies Partial<Supplier>);
++
++      // открыть — форма с сохранёнными значениями, адрес ?id=<uuid>.
++      await sup.openRow(data.name);
++      await expect(page).toHaveURL(new RegExp(`/suppliers\\?id=${created.id}$`));
++      await expect(sup.contactName).toHaveValue(data.contact_name);
++      await expect(sup.phone).toHaveValue(data.phone);
++      await expect(sup.address).toHaveValue(data.address);
++      await expect(sup.note).toHaveValue(data.note);
++      await expect(sup.toggleActive).toHaveText('В архив');
++
++      // «В архив»: из списка по умолчанию (только действующие) строка пропадает.
++      await sup.toggleActive.click();
++      await sup.expectSaved();
++      await expect(sup.row(data.name)).toHaveCount(0);
++      expect((await adminApi.supplierByName(data.name)).is_active).toBe(false);
++
++      // «Показать архивные» — строка с бейджем «в архиве».
++      await sup.showArchived(true);
++      await expect(sup.archivedBadge(data.name)).toBeVisible();
++      await expect(sup.archivedBadge(data.name)).toHaveText('в архиве');
++
++      // «Вернуть из архива» — бейдж исчез, поля не потеряны.
++      await sup.openRow(data.name);
++      await expect(sup.archivedNote).toBeVisible();
++      await expect(sup.toggleActive).toHaveText('Вернуть из архива');
++      await sup.toggleActive.click();
++      await sup.expectSaved();
++      await expect(sup.row(data.name)).toBeVisible();
++      await expect(sup.archivedBadge(data.name)).toHaveCount(0);
++      expect(await adminApi.supplierByName(data.name)).toMatchObject({ ...data, is_active: true } satisfies Partial<Supplier>);
++
++      // после выключения toggle действующий поставщик остаётся в списке.
++      await sup.showArchived(false);
++      await expect(sup.row(data.name)).toBeVisible();
++    } finally {
++      await archiveAll(adminApi, prefix);
++    }
++  });
++
++  test('SUP-002 (TS-035): негатив — дубль названия под полем «Поставщик с таким названием уже есть»; обязательное название; телефон без цифр', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    // ошибки валидации формы — ожидаемые 400 от API.
++    allowHttpErrors((url, status) => url.includes('/api/v1/suppliers') && status === 400);
++    const prefix = uniq('sup-002');
++    const existing = await adminApi.createSupplier({ name: `${prefix} поставщик` });
++    const archived = await adminApi.createSupplier({ name: `${prefix} архивный` });
++    await adminApi.updateSupplier(archived.id, { name: archived.name, is_active: false });
++    const sup = new SuppliersPage(page);
++    try {
++      await sup.goto();
++      await sup.searchFor(prefix);
++      await expect(sup.rows).toHaveCount(1);
++      await sup.openNew();
++
++      // пустое название → под полем, форма не закрылась, запись не создана.
++      await sup.save.click();
++      await expect(sup.fieldError('name')).toHaveText('Укажите название (до 200 символов)');
++      await expect(sup.name).toHaveClass(/is-invalid/);
++      await expect(sup.form).toBeVisible();
++      await expect(sup.save).toBeEnabled();
++
++      // название из пробелов — то же (trim на сервере).
++      await sup.fill({ name: '    ' });
++      await sup.save.click();
++      await expect(sup.fieldError('name')).toHaveText('Укажите название (до 200 символов)');
++
++      // дубль: другой регистр + пробелы по краям → под полем «Название».
++      await sup.fill({ name: `  ${existing.name.toUpperCase()}  `, contact_name: 'Кто-то', phone: '12345' });
++      await sup.save.click();
++      await expect(sup.fieldError('name')).toHaveText('Поставщик с таким названием уже есть');
++      await expect(sup.name).toHaveClass(/is-invalid/);
++      // введённое не потеряно.
++      await expect(sup.contactName).toHaveValue('Кто-то');
++      await expect(sup.phone).toHaveValue('12345');
++
++      // дубль названия архивного поставщика — тоже ошибка (уникальность вкл. архивные).
++      await sup.fill({ name: archived.name });
++      await sup.save.click();
++      await expect(sup.fieldError('name')).toHaveText('Поставщик с таким названием уже есть');
++
++      // телефон без цифр → под полем «Телефон»; ошибка названия снята.
++      await sup.fill({ name: `${prefix} новый`, phone: 'нет телефона' });
++      await sup.save.click();
++      await expect(sup.fieldError('phone')).toHaveText('Проверьте телефон');
++      await expect(sup.phone).toHaveClass(/is-invalid/);
++      await expect(sup.name).not.toHaveClass(/is-invalid/);
++      expect((await adminApi.listSuppliers({ q: prefix })).total, 'невалидные формы ничего не создали').toBe(2);
++
++      // исправили — сохраняется.
++      await sup.fill({ phone: '8 (700) 000-00-00' });
++      await sup.save.click();
++      await sup.expectSaved();
++      await expect(sup.row(`${prefix} новый`)).toBeVisible();
++
++      // правка: переименование в чужое название → дубль под полем; своё название — не дубль.
++      await sup.openRow(`${prefix} новый`);
++      await sup.fill({ name: existing.name });
++      await sup.save.click();
++      await expect(sup.fieldError('name')).toHaveText('Поставщик с таким названием уже есть');
++      await sup.fill({ name: `${prefix} НОВЫЙ` });
++      await sup.save.click();
++      await sup.expectSaved();
++      await expect(sup.row(`${prefix} НОВЫЙ`)).toBeVisible();
++
++      // «Отмена» закрывает форму без запроса и без изменений.
++      await sup.openRow(existing.name);
++      await sup.fill({ name: `${prefix} не сохранится` });
++      await sup.cancel.click();
++      await expect(sup.form).toBeHidden();
++      await expect(sup.row(existing.name)).toBeVisible();
++      expect((await adminApi.listSuppliers({ q: `${prefix} не сохранится` })).total).toBe(0);
++    } finally {
++      await archiveAll(adminApi, prefix);
++    }
++  });
++
++  test('SUP-003 (TS-035): executor — пункта меню «Поставщики» нет, прямой URL /suppliers и API → 403', async ({
++    page,
++    uniq,
++    makeUser,
++    loginAs,
++    allowHttpErrors,
++  }) => {
++    const login = uniq('exec-sup003');
++    const user = await makeUser({ login });
++    await loginAs(page, login, user.password);
++
++    const shell = new ShellPage(page);
++    await shell.goto('/');
++    await expect(shell.navLink('Доска')).toBeVisible();
++    await expect(shell.navLink('Поставщики')).toHaveCount(0);
++
++    allowHttpErrors((url, status) => (url.includes('/suppliers') || url.includes('/api/v1/suppliers')) && status === 403);
++    // прямой URL — страница отказа в доступе, экран справочника не отрисован.
++    const resp = await page.goto('/suppliers');
++    expect(resp?.status()).toBe(403);
++    await expect(page.getByTestId('status-page')).toBeVisible();
++    await expect(page.getByTestId('status-page')).toContainText('403');
++    await expect(page.getByTestId('suppliers-root')).toHaveCount(0);
++
++    const list = await page.request.get('/api/v1/suppliers', { failOnStatusCode: false });
++    expect(list.status()).toBe(403);
++    const body: NewSupplier = { name: 'чужой поставщик' };
++    const post = await page.request.post('/api/v1/suppliers', {
++      data: body,
++      headers: { 'X-Csrf-Token': await csrfToken(page) },
++      failOnStatusCode: false,
++    });
++    expect(post.status()).toBe(403);
++    const put = await page.request.put('/api/v1/suppliers/00000000-0000-0000-0000-000000000000', {
++      data: { ...body, is_active: false },
++      headers: { 'X-Csrf-Token': await csrfToken(page) },
++      failOnStatusCode: false,
++    });
++    expect(put.status()).toBe(403);
++  });
++
++  test('SUP-004 (TS-035): поиск, toggle архивных, пустой список, правка, адрес формы (?new=1, ?id=) и reload', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const prefix = uniq('sup-004');
++    const alpha = await adminApi.createSupplier({ name: `${prefix} альфа`, contact_name: 'Анна', phone: '111', address: 'Алматы' });
++    const beta = await adminApi.createSupplier({ name: `${prefix} бета` });
++    const gamma = await adminApi.createSupplier({ name: `${prefix} гамма` });
++    await adminApi.updateSupplier(gamma.id, { name: gamma.name, is_active: false });
++    const sup = new SuppliersPage(page);
++    try {
++      await sup.goto();
++
++      // поиск по подстроке без учёта регистра: только действующие, по названию.
++      await sup.searchFor(prefix.toUpperCase());
++      await expect(sup.rows).toHaveCount(2);
++      await expect(sup.rows.nth(0)).toHaveAttribute('data-name', alpha.name);
++      await expect(sup.rows.nth(1)).toHaveAttribute('data-name', beta.name);
++
++      // + архивные: действующие раньше архивных.
++      await sup.showArchived(true);
++      await expect(sup.rows).toHaveCount(3);
++      await expect(sup.rows.nth(2)).toHaveAttribute('data-name', gamma.name);
++      await expect(sup.archivedBadge(gamma.name)).toBeVisible();
++      await expect(sup.archivedBadge(alpha.name)).toHaveCount(0);
++
++      // комбинация фильтров — «И».
++      await sup.searchFor(`${prefix} гам`);
++      await expect(sup.rows).toHaveCount(1);
++      await sup.showArchived(false);
++      await expect(sup.rows).toHaveCount(0);
++
++      // пусто: «Поставщиков нет» + «Добавить» открывает форму создания.
++      await expect(sup.empty).toBeVisible();
++      await expect(sup.empty).toContainText('Поставщиков нет');
++      await sup.emptyAdd.click();
++      await expect(sup.form).toBeVisible();
++      await expect(sup.formTitle).toHaveText('Новый поставщик');
++      await expect(page).toHaveURL(/[?&]new=1$/);
++      await sup.cancel.click();
++      await expect(sup.form).toBeHidden();
++
++      // правка: все поля сохраняются, строка обновлена.
++      await sup.searchFor(prefix);
++      await sup.openRow(alpha.name);
++      const edited: Required<NewSupplier> = {
++        name: `${prefix} альфа плюс`,
++        contact_name: 'Борис',
++        phone: '222-333',
++        address: 'Астана, Кабанбай батыра 5',
++        note: 'звонить после 10',
++      };
++      await sup.fill(edited);
++      await sup.save.click();
++      await sup.expectSaved();
++      await expect(sup.row(edited.name)).toContainText(edited.contact_name);
++      await expect(sup.row(edited.name)).toContainText(edited.phone);
++      await expect(sup.row(alpha.name)).toHaveCount(0);
++      expect(await adminApi.supplierByName(edited.name)).toMatchObject({ ...edited, id: alpha.id, is_active: true } satisfies Partial<Supplier>);
++
++      // адрес формы правки переживает reload: список с сервера, форма с сохранёнными данными.
++      await sup.openRow(edited.name);
++      await expect(page).toHaveURL(new RegExp(`[?&]id=${alpha.id}$`));
++      await page.reload();
++      await expect(sup.form).toBeVisible();
++      await expect(sup.name).toHaveValue(edited.name);
++      await expect(sup.note).toHaveValue(edited.note);
++
++      // прямая ссылка на архивного (нет в списке по умолчанию) — форма открывается.
++      await sup.goto(`?id=${gamma.id}`);
++      await expect(sup.form).toBeVisible();
++      await expect(sup.name).toHaveValue(gamma.name);
++      await expect(sup.toggleActive).toHaveText('Вернуть из архива');
++
++      // ?new=1 — пустая форма создания.
++      await sup.goto('?new=1');
++      await expect(sup.form).toBeVisible();
++      await expect(sup.name).toHaveValue('');
++      await expect(sup.toggleActive).toBeHidden();
++
++      // несуществующий id в адресе — тост, форма закрыта, адрес очищен.
++      await sup.goto('?id=00000000-0000-0000-0000-000000000000');
++      await expect(sup.toastError).toHaveText('Поставщик не найден');
++      await expect(sup.form).toBeHidden();
++      await expect(page).toHaveURL(/\/suppliers$/);
++    } finally {
++      await archiveAll(adminApi, prefix);
++    }
++  });
++
++  test('SUP-005 (TS-035): вьюпорт 375×812 — нет горизонтальной прокрутки (список и форма, светлая и тёмная тема)', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    // сценарий сам отправляет пустую форму создания (по разу на тему), чтобы замерить
++    // overflow формы с ошибкой под полем: POST /api/v1/suppliers → 400 name: required.
++    // Разрешён только этот ответ — URL без query (GET списка всегда с ?…) и без /:id (PUT).
++    allowHttpErrors((url, status) => url.endsWith('/api/v1/suppliers') && status === 400);
++    const prefix = uniq('sup-005');
++    // длинные значения — худший случай для вёрстки таблицы и формы.
++    const long = await adminApi.createSupplier({
++      name: `${prefix} ${'оченьдлинноеназваниепоставщикабезпробелов'.repeat(3)}`,
++      contact_name: 'Константинопольский Александр Владимирович',
++      phone: '+7 (700) 123-45-67, +7 (727) 987-65-43 доб. 1234',
++      address: 'Республика Казахстан, город Алматы, Бостандыкский район, проспект Абая, дом 150/230, офис 1024',
++      note: 'примечание '.repeat(40).trim(),
++    });
++    await adminApi.createSupplier({ name: `${prefix} короткий` });
++    const sup = new SuppliersPage(page);
++    await page.setViewportSize({ width: 375, height: 812 });
++    try {
++      for (const theme of THEMES) {
++        // последний зарегистрированный init-скрипт задаёт тему (эталон — polish.spec.ts).
++        await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++        const where = `/suppliers ${theme} 375×812`;
++        await sup.goto();
++        await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++        await sup.searchFor(prefix);
++        await expect(sup.rows).toHaveCount(2);
++        await expectNoPageOverflow(sup, `${where}: список`);
++
++        await sup.openRow(long.name);
++        await expect(sup.save).toBeVisible();
++        await expectNoPageOverflow(sup, `${where}: форма правки`);
++        await sup.cancel.click();
++
++        await sup.openNew();
++        await sup.save.click();
++        await expect(sup.fieldError('name')).toHaveText('Укажите название (до 200 символов)');
++        await expectNoPageOverflow(sup, `${where}: форма с ошибкой`);
++        await sup.cancel.click();
++
++        await sup.searchFor(`${prefix} нет такого`);
++        await expect(sup.empty).toBeVisible();
++        await expectNoPageOverflow(sup, `${where}: пустой список`);
++      }
++    } finally {
++      await archiveAll(adminApi, prefix);
++    }
++  });
++
++  test('SUP-006 (TS-035, DS-043): два администратора правят одного поставщика — сохраняется последняя запись', async ({
++    adminPage: page,
++    adminApi,
++    runAdmin,
++    browser,
++    baseURL,
++    uniq,
++  }) => {
++    const prefix = uniq('sup-006');
++    const s = await adminApi.createSupplier({ name: `${prefix} общий`, contact_name: 'Исходный' });
++    const other = await browser.newContext({ baseURL, locale: 'ru-RU' });
++    try {
++      await loginContext(other, runAdmin.login, runAdmin.password);
++      const first = new SuppliersPage(page);
++      const second = new SuppliersPage(await other.newPage());
++      // оба открыли одну и ту же версию.
++      await first.goto(`?id=${s.id}`);
++      await second.goto(`?id=${s.id}`);
++      await expect(first.name).toHaveValue(s.name);
++      await expect(second.name).toHaveValue(s.name);
++
++      await first.fill({ name: `${prefix} общий (первый)`, contact_name: 'Первый' });
++      await first.save.click();
++      await first.expectSaved();
++
++      // второй сохраняет поверх со своей (устаревшей) формой — без ошибки, last-write-wins.
++      await second.fill({ contact_name: 'Второй', phone: '777' });
++      await second.save.click();
++      await second.expectSaved();
++
++      const final = await adminApi.listSuppliers({ q: prefix });
++      expect(final.total, 'дубль не появился').toBe(1);
++      expect(final.items[0]).toMatchObject({
++        id: s.id,
++        name: s.name,
++        contact_name: 'Второй',
++        phone: '777',
++        is_active: true,
++      } satisfies Partial<Supplier>);
++
++      // первый после reload видит итог с сервера.
++      await first.goto();
++      await first.searchFor(prefix);
++      await expect(first.rows).toHaveCount(1);
++      await expect(first.row(s.name)).toContainText('Второй');
++    } finally {
++      await other.close();
++      await archiveAll(adminApi, prefix);
++    }
++  });
++});
+diff --git a/web/ssr/_shared/js/suppliers.js b/web/ssr/_shared/js/suppliers.js
+new file mode 100644
+index 0000000..140f786
+--- /dev/null
++++ b/web/ssr/_shared/js/suppliers.js
+@@ -0,0 +1,295 @@
++/* KT.suppliers — экран «Поставщики» «/suppliers» (admin, suppliers DS-007, draft-spec §8.1)
++   поверх JSON API /api/v1/suppliers.
++
++   Слева — таблица с поиском по названию и toggle «Показать архивные» (выкл →
++   is_active=true; вкл → параметр не передаётся), debounce 300 мс. Справа — форма:
++   ?new=1 — создание (POST), ?id=<uuid> — правка (PUT, там же «В архив» / «Вернуть из
++   архива»). Ошибка поля — текст под полем + is-invalid (details.fields[]); успех и
++   глобальная ошибка — тост справа вверху на 5 секунд; на время запроса кнопки формы
++   заблокированы. Правка — last-write-wins (DS-043). Весь текст — через esc(). */
++(function () {
++  'use strict';
++  var KT = window.KT = window.KT || {};
++
++  var API = '/api/v1/suppliers';
++  var PAGE_LIMIT = 50;
++  var LOOKUP_LIMIT = 500;
++  var DEBOUNCE_MS = 300;
++  var TOAST_MS = 5000;
++  var FIELDS = ['name', 'contact_name', 'phone', 'address', 'note'];
++
++  // Тексты ошибок полей (§6.2): поле → код → текст; '*' — любой прочий код.
++  var FIELD_TEXT = {
++    name: { duplicate: 'Поставщик с таким названием уже есть', '*': 'Укажите название (до 200 символов)' },
++    contact_name: { '*': 'Слишком длинное имя контакта' },
++    phone: { '*': 'Проверьте телефон' },
++    address: { '*': 'Слишком длинный адрес' },
++    note: { '*': 'Слишком длинное примечание' }
++  };
++
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
++
++  var state = {
++    list: [],
++    total: 0,
++    q: '',
++    showArchived: false,
++    current: null, // SupplierResponse (правка) | null (создание)
++    formOpen: false,
++    busy: false,
++    listSeq: 0
++  };
++
++  // ---------- тосты ----------
++  function toast(msg, isError) {
++    var el = document.createElement('div');
++    el.className = 'alert ' + (isError ? 'alert-danger' : 'alert-success') + ' shadow py-2 mb-2';
++    el.setAttribute('role', isError ? 'alert' : 'status');
++    el.setAttribute('data-testid', isError ? 'toast-error' : 'toast');
++    el.textContent = msg;
++    $('#sup-toasts').appendChild(el);
++    setTimeout(function () { el.remove(); }, TOAST_MS);
++  }
++
++  // Ошибка без ответа сервера (fetch отклонён) — «Нет связи»; иначе сообщение API.
++  function toastFailure(err) {
++    if (err instanceof KT.ApiError) toast(err.message, true);
++    else toast('Нет связи', true);
++  }
++
++  // ---------- адрес ----------
++  function setUrl(params) {
++    var u = new URL(window.location.href);
++    u.searchParams.delete('id');
++    u.searchParams.delete('new');
++    Object.keys(params || {}).forEach(function (k) { u.searchParams.set(k, params[k]); });
++    window.history.replaceState(null, '', u.pathname + u.search);
++  }
++
++  // ---------- список ----------
++  function listUrl(limit, filtered) {
++    var p = new URLSearchParams();
++    if (filtered) {
++      if (state.q) p.set('q', state.q);
++      if (!state.showArchived) p.set('is_active', 'true');
++    }
++    p.set('limit', String(limit));
++    p.set('offset', '0');
++    return API + '?' + p.toString();
++  }
++
++  function loadList() {
++    var seq = ++state.listSeq;
++    return KT.api.get(listUrl(PAGE_LIMIT, true)).then(function (r) {
++      if (seq !== state.listSeq) return; // пришёл ответ на устаревший фильтр
++      state.list = r.items || [];
++      state.total = r.total || 0;
++      renderList();
++    }).catch(function (err) {
++      if (seq !== state.listSeq) return;
++      if (err instanceof KT.ApiError && err.status === 400) toast('Некорректный фильтр', true);
++      else toastFailure(err);
++    });
++  }
++
++  function renderList() {
++    var curId = state.formOpen && state.current ? state.current.id : '';
++    $('#sup-tbody').innerHTML = state.list.map(function (s) {
++      return '<tr data-testid="supplier-row" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) + '"' +
++        ' role="button" tabindex="0"' + (s.id === curId ? ' class="table-active"' : '') + '>' +
++        '<td><div class="fw-semibold text-break">' + esc(s.name) + '</div>' +
++        (s.is_active ? '' : '<span class="badge-off" data-testid="supplier-archived-badge">в архиве</span>') + '</td>' +
++        '<td class="text-break">' + esc(s.contact_name) + '</td>' +
++        '<td class="text-break">' + esc(s.phone) + '</td>' +
++        '<td class="text-break">' + esc(s.address) + '</td>' +
++        '</tr>';
++    }).join('');
++    var empty = state.list.length === 0;
++    $('#sup-table-wrap').classList.toggle('d-none', empty);
++    $('#sup-empty').classList.toggle('d-none', !empty);
++    var shown = $('#sup-shown');
++    if (state.total > state.list.length) {
++      shown.textContent = 'Показано ' + state.list.length + ' из ' + state.total;
++      shown.classList.remove('d-none');
++    } else {
++      shown.classList.add('d-none');
++    }
++  }
++
++  // ---------- форма ----------
++  function clearErrors() {
++    $$('#sup-form .is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
++    $$('#sup-form [data-error-for]').forEach(function (el) { el.textContent = ''; });
++  }
++
++  // Ошибки полей под полями; ошибка не про поле формы (is_active) — «Обновите страницу».
++  function showFieldErrors(fields) {
++    clearErrors();
++    var other = false;
++    (fields || []).forEach(function (f) {
++      var name = f.name || f.Name;
++      var code = f.message || f.Message;
++      var texts = FIELD_TEXT[name];
++      var input = $('#sup-form [name="' + name + '"]');
++      if (!texts || !input) { other = true; return; }
++      input.classList.add('is-invalid');
++      $('#sup-form [data-error-for="' + name + '"]').textContent = texts[code] || texts['*'];
++    });
++    if (other) toast('Обновите страницу', true);
++    var first = $('#sup-form .is-invalid');
++    if (first) first.focus();
++  }
++
++  function setBusy(busy) {
++    state.busy = busy;
++    ['#sup-save', '#sup-toggle-active', '#sup-cancel'].forEach(function (sel) { $(sel).disabled = busy; });
++  }
++
++  function openForm(supplier) {
++    state.current = supplier || null;
++    state.formOpen = true;
++    clearErrors();
++    FIELDS.forEach(function (name) {
++      $('#sup-form [name="' + name + '"]').value = supplier ? (supplier[name] || '') : '';
++    });
++    $('#sup-form-title').textContent = supplier ? 'Поставщик' : 'Новый поставщик';
++    var toggle = $('#sup-toggle-active');
++    toggle.classList.toggle('d-none', !supplier);
++    if (supplier) toggle.textContent = supplier.is_active ? 'В архив' : 'Вернуть из архива';
++    $('#sup-archived-note').classList.toggle('d-none', !supplier || supplier.is_active);
++    $('#sup-form-col').classList.remove('d-none');
++    setUrl(supplier ? { id: supplier.id } : { 'new': '1' });
++    renderList();
++    $('#sup-name').focus();
++  }
++
++  function closeForm() {
++    state.current = null;
++    state.formOpen = false;
++    $('#sup-form-col').classList.add('d-none');
++    setUrl(null);
++    renderList();
++  }
++
++  function formValues() {
++    var v = {};
++    FIELDS.forEach(function (name) { v[name] = $('#sup-form [name="' + name + '"]').value; });
++    return v;
++  }
++
++  // Общий разбор ошибки мутации: 400 — под полями, 404 — тост + перезапрос списка.
++  function handleMutationError(err) {
++    if (err instanceof KT.ApiError && err.status === 400 && err.fields.length) {
++      showFieldErrors(err.fields);
++      return;
++    }
++    if (err instanceof KT.ApiError && err.status === 404) {
++      toast('Поставщик не найден', true);
++      closeForm();
++      loadList();
++      return;
++    }
++    toastFailure(err);
++  }
++
++  function mutate(request) {
++    if (state.busy) return;
++    setBusy(true);
++    request().then(function () {
++      closeForm();
++      toast('Сохранено', false);
++      return loadList();
++    }).catch(handleMutationError).then(function () { setBusy(false); });
++  }
++
++  function save() {
++    var body = formValues();
++    var cur = state.current;
++    if (!cur) {
++      mutate(function () { return KT.api.post(API, body); });
++      return;
++    }
++    body.is_active = cur.is_active;
++    mutate(function () { return KT.api.put(API + '/' + encodeURIComponent(cur.id), body); });
++  }
++
++  // «В архив» / «Вернуть из архива» — сохранённые значения поставщика + перевёрнутый
++  // is_active: несохранённые правки формы архивированием не записываются.
++  function toggleActive() {
++    var cur = state.current;
++    if (!cur) return;
++    var body = { is_active: !cur.is_active };
++    FIELDS.forEach(function (name) { body[name] = cur[name] || ''; });
++    mutate(function () { return KT.api.put(API + '/' + encodeURIComponent(cur.id), body); });
++  }
++
++  // Открыть поставщика по id из адреса: сперва в загруженном списке, иначе — общий список
++  // без фильтров (отдельного GET /:id у API нет, §6).
++  function openById(id) {
++    var found = state.list.filter(function (s) { return s.id === id; })[0];
++    if (found) { openForm(found); return Promise.resolve(); }
++    return KT.api.get(listUrl(LOOKUP_LIMIT, false)).then(function (r) {
++      var s = (r.items || []).filter(function (x) { return x.id === id; })[0];
++      if (s) { openForm(s); return; }
++      toast('Поставщик не найден', true);
++      setUrl(null);
++    }).catch(toastFailure);
++  }
++
++  // ---------- события ----------
++  function rowOf(target) {
++    var tr = target.closest ? target.closest('tr[data-id]') : null;
++    if (!tr) return null;
++    return state.list.filter(function (s) { return s.id === tr.getAttribute('data-id'); })[0] || null;
++  }
++
++  function init() {
++    if (!$('#sup')) return;
++    var timer = null;
++    function scheduleReload() {
++      clearTimeout(timer);
++      timer = setTimeout(function () {
++        state.q = $('#sup-q').value.trim();
++        state.showArchived = $('#sup-archived').checked;
++        loadList();
++      }, DEBOUNCE_MS);
++    }
++    $('#sup-q').addEventListener('input', scheduleReload);
++    $('#sup-archived').addEventListener('change', scheduleReload);
++
++    $('#sup-add').addEventListener('click', function () { openForm(null); });
++    $('#sup-empty-add').addEventListener('click', function () { openForm(null); });
++    $('#sup-cancel').addEventListener('click', closeForm);
++    $('#sup-toggle-active').addEventListener('click', toggleActive);
++    $('#sup-form').addEventListener('submit', function (e) { e.preventDefault(); save(); });
++
++    $('#sup-tbody').addEventListener('click', function (e) {
++      var s = rowOf(e.target);
++      if (s) openForm(s);
++    });
++    $('#sup-tbody').addEventListener('keydown', function (e) {
++      if (e.key !== 'Enter' && e.key !== ' ') return;
++      var s = rowOf(e.target);
++      if (!s) return;
++      e.preventDefault();
++      openForm(s);
++    });
++
++    var params = new URLSearchParams(window.location.search);
++    var id = params.get('id');
++    var isNew = params.get('new') === '1';
++    loadList().then(function () {
++      if (id) return openById(id);
++      if (isNew) openForm(null);
++    });
++  }
++
++  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
++  else init();
++})();
+diff --git a/web/ssr/suppliers/templates/pages/list.html b/web/ssr/suppliers/templates/pages/list.html
+new file mode 100644
+index 0000000..504e6b4
+--- /dev/null
++++ b/web/ssr/suppliers/templates/pages/list.html
+@@ -0,0 +1,74 @@
++{{ define "actions" }}<button type="button" class="btn btn-primary" id="sup-add" data-testid="supplier-add">Добавить</button>{{ end }}
++
++{{ define "content" }}
++<div id="sup" class="row g-3" data-testid="suppliers-root">
++  <!-- Список поставщиков -->
++  <div class="col-lg" style="min-width:0">
++    <div class="d-flex flex-wrap align-items-center gap-3 mb-3" data-testid="suppliers-filters">
++      <input type="search" class="form-control" id="sup-q" maxlength="200" placeholder="Поиск по названию" aria-label="Поиск по названию" autocomplete="off" style="max-width:320px" data-testid="supplier-search">
++      <div class="form-check form-switch mb-0">
++        <input class="form-check-input" type="checkbox" role="switch" id="sup-archived" data-testid="supplier-filter-archived">
++        <label class="form-check-label" for="sup-archived">Показать архивные</label>
++      </div>
++    </div>
++    <div class="table-responsive d-none" id="sup-table-wrap">
++      <table class="table table-hover align-middle" data-testid="suppliers-table">
++        <thead><tr><th>Название</th><th>Контактное лицо</th><th>Телефон</th><th>Адрес</th></tr></thead>
++        <tbody id="sup-tbody"></tbody>
++      </table>
++    </div>
++    <div class="empty-state d-none" id="sup-empty" data-testid="suppliers-empty">
++      <div class="mb-3">Поставщиков нет</div>
++      <button type="button" class="btn btn-primary" id="sup-empty-add" data-testid="supplier-empty-add">Добавить</button>
++    </div>
++    <p class="text-body-secondary small d-none mt-2" id="sup-shown" data-testid="suppliers-shown"></p>
++  </div>
++
++  <!-- Форма поставщика (создание: ?new=1, правка: ?id=<uuid>) -->
++  <div class="col-lg-5 d-none" id="sup-form-col">
++    <form class="card" id="sup-form" data-testid="supplier-form" novalidate>
++      <div class="card-body">
++        <h2 class="fs-5 mb-3" id="sup-form-title" data-testid="supplier-form-title">Новый поставщик</h2>
++        <p class="text-body-secondary small d-none" id="sup-archived-note" data-testid="supplier-archived-note">Поставщик в архиве.</p>
++        <div class="mb-3">
++          <label for="sup-name" class="form-label">Название *</label>
++          <input id="sup-name" name="name" class="form-control" maxlength="200" autocomplete="off" data-testid="supplier-name">
++          <div class="invalid-feedback" data-error-for="name" data-testid="error-name"></div>
++        </div>
++        <div class="mb-3">
++          <label for="sup-contact-name" class="form-label">Контактное лицо</label>
++          <input id="sup-contact-name" name="contact_name" class="form-control" maxlength="200" autocomplete="off" data-testid="supplier-contact-name">
++          <div class="invalid-feedback" data-error-for="contact_name" data-testid="error-contact-name"></div>
++        </div>
++        <div class="mb-3">
++          <label for="sup-phone" class="form-label">Телефон</label>
++          <input id="sup-phone" name="phone" class="form-control" maxlength="50" autocomplete="off" data-testid="supplier-phone">
++          <div class="invalid-feedback" data-error-for="phone" data-testid="error-phone"></div>
++        </div>
++        <div class="mb-3">
++          <label for="sup-address" class="form-label">Адрес</label>
++          <input id="sup-address" name="address" class="form-control" maxlength="500" autocomplete="off" data-testid="supplier-address">
++          <div class="invalid-feedback" data-error-for="address" data-testid="error-address"></div>
++        </div>
++        <div class="mb-3">
++          <label for="sup-note" class="form-label">Примечание</label>
++          <textarea id="sup-note" name="note" class="form-control" rows="3" maxlength="1000" data-testid="supplier-note"></textarea>
++          <div class="invalid-feedback" data-error-for="note" data-testid="error-note"></div>
++        </div>
++        <div class="d-flex flex-wrap justify-content-end gap-2">
++          <button type="button" class="btn btn-outline-secondary" id="sup-cancel" data-testid="supplier-cancel">Отмена</button>
++          <button type="button" class="btn btn-outline-secondary d-none" id="sup-toggle-active" data-testid="supplier-toggle-active">В архив</button>
++          <button type="submit" class="btn btn-primary" id="sup-save" data-testid="supplier-save">Сохранить</button>
++        </div>
++      </div>
++    </form>
++  </div>
++</div>
++
++<!-- Тосты: правый верхний угол, 5 секунд (UI-конвенции §8) -->
++<div class="toast-container position-fixed top-0 end-0 p-3" id="sup-toasts" style="z-index:1090;max-width:min(380px,100vw)" aria-live="polite"></div>
++{{ end }}
++
++{{ define "scripts" }}
++<script src="/assets/ssr-shared/js/suppliers.js"></script>
++{{ end }}

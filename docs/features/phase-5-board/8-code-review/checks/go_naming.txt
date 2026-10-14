@@ -1,0 +1,5 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/go_naming_check.py --feature phase-5-board --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/nice-allen-cde8e9
+(exit 0)
+
+go-naming phase-5-board: модули из design-go-layers.md — internal/features, cmd/seed-demo
+go-naming phase-5-board: PASS (проблем: 0)

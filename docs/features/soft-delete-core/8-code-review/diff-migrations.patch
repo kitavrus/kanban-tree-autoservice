@@ -1,0 +1,39 @@
+diff --git a/migrations/0018_soft_delete_core.down.sql b/migrations/0018_soft_delete_core.down.sql
+new file mode 100644
+index 0000000..dc395a5
+--- /dev/null
++++ b/migrations/0018_soft_delete_core.down.sql
+@@ -0,0 +1,11 @@
++-- Откат части soft-delete-core: отметки удаления заказов стираются — мягко удалённые заказы
++-- снова становятся действующими (их товары остаются возвращёнными на склад до первого
++-- пересчёта колонки).
++
++DROP INDEX IF EXISTS tasks_deleted_at_idx;
++
++ALTER TABLE tasks
++    DROP CONSTRAINT IF EXISTS tasks_deleted_chk,
++    DROP COLUMN delete_reason,
++    DROP COLUMN deleted_by,
++    DROP COLUMN deleted_at;
+diff --git a/migrations/0018_soft_delete_core.up.sql b/migrations/0018_soft_delete_core.up.sql
+new file mode 100644
+index 0000000..20f49f4
+--- /dev/null
++++ b/migrations/0018_soft_delete_core.up.sql
+@@ -0,0 +1,16 @@
++-- Мягкое удаление — ядро (docs/features/soft-delete-core/draft-spec.md §4.1, часть 1 мастер-
++-- спеки soft-delete): DS-001 отметка удаления на заказе, DS-030 «кто, когда, почему» хранятся
++-- вместе, DS-020 причина 1–500 символов. Режим MVP (DS-022): ALTER поверх 0017; существующие
++-- заказы остаются действующими (три поля NULL).
++
++ALTER TABLE tasks
++    ADD COLUMN deleted_at timestamptz NULL,
++    ADD COLUMN deleted_by uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    ADD COLUMN delete_reason text NULL,
++    ADD CONSTRAINT tasks_deleted_chk CHECK (
++        (deleted_at IS NULL AND deleted_by IS NULL AND delete_reason IS NULL)
++        OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL AND delete_reason IS NOT NULL
++            AND char_length(btrim(delete_reason)) BETWEEN 1 AND 500));
++
++-- Список вкладки «Заказы» раздела «Удалённые»: сортировка по времени удаления (§6.3).
++CREATE INDEX tasks_deleted_at_idx ON tasks (deleted_at DESC, id) WHERE deleted_at IS NOT NULL;

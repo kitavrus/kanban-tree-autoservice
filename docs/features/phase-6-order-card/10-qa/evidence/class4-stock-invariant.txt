@@ -1,0 +1,28 @@
+Класс 4 — data integrity: инвариант склада "остаток = стартовый + Σ движений" для qa-oc-product-1
+на протяжении серии правок товара в списывающей колонке (AC-010, IT-001).
+
+Стартовый stock (после PUT /api/v1/stock/{P1_ID} {"stock":100}): 100.000
+
+1. Заказ #1862 создан в "Новые" (consumes_stock=false) с subtask (service qa-oc-service-1, кит product-1 qty2).
+   Добавление услуги/товара ДО перемещения в списывающую колонку — движений нет (ожидаемо, LV-123).
+
+2. POST /api/v1/tasks/1862/move {"column_id": WORKCOL "В работе" (consumes_stock=true)}
+   -> GET /api/v1/stock?scope=all&q=qa-oc-product-1: stock=98.000 (100 - 2*qty)  [task_reserved=2]
+
+3. PUT /api/v1/subtask-products/{sp1} {"qty":3.5}  (delta 2->3.5 = -1.5)
+   -> stock=96.500  (98 - 1.5)  [task_reserved=3.5]
+
+4. PUT /api/v1/subtask-products/{sp1} {"qty":1}  (delta 3.5->1 = +2.5 возврат)
+   -> stock=99.000  (96.5 + 2.5)  [task_reserved=1]
+
+5. DELETE /api/v1/subtask-products/{sp1}  (удаление товара — полный возврат qty=1)
+   -> stock=100.000  (99 + 1)  [task_reserved=0]
+
+Инвариант выполнен на каждом шаге: stock_after = stock_before + Σ delta теста, task_stock.qty
+(task_reserved в ответе карточки) синхронно отражает Σ qty активных subtask_products в
+списывающей колонке. Полная согласованность после серии add/qty-change/delete (LV-120…123, IT-001).
+
+Доп. проверка warnings (AC-010, kind=negative/below_min):
+$ PUT /api/v1/subtask-products/{sp} {"qty":48} на product-2 (stock=50, min_stock=1, уже занято 1.333)
+-> stock=0.667 <= min_stock=1 -> warnings=[{"product_id":...,"kind":"below_min","stock":0.667,"min_stock":1.0}]
+Подтверждено: движение склада корректно генерирует предупреждение по формуле design-sql.md.

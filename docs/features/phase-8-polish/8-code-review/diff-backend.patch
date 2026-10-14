@@ -1,0 +1,65 @@
+diff --git a/internal/features/board/attachments_handler.go b/internal/features/board/attachments_handler.go
+index e48186d..15ad4c1 100644
+--- a/internal/features/board/attachments_handler.go
++++ b/internal/features/board/attachments_handler.go
+@@ -13,7 +13,6 @@ import (
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 
+-	"github.com/kitavrus/kanban-tree/internal/server/middleware"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+@@ -64,7 +63,7 @@ func (h *AttachmentsHandler) Upload(c fiber.Ctx) (err error) {
+ 	body := &capReader{r: raw, left: AttachmentUploadMaxBody}
+ 	defer func() {
+ 		if body.exceeded {
+-			err = middleware.ErrRequestTooLarge
++			err = errorspkg.ErrRequestTooLarge
+ 			_, _ = io.Copy(io.Discard, io.LimitReader(raw, uploadOverflowDrain))
+ 			return
+ 		}
+diff --git a/internal/server/middleware/body_limit.go b/internal/server/middleware/body_limit.go
+index ce021ab..16422bd 100644
+--- a/internal/server/middleware/body_limit.go
++++ b/internal/server/middleware/body_limit.go
+@@ -2,16 +2,12 @@ package middleware
+ 
+ import (
+ 	"io"
+-	"net/http"
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+-// ErrRequestTooLarge — тело запроса больше лимита роута.
+-var ErrRequestTooLarge = errorspkg.New("REQUEST_TOO_LARGE", http.StatusRequestEntityTooLarge, "Слишком большой запрос")
+-
+ // BodyLimit — лимит тела по роутам при fiber.Config{StreamRequestBody: true} (фаза 7):
+ // fasthttp больше не буферизует тело целиком до хендлера, поэтому лимит «как было»
+ // (defaultLimit, для всех роутов) держит этот middleware — тело читается в память не
+@@ -65,5 +61,5 @@ const overflowDrain = 1 << 20
+ 
+ func tooLarge(c fiber.Ctx) error {
+ 	c.RequestCtx().SetConnectionClose()
+-	return ErrRequestTooLarge
++	return errorspkg.ErrRequestTooLarge
+ }
+diff --git a/pkg/errorspkg/errors.go b/pkg/errorspkg/errors.go
+index 818dff8..91626bb 100644
+--- a/pkg/errorspkg/errors.go
++++ b/pkg/errorspkg/errors.go
+@@ -43,6 +43,11 @@ func (e *AppError) WithDetail(key string, v any) *AppError {
+ 	return &cp
+ }
+ 
++// ErrRequestTooLarge — тело запроса больше лимита роута (413). Общий sentinel для
++// middleware.BodyLimit и хендлеров, читающих поток сами (загрузка вложений) — фича не
++// импортирует серверный слой ради ошибки.
++var ErrRequestTooLarge = New("REQUEST_TOO_LARGE", http.StatusRequestEntityTooLarge, "Слишком большой запрос")
++
+ func BadRequest(msg string) *AppError   { return New("BAD_REQUEST", http.StatusBadRequest, msg) }
+ func Unauthorized(msg string) *AppError { return New("UNAUTHORIZED", http.StatusUnauthorized, msg) }
+ func Forbidden(msg string) *AppError    { return New("FORBIDDEN", http.StatusForbidden, msg) }

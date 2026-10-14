@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature pagination --repo /Users/igorpotema/mycode/kanban-tree/.claude/worktrees/hungry-archimedes-6116ae
+(exit 0)
+
+E2E-MODE: PASS (прогонов сверено 2/2, полных 0; источник режима — самоотчёт оркестратора (cmd в улике); из конфига машинно проверен только запрет `headless: true`)

@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Spec: Перемещения — отмена проведения и удаление</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #24241f; --muted: #5f5e5a;
+  --border: #d3d1c7; --border-soft: #e4e2d9;
+  --surface: #f1efe8; --surface-soft: #fafaf7; --pre-bg: #f6f5f0;
+  --link: #185fa5; --open: #a32d2d;
+  --asis: #2e7d4f; --tobe: #b06000;
+  --kt: #dde9f8; --kf: #f6ecc8; --ki: #e8e6df; --ks: #dff0e2; --ke: #ece2f4; --kx: #f6dcda;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+    --border: #4c4c47; --border-soft: #3a3a36;
+    --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+    --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1f1f1d; --fg: #e8e6df; --muted: #aeaca3;
+  --border: #4c4c47; --border-soft: #3a3a36;
+  --surface: #2e2e2a; --surface-soft: #282826; --pre-bg: #282826;
+  --link: #85b7eb; --open: #f09595;
+  --asis: #8fd3a8; --tobe: #f0b464;
+  --kt: #2c3d52; --kf: #4a4126; --ki: #3a3a36; --ks: #2c4433; --ke: #3d3450; --kx: #4d2c2a;
+}
+#themeBtn { position: fixed; top: 14px; right: 16px; z-index: 10;
+  width: 38px; height: 38px; border-radius: 50%; cursor: pointer; font-size: 17px;
+  background: var(--surface); color: var(--fg); border: 1px solid var(--border); }
+pre { position: relative; }
+.copyBtn { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 9px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; }
+.copyBtn:hover { color: var(--fg); border-color: var(--border); }
+a.pnum { color: var(--muted); font-size: .72em; display: inline-block; min-width: 2.2em;
+  vertical-align: baseline; opacity: .6; text-decoration: none; margin-right: .3em; }
+a.pnum:hover { opacity: 1; }
+li:has(> a.pnum:target) { background: var(--surface); border-radius: 4px; }
+tr:has(a.pnum:target) td { background: var(--surface) !important; }
+html { background: var(--bg); }
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+       color: var(--fg); background: var(--bg);
+       max-width: 920px; margin: 0 auto; padding: 2rem 1.5rem; line-height: 1.55; }
+h1 { font-size: 1.7rem; border-bottom: 2px solid var(--border); padding-bottom: .4rem; }
+h2 { font-size: 1.3rem; margin-top: 2.2rem; border-bottom: 1px solid var(--border-soft); padding-bottom: .25rem; }
+h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+table { border-collapse: collapse; margin: .8rem 0; width: 100%; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+tr:nth-child(even) td { background: var(--surface-soft); }
+code { background: var(--surface); border-radius: 4px; padding: .1rem .35rem; font-size: .88em;
+       font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+pre { background: var(--pre-bg); border: 1px solid var(--border-soft); border-radius: 8px;
+      padding: .8rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid var(--border); margin: .8rem 0; padding: .2rem 1rem;
+             color: var(--muted); background: var(--surface-soft); }
+figure { margin: 1rem 0; text-align: center; }
+figure svg { max-width: 100%; height: auto; border-radius: 8px; }
+ul, ol { padding-left: 1.6rem; }
+li { margin: .15rem 0; }
+nav.toc { background: var(--surface-soft); border: 1px solid var(--border-soft); border-radius: 8px;
+          padding: .8rem 1.2rem; font-size: .92rem; }
+nav.toc ul { margin: .3rem 0; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc > ul > li { font-weight: 600; margin: .3rem 0; break-inside: avoid; }
+nav.toc ul ul { font-weight: 400; font-size: .9em; margin: .1rem 0 .25rem; }
+nav.toc ul ul li { margin: .05rem 0; }
+@media (min-width: 700px) { nav.toc > ul { column-count: 2; column-gap: 2.5rem; } }
+a { color: var(--link); }
+a.xref { text-decoration: none; border-bottom: 1px dotted var(--link); }
+a.xref:hover { border-bottom-style: solid; }
+h1, h2, h3, a[id^="ds-"] { scroll-margin-top: 14px; }
+tr:has(a:target) td { background: var(--surface) !important; }
+h2:target, h3:target { background: var(--surface-soft); }
+.badge-open { color: var(--open); font-weight: 600; }
+.badge-asis, .badge-tobe { font-weight: 600; font-size: .85em; padding: 0 .45em; border-radius: .7em; border: 1px solid currentColor; white-space: nowrap; }
+.badge-asis { color: var(--asis); }
+.badge-tobe { color: var(--tobe); }
+code.k-t { background: var(--kt); font-weight: 700; }
+code.k-f { background: var(--kf); }
+code.k-i { background: var(--ki); font-style: italic; }
+code.k-s { background: var(--ks); font-weight: 600; }
+code.k-e { background: var(--ke); }
+code.k-x { background: var(--kx); text-decoration: line-through; }
+.klegend { font-size: .85em; color: var(--muted); }
+@media print { body { max-width: none; } }
+</style>
+</head>
+<body>
+<button id="themeBtn" title="Тема: авто / тёмная / светлая">◐</button>
+<script>
+const r=document.documentElement,k='draft-spec-theme';
+const apply=v=>{v?r.setAttribute('data-theme',v):r.removeAttribute('data-theme')};
+apply(localStorage.getItem(k)||'');
+document.getElementById('themeBtn').onclick=()=>{
+  const cur=r.getAttribute('data-theme')||'';
+  const next=cur===''?'dark':cur==='dark'?'light':'';
+  next?localStorage.setItem(k,next):localStorage.removeItem(k);apply(next);
+};
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('pre').forEach(p=>{
+    const b=document.createElement('button');b.className='copyBtn';b.textContent='копировать';
+    b.onclick=()=>{navigator.clipboard.writeText(p.querySelector('code').innerText)
+      .then(()=>{b.textContent='✓ скопировано';setTimeout(()=>b.textContent='копировать',1500);});};
+    p.appendChild(b);
+  });
+});
+</script>
+<h1 id="h1-0">Draft Spec: Перемещения — отмена проведения и удаление</h1>
+<nav class="toc"><strong>Содержание</strong><ul><li><a href="#s-1">§1. Суть задачи</a></li><li><a href="#s-2">§2. Интеграции и master-data</a></li><li><a href="#s-3">§3. Нефункциональные требования</a></li><li><a href="#s-4">§4. Данные</a><ul><li><a href="#s-4-1">§4.1. transfers</a></li><li><a href="#s-4-2">§4.2. stock_movements (общая таблица, чужая — фича использует, не владеет)</a></li><li><a href="#s-4-3">§4.3. Прочие таблицы (структура не меняется)</a></li></ul></li><li><a href="#s-5">§5. Статусная модель</a></li><li><a href="#s-6">§6. API</a><ul><li><a href="#s-6-1">§6.1. POST /api/v1/transfers/:id/unreceive</a></li><li><a href="#s-6-2">§6.2. DELETE /api/v1/transfers/:id</a></li><li><a href="#s-6-3">§6.3. DELETE /api/v1/tasks/:id (существующий, дельта)</a></li><li><a href="#s-6-4">§6.4. Прочие изменения существующих endpoints (дельта)</a></li></ul></li><li><a href="#s-7">§7. UX/UI + API (сквозной флоу)</a></li><li><a href="#s-8">§8. UI-иерархия</a><ul><li><a href="#s-8-1">§8.1. Экран/форма «Перемещения»</a></li><li><a href="#s-8-2">§8.2. Экран/форма «Карточка заказа»</a></li></ul></li><li><a href="#s-9">§9. Решения (DS-index)</a></li><li><a href="#s-10">§10. Открытые вопросы (status: open)</a></li><li><a href="#s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</a><ul><li><a href="#h3-369">Unit / Integration (Go)</a></li><li><a href="#h3-402">E2E (Playwright)</a></li><li><a href="#h3-417">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</a></li></ul></li><li><a href="#h2-423">§Impact — точки касания существующего кода</a></li></ul></nav>
+<p class="klegend">Обозначения: <code class="k-t">таблица</code> <code class="k-f">поле</code> <code class="k-i">индекс</code> <code class="k-s">статус</code> <code class="k-e">endpoint</code> <code class="k-x">удаляется</code></p>
+<p><strong>Tier:</strong> M · <strong>Совместимость:</strong> MVP · <strong>Режим:</strong> new</p>
+<p><strong>Дата:</strong> 2026-10-07 | <strong>Статус:</strong> draft → final (после подтверждения пользователя) | <strong>Tier:</strong> M <strong>Совместимость:</strong> MVP (<a class="xref" href="#ds-027">DS-027</a> — контекст, реализуется в <code>transfers-core</code>) — живых данных нет <strong>UI-scope:</strong> swagger:no | adaptive:min | themes:both (<a class="xref" href="#ds-028">DS-028</a> — контекст, реализуется в <code>transfers-core</code>) <strong>Источник:</strong> мастер-спека <code>docs/features/transfers/draft-spec.md</code> (<a class="xref" href="#s-4-1">§4.1</a>, <a class="xref" href="#s-4-6">§4.6</a>, <a class="xref" href="#s-5">§5</a>, <a class="xref" href="#s-6-5">§6.5</a>, <a class="xref" href="#s-6-9">§6.9</a>, <a class="xref" href="#s-6-15">§6.15</a>, <a class="xref" href="#s-8-1">§8.1</a>, <a class="xref" href="#s-8-3">§8.3</a>) + её журнал <code>docs/features/transfers/draft-spec-decisions.md</code> <strong>Часть 6 из 6 мастер-спеки <code>transfers</code>; зависит от: <code>transfers-partners</code> (4), <code>transfers-sales</code> (5)</strong> (и через них от частей 1–3). Номера DS и TS — мастер-идентификаторы, не перенумерованы.</p>
+<blockquote><p>Эта спека — дельта поверх частей 3–5. После мержа этой части мастер-спека реализована полностью: администратор может «Отменить проведение» полученного документа любого направления (документ возвращается в «В пути», остатки и местоположение откатываются), удалить документ в статусе «Заявка» или «Отменён»; заказ с неоткатанными документами не удаляется, и сообщение называет мешающие документы, а отменённые документы удаляются вместе с заказом. Вне объёма остаются мягкое удаление с восстановлением и «ждёт поставку» — отдельные следующие задачи.</p></blockquote>
+<h2 id="s-1">§1. Суть задачи</h2>
+<p>Исправление ошибочно проведённых документов и правила удаления до появления мягкого удаления. Для администратора.</p>
+<p><strong>Бизнес (что делает пользователь/процесс):</strong></p>
+<ol>
+<li data-mdline="17"><a class="pnum" id="p-1" href="#p-1">1</a>Администратор нажимает «Отменить проведение» у полученного документа и указывает причину — документ возвращается в «В пути», дальше его можно принять заново с верным фактом либо отменить (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-017">DS-017</a>.</li>
+<li data-mdline="18"><a class="pnum" id="p-2" href="#p-2">2</a>Удаляет документ, не влияющий на учёт: «Заявка» или «Отменён» (<a class="xref" href="#s-8-1">§8.1</a>) — <a class="xref" href="#ds-025">DS-025</a>.</li>
+<li data-mdline="19"><a class="pnum" id="p-3" href="#p-3">3</a>При удалении заказа видит, какие документы мешают; после их отката и отмены заказ удаляется (<a class="xref" href="#s-8-2">§8.2</a>) — <a class="xref" href="#ds-025">DS-025</a>.</li>
+</ol>
+<p><strong>Логика (правила системы):</strong></p>
+<ol>
+<li data-mdline="22"><a class="pnum" id="p-4" href="#p-4">4</a>«Получено» перестаёт быть окончательным: переход <code class="k-s">received</code> → <code class="k-s">in_transit</code>, только администратор, обязательная причина 1–500 символов (пересмотр D51) — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-053">DS-053</a>.</li>
+<li data-mdline="23"><a class="pnum" id="p-5" href="#p-5">5</a>Откат — в обратном порядке: документ не отменить, пока его единицу оборудования увёз более поздний документ либо она стоит в другом незавершённом; система называет мешающий документ — <a class="xref" href="#ds-023">DS-023</a>.</li>
+<li data-mdline="24"><a class="pnum" id="p-6" href="#p-6">6</a>Учётные причины откат не блокируют: товар успели израсходовать — остаток уходит в минус с предупреждением; заказ отмечен «Оплачен» — накладная откатывается, отметка остаётся — <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-023">DS-023</a>.</li>
+<li data-mdline="25"><a class="pnum" id="p-7" href="#p-7">7</a>Что откатывается: остаток — компенсирующим движением <code class="k-s">transfer_unreceive</code> на факт приёмки; единицы — снова «в пути» и заняты этим документом; факт по строкам и отметка «кто/когда принял» обнуляются — <a class="xref" href="#ds-017">DS-017</a>.</li>
+<li data-mdline="26"><a class="pnum" id="p-8" href="#p-8">8</a>На документе фиксируется последний откат: кто, когда, причина — <a class="xref" href="#ds-044">DS-044</a>.</li>
+<li data-mdline="27"><a class="pnum" id="p-9" href="#p-9">9</a>Удалить документ можно только в <code class="k-s">requested</code> или <code class="k-s">cancelled</code>; проведённый сначала откатывают, затем отменяют, затем удаляют — <a class="xref" href="#ds-025">DS-025</a>.</li>
+<li data-mdline="28"><a class="pnum" id="p-10" href="#p-10">10</a>Заказ, у которого есть документ в <code class="k-s">requested</code>, <code class="k-s">in_transit</code>, <code class="k-s">received</code>, удалить нельзя; отменённые документы заказа удаляются вместе с ним — <a class="xref" href="#ds-025">DS-025</a>, <a class="xref" href="#ds-050">DS-050</a>.</li>
+<li data-mdline="29"><a class="pnum" id="p-11" href="#p-11">11</a>Мягкое удаление с восстановлением и отчёт «Удалённые заказы» — не здесь: отдельная следующая задача — <a class="xref" href="#ds-021">DS-021</a>, <a class="xref" href="#ds-022">DS-022</a>.</li>
+<li data-mdline="30"><a class="pnum" id="p-12" href="#p-12">12</a>Время: <code class="k-f">unreceived_at</code> хранится в UTC, показывается по поясу пользователя (<a class="xref" href="#ds-031">DS-031</a> — контекст, реализуется в <code>user-timezone</code>); порядок документов для правила «более поздний» — по <code class="k-f">received_at</code>, при равенстве по <code class="k-f">id</code>.</li>
+<li data-mdline="31"><a class="pnum" id="p-13" href="#p-13">13</a>Конкурентный доступ (краткий дубль <a class="xref" href="#s-3">§3</a>):</li>
+<ul>
+<li data-mdline="32"><a class="pnum" id="p-14" href="#p-14">14</a>откат и удаление документа → optimistic lock <code class="k-f">version</code> + 409 (<a class="xref" href="#ds-048">DS-048</a> — контекст, реализуется в <code>transfers-core</code>);</li>
+<li data-mdline="33"><a class="pnum" id="p-15" href="#p-15">15</a>откат остатка → <code>FOR UPDATE</code> строк <code class="k-t">product_stock</code> склада назначения в порядке product_id;</li>
+<li data-mdline="34"><a class="pnum" id="p-16" href="#p-16">16</a>откат единиц → guard под <code>FOR NO KEY UPDATE</code> строк <code class="k-t">equipment</code> (as-built, D75; не <code>FOR UPDATE</code>): единица там, куда её привёз этот документ, свободна, и более позднего документа с ней нет — <a class="xref" href="#ds-023">DS-023</a>;</li>
+<li data-mdline="35"><a class="pnum" id="p-17" href="#p-17">17</a>удаление заказа → проверка документов и удаление отменённых в одной транзакции с удалением заказа — <a class="xref" href="#ds-025">DS-025</a> (as-built, D75: документы при этом не блокируются — только заказ).</li>
+</ul>
+</ol>
+<p><strong>Техника (API/данные/интеграции):</strong></p>
+<ol>
+<li data-mdline="38"><a class="pnum" id="p-18" href="#p-18">18</a><code class="k-t">transfers</code>: <code class="k-f">unreceived_by</code>, <code class="k-f">unreceived_at</code>, <code class="k-f">unreceive_reason</code> (<a class="xref" href="#s-4-1">§4.1</a>).</li>
+<li data-mdline="39"><a class="pnum" id="p-19" href="#p-19">19</a>Новые <code class="k-e">POST /api/v1/transfers/:id/unreceive</code>, <code class="k-e">DELETE /api/v1/transfers/:id</code> (<a class="xref" href="#s-6-1">§6.1</a>, <a class="xref" href="#s-6-2">§6.2</a>).</li>
+<li data-mdline="40"><a class="pnum" id="p-20" href="#p-20">20</a>Дельта <code class="k-e">DELETE /api/v1/tasks/:id</code>: код <code>TASK_HAS_TRANSFERS</code> с номерами документов вместо общего 409 части 4; каскад отменённых (<a class="xref" href="#s-6-3">§6.3</a>).</li>
+<li data-mdline="41"><a class="pnum" id="p-21" href="#p-21">21</a>Движение <code class="k-s">transfer_unreceive</code> начинает писаться (значение в CHECK добавлено частью 4).</li>
+</ol>
+<p><strong>UI (графическая часть):</strong></p>
+<ol>
+<li data-mdline="44"><a class="pnum" id="p-22" href="#p-22">22</a>Документ: кнопка «Отменить проведение» (admin, «Получено») с диалогом причины; кнопка «Удалить» (admin, «Заявка» / «Отменён»); строка «Проведение отменено: кто, когда, причина» (<a class="xref" href="#s-8-1">§8.1</a>).</li>
+<li data-mdline="45"><a class="pnum" id="p-23" href="#p-23">23</a>Карточка заказа: сообщение со ссылками на документы при попытке удалить заказ (<a class="xref" href="#s-8-2">§8.2</a>).</li>
+</ol>
+<p>Out-of-scope:</p>
+<ol>
+<li data-mdline="48"><a class="pnum" id="p-24" href="#p-24">24</a>Мягкое удаление с восстановлением и отчёт «Удалённые заказы» — отдельная следующая задача (<a class="xref" href="#ds-022">DS-022</a>); после неё запреты удаления этой части пересматриваются.</li>
+<li data-mdline="49"><a class="pnum" id="p-25" href="#p-25">25</a>Каскадный откат цепочки документов одним действием — нет: только в обратном порядке, по одному (<a class="xref" href="#ds-023">DS-023</a>).</li>
+<li data-mdline="50"><a class="pnum" id="p-26" href="#p-26">26</a>История всех откатов документа — нет: хранится последний (<a class="xref" href="#ds-044">DS-044</a>); более ранние — только в slog.</li>
+<li data-mdline="51"><a class="pnum" id="p-27" href="#p-27">27</a>Откат отмены (<code class="k-s">cancelled</code> → обратно) — нет: отменённый документ терминален, создаётся новый.</li>
+<li data-mdline="52"><a class="pnum" id="p-28" href="#p-28">28</a>Возврат проданного товара от клиента — нет (<a class="xref" href="#ds-004">DS-004</a> — контекст, реализуется в <code>transfers-partners</code>).</li>
+</ol>
+<h2 id="s-2">§2. Интеграции и master-data</h2>
+<p>Не применимо: внешних систем и новых справочников нет.</p>
+<h2 id="s-3">§3. Нефункциональные требования</h2>
+<p><strong>Конкурентность (К-3 — по операциям):</strong></p>
+<ol>
+<li data-mdline="60"><a class="pnum" id="p-29" href="#p-29">29</a><strong>Отмена проведения (<code class="k-e">POST /api/v1/transfers/:id/unreceive</code>):</strong></li>
+<ul>
+<li data-mdline="61"><a class="pnum" id="p-30" href="#p-30">30</a>optimistic lock: обязательный <code class="k-f">version</code>, строка <code class="k-t">transfers</code> FOR UPDATE; устаревшая версия → 409 <code>TRANSFER_VERSION_CONFLICT</code>; статус не <code class="k-s">received</code> → 409 <code>TRANSFER_STATUS_CONFLICT</code> (<a class="xref" href="#ds-048">DS-048</a> — контекст, реализуется в <code>transfers-core</code>)</li>
+<li data-mdline="62"><a class="pnum" id="p-31" href="#p-31">31</a>Lock Order: <code class="k-t">transfers</code> → строки <code class="k-t">product_stock</code> склада назначения в порядке product_id → строки <code class="k-t">equipment</code> в порядке id</li>
+<li data-mdline="63"><a class="pnum" id="p-32" href="#p-32">32</a>as-built (D75): общий порядок блокировок перемещений — документ (<code>FOR UPDATE</code>) → заказ (<code>FOR KEY SHARE</code>, при создании/правке документа с клиентом) → <code class="k-t">product_stock</code> (<code>FOR UPDATE</code>, по product_id) → <code class="k-t">equipment</code> (<code>FOR NO KEY UPDATE</code>, по id)</li>
+<li data-mdline="64"><a class="pnum" id="p-33" href="#p-33">33</a>единицы: под блокировкой проверяется, что единица числится там, куда её привёз этот документ, <code class="k-f">active_transfer_id IS NULL</code> и нет более позднего полученного документа с ней; иначе 409 <code>TRANSFER_UNRECEIVE_BLOCKED</code>, ничего не изменено — <a class="xref" href="#ds-023">DS-023</a></li>
+<li data-mdline="65"><a class="pnum" id="p-34" href="#p-34">34</a>два одновременных отката одного документа → один 200, второй 409 по версии; компенсирующее движение одно</li>
+</ul>
+<li data-mdline="66"><a class="pnum" id="p-35" href="#p-35">35</a><strong>Откат одновременно с новым документом по той же единице:</strong> кто первым взял блокировку строки <code class="k-t">equipment</code>, тот и выиграл; проигравший получает 409 (<code>EQUIPMENT_IN_TRANSFER</code> у создания либо <code>TRANSFER_UNRECEIVE_BLOCKED</code> у отката) — <a class="xref" href="#ds-023">DS-023</a></li>
+<li data-mdline="67"><a class="pnum" id="p-36" href="#p-36">36</a><strong>Удаление документа (<code class="k-e">DELETE /api/v1/transfers/:id</code>):</strong> <code class="k-f">version</code> + статус под <code>FOR UPDATE</code>; удаление одновременно с отправкой → один успех, второй 409 — <a class="xref" href="#ds-025">DS-025</a></li>
+<li data-mdline="68"><a class="pnum" id="p-37" href="#p-37">37</a><strong>Удаление заказа (<code class="k-e">DELETE /api/v1/tasks/:id</code>):</strong> в транзакции удаления заказ блокируется (существующий <code>LockTask</code>), документы заказа читаются под <code>FOR UPDATE</code>; есть неотменённый → 409, ничего не удалено; иначе отменённые документы и заказ удаляются одной транзакцией — <a class="xref" href="#ds-025">DS-025</a>, <a class="xref" href="#ds-050">DS-050</a></li>
+<ul>
+<li data-mdline="69"><a class="pnum" id="p-38" href="#p-38">38</a>as-built (D75): документы заказа читаются БЕЗ <code>FOR UPDATE</code> — порядок «заказ → документ» против «документ → заказ» в правке заявки дал бы взаимную блокировку; гонок нет: создание документа ждёт блокировку заказа (<code>FOR KEY SHARE</code>), «Отменён» терминален, страховка — FK <code>transfers.task_id</code> RESTRICT; отменённые документы удаляет сам board SQL-запросом в транзакции удаления</li>
+</ul>
+</ol>
+<p><strong>Аудит:</strong></p>
+<ul>
+<li data-mdline="72"><a class="pnum" id="p-39" href="#p-39">39</a>на документе: <code class="k-f">unreceived_by</code>, <code class="k-f">unreceived_at</code>, <code class="k-f">unreceive_reason</code> — последний откат — <a class="xref" href="#ds-044">DS-044</a></li>
+<li data-mdline="73"><a class="pnum" id="p-40" href="#p-40">40</a>slog: каждый откат (id документа, пользователь, причина) и каждое удаление документа (id, статус, пользователь)</li>
+<li data-mdline="74"><a class="pnum" id="p-41" href="#p-41">41</a>компенсирующие движения <code class="k-s">transfer_unreceive</code> в <code class="k-t">stock_movements</code> с <code class="k-f">transfer_id</code>; при удалении документа <code class="k-f">transfer_id</code> движений → NULL (журнал остатков сохраняется)</li>
+</ul>
+<p><strong>Время/таймзоны (К-13):</strong></p>
+<ul>
+<li data-mdline="77"><a class="pnum" id="p-42" href="#p-42">42</a>хранение: UTC, <code>timestamptz</code>; показ — по поясу пользователя</li>
+<li data-mdline="78"><a class="pnum" id="p-43" href="#p-43">43</a>«более поздний документ» — по <code class="k-f">received_at</code>, при равенстве по <code class="k-f">id</code>; время — сервера БД</li>
+</ul>
+<p><strong>Метрики/таймстемпы:</strong></p>
+<ul>
+<li data-mdline="81"><a class="pnum" id="p-44" href="#p-44">44</a><code class="k-f">unreceived_at</code>; отчётов и алертов нет</li>
+</ul>
+<p><strong>Offline / деградация / восстановление:</strong></p>
+<ul>
+<li data-mdline="84"><a class="pnum" id="p-45" href="#p-45">45</a>как в ядре; повтор отката или удаления после сбоя сети безопасен: вторая попытка получит 409 либо 404</li>
+</ul>
+<p><strong>Логирование и чувствительные данные:</strong></p>
+<ul>
+<li data-mdline="87"><a class="pnum" id="p-46" href="#p-46">46</a>причина отката — свободный текст пользователя, пишется в slog целиком (до 500 символов); чувствительных данных нет</li>
+</ul>
+<p><strong>Формат ошибок:</strong></p>
+<ul>
+<li data-mdline="90"><a class="pnum" id="p-47" href="#p-47">47</a>только <code>pkg/errorspkg</code>: <code>{code, message, details}</code>; 400 → <code>details.fields[]</code></li>
+</ul>
+<p><strong>Abuse cases (вход для adversarial E2E TD-4):</strong></p>
+<ol>
+<li data-mdline="93"><a class="pnum" id="p-48" href="#p-48">48</a>Исполнитель вызывает <code class="k-e">POST /api/v1/transfers/:id/unreceive</code> или <code class="k-e">DELETE /api/v1/transfers/:id</code> → 403, документ не изменён — <a class="xref" href="#ds-018">DS-018</a> (контекст), <a class="xref" href="#ds-042">DS-042</a> (контекст).</li>
+<li data-mdline="94"><a class="pnum" id="p-49" href="#p-49">49</a>Причина из пробелов, из 501 символа → 400, документ остаётся «Получено».</li>
+<li data-mdline="95"><a class="pnum" id="p-50" href="#p-50">50</a>Откат документа, единицу которого уже увёз следующий документ и привёз обратно на тот же склад → 409 <code>TRANSFER_UNRECEIVE_BLOCKED</code> (проверяется порядок документов, а не только текущее местоположение).</li>
+<li data-mdline="96"><a class="pnum" id="p-51" href="#p-51">51</a>Удаление документа «В пути» или «Получено» прямым запросом → 409, остатки и местоположение не изменились.</li>
+<li data-mdline="97"><a class="pnum" id="p-52" href="#p-52">52</a>Удаление заказа с полученным документом прямым запросом → 409, ни заказ, ни документы не удалены.</li>
+</ol>
+<p><strong>Применённые zap-дефолты</strong> (zap-list — стандарты проекта из CLAUDE.md, применяются автоматически, без вопросов; в <a class="xref" href="#s-9">§9</a> — источник <code>zap</code>):</p>
+<ul>
+<li data-mdline="100"><a class="pnum" id="p-53" href="#p-53">53</a>404 / 403 / 409 — стандартные статусы; ошибки только <code>pkg/errorspkg</code> (zap)</li>
+<li data-mdline="101"><a class="pnum" id="p-54" href="#p-54">54</a>отдельная таблица аудита не заводится (zap; <a class="xref" href="#ds-051">DS-051</a> — контекст, реализуется в <code>transfers-core</code>)</li>
+<li data-mdline="102"><a class="pnum" id="p-55" href="#p-55">55</a>миграции — только <code>make migrate-up</code> (zap)</li>
+</ul>
+<h2 id="s-4">§4. Данные</h2>
+<p>Легенда колонки «Обяз.»: <code>да</code> — клиент обязан передать при создании/правке; <code>нет</code> — опционально; <code>авто</code> — заполняет система (PK, дефолты, таймстемпы, значения из URL/сессии); <code>условно</code> — зависит от правила, оно указано в Описании. NULL — DDL-факт, Обяз. — семантика заполнения.</p>
+<p>Одна новая миграция (ALTER поверх состояния после <code>transfers-sales</code>), режим MVP.</p>
+<h3 id="s-4-1">§4.1. <code class="k-t">transfers</code></h3>
+<p>Шапка документа. Дельта: сведения об откате. Таблица приведена целиком в состоянии после этой части.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="114"><td><a class="pnum" id="p-56" href="#p-56">56</a><code class="k-f">id</code></td><td>bigserial</td><td>нет</td><td>sequence</td><td>авто</td><td>PK, номер #N (без изменений)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="115"><td><a class="pnum" id="p-57" href="#p-57">57</a><code class="k-f">direction</code></td><td>text</td><td>нет</td><td>—</td><td>да</td><td><code class="k-s">client_to_warehouse</code>, <code class="k-s">warehouse_to_client</code>, <code class="k-s">warehouse_to_warehouse</code>, <code class="k-s">supplier_to_warehouse</code> (без изменений)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="116"><td><a class="pnum" id="p-58" href="#p-58">58</a><code class="k-f">from_warehouse_id</code></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>FK → <code class="k-t">warehouses(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="117"><td><a class="pnum" id="p-59" href="#p-59">59</a><code class="k-f">to_warehouse_id</code></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>FK → <code class="k-t">warehouses(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="118"><td><a class="pnum" id="p-60" href="#p-60">60</a><code class="k-f">task_id</code></td><td>bigint</td><td>да</td><td>—</td><td>условно</td><td>FK → <code class="k-t">tasks(id)</code> <code>ON DELETE RESTRICT</code> (без изменений); по нему проверяется удаление заказа</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="119"><td><a class="pnum" id="p-61" href="#p-61">61</a><code class="k-f">client_id</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">clients(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="120"><td><a class="pnum" id="p-62" href="#p-62">62</a><code class="k-f">supplier_id</code></td><td>uuid</td><td>да</td><td>—</td><td>условно</td><td>FK → <code class="k-t">suppliers(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="121"><td><a class="pnum" id="p-63" href="#p-63">63</a><code class="k-f">status</code></td><td>text</td><td>нет</td><td><code>requested</code></td><td>авто</td><td><code class="k-s">requested</code>, <code class="k-s">in_transit</code>, <code class="k-s">received</code>, <code class="k-s">cancelled</code>; ИЗМЕНЕНО (правило): <code class="k-s">received</code> больше не терминальный</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="122"><td><a class="pnum" id="p-64" href="#p-64">64</a><code class="k-f">note</code></td><td>text</td><td>нет</td><td><code>''</code></td><td>нет</td><td>Примечание, 0–1000 символов (без изменений)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="123"><td><a class="pnum" id="p-65" href="#p-65">65</a><code class="k-f">created_by</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="124"><td><a class="pnum" id="p-66" href="#p-66">66</a><code class="k-f">sent_by</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (без изменений); при откате сохраняется</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="125"><td><a class="pnum" id="p-67" href="#p-67">67</a><code class="k-f">sent_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>Момент отправки (без изменений); при откате сохраняется</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="126"><td><a class="pnum" id="p-68" href="#p-68">68</a><code class="k-f">received_by</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; ИЗМЕНЕНО: обнуляется при откате</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="127"><td><a class="pnum" id="p-69" href="#p-69">69</a><code class="k-f">received_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>Момент приёмки; ИЗМЕНЕНО: обнуляется при откате</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="128"><td><a class="pnum" id="p-70" href="#p-70">70</a><code class="k-f">cancelled_by</code></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (без изменений)</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="129"><td><a class="pnum" id="p-71" href="#p-71">71</a><code class="k-f">cancelled_at</code></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>Момент отмены (без изменений)</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="130"><td><a class="pnum" id="p-72" href="#p-72">72</a><strong><code class="k-f">unreceived_by</code></strong></td><td>uuid</td><td>да</td><td>—</td><td>авто</td><td>НОВОЕ. FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code>; кто последним отменил проведение, из сессии</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="131"><td><a class="pnum" id="p-73" href="#p-73">73</a><strong><code class="k-f">unreceived_at</code></strong></td><td>timestamptz</td><td>да</td><td>—</td><td>авто</td><td>НОВОЕ. Когда последний раз отменено проведение</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="132"><td><a class="pnum" id="p-74" href="#p-74">74</a><strong><code class="k-f">unreceive_reason</code></strong></td><td>text</td><td>нет</td><td><code>''</code></td><td>условно</td><td>НОВОЕ. Причина последней отмены проведения; обязательна в <code class="k-e">POST /api/v1/transfers/:id/unreceive</code>: 1–500 символов после trim; у документов без отката — пустая строка</td><td><a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-053">DS-053</a></td></tr><tr data-mdline="133"><td><a class="pnum" id="p-75" href="#p-75">75</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>(без изменений)</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="134"><td><a class="pnum" id="p-76" href="#p-76">76</a><code class="k-f">updated_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>(без изменений)</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="135"><td><a class="pnum" id="p-77" href="#p-77">77</a><code class="k-f">version</code></td><td>int</td><td>нет</td><td><code>1</code></td><td>авто</td><td>Optimistic lock; +1 при откате (без изменений механизма)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="138"><a class="pnum" id="p-78" href="#p-78">78</a>PK, индексы, CHECK <code class="k-i">transfers_route_check</code> — без изменений</li>
+<li data-mdline="139"><a class="pnum" id="p-79" href="#p-79">79</a>CHECK <code class="k-i">transfers_unreceive_reason_check</code> — НОВОЕ: <code>char_length(unreceive_reason) &lt;= 500</code></li>
+</ul>
+<p>Связи (одна связь = одна строка):</p>
+<ul>
+<li data-mdline="142"><a class="pnum" id="p-80" href="#p-80">80</a>N→1 <code class="k-t">users</code> (<code class="k-f">unreceived_by</code>) — RESTRICT — НОВОЕ</li>
+<li data-mdline="143"><a class="pnum" id="p-81" href="#p-81">81</a>1→N <code class="k-t">transfer_items</code> — CASCADE — строки удаляются с документом</li>
+<li data-mdline="144"><a class="pnum" id="p-82" href="#p-82">82</a>1→N <code class="k-t">stock_movements</code> (<code class="k-f">transfer_id</code>) — SET NULL — журнал остатков переживает удаление документа</li>
+<li data-mdline="145"><a class="pnum" id="p-83" href="#p-83">83</a>1→N <code class="k-t">equipment</code> (<code class="k-f">active_transfer_id</code>) — SET NULL — единицы удаляемой заявки освобождаются</li>
+<li data-mdline="146"><a class="pnum" id="p-84" href="#p-84">84</a>N→1 <code class="k-t">tasks</code> (<code class="k-f">task_id</code>) — RESTRICT — страховка: заказ с документами не удалить в обход сервиса</li>
+</ul>
+<p>Поведение при действиях (одно действие = одна строка):</p>
+<ul>
+<li data-mdline="149"><a class="pnum" id="p-85" href="#p-85">85</a>Отмена проведения (<code class="k-s">received</code> → <code class="k-s">in_transit</code>): только admin; <code class="k-f">received_by</code>, <code class="k-f">received_at</code> = NULL; <code class="k-f">unreceived_by</code>, <code class="k-f">unreceived_at</code>, <code class="k-f">unreceive_reason</code> заполняются; <code class="k-t">transfer_items.qty_received</code> = NULL у всех строк; остаток и единицы — <a class="xref" href="#s-4-2">§4.2</a> и <a class="xref" href="#s-5">§5</a> — <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="150"><a class="pnum" id="p-86" href="#p-86">86</a>Повторная приёмка после отката: обычный <code>receive</code> с новым фактом; сведения об откате остаются на документе — <a class="xref" href="#ds-044">DS-044</a></li>
+<li data-mdline="151"><a class="pnum" id="p-87" href="#p-87">87</a>Удаление: hard delete, только <code class="k-s">requested</code> или <code class="k-s">cancelled</code>, только admin — <a class="xref" href="#ds-025">DS-025</a></li>
+<li data-mdline="152"><a class="pnum" id="p-88" href="#p-88">88</a>Удаление заказа: отменённые документы заказа удаляются в той же транзакции; при наличии неотменённых — отказ — <a class="xref" href="#ds-025">DS-025</a>, <a class="xref" href="#ds-050">DS-050</a></li>
+</ul>
+<p>Инварианты (правило → чем держится → DS):</p>
+<ul>
+<li data-mdline="155"><a class="pnum" id="p-89" href="#p-89">89</a>откат только из <code class="k-s">received</code> → guard статуса под <code>FOR UPDATE</code> (409 <code>TRANSFER_STATUS_CONFLICT</code>) → <a class="xref" href="#ds-017">DS-017</a></li>
+<li data-mdline="156"><a class="pnum" id="p-90" href="#p-90">90</a>откат в обратном порядке → проверка единиц под <code>FOR NO KEY UPDATE</code> (as-built, D75) (409 <code>TRANSFER_UNRECEIVE_BLOCKED</code>) → <a class="xref" href="#ds-023">DS-023</a></li>
+<li data-mdline="157"><a class="pnum" id="p-91" href="#p-91">91</a>причина обязательна → валидатор (400 <code>reason: required</code> / <code>too_long</code>) + CHECK длины → <a class="xref" href="#ds-053">DS-053</a></li>
+<li data-mdline="158"><a class="pnum" id="p-92" href="#p-92">92</a>удалить можно только документ, не влияющий на учёт → guard статуса (409 <code>TRANSFER_STATUS_CONFLICT</code>) → <a class="xref" href="#ds-025">DS-025</a></li>
+<li data-mdline="159"><a class="pnum" id="p-93" href="#p-93">93</a>заказ с неотменёнными документами не удалить → проверка сервиса (409 <code>TASK_HAS_TRANSFERS</code>) + FK RESTRICT → <a class="xref" href="#ds-025">DS-025</a></li>
+</ul>
+<h3 id="s-4-2">§4.2. <code class="k-t">stock_movements</code> (общая таблица, чужая — фича использует, не владеет)</h3>
+<p>Журнал движений остатка; владелец — фича <code>board</code>. Структура и CHECK причин не меняются (значение <code class="k-s">transfer_unreceive</code> добавлено в CHECK частью 4); эта часть начинает его писать.</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>NULL</th><th>Default</th><th>Обяз.</th><th>Описание</th><th>DS</th></tr></thead><tbody><tr data-mdline="166"><td><a class="pnum" id="p-94" href="#p-94">94</a><code class="k-f">id</code></td><td>uuid</td><td>нет</td><td><code>gen_random_uuid()</code></td><td>авто</td><td>PK (as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="167"><td><a class="pnum" id="p-95" href="#p-95">95</a><code class="k-f">product_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">products(id)</code> <code>ON DELETE RESTRICT</code> (as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="168"><td><a class="pnum" id="p-96" href="#p-96">96</a><code class="k-f">task_id</code></td><td>bigint</td><td>да</td><td>—</td><td>авто</td><td>Заказ движения списания/возврата услуги (as-is); для движений отката не заполняется</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="169"><td><a class="pnum" id="p-97" href="#p-97">97</a><code class="k-f">warehouse_id</code></td><td>uuid</td><td>нет</td><td><code>default_warehouse_id()</code></td><td>авто</td><td>FK → <code class="k-t">warehouses(id)</code> <code>ON DELETE RESTRICT</code> (as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="170"><td><a class="pnum" id="p-98" href="#p-98">98</a><code class="k-f">transfer_id</code></td><td>bigint</td><td>да</td><td>—</td><td>авто</td><td>FK → <code class="k-t">transfers(id)</code> <code>ON DELETE SET NULL</code> (as-is); при удалении документа становится NULL</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="171"><td><a class="pnum" id="p-99" href="#p-99">99</a><code class="k-f">qty_delta</code></td><td>numeric(12,3)</td><td>нет</td><td>—</td><td>авто</td><td>Дельта остатка, ≠ 0 (as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="172"><td><a class="pnum" id="p-100" href="#p-100">100</a><code class="k-f">reason</code></td><td>text</td><td>нет</td><td>—</td><td>авто</td><td>Причина. Набор значений: <code class="k-s">task_consume</code>, <code class="k-s">task_return</code>, <code class="k-s">manual</code> (board), <code class="k-s">transfer_out</code>, <code class="k-s">transfer_in</code>, <code class="k-s">transfer_loss</code>, <code class="k-s">transfer_return</code> (перемещения), <code class="k-s">supplier_in</code> (приход от поставщика), <code class="k-s">client_out</code> (накладная клиенту), <code class="k-s">transfer_unreceive</code> (компенсирующее движение отката — НАЧИНАЕТ ПИСАТЬСЯ в этой части)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="173"><td><a class="pnum" id="p-101" href="#p-101">101</a><code class="k-f">user_id</code></td><td>uuid</td><td>нет</td><td>—</td><td>авто</td><td>FK → <code class="k-t">users(id)</code> <code>ON DELETE RESTRICT</code> (as-is); для отката — администратор, выполнивший откат</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="174"><td><a class="pnum" id="p-102" href="#p-102">102</a><code class="k-f">created_at</code></td><td>timestamptz</td><td>нет</td><td><code>now()</code></td><td>авто</td><td>(as-is)</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr></tbody></table>
+<p>Ключи и индексы:</p>
+<ul>
+<li data-mdline="177"><a class="pnum" id="p-103" href="#p-103">103</a>без изменений</li>
+</ul>
+<p>Поведение при действиях (движения отката, одна транзакция с переходом документа) — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-023">DS-023</a>:</p>
+<ul>
+<li data-mdline="180"><a class="pnum" id="p-104" href="#p-104">104</a>Откат <code class="k-s">warehouse_to_warehouse</code>: <code class="k-s">transfer_unreceive</code> −<code class="k-f">qty_received</code> на складе назначения по каждой товарной строке (приёмка дала чистый прирост на факт: <code class="k-s">transfer_in</code> +<code class="k-f">qty_sent</code> и <code class="k-s">transfer_loss</code> −разница)</li>
+<li data-mdline="181"><a class="pnum" id="p-105" href="#p-105">105</a>Откат <code class="k-s">supplier_to_warehouse</code>: <code class="k-s">transfer_unreceive</code> −<code class="k-f">qty_received</code> на складе назначения</li>
+<li data-mdline="182"><a class="pnum" id="p-106" href="#p-106">106</a>Откат <code class="k-s">warehouse_to_client</code>: движений нет (товар списан при отправке и остаётся списанным, пока документ «в пути»)</li>
+<li data-mdline="183"><a class="pnum" id="p-107" href="#p-107">107</a>Откат <code class="k-s">client_to_warehouse</code>: движений нет (товарных строк нет)</li>
+<li data-mdline="184"><a class="pnum" id="p-108" href="#p-108">108</a>Строка с фактом 0: движение не пишется</li>
+<li data-mdline="185"><a class="pnum" id="p-109" href="#p-109">109</a>Остаток склада назначения может уйти в минус — ответ несёт <code class="k-f">warnings</code>; откат не блокируется</li>
+<li data-mdline="186"><a class="pnum" id="p-110" href="#p-110">110</a>Журнал не удаляется и не правится: откат — только компенсирующей записью</li>
+</ul>
+<p>Используется в модулях (used by):</p>
+<table><thead><tr><th>Модуль</th><th>Ключ-дискриминатор (если есть)</th><th>Роль (writer/reader)</th><th>Что делает</th><th>Путь</th></tr></thead><tbody><tr data-mdline="191"><td><a class="pnum" id="p-111" href="#p-111">111</a>transfers (эта часть)</td><td><code class="k-f">reason</code> = transfer_unreceive</td><td>writer</td><td>компенсирующие движения отката</td><td><code>internal/features/transfers</code></td></tr><tr data-mdline="192"><td><a class="pnum" id="p-112" href="#p-112">112</a>transfers (части 3–5)</td><td><code class="k-f">reason</code> ∈ transfer_out, transfer_in, transfer_loss, transfer_return, supplier_in, client_out</td><td>writer</td><td>движения документов</td><td><code>internal/features/transfers</code></td></tr><tr data-mdline="193"><td><a class="pnum" id="p-113" href="#p-113">113</a>board (StockEngine, «Остатки»)</td><td><code class="k-f">reason</code> ∈ task_consume, task_return, manual</td><td>writer</td><td>списание услугами, ручная корректировка</td><td><code>internal/features/board/stock_engine.go</code>, <code>stock_repo.go</code></td></tr><tr data-mdline="194"><td><a class="pnum" id="p-114" href="#p-114">114</a>seeddemo</td><td>все</td><td>writer</td><td>демо-движения</td><td><code>internal/seeddemo/seeddemo.go</code></td></tr></tbody></table>
+<h3 id="s-4-3">§4.3. Прочие таблицы (структура не меняется)</h3>
+<ul>
+<li data-mdline="197"><a class="pnum" id="p-115" href="#p-115">115</a><code class="k-t">transfer_items</code>: при откате <code class="k-f">qty_received</code> = NULL у всех строк; при удалении документа строки удаляются каскадом — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-025">DS-025</a></li>
+<li data-mdline="198"><a class="pnum" id="p-116" href="#p-116">116</a><code class="k-t">equipment</code>: при откате единица возвращается в <code class="k-s">in_transit</code>, <code class="k-f">warehouse_id</code> = NULL, <code class="k-f">active_transfer_id</code> = id документа; при удалении заявки <code class="k-f">active_transfer_id</code> = NULL — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-025">DS-025</a></li>
+<li data-mdline="199"><a class="pnum" id="p-117" href="#p-117">117</a><code class="k-t">tasks</code>: при удалении заказа сначала удаляются его отменённые документы — <a class="xref" href="#ds-050">DS-050</a></li>
+</ul>
+<h2 id="s-5">§5. Статусная модель</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 520" width="680" height="520" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="520" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="n" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b45309"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="26" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="415.8" lengthAdjust="spacingAndGlyphs">Статусная модель документа (часть 6: откат и удаление)</text>
+<circle cx="60" cy="110" r="8" fill="#334155"/>
+<rect x="130" y="70" width="180" height="80" rx="8" fill="#eff6ff" stroke="#1e3a8a" stroke-width="1.5"/>
+<text x="220.0" y="94" font-size="13" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="128.7" lengthAdjust="spacingAndGlyphs">requested · Заявка</text>
+<text x="220.0" y="114" font-size="11" fill="#1e3a8a" text-anchor="middle" font-weight="normal" textLength="157.3" lengthAdjust="spacingAndGlyphs">можно: править, отправить,</text>
+<text x="220.0" y="129" font-size="11" fill="#1e3a8a" text-anchor="middle" font-weight="normal" textLength="151.2" lengthAdjust="spacingAndGlyphs">отменить, удалить (admin)</text>
+<rect x="440" y="70" width="190" height="80" rx="8" fill="#fef9c3" stroke="#713f12" stroke-width="1.5"/>
+<text x="535.0" y="94" font-size="13" fill="#713f12" text-anchor="middle" font-weight="bold" textLength="135.9" lengthAdjust="spacingAndGlyphs">in_transit · В пути</text>
+<text x="535.0" y="114" font-size="11" fill="#713f12" text-anchor="middle" font-weight="normal" textLength="90.8" lengthAdjust="spacingAndGlyphs">можно: принять,</text>
+<text x="535.0" y="129" font-size="11" fill="#713f12" text-anchor="middle" font-weight="normal" textLength="48.4" lengthAdjust="spacingAndGlyphs">отменить</text>
+<rect x="440" y="270" width="190" height="80" rx="8" fill="#dcfce7" stroke="#14532d" stroke-width="1.5"/>
+<text x="535.0" y="294" font-size="13" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="135.9" lengthAdjust="spacingAndGlyphs">received · Получено</text>
+<text x="535.0" y="314" font-size="11" fill="#14532d" text-anchor="middle" font-weight="normal" textLength="90.8" lengthAdjust="spacingAndGlyphs">можно: отменить</text>
+<text x="535.0" y="329" font-size="11" fill="#14532d" text-anchor="middle" font-weight="normal" textLength="108.9" lengthAdjust="spacingAndGlyphs">проведение (admin)</text>
+<rect x="130" y="270" width="180" height="80" rx="8" fill="#fee2e2" stroke="#7f1d1d" stroke-width="1.5"/>
+<rect x="134" y="274" width="172" height="72" rx="6" fill="none" stroke="#7f1d1d" stroke-width="1"/>
+<text x="220.0" y="294" font-size="13" fill="#7f1d1d" text-anchor="middle" font-weight="bold" textLength="135.9" lengthAdjust="spacingAndGlyphs">cancelled · Отменён</text>
+<text x="220.0" y="314" font-size="11" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="72.6" lengthAdjust="spacingAndGlyphs">терминальный</text>
+<text x="220.0" y="329" font-size="11" fill="#7f1d1d" text-anchor="middle" font-weight="normal" textLength="133.1" lengthAdjust="spacingAndGlyphs">можно: удалить (admin)</text>
+<path d="M68,110 L128,110" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="98" y="100" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="42.4" lengthAdjust="spacingAndGlyphs">создать</text>
+<path d="M310,110 L438,110" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="374" y="100" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="24.2" lengthAdjust="spacingAndGlyphs">send</text>
+<path d="M505,150 L505,268" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="472" y="212" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="42.4" lengthAdjust="spacingAndGlyphs">receive</text>
+<path d="M575,268 L575,152" stroke="#b45309" stroke-width="2.2" fill="none" marker-end="url(#n)"/>
+<text x="625" y="198" font-size="11" fill="#b45309" text-anchor="middle" font-weight="bold" textLength="54.5" lengthAdjust="spacingAndGlyphs">unreceive</text>
+<text x="625" y="213" font-size="11" fill="#b45309" text-anchor="middle" font-weight="normal" textLength="36.3" lengthAdjust="spacingAndGlyphs">admin,</text>
+<text x="625" y="228" font-size="11" fill="#b45309" text-anchor="middle" font-weight="normal" textLength="42.4" lengthAdjust="spacingAndGlyphs">причина</text>
+<path d="M220,150 L220,268" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="190" y="212" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="36.3" lengthAdjust="spacingAndGlyphs">cancel</text>
+<path d="M440,145 L312,275" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="352" y="200" font-size="11" fill="#475569" text-anchor="middle" font-weight="normal" textLength="36.3" lengthAdjust="spacingAndGlyphs">cancel</text>
+<path d="M130,95 L60,60" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="62" y="48" font-size="11" fill="#b91c1c" text-anchor="middle" font-weight="bold" textLength="36.3" lengthAdjust="spacingAndGlyphs">delete</text>
+<path d="M130,330 L60,365" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="62" y="382" font-size="11" fill="#b91c1c" text-anchor="middle" font-weight="bold" textLength="36.3" lengthAdjust="spacingAndGlyphs">delete</text>
+<rect x="30" y="400" width="620" height="105" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="44" y="420" font-size="12" fill="#1f2937" text-anchor="start" font-weight="bold" textLength="46.2" lengthAdjust="spacingAndGlyphs">Легенда</text>
+<text x="44" y="438" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="560.2" lengthAdjust="spacingAndGlyphs">Новое в части 6: unreceive (оранжевая стрелка) и delete (красные стрелки). Остальное — части 3–5.</text>
+<text x="44" y="454" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="635.2" lengthAdjust="spacingAndGlyphs">unreceive: остаток −факт (может уйти в минус, warnings), единицы снова «в пути», факт и «кто принял» обнулены.</text>
+<text x="44" y="470" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="612.2" lengthAdjust="spacingAndGlyphs">unreceive запрещён (409 TRANSFER_UNRECEIVE_BLOCKED), если единицу увёз более поздний документ — он назван.</text>
+<text x="44" y="486" font-size="10.5" fill="#334155" text-anchor="start" font-weight="normal" textLength="606.4" lengthAdjust="spacingAndGlyphs">delete: только Заявка и Отменён. Заказ с Заявкой / В пути / Получено не удалить (409 TASK_HAS_TRANSFERS).</text>
+</svg></figure></p>
+<p>Дельта: «Получено» больше не терминальный; появляется удаление. Что можно в каждом статусе после этой части (всё остальное → 409 <code>TRANSFER_STATUS_CONFLICT</code>):</p>
+<ul>
+<li data-mdline="205"><a class="pnum" id="p-118" href="#p-118">118</a><code class="k-s">requested</code> («Заявка»): править, отправить, отменить, удалить (admin)</li>
+<li data-mdline="206"><a class="pnum" id="p-119" href="#p-119">119</a><code class="k-s">in_transit</code> («В пути»): принять, отменить</li>
+<li data-mdline="207"><a class="pnum" id="p-120" href="#p-120">120</a><code class="k-s">received</code> («Получено»): отменить проведение (admin)</li>
+<li data-mdline="208"><a class="pnum" id="p-121" href="#p-121">121</a><code class="k-s">cancelled</code> («Отменён», терминальный): удалить (admin)</li>
+</ul>
+<p>Детали переходов (guard = атомарное условие; что при гонке; каждый запрет = 409 + негативный тест):</p>
+<table><thead><tr><th>Из</th><th>В</th><th>Триггер</th><th>Кто</th><th>Guard / конкурентный исход</th><th>Side effects</th></tr></thead><tbody><tr data-mdline="213"><td><a class="pnum" id="p-122" href="#p-122">122</a><code class="k-s">received</code></td><td><code class="k-s">in_transit</code></td><td><code class="k-e">POST /api/v1/transfers/:id/unreceive</code></td><td>только admin</td><td>версия + статус; каждая единица документа числится там, куда её привёз этот документ, свободна и не участвует в более позднем полученном документе — иначе 409 <code>TRANSFER_UNRECEIVE_BLOCKED</code> с номером мешающего документа; второй одновременный откат — 409 по версии</td><td><code class="k-s">transfer_unreceive</code> на факт (<a class="xref" href="#s-4-2">§4.2</a>), остаток может уйти в минус — <code class="k-f">warnings</code>; единицы → <code class="k-s">in_transit</code> и заняты этим документом; <code class="k-f">qty_received</code>, <code class="k-f">received_by</code>, <code class="k-f">received_at</code> = NULL; <code class="k-f">unreceived_by</code>, <code class="k-f">unreceived_at</code>, <code class="k-f">unreceive_reason</code>; для накладной сумма остаётся в итоге заказа («В пути»), отметка «Оплачен» не трогается</td></tr><tr data-mdline="214"><td><a class="pnum" id="p-123" href="#p-123">123</a><code class="k-s">requested</code></td><td>(удалён)</td><td><code class="k-e">DELETE /api/v1/transfers/:id</code></td><td>только admin</td><td>версия + статус</td><td>строки удаляются каскадом; единицы заявки освобождаются</td></tr><tr data-mdline="215"><td><a class="pnum" id="p-124" href="#p-124">124</a><code class="k-s">cancelled</code></td><td>(удалён)</td><td><code class="k-e">DELETE /api/v1/transfers/:id</code></td><td>только admin</td><td>версия + статус</td><td>строки удаляются каскадом; у движений <code class="k-f">transfer_id</code> = NULL</td></tr><tr data-mdline="216"><td><a class="pnum" id="p-125" href="#p-125">125</a><code class="k-s">cancelled</code></td><td>(удалён)</td><td><code class="k-e">DELETE /api/v1/tasks/:id</code> — вместе с заказом</td><td>только admin</td><td>у заказа нет документов в <code class="k-s">requested</code>, <code class="k-s">in_transit</code>, <code class="k-s">received</code>, иначе 409 <code>TASK_HAS_TRANSFERS</code></td><td>отменённые документы заказа и заказ удалены одной транзакцией</td></tr></tbody></table>
+<p>Где единица после отката (в статусе «в пути», маршрут — этого документа): <code class="k-s">client_to_warehouse</code> — была на складе назначения → в пути от клиента; <code class="k-s">warehouse_to_warehouse</code> — была на складе назначения → в пути; <code class="k-s">warehouse_to_client</code> — была «у клиента» → в пути к клиенту. Последующая отмена документа «в пути» вернёт её в источник обычным образом (части 3–4).</p>
+<h2 id="s-6">§6. API</h2>
+<blockquote><p>Режим B «API + фронтенд». Базовый URL стенда: <code>http://localhost:8080</code>. Авторизация — сессионная cookie <code>sid</code> (плейсхолдеры <code>&lt;SID&gt;</code>, <code>&lt;SID_EXECUTOR&gt;</code>). Копируй curl в терминал или в Postman: Import → Raw text. Тело ошибки — формат <code>pkg/errorspkg</code>. Ключи — snake_case, URL — kebab-case (CLAUDE.md §API-1).</p></blockquote>
+<p>Формат тела ошибки (единый для всех endpoint'ов части; 400 дополнительно несёт <code>details.fields[]</code>):</p>
+<pre><code>{
+  "code": "TRANSFER_STATUS_CONFLICT",
+  "message": "Перемещение ещё не получено",
+  "details": {}
+}</code></pre>
+<h3 id="s-6-1">§6.1. <code class="k-e">POST /api/v1/transfers/:id/unreceive</code></h3>
+<ul>
+<li data-mdline="233"><a class="pnum" id="p-126" href="#p-126">126</a>Назначение: «Отменить проведение» — вернуть полученный документ в «В пути». НОВЫЙ endpoint.</li>
+<li data-mdline="234"><a class="pnum" id="p-127" href="#p-127">127</a>Authz: только admin; executor → 403 (и для документов с клиентом тоже) — <a class="xref" href="#ds-018">DS-018</a> (контекст). as-built (D76): роль проверяется первой — исполнитель получает 403 всегда, в т.ч. для несуществующего документа.</li>
+<li data-mdline="235"><a class="pnum" id="p-128" href="#p-128">128</a>Спец-механика: откат в обратном порядке — если единицу документа увёз более поздний документ либо она стоит в другом незавершённом, откат запрещён, ответ называет мешающий документ; оплата заказа и уход остатка в минус откат не блокируют — <a class="xref" href="#ds-023">DS-023</a>.</li>
+<li data-mdline="236"><a class="pnum" id="p-129" href="#p-129">129</a>Идемпотентность/повтор: повтор → 409 (версия либо статус); компенсирующее движение одно.</li>
+<li data-mdline="237"><a class="pnum" id="p-130" href="#p-130">130</a>Side effects: одна транзакция — <code class="k-t">transfers</code> (статус <code>in_transit</code>, <code class="k-f">received_by</code> и <code class="k-f">received_at</code> = NULL, <code class="k-f">unreceived_by</code>, <code class="k-f">unreceived_at</code>, <code class="k-f">unreceive_reason</code>, версия), <code class="k-t">transfer_items.qty_received</code> = NULL, <code class="k-t">product_stock</code> и <code class="k-t">stock_movements</code> (<code class="k-s">transfer_unreceive</code>, <a class="xref" href="#s-4-2">§4.2</a>), <code class="k-t">equipment</code> (<code class="k-f">location_status</code> = <code>in_transit</code>, <code class="k-f">warehouse_id</code> = NULL, <code class="k-f">active_transfer_id</code> = id документа); итог заказа не меняется, <code>tasks.is_paid</code> не трогается.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="243"><td><a class="pnum" id="p-131" href="#p-131">131</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>1–9223372036854775807; существующий документ; иначе 404</td></tr><tr data-mdline="244"><td><a class="pnum" id="p-132" href="#p-132">132</a><code class="k-f">version</code></td><td>body</td><td>integer</td><td>да</td><td>≥ 1; отсутствует → 400 <code>required</code>; не совпала → 409</td></tr><tr data-mdline="245"><td><a class="pnum" id="p-133" href="#p-133">133</a><code class="k-f">reason</code></td><td>body</td><td>string</td><td>да</td><td>1–500 символов после trim; пусто или из пробелов → 400 <code>required</code>; длиннее 500 → 400 <code>too_long</code>; недопустимые символы (например NUL) → 400 <code>invalid_text</code> (as-built)</td></tr></tbody></table>
+<p>Response 200 — объект документа; поля частей 3–5 без изменений (<code>id</code>, <code>direction</code>, <code>status</code>, <code>from_warehouse_id</code>, <code>from_warehouse_name</code>, <code>to_warehouse_id</code>, <code>to_warehouse_name</code>, <code>task_id</code>, <code>task_title</code>, <code>client_id</code>, <code>client_name</code>, <code>supplier_id</code>, <code>supplier_name</code>, <code>note</code>, <code>amount</code>, <code>created_by</code>, <code>created_by_name</code>, <code>sent_by</code>, <code>sent_by_name</code>, <code>sent_at</code>, <code>received_by</code>, <code>received_by_name</code>, <code>received_at</code>, <code>cancelled_by</code>, <code>cancelled_by_name</code>, <code>cancelled_at</code>, <code>created_at</code>, <code>updated_at</code>, <code>version</code>, <code>items[]</code>, <code>warnings[]</code>); новые поля (присутствуют в объекте документа во всех endpoint'ах):</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="251"><td><a class="pnum" id="p-134" href="#p-134">134</a><code class="k-f">unreceived_by</code></td><td>uuid | null</td><td>кто последним отменил проведение</td></tr><tr data-mdline="252"><td><a class="pnum" id="p-135" href="#p-135">135</a><code class="k-f">unreceived_by_name</code></td><td>string | null</td><td>его имя</td></tr><tr data-mdline="253"><td><a class="pnum" id="p-136" href="#p-136">136</a><code class="k-f">unreceived_at</code></td><td>datetime | null</td><td>когда отменено проведение</td></tr><tr data-mdline="254"><td><a class="pnum" id="p-137" href="#p-137">137</a><code class="k-f">unreceive_reason</code></td><td>string</td><td>причина последнего отката; пустая строка, если отката не было</td></tr></tbody></table>
+<p><code class="k-f">warnings</code> в ответе отката — товары, ушедшие в минус или ниже минимума на складе назначения.</p>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="262"><td><a class="pnum" id="p-138" href="#p-138">138</a>400 <code>VALIDATION</code></td><td><code>version: required</code></td><td>«Обновите страницу»</td></tr><tr data-mdline="263"><td><a class="pnum" id="p-139" href="#p-139">139</a>400 <code>VALIDATION</code></td><td><code>reason: required</code></td><td>«Укажите причину»</td></tr><tr data-mdline="264"><td><a class="pnum" id="p-140" href="#p-140">140</a>400 <code>VALIDATION</code></td><td><code>reason: too_long</code></td><td>«Причина — не более 500 символов»</td></tr><tr data-mdline="265"><td><a class="pnum" id="p-141" href="#p-141">141</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="266"><td><a class="pnum" id="p-142" href="#p-142">142</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>нет документа</td><td>«Перемещение не найдено»</td></tr><tr data-mdline="267"><td><a class="pnum" id="p-143" href="#p-143">143</a>409 <code>TRANSFER_VERSION_CONFLICT</code></td><td>версия устарела</td><td>«Перемещение уже изменено, обновите»</td></tr><tr data-mdline="268"><td><a class="pnum" id="p-144" href="#p-144">144</a>409 <code>TRANSFER_STATUS_CONFLICT</code></td><td>статус <code>requested</code></td><td>«Перемещение ещё не проведено»</td></tr><tr data-mdline="269"><td><a class="pnum" id="p-145" href="#p-145">145</a>409 <code>TRANSFER_STATUS_CONFLICT</code></td><td>статус <code>in_transit</code></td><td>«Перемещение ещё не получено»</td></tr><tr data-mdline="270"><td><a class="pnum" id="p-146" href="#p-146">146</a>409 <code>TRANSFER_STATUS_CONFLICT</code></td><td>статус <code>cancelled</code></td><td>«Перемещение отменено»</td></tr><tr data-mdline="271"><td><a class="pnum" id="p-147" href="#p-147">147</a>409 <code>TRANSFER_UNRECEIVE_BLOCKED</code></td><td>единицу увёз более поздний полученный документ (<code>details.transfer_id</code>, <code>details.equipment_id</code>)</td><td>«Сначала отмените проведение перемещения #N»</td></tr><tr data-mdline="272"><td><a class="pnum" id="p-148" href="#p-148">148</a>409 <code>TRANSFER_UNRECEIVE_BLOCKED</code></td><td>единица стоит в другом незавершённом документе (<code>details.transfer_id</code>, <code>details.equipment_id</code>)</td><td>«Сначала отмените перемещение #N»</td></tr></tbody></table>
+<p>as-built (D77): при нескольких более поздних документах ответ называет САМЫЙ поздний полученный документ с единицей (с него начинают откат); единица не на месте без мешающего документа (местоположение правили вне перемещений) → тот же код без <code>details.transfer_id</code>, текст «Оборудование находится не там, куда его привезло это перемещение». Порядок «более поздний» опирается на <code class="k-f">received_at</code> = <code>clock_timestamp()</code> (D76, не <code>now()</code>).</p>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/17/unreceive' -d '{"version":4,"reason":"Приняли не тот товар"}'</code></pre>
+<pre><code>{
+  "id": 17, "direction": "supplier_to_warehouse", "status": "in_transit",
+  "received_by": null, "received_by_name": null, "received_at": null,
+  "unreceived_by": "1f6b0c3a-2d4e-4f5a-9b7c-8e1d2a3b4c5d", "unreceived_by_name": "Админ",
+  "unreceived_at": "2026-10-07T10:00:00Z", "unreceive_reason": "Приняли не тот товар", "version": 5,
+  "items": [ { "id": "b7c8d9e0-f1a2-4b34-8c5d-6e7f8a9b0c1d", "kind": "product", "qty_sent": 10.000, "qty_received": null } ],
+  "warnings": [ { "product_id": "c7e2a9f4-1b3d-4e6a-8c2f-9d0b5a4e3f12", "warehouse_id": "5b0c1c0e-6a55-4c0e-9c37-3d2f6f1f7a11", "warehouse_name": "Алматы", "name": "Картридж Q2612A", "stock": -3.000, "min_stock": 3.000, "kind": "negative" } ]
+}</code></pre>
+<p>Ошибка (TRANSFER_UNRECEIVE_BLOCKED → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/12/unreceive' -d '{"version":1,"reason":"Ошибка склада"}'</code></pre>
+<pre><code>{
+  "code": "TRANSFER_UNRECEIVE_BLOCKED",
+  "message": "Сначала отмените проведение перемещения #14",
+  "details": { "transfer_id": 14, "equipment_id": "0d9a4c1b-7e2f-4b63-9a51-2c8e5f7d3a90" }
+}</code></pre>
+<p>Спец-механика (откат накладной при оплаченном заказе — разрешён):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -H 'Content-Type: application/json' -X POST 'http://localhost:8080/api/v1/transfers/14/unreceive' -d '{"version":3,"reason":"Клиент не получил"}'</code></pre>
+<pre><code>{ "id": 14, "direction": "warehouse_to_client", "status": "in_transit", "amount": 18500.00, "unreceive_reason": "Клиент не получил", "version": 4, "warnings": [] }</code></pre>
+<p>DS: <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-023">DS-023</a>, <a class="xref" href="#ds-044">DS-044</a>, <a class="xref" href="#ds-053">DS-053</a>.</p>
+<h3 id="s-6-2">§6.2. <code class="k-e">DELETE /api/v1/transfers/:id</code></h3>
+<ul>
+<li data-mdline="311"><a class="pnum" id="p-149" href="#p-149">149</a>Назначение: удалить документ, не влияющий на учёт. НОВЫЙ endpoint.</li>
+<li data-mdline="312"><a class="pnum" id="p-150" href="#p-150">150</a>Authz: только admin; executor → 403 — <a class="xref" href="#ds-042">DS-042</a> (контекст). as-built (D76): 403 всегда, роль проверяется первой (в т.ч. документ с клиентом и несуществующий).</li>
+<li data-mdline="313"><a class="pnum" id="p-151" href="#p-151">151</a>Идемпотентность/повтор: повтор → 404.</li>
+<li data-mdline="314"><a class="pnum" id="p-152" href="#p-152">152</a>Side effects: одна транзакция — удаление <code class="k-t">transfers</code> (строки <code class="k-t">transfer_items</code> каскадом), <code class="k-t">stock_movements.transfer_id</code> → NULL, <code class="k-t">equipment.active_transfer_id</code> → NULL у единиц заявки.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="320"><td><a class="pnum" id="p-153" href="#p-153">153</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>1–9223372036854775807; существующий документ; иначе 404</td></tr><tr data-mdline="321"><td><a class="pnum" id="p-154" href="#p-154">154</a><code class="k-f">version</code></td><td>query</td><td>integer</td><td>да</td><td>≥ 1; отсутствует → 400 <code>required</code>; не число → 400 <code>invalid</code>; не совпала → 409</td></tr></tbody></table>
+<p>Response 200:</p>
+<table><thead><tr><th>Поле</th><th>Тип</th><th>Описание</th></tr></thead><tbody><tr data-mdline="327"><td><a class="pnum" id="p-155" href="#p-155">155</a><code class="k-f">id</code></td><td>integer</td><td>номер удалённого документа</td></tr></tbody></table>
+<p>Ошибки:</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="333"><td><a class="pnum" id="p-156" href="#p-156">156</a>400 <code>VALIDATION</code></td><td><code>version: required</code> / <code>invalid</code></td><td>«Обновите страницу»</td></tr><tr data-mdline="334"><td><a class="pnum" id="p-157" href="#p-157">157</a>403 <code>FORBIDDEN</code></td><td>executor</td><td>«Нет доступа»</td></tr><tr data-mdline="335"><td><a class="pnum" id="p-158" href="#p-158">158</a>404 <code>TRANSFER_NOT_FOUND</code></td><td>нет документа</td><td>«Перемещение не найдено»</td></tr><tr data-mdline="336"><td><a class="pnum" id="p-159" href="#p-159">159</a>409 <code>TRANSFER_VERSION_CONFLICT</code></td><td>версия устарела</td><td>«Перемещение уже изменено, обновите»</td></tr><tr data-mdline="337"><td><a class="pnum" id="p-160" href="#p-160">160</a>409 <code>TRANSFER_STATUS_CONFLICT</code></td><td>статус <code>in_transit</code></td><td>«Перемещение в пути — сначала отмените его»</td></tr><tr data-mdline="338"><td><a class="pnum" id="p-161" href="#p-161">161</a>409 <code>TRANSFER_STATUS_CONFLICT</code></td><td>статус <code>received</code></td><td>«Перемещение получено — сначала отмените проведение, затем отмените»</td></tr></tbody></table>
+<p>Успех:</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/transfers/16?version=4'</code></pre>
+<pre><code>{ "id": 16 }</code></pre>
+<p>Ошибка (TRANSFER_STATUS_CONFLICT → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/transfers/14?version=4'</code></pre>
+<pre><code>{
+  "code": "TRANSFER_STATUS_CONFLICT",
+  "message": "Перемещение в пути — сначала отмените его"
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-025">DS-025</a>.</p>
+<h3 id="s-6-3">§6.3. <code class="k-e">DELETE /api/v1/tasks/:id</code> (существующий, дельта)</h3>
+<ul>
+<li data-mdline="360"><a class="pnum" id="p-162" href="#p-162">162</a>Назначение: удаление заказа; дельта — точный запрет с номерами документов и удаление отменённых документов вместе с заказом.</li>
+<li data-mdline="361"><a class="pnum" id="p-163" href="#p-163">163</a>Authz: без изменений — только admin.</li>
+<li data-mdline="362"><a class="pnum" id="p-164" href="#p-164">164</a>Идемпотентность/повтор: повтор → 404 (as-is).</li>
+<li data-mdline="363"><a class="pnum" id="p-165" href="#p-165">165</a>Side effects: ИЗМЕНЕНО — в одной транзакции: отменённые документы заказа удаляются (как <a class="xref" href="#s-6-2">§6.2</a>: строки каскадом, <code>stock_movements.transfer_id</code> → NULL), затем заказ удаляется как сейчас.</li>
+</ul>
+<p>Request:</p>
+<table><thead><tr><th>Параметр</th><th>Где</th><th>Тип</th><th>Обязателен</th><th>Валидация</th></tr></thead><tbody><tr data-mdline="369"><td><a class="pnum" id="p-166" href="#p-166">166</a><code class="k-f">id</code></td><td>path</td><td>integer</td><td>да</td><td>существующий заказ; иначе 404 (без изменений)</td></tr></tbody></table>
+<p>Response 200 — без изменений (as-is ответ удаления заказа).</p>
+<p>Ошибки (изменённая; остальные без изменений):</p>
+<table><thead><tr><th>Код</th><th>Условие</th><th>Сообщение пользователю</th></tr></thead><tbody><tr data-mdline="377"><td><a class="pnum" id="p-167" href="#p-167">167</a>409 <code>TASK_HAS_TRANSFERS</code></td><td>у заказа есть документ в <code>requested</code>, <code>in_transit</code> или <code>received</code> (<code>details.transfer_ids</code> — номера по возрастанию); ЗАМЕНЯЕТ общий 409 <code class="k-x">CONFLICT</code> «У заказа есть перемещения — удалить нельзя» части 4</td><td>«Сначала отмените перемещения: #N, #M»</td></tr></tbody></table>
+<p>Успех (у заказа только отменённые документы; as-built — фактический as-is ответ удаления заказа <code>{ warnings }</code>: предупреждения по остаткам товаров, возвращённых на склад):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/tasks/41'</code></pre>
+<pre><code>{ "warnings": [] }</code></pre>
+<p>Ошибка (TASK_HAS_TRANSFERS → 409):</p>
+<pre><code>curl -s -b 'sid=&lt;SID&gt;' -X DELETE 'http://localhost:8080/api/v1/tasks/37'</code></pre>
+<pre><code>{
+  "code": "TASK_HAS_TRANSFERS",
+  "message": "Сначала отмените перемещения: #12, #14",
+  "details": { "transfer_ids": [12, 14] }
+}</code></pre>
+<p>DS: <a class="xref" href="#ds-025">DS-025</a>, <a class="xref" href="#ds-050">DS-050</a>.</p>
+<h3 id="s-6-4">§6.4. Прочие изменения существующих endpoints (дельта)</h3>
+<p>Формат каждой строки: endpoint — что меняется — ошибка — DS.</p>
+<table><thead><tr><th>Endpoint</th><th>Изменение</th><th>Новая ошибка</th><th>DS</th></tr></thead><tbody><tr data-mdline="404"><td><a class="pnum" id="p-168" href="#p-168">168</a><code class="k-e">GET /api/v1/transfers/:id</code>, ответы <code class="k-e">POST /api/v1/transfers</code>, <code class="k-e">PUT /api/v1/transfers/:id</code>, <code>…/send</code>, <code>…/receive</code>, <code>…/cancel</code></td><td>объект документа с <code class="k-f">unreceived_by</code>, <code class="k-f">unreceived_by_name</code>, <code class="k-f">unreceived_at</code>, <code class="k-f">unreceive_reason</code></td><td>—</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="405"><td><a class="pnum" id="p-169" href="#p-169">169</a><code class="k-e">GET /api/v1/transfers</code> (список)</td><td>as-built: элемент списка несёт <code class="k-f">items[].unreceived_at</code> (datetime | null) — по нему рисуется значок «↩» у документа, возвращённого откатом в «В пути»</td><td>—</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="406"><td><a class="pnum" id="p-170" href="#p-170">170</a><code class="k-e">POST /api/v1/transfers/:id/cancel</code></td><td>текст для статуса <code>received</code> меняется: был «Перемещение уже получено — отменить нельзя»</td><td>409 <code>TRANSFER_STATUS_CONFLICT</code> «Перемещение получено — сначала отмените проведение»</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="407"><td><a class="pnum" id="p-171" href="#p-171">171</a><code class="k-e">POST /api/v1/transfers/:id/receive</code></td><td>повторная приёмка после отката — обычная; факт вводится заново, сведения об откате сохраняются</td><td>—</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="408"><td><a class="pnum" id="p-172" href="#p-172">172</a><code class="k-e">GET /api/v1/tasks/:id/card</code>, <code class="k-e">GET /api/v1/tasks</code></td><td>значения не меняются по формуле: откатанная накладная («В пути») остаётся в <code class="k-f">total_amount</code> / <code class="k-f">transfers_amount</code>; отменённая после отката — выходит</td><td>—</td><td><a class="xref" href="#ds-023">DS-023</a></td></tr></tbody></table>
+<p>Ошибка (TRANSFER_STATUS_CONFLICT → 409, отмена полученного документа без отката):</p>
+<pre><code>{
+  "code": "TRANSFER_STATUS_CONFLICT",
+  "message": "Перемещение получено — сначала отмените проведение"
+}</code></pre>
+<h2 id="s-7">§7. UX/UI + API (сквозной флоу)</h2>
+<p><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 470" width="680" height="470" font-family="Helvetica Neue, Arial, sans-serif">
+<rect width="680" height="470" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#475569"/></marker><marker id="n" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b45309"/></marker><marker id="r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#b91c1c"/></marker></defs>
+<text x="340" y="24" font-size="14" fill="#1f2937" text-anchor="middle" font-weight="bold" textLength="408.1" lengthAdjust="spacingAndGlyphs">Сценарий: исправление ошибочно проведённого документа</text>
+<rect x="10" y="40" width="160" height="30" rx="6" fill="#eff6ff" stroke="#1e3a8a"/>
+<text x="90" y="60" font-size="12" fill="#1e3a8a" text-anchor="middle" font-weight="bold" textLength="85.8" lengthAdjust="spacingAndGlyphs">Администратор</text>
+<path d="M90,70 L90,445" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="220" y="40" width="160" height="30" rx="6" fill="#f1f5f9" stroke="#334155"/>
+<text x="300" y="60" font-size="12" fill="#334155" text-anchor="middle" font-weight="bold" textLength="118.8" lengthAdjust="spacingAndGlyphs">Экран (§8.1, §8.2)</text>
+<path d="M300,70 L300,445" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<rect x="460" y="40" width="160" height="30" rx="6" fill="#dcfce7" stroke="#14532d"/>
+<text x="540" y="60" font-size="12" fill="#14532d" text-anchor="middle" font-weight="bold" textLength="52.8" lengthAdjust="spacingAndGlyphs">API (§6)</text>
+<path d="M540,70 L540,445" stroke="#94a3b8" stroke-dasharray="4 4"/>
+<path d="M90,100 L300,100" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="94" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="179.0" lengthAdjust="spacingAndGlyphs">«Отменить проведение» → причина</text>
+<path d="M300,125 L540,125" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="119" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="306.1" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/17/unreceive {version, reason}</text>
+<path d="M540,150 L300,150" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="144" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="202.1" lengthAdjust="spacingAndGlyphs">200 {status:"in_transit", warnings}</text>
+<path d="M300,175 L90,175" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="195.0" y="169" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="236.8" lengthAdjust="spacingAndGlyphs">«В пути», строка «Проведение отменено: …»</text>
+<path d="M90,200 L300,200" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="194" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="109.7" lengthAdjust="spacingAndGlyphs">«Отменить отправку»</text>
+<path d="M300,225 L540,225" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="219" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="242.6" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/17/cancel {version}</text>
+<path d="M540,250 L300,250" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="244" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="138.6" lengthAdjust="spacingAndGlyphs">200 {status:"cancelled"}</text>
+<path d="M90,275 L300,275" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="195.0" y="269" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="52.0" lengthAdjust="spacingAndGlyphs">«Удалить»</text>
+<path d="M300,300 L540,300" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text x="420.0" y="294" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="213.7" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/transfers/17?version=6</text>
+<path d="M540,325 L300,325" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="420.0" y="319" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="normal" textLength="63.5" lengthAdjust="spacingAndGlyphs">200 {id:17}</text>
+<path d="M300,350 L540,350" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="344" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="311.9" lengthAdjust="spacingAndGlyphs">POST /api/v1/transfers/12/unreceive (единицу увёз #14)</text>
+<path d="M540,375 L300,375" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="369" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="271.4" lengthAdjust="spacingAndGlyphs">409 TRANSFER_UNRECEIVE_BLOCKED {transfer_id:14}</text>
+<path d="M300,400 L540,400" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)"/>
+<text x="420.0" y="394" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="300.3" lengthAdjust="spacingAndGlyphs">DELETE /api/v1/tasks/37 (есть проведённые документы)</text>
+<path d="M540,425 L300,425" stroke="#b91c1c" stroke-width="1.5" fill="none" marker-end="url(#r)" stroke-dasharray="5 4"/>
+<text x="420.0" y="419" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="normal" textLength="259.9" lengthAdjust="spacingAndGlyphs">409 TASK_HAS_TRANSFERS {transfer_ids:[12,14]}</text>
+<text x="340" y="460" font-size="10" fill="#475569" text-anchor="middle" font-weight="normal" textLength="407.0" lengthAdjust="spacingAndGlyphs">Сплошная стрелка — запрос/действие, пунктир — ответ; красным — error-ветки</text>
+</svg></figure></p>
+<p>Полнота покрытия (endpoint → экраны <a class="xref" href="#s-8">§8</a>):</p>
+<table><thead><tr><th>Endpoint</th><th>Экраны</th></tr></thead><tbody><tr data-mdline="424"><td><a class="pnum" id="p-173" href="#p-173">173</a><code class="k-e">POST /api/v1/transfers/:id/unreceive</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="425"><td><a class="pnum" id="p-174" href="#p-174">174</a><code class="k-e">DELETE /api/v1/transfers/:id</code></td><td><a class="xref" href="#s-8-1">§8.1</a></td></tr><tr data-mdline="426"><td><a class="pnum" id="p-175" href="#p-175">175</a><code class="k-e">DELETE /api/v1/tasks/:id</code></td><td><a class="xref" href="#s-8-2">§8.2</a></td></tr></tbody></table>
+<p>Непокрытых endpoints и UI-действий без endpoint нет.</p>
+<h2 id="s-8">§8. UI-иерархия</h2>
+<ul>
+<li data-mdline="431"><a class="pnum" id="p-176" href="#p-176">176</a>Работа → <strong>Перемещения</strong> (<code>/transfers</code>) → документ → диалоги «Отменить проведение», «Удалить» — <a class="xref" href="#s-8-1">§8.1</a></li>
+<li data-mdline="432"><a class="pnum" id="p-177" href="#p-177">177</a>Доска → <strong>Карточка заказа</strong> → удаление заказа — <a class="xref" href="#s-8-2">§8.2</a></li>
+</ul>
+<p>UI-конвенции (<a class="xref" href="#ds-052">DS-052</a> — контекст, реализуется в <code>transfers-core</code>): ошибка под полем, тост в правом верхнем углу на 5 секунд, модальный <code>KT.uiDialog</code> по центру, блокировка кнопки на время запроса. as-built (D77): диалог причины отката — отдельная Bootstrap-модалка экрана «Перемещения» (как модалка приёмки), не <code>KT.uiDialog</code>; ошибки карточки заказа — в шапке карточки (<code>#task-error</code>) либо диалог <code>KT.uiAlert</code>, не тост. Время — в едином формате «ДД.ММ.ГГГГ ЧЧ:ММ» (D81).</p>
+<h3 id="s-8-1">§8.1. Экран/форма «Перемещения»</h3>
+<ul>
+<li data-mdline="437"><a class="pnum" id="p-178" href="#p-178">178</a>Маршрут: <code>/transfers</code>, <code>/transfers?id=N</code> (без изменений)</li>
+</ul>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="440"><a class="pnum" id="p-179" href="#p-179">179</a><strong>Путь:</strong> без изменений</li>
+<li data-mdline="441"><a class="pnum" id="p-180" href="#p-180">180</a><strong>URL:</strong> без изменений</li>
+<li data-mdline="442"><a class="pnum" id="p-181" href="#p-181">181</a><strong>Роли:</strong> admin — новые кнопки; executor — кнопок нет, сведения об откате видит · <strong>Устройство:</strong> десктоп; телефон — без горизонтальной прокрутки</li>
+<li data-mdline="443"><a class="pnum" id="p-182" href="#p-182">182</a><strong>При открытии:</strong> <code>GET</code> → <code>/api/v1/transfers/N</code></li>
+<li data-mdline="444"><a class="pnum" id="p-183" href="#p-183">183</a><strong>200:</strong> документ с новыми кнопками и сведениями · <strong>Пусто:</strong> без изменений · <strong>4xx:</strong> без изменений</li>
+</ul>
+<p><strong>Что на странице (дельта, сверху вниз):</strong></p>
+<ol>
+<li data-mdline="447"><a class="pnum" id="p-184" href="#p-184">184</a>Кнопки действий (внизу справа), только admin:</li>
+<ol>
+<li data-mdline="448"><a class="pnum" id="p-185" href="#p-185">185</a>«Получено» — «Отменить проведение» (второстепенная).</li>
+<li data-mdline="449"><a class="pnum" id="p-186" href="#p-186">186</a>«Заявка» — «Удалить» (красная, левее «Сохранить»).</li>
+<li data-mdline="450"><a class="pnum" id="p-187" href="#p-187">187</a>«Отменён» — «Удалить» (красная).</li>
+</ol>
+<li data-mdline="451"><a class="pnum" id="p-188" href="#p-188">188</a>Блок сведений под документом: новая строка «Проведение отменено: {кто}, {когда} — {причина}» — показывается, если откат был (<code>unreceived_at</code> не пуст), остаётся и после повторной приёмки.</li>
+<li data-mdline="452"><a class="pnum" id="p-189" href="#p-189">189</a>В списке: у документа, возвращённого откатом в «В пути», рядом с бейджем статуса — значок «↩» с подсказкой «Проведение отменено».</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="455"><a class="pnum" id="p-190" href="#p-190">190</a><strong>«Отменить проведение» (admin)</strong></li>
+<ul>
+<li data-mdline="456"><a class="pnum" id="p-191" href="#p-191">191</a><strong>Элемент:</strong> кнопка второстепенная внизу справа → отдельная Bootstrap-модалка (as-built, D77; не <code>KT.uiDialog</code>: нужны ошибка под полем, блокировка кнопки на время запроса и ссылка в диалоге) «Отменить проведение перемещения #N?» с обязательной textarea «Причина» и текстом «Остатки и местоположение оборудования будут возвращены в состояние „в пути“»</li>
+<li data-mdline="457"><a class="pnum" id="p-192" href="#p-192">192</a><strong>UI:</strong> кнопка диалога «Отменить проведение» заблокирована на время запроса</li>
+<li data-mdline="458"><a class="pnum" id="p-193" href="#p-193">193</a><strong>Вызов:</strong> <code>POST <a class="xref" href="#s-6-1">§6.1</a></code> → <code>/api/v1/transfers/N/unreceive</code>, body: <code>{ version, reason }</code></li>
+<li data-mdline="459"><a class="pnum" id="p-194" href="#p-194">194</a><strong>200:</strong> <code>{ status: "in_transit", unreceived_at, unreceive_reason, warnings }</code> → диалог закрыт, бейдж «В пути», в сведениях строка «Проведение отменено: …»; <code>warnings</code> — жёлтый блок над строками («Картридж Q2612A: остаток −3 на складе Алматы»)</li>
+<li data-mdline="460"><a class="pnum" id="p-195" href="#p-195">195</a><strong>400 (reason: required):</strong> под textarea — «Укажите причину»</li>
+<li data-mdline="461"><a class="pnum" id="p-196" href="#p-196">196</a><strong>400 (reason: too_long):</strong> под textarea — «Причина — не более 500 символов»</li>
+<li data-mdline="462"><a class="pnum" id="p-197" href="#p-197">197</a><strong>403:</strong> тост «Нет доступа»</li>
+<li data-mdline="463"><a class="pnum" id="p-198" href="#p-198">198</a><strong>409 (версия):</strong> диалог закрыт, тост «Перемещение уже изменено, обновите», документ перечитывается</li>
+<li data-mdline="464"><a class="pnum" id="p-199" href="#p-199">199</a><strong>409 (статус: не проведено):</strong> тост «Перемещение ещё не проведено», документ перечитывается</li>
+<li data-mdline="465"><a class="pnum" id="p-200" href="#p-200">200</a><strong>409 (статус: не получено):</strong> тост «Перемещение ещё не получено», документ перечитывается</li>
+<li data-mdline="466"><a class="pnum" id="p-201" href="#p-201">201</a><strong>409 (статус: отменено):</strong> тост «Перемещение отменено», документ перечитывается</li>
+<li data-mdline="467"><a class="pnum" id="p-202" href="#p-202">202</a><strong>409 (TRANSFER_UNRECEIVE_BLOCKED, более поздний документ):</strong> в диалоге, над кнопками — «Сначала отмените проведение перемещения #N» со ссылкой на <code>/transfers?id=N</code></li>
+<li data-mdline="468"><a class="pnum" id="p-203" href="#p-203">203</a><strong>409 (TRANSFER_UNRECEIVE_BLOCKED, незавершённый документ):</strong> в диалоге — «Сначала отмените перемещение #N» со ссылкой</li>
+</ul>
+<li data-mdline="469"><a class="pnum" id="p-204" href="#p-204">204</a><strong>«Удалить» (admin)</strong></li>
+<ul>
+<li data-mdline="470"><a class="pnum" id="p-205" href="#p-205">205</a><strong>Элемент:</strong> кнопка красная внизу справа → <code>KT.uiDialog</code> «Удалить перемещение #N? Восстановить будет нельзя»</li>
+<li data-mdline="471"><a class="pnum" id="p-206" href="#p-206">206</a><strong>UI:</strong> кнопка диалога заблокирована на время запроса</li>
+<li data-mdline="472"><a class="pnum" id="p-207" href="#p-207">207</a><strong>Вызов:</strong> <code>DELETE <a class="xref" href="#s-6-2">§6.2</a></code> → <code>/api/v1/transfers/N?version=V</code></li>
+<li data-mdline="473"><a class="pnum" id="p-208" href="#p-208">208</a><strong>200:</strong> <code>{ id }</code> → документ закрыт, URL → <code>/transfers</code>, строка исчезла из списка, тост «Удалено»</li>
+<li data-mdline="474"><a class="pnum" id="p-209" href="#p-209">209</a><strong>403:</strong> тост «Нет доступа»</li>
+<li data-mdline="475"><a class="pnum" id="p-210" href="#p-210">210</a><strong>404:</strong> тост «Перемещение не найдено», список перезапрашивается</li>
+<li data-mdline="476"><a class="pnum" id="p-211" href="#p-211">211</a><strong>409 (версия):</strong> тост «Перемещение уже изменено, обновите», документ перечитывается</li>
+<li data-mdline="477"><a class="pnum" id="p-212" href="#p-212">212</a><strong>409 (статус: в пути):</strong> тост «Перемещение в пути — сначала отмените его», документ перечитывается</li>
+<li data-mdline="478"><a class="pnum" id="p-213" href="#p-213">213</a><strong>409 (статус: получено):</strong> тост «Перемещение получено — сначала отмените проведение, затем отмените», документ перечитывается</li>
+</ul>
+<li data-mdline="479"><a class="pnum" id="p-214" href="#p-214">214</a><strong>«Отменить» у полученного документа (изменён текст)</strong></li>
+<ul>
+<li data-mdline="480"><a class="pnum" id="p-215" href="#p-215">215</a><strong>Элемент:</strong> в UI у «Получено» кнопки «Отменить» нет; действие достижимо только из устаревшей вкладки</li>
+<li data-mdline="481"><a class="pnum" id="p-216" href="#p-216">216</a><strong>UI:</strong> без изменений</li>
+<li data-mdline="482"><a class="pnum" id="p-217" href="#p-217">217</a><strong>Вызов:</strong> <code>POST</code> → <code>/api/v1/transfers/N/cancel</code>, body: <code>{ version }</code></li>
+<li data-mdline="483"><a class="pnum" id="p-218" href="#p-218">218</a><strong>200:</strong> не возникает для статуса «Получено»</li>
+<li data-mdline="484"><a class="pnum" id="p-219" href="#p-219">219</a><strong>409 (получено):</strong> тост «Перемещение получено — сначала отмените проведение», документ перечитывается</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> документ открыт у исполнителя, администратор отменил проведение — при следующем действии исполнителя 409 по версии, документ перечитывается и показывает «В пути» и строку об откате.</p>
+<h3 id="s-8-2">§8.2. Экран/форма «Карточка заказа»</h3>
+<ul>
+<li data-mdline="489"><a class="pnum" id="p-220" href="#p-220">220</a>Маршрут: карточка заказа на доске (существующая), дельта удаления</li>
+</ul>
+<p><strong>Как попадаем:</strong></p>
+<ul>
+<li data-mdline="492"><a class="pnum" id="p-221" href="#p-221">221</a><strong>Путь:</strong> доска → клик по заказу</li>
+<li data-mdline="493"><a class="pnum" id="p-222" href="#p-222">222</a><strong>URL:</strong> существующий URL карточки заказа</li>
+<li data-mdline="494"><a class="pnum" id="p-223" href="#p-223">223</a><strong>Роли:</strong> admin (удаление заказа — только он, as-is) · <strong>Устройство:</strong> десктоп; телефон — без горизонтальной прокрутки</li>
+<li data-mdline="495"><a class="pnum" id="p-224" href="#p-224">224</a><strong>При открытии:</strong> <code>GET</code> → <code>/api/v1/tasks/37/card</code> (без изменений)</li>
+<li data-mdline="496"><a class="pnum" id="p-225" href="#p-225">225</a><strong>200:</strong> без изменений · <strong>Пусто:</strong> без изменений · <strong>4xx:</strong> без изменений</li>
+</ul>
+<p><strong>Что на странице (дельта, сверху вниз):</strong></p>
+<ol>
+<li data-mdline="499"><a class="pnum" id="p-226" href="#p-226">226</a>Диалог подтверждения удаления заказа: если в блоке «Перемещения заказа» есть отменённые документы — дополнительная строка «Отменённые перемещения (#N, #M) будут удалены вместе с заказом».</li>
+<li data-mdline="500"><a class="pnum" id="p-227" href="#p-227">227</a>Сообщение об отказе — тост со ссылками на мешающие документы (вместо общего текста части 4). as-built (D77): не тост, а ошибка в шапке карточки заказа (<code>#task-error</code>, конвенция карточки) со ссылками на документы.</li>
+</ol>
+<p><strong>Интерактив:</strong></p>
+<ol>
+<li data-mdline="503"><a class="pnum" id="p-228" href="#p-228">228</a><strong>Удаление заказа (admin)</strong></li>
+<ul>
+<li data-mdline="504"><a class="pnum" id="p-229" href="#p-229">229</a><strong>Элемент:</strong> существующая кнопка удаления заказа → существующий диалог подтверждения</li>
+<li data-mdline="505"><a class="pnum" id="p-230" href="#p-230">230</a><strong>UI:</strong> кнопка диалога заблокирована на время запроса</li>
+<li data-mdline="506"><a class="pnum" id="p-231" href="#p-231">231</a><strong>Вызов:</strong> <code>DELETE <a class="xref" href="#s-6-3">§6.3</a></code> → <code>/api/v1/tasks/37</code></li>
+<li data-mdline="507"><a class="pnum" id="p-232" href="#p-232">232</a><strong>200:</strong> заказ удалён, карточка закрыта (as-is); его отменённые документы исчезли из списка перемещений</li>
+<li data-mdline="508"><a class="pnum" id="p-233" href="#p-233">233</a><strong>403:</strong> сообщение API <code>admin only</code> (admin-only API; в UI недостижимо — кнопка удаления только у admin)</li>
+<li data-mdline="509"><a class="pnum" id="p-234" href="#p-234">234</a><strong>409 (TASK_HAS_TRANSFERS):</strong> тост «Сначала отмените перемещения: #12, #14» — номера ссылками на <code>/transfers?id=N</code>; тост не скрывается автоматически, пока не закрыт</li>
+<li data-mdline="510"><a class="pnum" id="p-235" href="#p-235">235</a>as-built (D77): сообщение <code>TASK_HAS_TRANSFERS</code> показывается в шапке карточки заказа (<code>#task-error</code>) со ссылками на документы, не тостом</li>
+<li data-mdline="511"><a class="pnum" id="p-236" href="#p-236">236</a><strong>409 (прочие as-is причины удаления заказа):</strong> без изменений</li>
+</ul>
+</ol>
+<p><strong>Состояния:</strong> документ заказа отменён другим администратором, пока открыт диалог удаления — запрос проходит (отменённый документ не мешает); документ проведён, пока открыт диалог — 409 с его номером.</p>
+<h2 id="s-9">§9. Решения (DS-index)</h2>
+<table><thead><tr><th>DS</th><th>Формулировка</th><th>Источник</th><th>Статус</th></tr></thead><tbody><tr data-mdline="518"><td><a class="pnum" id="p-237" href="#p-237">237</a><a id="ds-017"></a><strong>DS-017</strong></td><td>«Отменить проведение»: администратор возвращает полученный документ в «В пути» с обязательной причиной; остатки и местоположение откатываются (пересмотр финальности «Получено», D51)</td><td>мастер, батч 3</td><td>closed</td></tr><tr data-mdline="519"><td><a class="pnum" id="p-238" href="#p-238">238</a><a id="ds-020"></a><strong>DS-020</strong></td><td>Принцип «всё можно менять»: откат не блокируется учётными причинами</td><td>мастер, батч 4</td><td>closed</td></tr><tr data-mdline="520"><td><a class="pnum" id="p-239" href="#p-239">239</a><a id="ds-021"></a><strong>DS-021</strong></td><td>Принцип: мягкое удаление с восстановлением + отчёт «Удалённые заказы»</td><td>мастер, батч 4</td><td>closed (вне объёма — <a class="xref" href="#ds-022">DS-022</a>, реализации нет)</td></tr><tr data-mdline="521"><td><a class="pnum" id="p-240" href="#p-240">240</a><a id="ds-022"></a><strong>DS-022</strong></td><td>Мягкое удаление и отчёт «Удалённые заказы» — отдельная следующая задача, вне объёма <code>transfers</code></td><td>мастер, батч 4 (уточнение)</td><td>closed (вне объёма, реализации нет)</td></tr><tr data-mdline="522"><td><a class="pnum" id="p-241" href="#p-241">241</a><a id="ds-023"></a><strong>DS-023</strong></td><td>Откат в обратном порядке: документ не отменить, пока его единицу увёз более поздний документ (система называет его); оплата заказа и уход остатка в минус откат не блокируют</td><td>мастер, батч 5</td><td>closed</td></tr><tr data-mdline="523"><td><a class="pnum" id="p-242" href="#p-242">242</a><a id="ds-025"></a><strong>DS-025</strong></td><td>До мягкого удаления: заказ с неотменёнными/неоткатанными документами не удаляется (сообщение перечисляет их); документ удаляется только в «Заявка» или «Отменён»</td><td>мастер, батч 5</td><td>closed</td></tr><tr data-mdline="524"><td><a class="pnum" id="p-243" href="#p-243">243</a><a id="ds-044"></a><strong>DS-044</strong></td><td>Откат фиксируется на документе: кто, когда, причина (последний откат) + slog</td><td>мастер, inferred</td><td>closed</td></tr><tr data-mdline="525"><td><a class="pnum" id="p-244" href="#p-244">244</a><a id="ds-050"></a><strong>DS-050</strong></td><td>При удалении заказа его отменённые документы удаляются вместе с ним</td><td>мастер, батч 7</td><td>closed</td></tr><tr data-mdline="526"><td><a class="pnum" id="p-245" href="#p-245">245</a><a id="ds-053"></a><strong>DS-053</strong></td><td>Причина отката — 1–500 символов</td><td>мастер, inferred</td><td>closed</td></tr><tr data-mdline="527"><td><a class="pnum" id="p-246" href="#p-246">246</a><a id="ds-004"></a><strong>DS-004</strong></td><td>Состав строк по направлениям</td><td>мастер, батч 0</td><td>closed — контекст, реализуется в <code>transfers-partners</code></td></tr><tr data-mdline="528"><td><a class="pnum" id="p-247" href="#p-247">247</a><a id="ds-012"></a><strong>DS-012</strong></td><td>Заказ обязателен для документов с клиентом; временный общий 409 при удалении заказа</td><td>мастер, батч 2</td><td>closed — контекст, реализуется в <code>transfers-partners</code></td></tr><tr data-mdline="529"><td><a class="pnum" id="p-248" href="#p-248">248</a><a id="ds-018"></a><strong>DS-018</strong></td><td>Права: «Отменить проведение» — только администратор</td><td>мастер, батч 4</td><td>closed — контекст, реализуется в <code>transfers-partners</code></td></tr><tr data-mdline="530"><td><a class="pnum" id="p-249" href="#p-249">249</a><a id="ds-040"></a><strong>DS-040</strong></td><td>Причины движений остатка (<code>transfer_unreceive</code> добавлен в CHECK частью 4)</td><td>мастер, inferred</td><td>closed — контекст, реализуется в <code>transfers-partners</code></td></tr><tr data-mdline="531"><td><a class="pnum" id="p-250" href="#p-250">250</a><a id="ds-042"></a><strong>DS-042</strong></td><td>Удаление документа — только администратор</td><td>мастер, батч 7</td><td>closed — контекст, реализуется в <code>transfers-partners</code></td></tr><tr data-mdline="532"><td><a class="pnum" id="p-251" href="#p-251">251</a><a id="ds-014"></a><strong>DS-014</strong></td><td>Сумма накладной в итоге заказа</td><td>мастер, батч 3</td><td>closed — контекст, реализуется в <code>transfers-sales</code></td></tr><tr data-mdline="533"><td><a class="pnum" id="p-252" href="#p-252">252</a><a id="ds-027"></a><strong>DS-027</strong></td><td>Совместимость — MVP</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="534"><td><a class="pnum" id="p-253" href="#p-253">253</a><a id="ds-028"></a><strong>DS-028</strong></td><td>UI-scope: swagger:no, adaptive:min, themes:both</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="535"><td><a class="pnum" id="p-254" href="#p-254">254</a><a id="ds-031"></a><strong>DS-031</strong></td><td>Показ времени по поясу пользователя</td><td>мастер, батч 6</td><td>closed — контекст, реализуется в <code>user-timezone</code></td></tr><tr data-mdline="536"><td><a class="pnum" id="p-255" href="#p-255">255</a><a id="ds-048"></a><strong>DS-048</strong></td><td>Конкурентность документа: <code>version</code>, 409</td><td>мастер, as-is</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="537"><td><a class="pnum" id="p-256" href="#p-256">256</a><a id="ds-051"></a><strong>DS-051</strong></td><td>Отдельной таблицы аудита нет</td><td>мастер, zap</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr><tr data-mdline="538"><td><a class="pnum" id="p-257" href="#p-257">257</a><a id="ds-052"></a><strong>DS-052</strong></td><td>UI-конвенции</td><td>мастер, inferred</td><td>closed — контекст, реализуется в <code>transfers-core</code></td></tr></tbody></table>
+<h2 id="s-10">§10. Открытые вопросы (status: open)</h2>
+<p>Открытых вопросов нет.</p>
+<h2 id="s-11">§11. Тестовые сценарии (черновик — вход для design-e2e-strategy, TD-6.8)</h2>
+<p>UI-scope: swagger-сценариев нет; адаптив и темы — в составе TS-033 (диалог причины при 375×812 без горизонтальной прокрутки; красная кнопка «Удалить» и строка об откате читаемы в обеих темах).</p>
+<h3 id="h3-369">Unit / Integration (Go)</h3>
+<ul>
+<li data-mdline="547"><a class="pnum" id="p-258" href="#p-258">258</a><strong>TS-010.</strong> Отмена проведения: <code>received</code> → <code>in_transit</code> для каждого из четырёх направлений; компенсирующие движения <code>transfer_unreceive</code> на факт (склад → склад и приход от поставщика), для документов с клиентом движений нет; <code>qty_received</code>, <code>received_by</code>, <code>received_at</code> обнулены; единицы снова «в пути» и заняты документом; <code>unreceived_by</code>, <code>unreceived_at</code>, <code>unreceive_reason</code> заполнены; причина обязательна (пусто и пробелы → 400 <code>required</code>, 501 символ → 400 <code>too_long</code>); после отката проходит повторный <code>receive</code> с другим фактом и <code>cancel</code> — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-044">DS-044</a>, <a class="xref" href="#ds-053">DS-053</a></li>
+<ul>
+<li data-mdline="548"><a class="pnum" id="p-259" href="#p-259">259</a>негатив: executor → 403; откат из <code>requested</code>, <code>in_transit</code>, <code>cancelled</code> → 409 со своим сообщением; двойной параллельный откат → один 200, одно компенсирующее движение</li>
+</ul>
+<li data-mdline="549"><a class="pnum" id="p-260" href="#p-260">260</a><strong>TS-011.</strong> Отмена проведения, товар израсходован: остаток склада назначения уходит в минус, ответ 200 с <code>warnings[].kind = negative</code> — <a class="xref" href="#ds-020">DS-020</a>, <a class="xref" href="#ds-023">DS-023</a></li>
+<ul>
+<li data-mdline="550"><a class="pnum" id="p-261" href="#p-261">261</a>негатив: откат не блокируется</li>
+</ul>
+<li data-mdline="551"><a class="pnum" id="p-262" href="#p-262">262</a><strong>TS-012.</strong> Отмена проведения, единицу увёз более поздний документ → 409 <code>TRANSFER_UNRECEIVE_BLOCKED</code> с <code>details.transfer_id</code>; после отката более позднего — успех (обратный порядок); единица, которую более поздние документы увезли и вернули на тот же склад, — тоже 409 — <a class="xref" href="#ds-023">DS-023</a></li>
+<ul>
+<li data-mdline="552"><a class="pnum" id="p-263" href="#p-263">263</a>негатив: единица в другой незавершённой заявке → 409 с её номером; при отказе остатки, строки и местоположение не изменились</li>
+</ul>
+<li data-mdline="553"><a class="pnum" id="p-264" href="#p-264">264</a><strong>TS-013.</strong> Отмена проведения накладной при оплаченном заказе: 200, <code>is_paid</code> заказа не изменился, <code>total_amount</code> по-прежнему включает накладную («В пути») — <a class="xref" href="#ds-023">DS-023</a></li>
+<ul>
+<li data-mdline="554"><a class="pnum" id="p-265" href="#p-265">265</a>негатив: последующая отмена накладной (<code>cancel</code>) убирает её сумму из <code>total_amount</code> и возвращает товар на склад</li>
+</ul>
+<li data-mdline="555"><a class="pnum" id="p-266" href="#p-266">266</a><strong>TS-016.</strong> Удаление документа: <code>requested</code> и <code>cancelled</code> → 200, строки удалены, <code>stock_movements.transfer_id</code> = NULL, единицы заявки свободны; <code>in_transit</code> и <code>received</code> → 409 со своим сообщением — <a class="xref" href="#ds-025">DS-025</a></li>
+<ul>
+<li data-mdline="556"><a class="pnum" id="p-267" href="#p-267">267</a>негатив: без <code>version</code> → 400; устаревшая версия → 409; executor → 403; повтор → 404</li>
+</ul>
+<li data-mdline="557"><a class="pnum" id="p-268" href="#p-268">268</a><strong>TS-017.</strong> Удаление заказа: документ в <code>requested</code> / <code>in_transit</code> / <code>received</code> → 409 <code>TASK_HAS_TRANSFERS</code> с <code>details.transfer_ids</code> (по возрастанию); только отменённые → заказ и они удалены одной транзакцией, движения остатков остались с <code>transfer_id</code> = NULL — <a class="xref" href="#ds-025">DS-025</a>, <a class="xref" href="#ds-050">DS-050</a></li>
+<ul>
+<li data-mdline="558"><a class="pnum" id="p-269" href="#p-269">269</a>негатив: при отказе остатки, документы и заказ не изменились; заказ без документов удаляется как раньше</li>
+</ul>
+</ul>
+<p>Хвосты сценариев других частей, реализуемые здесь (без новых номеров):</p>
+<ul>
+<li data-mdline="561"><a class="pnum" id="p-270" href="#p-270">270</a>TS-015 (<code>transfers-partners</code>): executor → 403 на <code>unreceive</code> и <code>DELETE /transfers/:id</code>, включая документы с клиентом.</li>
+<li data-mdline="562"><a class="pnum" id="p-271" href="#p-271">271</a>TS-018 (<code>transfers-core</code>): после удаления документа-заявки единица убирается из заказа и удаляется из справочника, если других строк документов у неё нет.</li>
+<li data-mdline="563"><a class="pnum" id="p-272" href="#p-272">272</a>TS-009 (<code>transfers-core</code>): текст 409 при <code>cancel</code> полученного документа — «Перемещение получено — сначала отмените проведение».</li>
+</ul>
+<h3 id="h3-402">E2E (Playwright)</h3>
+<ul>
+<li data-mdline="566"><a class="pnum" id="p-273" href="#p-273">273</a><strong>TS-033.</strong> Отменить проведение — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-023">DS-023</a></li>
+<ul>
+<li data-mdline="567"><a class="pnum" id="p-274" href="#p-274">274</a>шаги: admin → полученный приход от поставщика → «Отменить проведение» → причина → подтвердить → «Принять» с другим фактом; проверка: после отката бейдж «В пути», строка «Проведение отменено: …» с причиной, остаток откатился; после повторной приёмки остаток соответствует новому факту, строка об откате осталась; диалог при 375×812 без горизонтальной прокрутки, читаем в обеих темах; негатив: пустая причина → «Укажите причину»; единицу увёз другой документ → в диалоге «Сначала отмените проведение перемещения #N» со ссылкой; исполнитель кнопки не видит</li>
+</ul>
+<li data-mdline="568"><a class="pnum" id="p-275" href="#p-275">275</a><strong>TS-037.</strong> Запрет удаления заказа с документами — экран <a class="xref" href="#s-8-2">§8.2</a> — <a class="xref" href="#ds-025">DS-025</a></li>
+<ul>
+<li data-mdline="569"><a class="pnum" id="p-276" href="#p-276">276</a>шаги: admin → удалить заказ с проведённым документом; проверка: тост «Сначала отмените перемещения: #N» со ссылкой, заказ на месте; негатив: после отката, отмены документа заказ удаляется, отменённый документ исчез из списка перемещений</li>
+</ul>
+<li data-mdline="570"><a class="pnum" id="p-277" href="#p-277">277</a><strong>TS-038.</strong> Удаление документа — экран <a class="xref" href="#s-8-1">§8.1</a> — <a class="xref" href="#ds-025">DS-025</a></li>
+<ul>
+<li data-mdline="571"><a class="pnum" id="p-278" href="#p-278">278</a>шаги: admin → заявка → «Удалить» → подтвердить; проверка: строка исчезла, тост «Удалено», единица заявки снова свободна (её можно добавить в новый документ); негатив: у документа «В пути» и «Получено» кнопки «Удалить» нет; исполнитель кнопки не видит</li>
+</ul>
+</ul>
+<h3 id="h3-417">Фикстуры и сиды (АКЦЕНТ — хронический пропуск)</h3>
+<ul>
+<li data-mdline="574"><a class="pnum" id="p-279" href="#p-279">279</a>seed-demo (<code>internal/seeddemo/seeddemo.go</code>, владелец TS-F1 — <code>transfers-core</code>): дополнить в той же фазе, что миграция — один документ, откатанный и принятый заново (с причиной и компенсирующим движением <code>transfer_unreceive</code>), один отменённый документ у заказа (для проверки удаления заказа).</li>
+<li data-mdline="575"><a class="pnum" id="p-280" href="#p-280">280</a>e2e (<code>e2e/fixtures/board-types.ts</code>, владелец TS-F2 — <code>transfers-core</code>): wire-тип документа получает <code>unreceived_by</code>, <code>unreceived_by_name</code>, <code>unreceived_at</code>, <code>unreceive_reason</code>; тип ошибки <code>TASK_HAS_TRANSFERS</code> с <code>details.transfer_ids</code>; payload'ы типизировать wire-типами из исходников (§TD-6.2).</li>
+<li data-mdline="576"><a class="pnum" id="p-281" href="#p-281">281</a>Go-тест части 4 на общий 409 <code>CONFLICT</code> при удалении заказа — заменить на <code>TASK_HAS_TRANSFERS</code>.</li>
+</ul>
+<h2 id="h2-423">§Impact — точки касания существующего кода</h2>
+<p>Источник: строки <code>impact_scan.py</code> мастера, относящиеся к этой части, в состоянии после частей 3–5; отдельный прогон не делался: пакета <code>internal/features/transfers</code> на момент написания спеки нет.</p>
+<table><thead><tr><th>#</th><th>Класс</th><th>Что задеваем (file:line / объект)</th><th>Дельта фичи</th><th>Решение</th><th>DS</th></tr></thead><tbody><tr data-mdline="583"><td><a class="pnum" id="p-282" href="#p-282">282</a>1</td><td>SHARED-DEP</td><td><code>internal/features/transfers/*</code> (после частей 3–5; сейчас <code>internal/features/stocktransfers</code>: <code>routes.go:13-19</code>, <code>service.go</code>, <code>repo.go:335</code> <code>lockTransfer</code>)</td><td>новые операции <code>unreceive</code> и <code>delete</code>; поля отката в DTO; проверка порядка документов по единице</td><td>править</td><td><a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-023">DS-023</a>, <a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="584"><td><a class="pnum" id="p-283" href="#p-283">283</a>2</td><td>SHARED-DEP</td><td><code>internal/features/board/tasks_service.go:332</code> (<code>Delete</code>), <code>errors.go</code></td><td><code>TASK_HAS_TRANSFERS</code> с номерами вместо общего 409 части 4; удаление отменённых документов в транзакции удаления заказа</td><td>править</td><td><a class="xref" href="#ds-025">DS-025</a>, <a class="xref" href="#ds-050">DS-050</a></td></tr><tr data-mdline="585"><td><a class="pnum" id="p-284" href="#p-284">284</a>3</td><td>SHARED-DEP</td><td>зависимость <code>board</code> → <code>transfers</code> при удалении заказа</td><td>заказ удаляет пакет <code>board</code>, документы принадлежат пакету <code>transfers</code> — при планировании решить, кто выполняет SQL удаления отменённых документов (общий репозиторий либо вызов сервиса <code>transfers</code> в той же транзакции)</td><td>решение за планированием</td><td><a class="xref" href="#ds-050">DS-050</a></td></tr><tr data-mdline="586"><td><a class="pnum" id="p-285" href="#p-285">285</a>4</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/transfers.js</code> (после ядра)</td><td>кнопки «Отменить проведение», «Удалить», диалог причины, строка об откате, значок «↩» в списке</td><td>править</td><td><a class="xref" href="#ds-017">DS-017</a>, <a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="587"><td><a class="pnum" id="p-286" href="#p-286">286</a>5</td><td>FRONTEND</td><td><code>web/ssr/_shared/js/task-card.js</code> (удаление заказа), <code>web/ssr/_shared/js/board.js</code> (если удаление заказа вызывается с доски)</td><td>тост со ссылками на документы; строка про отменённые документы в диалоге</td><td>править</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="588"><td><a class="pnum" id="p-287" href="#p-287">287</a>6</td><td>FK</td><td><code>migrations/</code></td><td>новая миграция: три колонки отката <code class="k-t">transfers</code>, CHECK длины причины</td><td>добавить</td><td><a class="xref" href="#ds-044">DS-044</a></td></tr><tr data-mdline="589"><td><a class="pnum" id="p-288" href="#p-288">288</a>7</td><td>ENUMERATION</td><td><code>internal/seeddemo/seeddemo.go</code>, <code>e2e/fixtures/board-types.ts</code>, Go-тест части 4 на общий 409</td><td>сид, wire-типы, замена ожидания</td><td>править</td><td><a class="xref" href="#ds-025">DS-025</a></td></tr><tr data-mdline="590"><td><a class="pnum" id="p-289" href="#p-289">289</a>8</td><td>ENUMERATION</td><td><code>docs/plan.md</code> (D51 — финальность «Получено»)</td><td>дописать решение-пересмотр после реализации</td><td>после реализации</td><td><a class="xref" href="#ds-017">DS-017</a></td></tr><tr data-mdline="591"><td><a class="pnum" id="p-290" href="#p-290">290</a>9</td><td>CONFIG</td><td>env-ключи</td><td>не задеваются</td><td>—</td><td>—</td></tr><tr data-mdline="592"><td><a class="pnum" id="p-291" href="#p-291">291</a>10</td><td>MONITORING</td><td>дашборды/алерты</td><td>не задеваются</td><td>—</td><td>—</td></tr></tbody></table>
+<p><strong>Вне каталога фичи:</strong> есть — internal/features/board, internal/features/transfers, internal/seeddemo, web/ssr/_shared/js, migrations, e2e, docs/plan.md</p>
+</body>
+</html>

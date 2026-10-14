@@ -1,0 +1,2094 @@
+diff --git a/internal/features/auth/auth_http_live_test.go b/internal/features/auth/auth_http_live_test.go
+index 169939e..2456ae9 100644
+--- a/internal/features/auth/auth_http_live_test.go
++++ b/internal/features/auth/auth_http_live_test.go
+@@ -57,7 +57,8 @@ func (s *AuthLiveSuite) TestLogin_SetsHardenedCookie_AndMe() {
+ 	s.Require().NoError(json.Unmarshal(body, &me))
+ 	s.NotEmpty(me["id"])
+ 	delete(me, "id")
+-	s.Equal(map[string]string{"login": "a-ok", "name": "Админ Окей", "role": "admin"}, me, "логин нормализован")
++	// timezone — пояс пользователя (user-timezone TS-021, DS-031): умолчание Asia/Almaty.
++	s.Equal(map[string]string{"login": "a-ok", "name": "Админ Окей", "role": "admin", "timezone": "Asia/Almaty"}, me, "логин нормализован")
+ 
+ 	var sid *http.Cookie
+ 	for _, c := range resp.Cookies() {
+@@ -73,6 +74,14 @@ func (s *AuthLiveSuite) TestLogin_SetsHardenedCookie_AndMe() {
+ 	status, meBody := b.Do(http.MethodGet, "/api/v1/auth/me", nil)
+ 	s.Equal(http.StatusOK, status)
+ 	s.Contains(string(meBody), `"role":"admin"`)
++	s.Contains(string(meBody), `"timezone":"Asia/Almaty"`)
++
++	// TS-021: /auth/me читает пояс из БД на каждый запрос — смена видна без перелогина.
++	_, err := s.Pool.Exec(s.T().Context(), `UPDATE users SET timezone = 'Europe/Moscow' WHERE login = 'a-ok'`)
++	s.Require().NoError(err)
++	status, meBody = b.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Equal(http.StatusOK, status)
++	s.Contains(string(meBody), `"timezone":"Europe/Moscow"`)
+ }
+ 
+ func (s *AuthLiveSuite) TestLogin_WrongPasswordAndUnknownLoginLookTheSame() {
+diff --git a/internal/features/auth/dto.go b/internal/features/auth/dto.go
+index 83dfbf4..3c6306f 100644
+--- a/internal/features/auth/dto.go
++++ b/internal/features/auth/dto.go
+@@ -12,4 +12,6 @@ type UserResponse struct {
+ 	Login string `json:"login"`
+ 	Name  string `json:"name"`
+ 	Role  string `json:"role"`
++	// Timezone — часовой пояс пользователя (IANA, DS-031): по нему клиент показывает время.
++	Timezone string `json:"timezone"`
+ }
+diff --git a/internal/features/auth/handler.go b/internal/features/auth/handler.go
+index b4a151a..a8a5baa 100644
+--- a/internal/features/auth/handler.go
++++ b/internal/features/auth/handler.go
+@@ -51,7 +51,7 @@ func (h *Handler) Login(c fiber.Ctx) error {
+ 	if err := h.replaceSession(c, sid); err != nil {
+ 		return err
+ 	}
+-	return c.JSON(UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role})
++	return c.JSON(UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Timezone: u.Timezone})
+ }
+ 
+ // Logout — POST /api/v1/auth/logout (protected).
+@@ -65,7 +65,7 @@ func (h *Handler) Logout(c fiber.Ctx) error {
+ // Me — GET /api/v1/auth/me (protected).
+ func (h *Handler) Me(c fiber.Ctx) error {
+ 	p := middleware.CurrentPrincipal(c)
+-	return c.JSON(UserResponse{ID: p.ID, Login: p.Login, Name: p.Name, Role: p.Role})
++	return c.JSON(UserResponse{ID: p.ID, Login: p.Login, Name: p.Name, Role: p.Role, Timezone: p.Timezone})
+ }
+ 
+ // replaceSession — новая сессия в cookie; прежняя сессия этого браузера (вход под
+diff --git a/internal/features/auth/repo.go b/internal/features/auth/repo.go
+index 9ae496e..859fc7b 100644
+--- a/internal/features/auth/repo.go
++++ b/internal/features/auth/repo.go
+@@ -15,6 +15,7 @@ type User struct {
+ 	Name         string
+ 	Role         string
+ 	IsActive     bool
++	Timezone     string // имя IANA (DS-031)
+ }
+ 
+ type Repo struct {
+@@ -25,11 +26,11 @@ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
+ 
+ var ErrNotFound = pgx.ErrNoRows
+ 
+-const userColumns = `id, login, password_hash, name, role, is_active`
++const userColumns = `id, login, password_hash, name, role, is_active, timezone`
+ 
+ func scanUser(row pgx.Row) (*User, error) {
+ 	var u User
+-	if err := row.Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name, &u.Role, &u.IsActive); err != nil {
++	if err := row.Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name, &u.Role, &u.IsActive, &u.Timezone); err != nil {
+ 		return nil, err
+ 	}
+ 	return &u, nil
+diff --git a/internal/features/auth/service.go b/internal/features/auth/service.go
+index 0e83928..9c8a91a 100644
+--- a/internal/features/auth/service.go
++++ b/internal/features/auth/service.go
+@@ -114,5 +114,5 @@ func (s *Service) Principal(ctx context.Context, id string) (*middleware.Princip
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return &middleware.Principal{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, IsActive: u.IsActive}, nil
++	return &middleware.Principal{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, IsActive: u.IsActive, Timezone: u.Timezone}, nil
+ }
+diff --git a/internal/features/board/board_fuzz_test.go b/internal/features/board/board_fuzz_test.go
+index bf9fcac..be64a0e 100644
+--- a/internal/features/board/board_fuzz_test.go
++++ b/internal/features/board/board_fuzz_test.go
+@@ -106,7 +106,9 @@ type fakeMoveTaskService struct{}
+ func (fakeMoveTaskService) List(context.Context, TaskFilter) (*TaskListResponse, error) {
+ 	return nil, nil
+ }
+-func (fakeMoveTaskService) Get(context.Context, string) (*TaskResponse, error) { return nil, nil }
++func (fakeMoveTaskService) Get(context.Context, Actor, string) (*TaskResponse, error) {
++	return nil, nil
++}
+ func (fakeMoveTaskService) Create(context.Context, Actor, TaskCreateRequest) (*TaskMutationResponse, error) {
+ 	return nil, nil
+ }
+diff --git a/internal/features/board/card_service.go b/internal/features/board/card_service.go
+index 085c747..a46680f 100644
+--- a/internal/features/board/card_service.go
++++ b/internal/features/board/card_service.go
+@@ -58,7 +58,7 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
+ 	defer span.End()
+ 	span.SetAttributes(attribute.Int64("task_id", id))
+ 
+-	task, err := s.tasks.Get(ctx, id)
++	task, err := s.tasks.Get(ctx, id, a.Today)
+ 	if errors.Is(err, errNotFound) {
+ 		return nil, ErrTaskNotFound
+ 	}
+diff --git a/internal/features/board/print_ssr.go b/internal/features/board/print_ssr.go
+index 80a4033..fad07a5 100644
+--- a/internal/features/board/print_ssr.go
++++ b/internal/features/board/print_ssr.go
+@@ -10,6 +10,7 @@ import (
+ 	"github.com/gofiber/fiber/v3"
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/internal/ssr"
+ )
+ 
+ // printService — узкий интерфейс зависимости SSR-печати (эталон cardService/taskService).
+@@ -29,6 +30,9 @@ type PrintVM struct {
+ 	Phones      string
+ 	Description template.HTML // task.description_html (ADR-006) — хранится уже экранированным
+ 	PrintedAt   time.Time
++	// Timezone — пояс смотрящего пользователя (IANA, DS-032): дата печати и дата оплаты
++	// выводятся в нём ({{ timeIn .Timezone … }}), а не в поясе сервера.
++	Timezone string
+ }
+ 
+ // print — GET /tasks/:id/print/:kind (RequireSSR — исполнитель и admin, D19; Cache-Control:
+@@ -50,6 +54,7 @@ func (s *SSR) print(c fiber.Ctx) error {
+ 	vm.Kind = kind
+ 	vm.Firm = s.firm
+ 	vm.PrintedAt = time.Now()
++	vm.Timezone = ssr.ViewerTimezone(c)
+ 
+ 	c.Set(fiber.HeaderContentType, "text/html; charset=utf-8")
+ 	return s.r.Render(c.Response().BodyWriter(), "print-"+kind, "print", vm)
+diff --git a/internal/features/board/tasks_filter.go b/internal/features/board/tasks_filter.go
+index 1f3c077..ac11ecd 100644
+--- a/internal/features/board/tasks_filter.go
++++ b/internal/features/board/tasks_filter.go
+@@ -38,6 +38,10 @@ type TaskFilter struct {
+ 	Paid       *bool
+ 	AssigneeID *string
+ 	Due        string
++	// Today — «сегодня» (YYYY-MM-DD) в часовом поясе пользователя (user-timezone DS-032):
++	// от него считаются soon/overdue фильтра Due и subtasks_late. Берётся из Actor.Today;
++	// пусто — current_date сервера БД.
++	Today string
+ 	// WarehouseID — фильтр «Склад» (DS-009, D59): заказы, у которых хоть одно оборудование
+ 	// на складе X (at_warehouse) или едет на склад X (in_transit с назначением X).
+ 	WarehouseID *string
+@@ -136,6 +140,7 @@ func ParseTaskFilter(c fiber.Ctx, a Actor) (TaskFilter, error) {
+ 		add("assignee")
+ 	}
+ 
++	f.Today = a.Today
+ 	switch d := c.Query("due", DueFilterAll); d {
+ 	case DueFilterAll:
+ 		f.Due = ""
+diff --git a/internal/features/board/tasks_handler.go b/internal/features/board/tasks_handler.go
+index 654b986..45c97f2 100644
+--- a/internal/features/board/tasks_handler.go
++++ b/internal/features/board/tasks_handler.go
+@@ -2,11 +2,14 @@ package board
+ 
+ import (
+ 	"context"
++	"time"
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/server/middleware"
++	"github.com/kitavrus/kanban-tree/internal/ssr"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+ 
+ // taskService — узкий интерфейс зависимости TasksHandler (не `*TaskService` напрямую):
+@@ -15,7 +18,7 @@ import (
+ // декларации.
+ type taskService interface {
+ 	List(ctx context.Context, f TaskFilter) (*TaskListResponse, error)
+-	Get(ctx context.Context, idStr string) (*TaskResponse, error)
++	Get(ctx context.Context, a Actor, idStr string) (*TaskResponse, error)
+ 	Create(ctx context.Context, a Actor, in TaskCreateRequest) (*TaskMutationResponse, error)
+ 	Update(ctx context.Context, a Actor, idStr string, in TaskUpdateRequest) (*TaskMutationResponse, error)
+ 	Move(ctx context.Context, a Actor, idStr string, in TaskMoveRequest) (*TaskMutationResponse, error)
+@@ -31,10 +34,16 @@ type TasksHandler struct {
+ func NewTasksHandler(svc taskService) *TasksHandler { return &TasksHandler{svc: svc} }
+ 
+ // currentActor — Actor из middleware.CurrentPrincipal (роут закрыт RequireAPI — principal
+-// всегда не nil).
++// всегда не nil). Today — единственное место пакета, где вычисляется «сегодня» пользователя.
+ func currentActor(c fiber.Ctx) Actor {
+ 	p := middleware.CurrentPrincipal(c)
+-	return Actor{ID: p.ID, IsAdmin: p.IsAdmin()}
++	return Actor{ID: p.ID, IsAdmin: p.IsAdmin(), Today: viewerToday(c)}
++}
++
++// viewerToday — текущая календарная дата (YYYY-MM-DD) в часовом поясе пользователя запроса
++// (user-timezone DS-032): «сегодня / просрочен» считаются по ней, а не по дате сервера БД.
++func viewerToday(c fiber.Ctx) string {
++	return timezone.In(time.Now(), ssr.ViewerTimezone(c)).Format(time.DateOnly)
+ }
+ 
+ // List — GET /api/v1/tasks?<TaskFilter>.
+@@ -52,7 +61,7 @@ func (h *TasksHandler) List(c fiber.Ctx) error {
+ 
+ // Get — GET /api/v1/tasks/:id.
+ func (h *TasksHandler) Get(c fiber.Ctx) error {
+-	resp, err := h.svc.Get(c.Context(), c.Params("id"))
++	resp, err := h.svc.Get(c.Context(), currentActor(c), c.Params("id"))
+ 	if err != nil {
+ 		return err
+ 	}
+diff --git a/internal/features/board/tasks_repo.go b/internal/features/board/tasks_repo.go
+index c6473ae..0f3ffb8 100644
+--- a/internal/features/board/tasks_repo.go
++++ b/internal/features/board/tasks_repo.go
+@@ -262,18 +262,25 @@ func (r *TaskRepo) ActiveAssigneeExists(ctx context.Context, tx pgx.Tx, id strin
+ // Get — design-sql.md §Board List Query (без пагинации/фильтров, одна строка): полная
+ // карточка заказа с денормализованными именами и счётчиками подзадач — источник ответа
+ // GET /tasks/:id и всех mutation-ответов (Re-fetch-after-write).
+-func (r *TaskRepo) Get(ctx context.Context, id int64) (*Task, error) {
++//
++// today — «сегодня» (YYYY-MM-DD) в поясе пользователя для subtasks_late (user-timezone
++// DS-032, тот же источник, что TaskFilter.Today в List); пусто — current_date БД.
++func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, error) {
+ 	var t Task
+ 	var totalAmount string
+ 	var llText, llAuthor sql.NullString
+ 	var llCut sql.NullBool
+ 	var llCreatedAt sql.NullTime
++	var todayArg any
++	if today != "" {
++		todayArg = today
++	}
+ 	err := r.pool.QueryRow(ctx, `
+ 		SELECT t.id, t.column_id, t.client_id, cl.company_name, t.title, t.assignee_id, u.name,
+ 		       t.due_date::text, t.is_paid, t.paid_at, t.position::text, t.version, t.created_at, t.updated_at,
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id),
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done'),
+-		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done' AND s.due_date < current_date),
++		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done' AND s.due_date < COALESCE($2::date, current_date)),
+ 		       t.description_html, `+totalAmountSelectSQL+`,
+ 		       ll.text, ll.cut, ll.author_name, ll.created_at,
+ 		       EXISTS (SELECT 1 FROM task_equipment te WHERE te.task_id = t.id AND te.status = 'in_transit'),
+@@ -282,7 +289,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64) (*Task, error) {
+ 		JOIN clients cl ON cl.id = t.client_id
+ 		LEFT JOIN users u ON u.id = t.assignee_id
+ 		`+lastLogJoinSQL+`
+-		WHERE t.id = $1`, id).
++		WHERE t.id = $1`, id, todayArg).
+ 		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.ClientName, &t.Title, &t.AssigneeID, &t.AssigneeName,
+ 			&t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
+ 			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount,
+@@ -332,10 +339,10 @@ WITH base AS (
+     AND ($6::uuid IS NULL OR t.assignee_id = $6
+          OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.assignee_id = $6))
+     AND ($7::text IS NULL OR (NOT c.is_final AND (
+-           ($7 = 'overdue' AND t.due_date < current_date)
+-        OR ($7 = 'soon'    AND t.due_date <= current_date + 1)
++           ($7 = 'overdue' AND t.due_date < COALESCE($15::date, current_date))
++        OR ($7 = 'soon'    AND t.due_date <= COALESCE($15::date, current_date) + 1)
+         OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
+-                   AND s.due_date < current_date))))
++                   AND s.due_date < COALESCE($15::date, current_date)))))
+     AND ($10::uuid IS NULL OR t.column_id = $10)
+     AND ($13::uuid IS NULL OR EXISTS (SELECT 1 FROM task_equipment te WHERE te.task_id = t.id
+            AND ((te.status = 'at_warehouse' AND te.warehouse_id = $13)
+@@ -361,7 +368,7 @@ SELECT t.id, t.column_id, t.client_id, cl.company_name, t.title, t.assignee_id,
+        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id)                       AS subtasks_total,
+        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done') AS subtasks_done,
+        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
+-                                           AND s.due_date < current_date)             AS subtasks_late,
++                                           AND s.due_date < COALESCE($15::date, current_date)) AS subtasks_late,
+        ` + totalAmountSelectSQL + ` AS total_amount,
+        ll.text, ll.cut, ll.author_name, ll.created_at,
+        p.column_total, p.total,
+@@ -379,7 +386,11 @@ ORDER BY c.position, c.id, t.position, t.id`
+ // модель/SN оборудования заказа (plan.md §Доска, §Оборудование клиента). Q-3 передаётся вызывающей стороной уже
+ // экранированным (pkg/sqlutil.EscapeLike, tasks_filter.go).
+ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, error) {
+-	var q, qDesc, due, executorPaid any
++	// today — «сегодня» в поясе пользователя (user-timezone DS-032); nil — current_date БД.
++	var q, qDesc, due, executorPaid, today any
++	if f.Today != "" {
++		today = f.Today
++	}
+ 	if f.Q != "" {
+ 		q, qDesc = f.Q, f.QDesc
+ 	}
+@@ -392,7 +403,7 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
+ 
+ 	rows, err := r.pool.Query(ctx, boardListSQL,
+ 		f.ClientID, q, f.TaskNo, f.CategoryID, f.Paid, f.AssigneeID, due, f.Limit, f.Offset,
+-		f.ColumnID, f.PerColumn, qDesc, f.WarehouseID, executorPaid)
++		f.ColumnID, f.PerColumn, qDesc, f.WarehouseID, executorPaid, today)
+ 	if err != nil {
+ 		return nil, 0, err
+ 	}
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index 2456975..5b45772 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -20,6 +20,10 @@ import (
+ type Actor struct {
+ 	ID      string
+ 	IsAdmin bool
++	// Today — «сегодня» (YYYY-MM-DD) в часовом поясе пользователя (user-timezone DS-032):
++	// от него считаются просрочки (фильтр срока, subtasks_late) в списке, карточке и ответах
++	// мутаций. Заполняет currentActor; пусто — current_date сервера БД.
++	Today string
+ }
+ 
+ // TaskService — концентрирует Lock Order (columns→tasks→products, ADR-104) операций
+@@ -50,12 +54,12 @@ func (s *TaskService) List(ctx context.Context, f TaskFilter) (*TaskListResponse
+ 	return &TaskListResponse{Items: items, Total: total, Limit: f.Limit, Offset: f.Offset}, nil
+ }
+ 
+-func (s *TaskService) Get(ctx context.Context, idStr string) (*TaskResponse, error) {
++func (s *TaskService) Get(ctx context.Context, a Actor, idStr string) (*TaskResponse, error) {
+ 	id, ok := parseTaskID(idStr)
+ 	if !ok {
+ 		return nil, ErrTaskNotFound
+ 	}
+-	t, err := s.repo.Get(ctx, id)
++	t, err := s.repo.Get(ctx, id, a.Today)
+ 	if errors.Is(err, errNotFound) {
+ 		return nil, ErrTaskNotFound
+ 	}
+@@ -135,7 +139,7 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return s.mutationResponse(ctx, taskID, reconcile)
++	return s.mutationResponse(ctx, a, taskID, reconcile)
+ }
+ 
+ // Update — полная замена карточки (LWW по version). column_id сменился → шаги
+@@ -263,7 +267,7 @@ func (s *TaskService) Update(ctx context.Context, a Actor, idStr string, in Task
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return s.mutationResponse(ctx, id, reconcile)
++	return s.mutationResponse(ctx, a, id, reconcile)
+ }
+ 
+ // Move — design-go-layers.md §Service Interface, шаги 1-7.
+@@ -324,7 +328,7 @@ func (s *TaskService) Move(ctx context.Context, a Actor, idStr string, in TaskMo
+ 		attribute.String("to_column", in.ColumnID),
+ 		attribute.Int("movements_count", reconcile.Movements),
+ 	)
+-	return s.mutationResponse(ctx, id, reconcile)
++	return s.mutationResponse(ctx, a, id, reconcile)
+ }
+ 
+ // Delete — только admin (роут + повторная проверка роли в сервисе); StockEngine.
+@@ -373,8 +377,8 @@ func (s *TaskService) Delete(ctx context.Context, a Actor, idStr string) (*TaskD
+ // mutationResponse — Re-fetch-after-write: ответ Create/Update/Move собирается ИЗ Get()
+ // после коммита транзакции, не из RETURNING-строки мутации (денормализованные поля
+ // TaskCard — JOIN'ы, посчитанные заново).
+-func (s *TaskService) mutationResponse(ctx context.Context, id int64, reconcile ReconcileResult) (*TaskMutationResponse, error) {
+-	full, err := s.repo.Get(ctx, id)
++func (s *TaskService) mutationResponse(ctx context.Context, a Actor, id int64, reconcile ReconcileResult) (*TaskMutationResponse, error) {
++	full, err := s.repo.Get(ctx, id, a.Today)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/internal/features/board/timezone_http_live_test.go b/internal/features/board/timezone_http_live_test.go
+new file mode 100644
+index 0000000..9438557
+--- /dev/null
++++ b/internal/features/board/timezone_http_live_test.go
+@@ -0,0 +1,232 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// Часовой пояс пользователя на SSR-печати и в фильтре сроков доски
++// (docs/features/user-timezone/draft-spec.md §8.1 «Где применяется», TS-041, DS-032).
++// Методы — на PrintLiveSuite: те же фикстуры заказа, живой бинарь и реальный вход (§TD-8).
++
++// tzFixtureMoment — TS-F5: 00:30 7 октября по Алматы = 22:30 6 октября по Москве.
++const tzFixtureMoment = "2026-10-06T19:30:00Z"
++
++// tzAdmin — новый администратор с поясом tz, выставленным настоящим endpoint'ом.
++func (s *PrintLiveSuite) tzAdmin(login, tz string) *testutil.Browser {
++	s.SeedUser(login, "password1", "Пояс "+login, "admin", true)
++	b := s.NewBrowser()
++	b.Login(login, "password1")
++	st, raw := b.Do(http.MethodPut, "/api/v1/users/me/timezone", map[string]any{"timezone": tz})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	return b
++}
++
++func (s *PrintLiveSuite) printPage(b *testutil.Browser, taskID int64, kind string) string {
++	resp := b.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/%s", taskID, kind), nil, nil)
++	defer resp.Body.Close()
++	s.Require().Equal(http.StatusOK, resp.StatusCode)
++	return s.readBody(resp)
++}
++
++// TS-041: печать «Выдача» — дата оплаты одного и того же заказа в поясе смотрящего.
++func (s *PrintLiveSuite) TestTS041_Handover_PaidDate_InViewerTimezone() {
++	c := s.newClient("Клиент-Пояс-Оплата", "", "")
++	col := s.columnID("Новые")
++	taskID, version := s.newTask(c, col, "")
++	s.markPaid(fmt.Sprintf("%d", taskID), c, col, version)
++	_, err := s.Pool.Exec(context.Background(),
++		`UPDATE tasks SET paid_at = $2::timestamptz WHERE id = $1`, taskID, tzFixtureMoment)
++	s.Require().NoError(err)
++
++	almaty := s.tzAdmin("tz-print-almaty", "Asia/Almaty")
++	moscow := s.tzAdmin("tz-print-moscow", "Europe/Moscow")
++
++	s.Contains(s.printPage(almaty, taskID, "handover"), "Оплачено 07.10.2026")
++	body := s.printPage(moscow, taskID, "handover")
++	s.Contains(body, "Оплачено 06.10.2026")
++	s.NotContains(body, "Оплачено 07.10.2026")
++}
++
++// TS-041: печать «Приём» и «Выдача» — дата печати в поясе смотрящего, а не сервера.
++// Пояса UTC+14 и UTC-12 разнесены на 26 часов: их календарные даты различаются ВСЕГДА,
++// поэтому тест не зависит от времени запуска и от пояса сервера.
++func (s *PrintLiveSuite) TestTS041_PrintDate_InViewerTimezone() {
++	c := s.newClient("Клиент-Пояс-Дата-Печати", "", "")
++	taskID, _ := s.newTask(c, s.columnID("Новые"), "")
++
++	for i, zone := range []string{"Pacific/Kiritimati", "Etc/GMT+12"} {
++		loc, err := time.LoadLocation(zone)
++		s.Require().NoError(err)
++		b := s.tzAdmin(fmt.Sprintf("tz-date-%d", i), zone)
++		for _, kind := range []string{"intake", "handover"} {
++			before := time.Now().In(loc).Format("02.01.2006")
++			body := s.printPage(b, taskID, kind)
++			after := time.Now().In(loc).Format("02.01.2006")
++			// before/after — на случай полуночи пояса ровно во время запроса.
++			s.True(strings.Contains(body, `data-testid="print-date">Дата: `+before+`<`) ||
++				strings.Contains(body, `data-testid="print-date">Дата: `+after+`<`),
++				"%s %s: ожидалась дата %s", zone, kind, before)
++		}
++	}
++	east := time.Now().In(time.FixedZone("", 14*3600)).Format("02.01.2006")
++	west := time.Now().In(time.FixedZone("", -12*3600)).Format("02.01.2006")
++	s.NotEqual(east, west, "предпосылка теста: даты поясов различаются")
++}
++
++// TS-041 (негатив «срок считается по поясу пользователя»): фильтр доски due=overdue/soon и
++// счётчик subtasks_late берут «сегодня» из пояса пользователя, а не из current_date БД.
++// Срок = «вчера» по UTC+14: для UTC+14 заказ просрочен, для UTC-12 (там ещё «вчера» или
++// раньше) — нет.
++func (s *PrintLiveSuite) TestTS041_DueFilter_TodayInViewerTimezone() {
++	ctx := context.Background()
++	c := s.newClient("Клиент-Пояс-Срок", "", "")
++	taskID, _ := s.newTask(c, s.columnID("Новые"), "")
++
++	eastToday := time.Now().In(time.FixedZone("", 14*3600))
++	due := eastToday.AddDate(0, 0, -1).Format(time.DateOnly)
++	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET due_date = $2::date WHERE id = $1`, taskID, due)
++	s.Require().NoError(err)
++	// Услуга с тем же сроком — для счётчика subtasks_late.
++	svc := s.newService("Услуга-Пояс-Срок", "100")
++	sub := s.addSubtask(taskID, svc)
++	_, err = s.Pool.Exec(ctx, `UPDATE subtasks SET due_date = $2::date WHERE id::text = $1`, sub, due)
++	s.Require().NoError(err)
++
++	east := s.tzAdmin("tz-due-east", "Pacific/Kiritimati")
++	west := s.tzAdmin("tz-due-west", "Etc/GMT+12")
++
++	type listResp struct {
++		Items []struct {
++			ID           int64 `json:"id"`
++			SubtasksLate int   `json:"subtasks_late"`
++		} `json:"items"`
++		Total int `json:"total"`
++	}
++	list := func(b *testutil.Browser, dueFilter string) listResp {
++		st, raw := b.Do(http.MethodGet, "/api/v1/tasks?assignee=all&client_id="+c+"&due="+dueFilter, nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var r listResp
++		s.Require().NoError(json.Unmarshal(raw, &r), string(raw))
++		return r
++	}
++
++	// Восток (UTC+14): срок — вчера → просрочен, услуга просрочена.
++	r := list(east, "overdue")
++	s.Require().Equal(1, r.Total, "UTC+14: срок %s уже прошёл", due)
++	s.Equal(taskID, r.Items[0].ID)
++	s.Equal(1, r.Items[0].SubtasksLate)
++
++	// Запад (UTC-12): для него этот срок — сегодня или позже → не просрочен.
++	// Услугу снимаем с просрочки фильтра отдельно: EXISTS по subtasks тоже считается от «сегодня».
++	r = list(west, "overdue")
++	s.Equal(0, r.Total, "UTC-12: срок %s ещё не прошёл", due)
++	r = list(west, "all")
++	s.Require().Equal(1, r.Total)
++	s.Equal(0, r.Items[0].SubtasksLate, "UTC-12: услуга не просрочена")
++}
++
++// TS-041: счётчик просроченных услуг (subtasks_late) в карточке заказа и в ответах мутаций
++// считается от «сегодня» в поясе пользователя — так же, как в списке (Actor.Today, один
++// источник на пакет). Срок услуги = «вчера» по UTC+14: для UTC+14 она просрочена, для
++// UTC-12 — нет, какой бы ни была дата сервера БД. Список, GET /tasks/:id, GET /tasks/:id/card
++// и ответы PUT заказа / PUT услуги дают одному зрителю одно и то же число.
++func (s *PrintLiveSuite) TestTS041_CardAndMutations_SubtasksLate_TodayInViewerTimezone() {
++	c := s.newClient("Клиент-Пояс-Карточка", "", "")
++	col := s.columnID("Новые")
++	taskID, _ := s.newTask(c, col, "")
++	sub := s.addSubtask(taskID, s.newService("Услуга-Пояс-Карточка", "100"))
++	due := time.Now().In(time.FixedZone("", 14*3600)).AddDate(0, 0, -1).Format(time.DateOnly)
++
++	east := s.tzAdmin("tz-card-east", "Pacific/Kiritimati")
++	west := s.tzAdmin("tz-card-west", "Etc/GMT+12")
++
++	type taskBody struct {
++		ID           int64 `json:"id"`
++		Version      int64 `json:"version"`
++		SubtasksLate int   `json:"subtasks_late"`
++	}
++	decode := func(raw []byte, v any) {
++		s.Require().NoError(json.Unmarshal(raw, v), string(raw))
++	}
++	// Срок услуге ставит настоящая мутация PUT /subtasks/:id — её ответ (карточка) тоже проверяем.
++	putSubtask := func(b *testutil.Browser, status string) int {
++		st, raw := b.Do(http.MethodPut, "/api/v1/subtasks/"+sub, map[string]any{
++			"status": status, "assignee_id": nil, "due_date": due, "price": 100, "equipment_id": nil,
++		})
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var m struct {
++			Card struct {
++				Task taskBody `json:"task"`
++			} `json:"card"`
++		}
++		decode(raw, &m)
++		return m.Card.Task.SubtasksLate
++	}
++	getTask := func(b *testutil.Browser) taskBody {
++		st, raw := b.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d", taskID), nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var t taskBody
++		decode(raw, &t)
++		return t
++	}
++	getCard := func(b *testutil.Browser) int {
++		st, raw := b.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", taskID), nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var m struct {
++			Task taskBody `json:"task"`
++		}
++		decode(raw, &m)
++		return m.Task.SubtasksLate
++	}
++	listLate := func(b *testutil.Browser) int {
++		st, raw := b.Do(http.MethodGet, "/api/v1/tasks?assignee=all&client_id="+c, nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var r struct {
++			Items []taskBody `json:"items"`
++		}
++		decode(raw, &r)
++		s.Require().Len(r.Items, 1)
++		return r.Items[0].SubtasksLate
++	}
++	// PUT /tasks/:id — ответ мутации заказа (Re-fetch-after-write).
++	putTask := func(b *testutil.Browser, title string) int {
++		st, raw := b.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
++			"title": title, "client_id": c, "column_id": col,
++			"assignee_id": nil, "due_date": nil, "is_paid": false, "version": getTask(b).Version,
++		})
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var m struct {
++			Task taskBody `json:"task"`
++		}
++		decode(raw, &m)
++		return m.Task.SubtasksLate
++	}
++
++	for _, v := range []struct {
++		name string
++		b    *testutil.Browser
++		want int
++	}{
++		{"UTC+14: срок — вчера, услуга просрочена", east, 1},
++		{"UTC-12: срок — сегодня или позже, не просрочена", west, 0},
++	} {
++		s.Equal(v.want, putSubtask(v.b, "in_progress"), "%s: ответ PUT /subtasks/:id", v.name)
++		s.Equal(v.want, getTask(v.b).SubtasksLate, "%s: GET /tasks/:id", v.name)
++		s.Equal(v.want, getCard(v.b), "%s: GET /tasks/:id/card", v.name)
++		s.Equal(v.want, putTask(v.b, "Заказ печати — "+v.name[:6]), "%s: ответ PUT /tasks/:id", v.name)
++		s.Equal(v.want, listLate(v.b), "%s: список — то же число, что карточка", v.name)
++	}
++
++	// Выполненная услуга не просрочена ни для кого.
++	s.Equal(0, putSubtask(east, "done"))
++	s.Equal(0, getTask(east).SubtasksLate)
++}
+diff --git a/internal/features/clients/clients_http_live_test.go b/internal/features/clients/clients_http_live_test.go
+index 32b97ac..195ff5b 100644
+--- a/internal/features/clients/clients_http_live_test.go
++++ b/internal/features/clients/clients_http_live_test.go
+@@ -1275,6 +1275,24 @@ func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
+ 	s.Contains(body, "Заменил конденсатор")
+ 	s.NotContains(body, "История Чужая услуга")
+ 
++	// TS-041 (user-timezone, DS-032): дата заказа и время записи журнала — в поясе смотрящего
++	// (фикстура TS-F5: 2026-10-06T19:30Z = 00:30 7 октября по Алматы, 22:30 6 октября по Москве).
++	_, err = s.Pool.Exec(ctx, `UPDATE tasks SET created_at = '2026-10-06T19:30:00Z' WHERE id = $1`, taskID)
++	s.Require().NoError(err)
++	_, err = s.Pool.Exec(ctx, `UPDATE subtask_logs SET created_at = '2026-10-06T19:30:00Z' WHERE subtask_id = $1::uuid`, subID)
++	s.Require().NoError(err)
++	_, page = s.admin.Do(http.MethodGet, "/equipment/"+e.ID+"/history", nil)
++	s.Contains(string(page), `data-testid="history-order-date">07.10.2026</span>`)
++	s.Contains(string(page), `data-testid="history-log-time">07.10.2026 00:30</span>`)
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/me/timezone", map[string]any{"timezone": "Europe/Moscow"})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	_, page = s.admin.Do(http.MethodGet, "/equipment/"+e.ID+"/history", nil)
++	s.Contains(string(page), `data-testid="history-order-date">06.10.2026</span>`)
++	s.Contains(string(page), `data-testid="history-log-time">06.10.2026 22:30</span>`)
++	s.NotContains(string(page), "07.10.2026")
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/me/timezone", map[string]any{"timezone": "Asia/Almaty"})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++
+ 	st, _ = s.admin.Do(http.MethodGet, "/equipment/not-a-uuid/history", nil)
+ 	s.Equal(http.StatusNotFound, st)
+ 	st, _ = s.admin.Do(http.MethodGet, "/equipment/00000000-0000-0000-0000-000000000000/history", nil)
+diff --git a/internal/features/users/dto.go b/internal/features/users/dto.go
+index 0fc00eb..f1d8487 100644
+--- a/internal/features/users/dto.go
++++ b/internal/features/users/dto.go
+@@ -11,6 +11,7 @@ type UserResponse struct {
+ 	Role      string    `json:"role"`
+ 	Phone     string    `json:"phone"`
+ 	IsActive  bool      `json:"is_active"`
++	Timezone  string    `json:"timezone"` // имя IANA (DS-031)
+ 	CreatedAt time.Time `json:"created_at"`
+ 	UpdatedAt time.Time `json:"updated_at"`
+ 	// ActiveTasks — только в списке (GET /api/v1/users): заказы вне финальной колонки, где
+@@ -25,23 +26,36 @@ type ListResponse struct {
+ 	Offset int            `json:"offset"`
+ }
+ 
+-// CreateRequest — POST /api/v1/users. is_active не передан — активен.
++// CreateRequest — POST /api/v1/users. is_active не передан — активен; timezone не
++// передан — пояс по умолчанию (DS-056).
+ type CreateRequest struct {
+-	Login    string `json:"login"`
+-	Name     string `json:"name"`
+-	Role     string `json:"role"`
+-	Phone    string `json:"phone"`
+-	Password string `json:"password"`
+-	IsActive *bool  `json:"is_active"`
++	Login    string  `json:"login"`
++	Name     string  `json:"name"`
++	Role     string  `json:"role"`
++	Phone    string  `json:"phone"`
++	Password string  `json:"password"`
++	IsActive *bool   `json:"is_active"`
++	Timezone *string `json:"timezone"`
+ }
+ 
+ // UpdateRequest — PUT /api/v1/users/:id: полная замена карточки (D28 — last-write-wins,
+-// без version). Пароль пустой/не передан — не меняется.
++// без version). Пароль пустой/не передан — не меняется; timezone не передан — не меняется.
+ type UpdateRequest struct {
+-	Login    string `json:"login"`
+-	Name     string `json:"name"`
+-	Role     string `json:"role"`
+-	Phone    string `json:"phone"`
+-	IsActive *bool  `json:"is_active"`
+-	Password string `json:"password"`
++	Login    string  `json:"login"`
++	Name     string  `json:"name"`
++	Role     string  `json:"role"`
++	Phone    string  `json:"phone"`
++	IsActive *bool   `json:"is_active"`
++	Password string  `json:"password"`
++	Timezone *string `json:"timezone"`
++}
++
++// TimezoneRequest — PUT /api/v1/users/me/timezone. Других полей нет: id — из сессии,
++// посторонние ключи тела (user_id и т.п.) игнорируются.
++type TimezoneRequest struct {
++	Timezone string `json:"timezone"`
++}
++
++type TimezoneResponse struct {
++	Timezone string `json:"timezone"`
+ }
+diff --git a/internal/features/users/handler.go b/internal/features/users/handler.go
+index 5055d7f..9c3e328 100644
+--- a/internal/features/users/handler.go
++++ b/internal/features/users/handler.go
+@@ -1,6 +1,7 @@
+ package users
+ 
+ import (
++	"encoding/json"
+ 	"strconv"
+ 
+ 	"github.com/gofiber/fiber/v3"
+@@ -9,7 +10,8 @@ import (
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+-// Handler — JSON API /api/v1/users (только admin — гард вешает routes.go).
++// Handler — JSON API /api/v1/users (только admin — гард вешает routes.go; исключение —
++// SetMyTimezone, доступный любому авторизованному).
+ type Handler struct {
+ 	svc *Service
+ }
+@@ -48,6 +50,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
+ 	active := req.IsActive == nil || *req.IsActive
+ 	resp, err := h.svc.Create(c.Context(), Input{
+ 		Login: req.Login, Name: req.Name, Role: req.Role, Phone: req.Phone, Password: req.Password, IsActive: active,
++		Timezone: req.Timezone,
+ 	})
+ 	if err != nil {
+ 		return err
+@@ -66,6 +69,7 @@ func (h *Handler) Update(c fiber.Ctx) error {
+ 	}
+ 	resp, err := h.svc.Update(c.Context(), actorOf(c), c.Params("id"), Input{
+ 		Login: req.Login, Name: req.Name, Role: req.Role, Phone: req.Phone, Password: req.Password, IsActive: *req.IsActive,
++		Timezone: req.Timezone,
+ 	})
+ 	if err != nil {
+ 		return err
+@@ -73,6 +77,22 @@ func (h *Handler) Update(c fiber.Ctx) error {
+ 	return c.JSON(resp)
+ }
+ 
++// SetMyTimezone — PUT /api/v1/users/me/timezone: любой авторизованный меняет СВОЙ пояс
++// (DS-033). id — из сессии; user_id и прочие ключи тела игнорируются.
++func (h *Handler) SetMyTimezone(c fiber.Ctx) error {
++	// encoding/json напрямую, не c.Bind(): binder Fiber отклоняет тело с посторонними
++	// ключами, а чужой user_id по спеке (abuse case 2) должен молча игнорироваться.
++	var req TimezoneRequest
++	if err := json.Unmarshal(c.Body(), &req); err != nil {
++		return errorspkg.BadRequest("invalid body")
++	}
++	resp, err := h.svc.SetTimezone(c.Context(), actorOf(c).UserID, req.Timezone)
++	if err != nil {
++		return err
++	}
++	return c.JSON(resp)
++}
++
+ func actorOf(c fiber.Ctx) Actor {
+ 	uid, _ := c.Locals(middleware.UserIDKey).(string)
+ 	sid, _ := c.Locals(middleware.SessionIDKey).(string)
+diff --git a/internal/features/users/migration_integration_test.go b/internal/features/users/migration_integration_test.go
+new file mode 100644
+index 0000000..d478beb
+--- /dev/null
++++ b/internal/features/users/migration_integration_test.go
+@@ -0,0 +1,123 @@
++//go:build integration
++
++package users_test
++
++import (
++	"context"
++	"errors"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	_ "github.com/golang-migrate/migrate/v4/database/postgres"
++	_ "github.com/golang-migrate/migrate/v4/source/file"
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// UserTimezoneMigrationSuite — миграция 0013 (docs/features/user-timezone/draft-spec.md
++// §4.1, DS-033; часть TS-022 — «существующие пользователи получили Asia/Almaty»):
++// down → колонки нет; up → колонка NOT NULL с умолчанием, существующие строки заполнены,
++// CHECK длины 1..64; повторный down/up чистый.
++type UserTimezoneMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestUserTimezoneMigrationSuite(t *testing.T) {
++	suite.Run(t, new(UserTimezoneMigrationSuite))
++}
++
++func migrationsURL() string {
++	_, f, _, _ := runtime.Caller(0)
++	return "file://" + filepath.Join(filepath.Dir(f), "..", "..", "..", "migrations")
++}
++
++func (s *UserTimezoneMigrationSuite) columnExists() bool {
++	var ok bool
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
++		SELECT EXISTS (SELECT 1 FROM information_schema.columns
++		               WHERE table_name = 'users' AND column_name = 'timezone')`).Scan(&ok))
++	return ok
++}
++
++func (s *UserTimezoneMigrationSuite) pgCode(err error) string {
++	var pgErr *pgconn.PgError
++	s.Require().True(errors.As(err, &pgErr), "ожидалась ошибка PostgreSQL: %v", err)
++	return pgErr.Code
++}
++
++func (s *UserTimezoneMigrationSuite) TestTS022_Migration0013_UpDown() {
++	ctx := context.Background()
++	mig, err := migrate.New(migrationsURL(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(12))
++	// Вернуть схему на последнюю версию; пока 0013 — последняя, Up() отвечает ErrNoChange.
++	defer func() {
++		if err := mig.Up(); !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	s.False(s.columnExists(), "до 0013 колонки users.timezone нет")
++
++	// «Существующий» пользователь — заведён ДО миграции.
++	var oldID string
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO users (login, password_hash, name, role) VALUES ('tz-mig-old', 'x', 'До миграции', 'executor')
++		 RETURNING id::text`).Scan(&oldID))
++	defer func() { _, _ = s.Pool.Exec(ctx, `DELETE FROM users WHERE login LIKE 'tz-mig-%'`) }()
++
++	// --- up 0013 ---
++	s.Require().NoError(mig.Migrate(13))
++	s.True(s.columnExists())
++
++	var typ, nullable, def string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT data_type, is_nullable, column_default FROM information_schema.columns
++		WHERE table_name = 'users' AND column_name = 'timezone'`).Scan(&typ, &nullable, &def))
++	s.Equal("text", typ)
++	s.Equal("NO", nullable)
++	s.Contains(def, "Asia/Almaty")
++
++	// Существующие пользователи получили Алматы (DS-033) — все, без NULL и пустых.
++	var tz string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT timezone FROM users WHERE id = $1::uuid`, oldID).Scan(&tz))
++	s.Equal("Asia/Almaty", tz)
++	var notAlmaty int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE timezone <> 'Asia/Almaty'`).Scan(&notAlmaty))
++	s.Zero(notAlmaty, "сразу после миграции у всех — умолчание")
++
++	// Новый пользователь без поля → умолчание.
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO users (login, password_hash, name, role) VALUES ('tz-mig-new', 'x', 'После миграции', 'executor')
++		 RETURNING timezone`).Scan(&tz))
++	s.Equal("Asia/Almaty", tz)
++
++	// CHECK длины 1..64: пустое и 65 символов не проходят мимо сервиса; границы валидны.
++	_, err = s.Pool.Exec(ctx, `UPDATE users SET timezone = '' WHERE id = $1::uuid`, oldID)
++	s.Equal("23514", s.pgCode(err))
++	_, err = s.Pool.Exec(ctx, `UPDATE users SET timezone = $2 WHERE id = $1::uuid`, oldID, strings.Repeat("a", 65))
++	s.Equal("23514", s.pgCode(err))
++	_, err = s.Pool.Exec(ctx, `UPDATE users SET timezone = NULL WHERE id = $1::uuid`, oldID)
++	s.Equal("23502", s.pgCode(err), "NOT NULL")
++	_, err = s.Pool.Exec(ctx, `UPDATE users SET timezone = $2 WHERE id = $1::uuid`, oldID, strings.Repeat("a", 64))
++	s.Require().NoError(err, "64 символа — граница валидна")
++	_, err = s.Pool.Exec(ctx, `UPDATE users SET timezone = 'Europe/Moscow' WHERE id = $1::uuid`, oldID)
++	s.Require().NoError(err)
++
++	// --- down → 0012: колонка (и CHECK) удалены, пользователи на месте; up поднимается чисто ---
++	s.Require().NoError(mig.Migrate(12))
++	s.False(s.columnExists())
++	var kept int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE login LIKE 'tz-mig-%'`).Scan(&kept))
++	s.Equal(2, kept, "откат не удаляет пользователей")
++
++	s.Require().NoError(mig.Migrate(13))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT timezone FROM users WHERE id = $1::uuid`, oldID).Scan(&tz))
++	s.Equal("Asia/Almaty", tz, "после отката и повторного наката — снова умолчание")
++}
+diff --git a/internal/features/users/repo.go b/internal/features/users/repo.go
+index 9aad05f..6820a45 100644
+--- a/internal/features/users/repo.go
++++ b/internal/features/users/repo.go
+@@ -21,6 +21,7 @@ type User struct {
+ 	Role      string
+ 	Phone     string
+ 	IsActive  bool
++	Timezone  string // имя IANA (DS-031)
+ 	CreatedAt time.Time
+ 	UpdatedAt time.Time
+ 	// ActiveTasks — заполняется только в List (nil в остальных запросах).
+@@ -38,7 +39,7 @@ var (
+ 	errLoginTaken = errors.New("users: login taken")
+ )
+ 
+-const columns = `id, login, name, role, phone, is_active, created_at, updated_at`
++const columns = `id, login, name, role, phone, is_active, timezone, created_at, updated_at`
+ 
+ // activeTasksSQL — «Активных заказов» в списке сотрудников (как в прототипе): заказы вне
+ // финальной колонки, где сотрудник — ответственный заказа или исполнитель незавершённой
+@@ -49,7 +50,7 @@ const activeTasksSQL = `(SELECT count(*) FROM tasks t JOIN columns c ON c.id = t
+ 
+ func scan(row pgx.Row) (*User, error) {
+ 	var u User
+-	if err := row.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
++	if err := row.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.Timezone, &u.CreatedAt, &u.UpdatedAt); err != nil {
+ 		return nil, err
+ 	}
+ 	return &u, nil
+@@ -104,7 +105,7 @@ func (r *Repo) List(ctx context.Context, p ListParams) ([]User, int, error) {
+ 	for rows.Next() {
+ 		var u User
+ 		var active int
+-		if err := rows.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.CreatedAt, &u.UpdatedAt,
++		if err := rows.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.Timezone, &u.CreatedAt, &u.UpdatedAt,
+ 			&active); err != nil {
+ 			return nil, 0, err
+ 		}
+@@ -119,11 +120,12 @@ func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
+ 	return scan(r.pool.QueryRow(ctx, `SELECT `+columns+` FROM users WHERE id = $1::uuid`, id))
+ }
+ 
+-func (r *Repo) Create(ctx context.Context, in Input, passwordHash string) (*User, error) {
++// Create — timezone уже разрешён сервисом (не передан → пояс по умолчанию).
++func (r *Repo) Create(ctx context.Context, in Input, passwordHash, timezone string) (*User, error) {
+ 	u, err := scan(r.pool.QueryRow(ctx,
+-		`INSERT INTO users (login, password_hash, name, role, phone, is_active)
+-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+columns,
+-		in.Login, passwordHash, in.Name, in.Role, in.Phone, in.IsActive))
++		`INSERT INTO users (login, password_hash, name, role, phone, is_active, timezone)
++		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+columns,
++		in.Login, passwordHash, in.Name, in.Role, in.Phone, in.IsActive, timezone))
+ 	return u, mapUnique(err)
+ }
+ 
+@@ -134,7 +136,8 @@ type UpdateCheck func(before *User, otherActiveAdmins int) error
+ // Update — полная замена карточки в транзакции. Строки всех активных админов и
+ // правимого пользователя блокируются (FOR UPDATE, в порядке id — без дедлоков), поэтому
+ // два параллельных «разжалования» админов не оставят систему без администратора (D29).
+-// passwordHash nil — пароль не меняется. Возвращает карточку до и после.
++// passwordHash nil — пароль не меняется; in.Timezone nil — пояс не трогается (DS-056).
++// Возвращает карточку до и после.
+ func (r *Repo) Update(ctx context.Context, id string, in Input, passwordHash *string, check UpdateCheck) (before, after *User, err error) {
+ 	tx, err := r.pool.Begin(ctx)
+ 	if err != nil {
+@@ -161,10 +164,11 @@ func (r *Repo) Update(ctx context.Context, id string, in Input, passwordHash *st
+ 		`UPDATE users SET
+ 		   login = $2, name = $3, role = $4, phone = $5, is_active = $6,
+ 		   password_hash = COALESCE($7, password_hash),
++		   timezone = COALESCE($8, timezone),
+ 		   version = version + 1, updated_at = now()
+ 		 WHERE id = $1::uuid
+ 		 RETURNING `+columns,
+-		id, in.Login, in.Name, in.Role, in.Phone, in.IsActive, passwordHash))
++		id, in.Login, in.Name, in.Role, in.Phone, in.IsActive, passwordHash, in.Timezone))
+ 	if err != nil {
+ 		return nil, nil, mapUnique(err)
+ 	}
+@@ -174,6 +178,17 @@ func (r *Repo) Update(ctx context.Context, id string, in Input, passwordHash *st
+ 	return before, after, nil
+ }
+ 
++// SetTimezone — пользователь меняет свой пояс (DS-033): last-write-wins, version не
++// проверяется и не увеличивается. Возвращает прежнее значение (для журнала).
++func (r *Repo) SetTimezone(ctx context.Context, id, timezone string) (old string, err error) {
++	err = r.pool.QueryRow(ctx,
++		`UPDATE users u SET timezone = $2
++		   FROM (SELECT id, timezone FROM users WHERE id = $1::uuid FOR UPDATE) prev
++		  WHERE u.id = prev.id
++		RETURNING prev.timezone`, id, timezone).Scan(&old)
++	return old, err
++}
++
+ func mapUnique(err error) error {
+ 	var pgErr *pgconn.PgError
+ 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+diff --git a/internal/features/users/routes.go b/internal/features/users/routes.go
+index d7197e3..7a95dae 100644
+--- a/internal/features/users/routes.go
++++ b/internal/features/users/routes.go
+@@ -8,7 +8,14 @@ import (
+ 
+ // Register — JSON API /api/v1/users и SSR-экран /users; всё только для admin
+ // (plan.md §2). Удаления нет (D39) — блокировка через is_active.
++//
++// Исключение — PUT /api/v1/users/me/timezone (DS-033): свой пояс меняет ЛЮБОЙ авторизованный.
++// Маршрут регистрируется ДО admin-группы: её гарды — префиксные Use("/users"), а хендлеры
++// Fiber идут в порядке регистрации, поэтому запрос отвечает здесь и до RequireAdmin (и до
++// /:id с id="me") не доходит.
+ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handler, s *SSR) {
++	api.Put("/users/me/timezone", a.RequireAPI(), h.SetMyTimezone)
++
+ 	g := api.Group("/users", a.RequireAPI(), middleware.RequireAdmin(nil))
+ 	g.Get("", h.List)
+ 	g.Post("", h.Create)
+diff --git a/internal/features/users/service.go b/internal/features/users/service.go
+index 7b71269..28b99db 100644
+--- a/internal/features/users/service.go
++++ b/internal/features/users/service.go
+@@ -3,6 +3,7 @@ package users
+ import (
+ 	"context"
+ 	"errors"
++	"log/slog"
+ 	"net/http"
+ 	"strings"
+ 
+@@ -12,6 +13,7 @@ import (
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/session"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+ 
+ var (
+@@ -114,7 +116,11 @@ func (s *Service) Create(ctx context.Context, in Input) (*UserResponse, error) {
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	u, err := s.repo.Create(ctx, in, string(hash))
++	tz := timezone.Default
++	if in.Timezone != nil {
++		tz = *in.Timezone
++	}
++	u, err := s.repo.Create(ctx, in, string(hash), tz)
+ 	if errors.Is(err, errLoginTaken) {
+ 		return nil, ErrLoginTaken
+ 	}
+@@ -183,11 +189,37 @@ func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	if before.Timezone != after.Timezone {
++		slog.InfoContext(ctx, "users: timezone changed", "actor_id", actor.UserID, "user_id", id,
++			"old", before.Timezone, "new", after.Timezone)
++	}
+ 	resp := toResponse(*after)
+ 	return &resp, nil
+ }
+ 
++// SetTimezone — пользователь меняет СВОЙ пояс (DS-033): userID — только из сессии.
++// Last-write-wins; сессии не трогаются — новое значение читается из БД со следующего запроса.
++func (s *Service) SetTimezone(ctx context.Context, userID, tz string) (*TimezoneResponse, error) {
++	if f := validateTimezone(tz); len(f) > 0 {
++		return nil, errorspkg.Validation(f...)
++	}
++	if uuid.Validate(userID) != nil {
++		return nil, ErrUserNotFound
++	}
++	old, err := s.repo.SetTimezone(ctx, userID, tz)
++	if errors.Is(err, ErrNotFound) {
++		return nil, ErrUserNotFound
++	}
++	if err != nil {
++		return nil, err
++	}
++	if old != tz {
++		slog.InfoContext(ctx, "users: timezone changed", "actor_id", userID, "user_id", userID, "old", old, "new", tz)
++	}
++	return &TimezoneResponse{Timezone: tz}, nil
++}
++
+ func toResponse(u User) UserResponse {
+ 	return UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone,
+-		IsActive: u.IsActive, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt, ActiveTasks: u.ActiveTasks}
++		IsActive: u.IsActive, Timezone: u.Timezone, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt, ActiveTasks: u.ActiveTasks}
+ }
+diff --git a/internal/features/users/ssr.go b/internal/features/users/ssr.go
+index 080500a..7a4d9bb 100644
+--- a/internal/features/users/ssr.go
++++ b/internal/features/users/ssr.go
+@@ -3,11 +3,13 @@ package users
+ import (
+ 	"errors"
+ 	"net/url"
++	"time"
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/ssr"
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+ 
+ // Root — шаблоны экрана «Сотрудники» относительно корня модуля.
+@@ -46,8 +48,11 @@ type FormVM struct {
+ 	Role     string
+ 	Phone    string
+ 	IsActive bool
+-	Errors   map[string]string // поле → текст ошибки
+-	Error    string            // общая ошибка формы
++	// Timezone — выбранный пояс (IANA); Timezones — пункты select'а (DS-056).
++	Timezone  string
++	Timezones []timezone.Option
++	Errors    map[string]string // поле → текст ошибки
++	Error     string            // общая ошибка формы
+ }
+ 
+ var flashes = map[string]string{
+@@ -78,7 +83,7 @@ func (h *SSR) list(c fiber.Ctx) error {
+ 
+ // formNew — GET /users/new.
+ func (h *SSR) formNew(c fiber.Ctx) error {
+-	return h.renderForm(c, fiber.StatusOK, FormVM{IsNew: true, Role: RoleExecutor, IsActive: true})
++	return h.renderForm(c, fiber.StatusOK, FormVM{IsNew: true, Role: RoleExecutor, IsActive: true, Timezone: timezone.Default})
+ }
+ 
+ // create — POST /users.
+@@ -87,6 +92,7 @@ func (h *SSR) create(c fiber.Ctx) error {
+ 	vm.IsNew = true
+ 	_, err := h.svc.Create(c.Context(), Input{
+ 		Login: vm.Login, Name: vm.Name, Role: vm.Role, Phone: vm.Phone, Password: c.FormValue("password"), IsActive: vm.IsActive,
++		Timezone: formTimezone(c),
+ 	})
+ 	if err != nil {
+ 		return h.formError(c, vm, err)
+@@ -103,7 +109,7 @@ func (h *SSR) formEdit(c fiber.Ctx) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	return h.renderForm(c, fiber.StatusOK, FormVM{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone, IsActive: u.IsActive})
++	return h.renderForm(c, fiber.StatusOK, FormVM{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone, IsActive: u.IsActive, Timezone: u.Timezone})
+ }
+ 
+ // update — POST /users/:id.
+@@ -112,6 +118,7 @@ func (h *SSR) update(c fiber.Ctx) error {
+ 	vm.ID = c.Params("id")
+ 	_, err := h.svc.Update(c.Context(), actorOf(c), vm.ID, Input{
+ 		Login: vm.Login, Name: vm.Name, Role: vm.Role, Phone: vm.Phone, Password: c.FormValue("password"), IsActive: vm.IsActive,
++		Timezone: formTimezone(c),
+ 	})
+ 	if errors.Is(err, ErrUserNotFound) {
+ 		return h.status.NotFound(c)
+@@ -129,9 +136,19 @@ func formFrom(c fiber.Ctx) FormVM {
+ 		Role:     c.FormValue("role"),
+ 		Phone:    c.FormValue("phone"),
+ 		IsActive: c.FormValue("is_active") == "on",
++		Timezone: c.FormValue("timezone"),
+ 	}
+ }
+ 
++// formTimezone — пояс из формы; поля нет/пусто (форма без select'а) — nil: при создании
++// пояс по умолчанию, при правке колонка не трогается (DS-056).
++func formTimezone(c fiber.Ctx) *string {
++	if tz := c.FormValue("timezone"); tz != "" {
++		return &tz
++	}
++	return nil
++}
++
+ // formError — ошибки сервиса → форма с текстами (422 валидация, 409 конфликты).
+ func (h *SSR) formError(c fiber.Ctx, vm FormVM, err error) error {
+ 	var app *errorspkg.AppError
+@@ -161,12 +178,22 @@ func (h *SSR) renderForm(c fiber.Ctx, status int, vm FormVM) error {
+ 		title = "Новый сотрудник"
+ 	}
+ 	vm.Shell = h.shell.Build(c, title)
++	if vm.Timezone == "" {
++		vm.Timezone = timezone.Default
++	}
++	vm.Timezones = timezone.Options(time.Now(), vm.Timezone)
+ 	c.Status(status)
+ 	return h.r.Page(c, "form", vm)
+ }
+ 
+ // fieldText — код ошибки поля → текст под полем.
+ func fieldText(field, code string) string {
++	if field == "timezone" {
++		if code == msgRequired {
++			return "Выберите часовой пояс"
++		}
++		return "Неизвестный часовой пояс"
++	}
+ 	switch code {
+ 	case msgRequired:
+ 		return "Обязательное поле"
+diff --git a/internal/features/users/timezone_http_live_test.go b/internal/features/users/timezone_http_live_test.go
+new file mode 100644
+index 0000000..0f3fbae
+--- /dev/null
++++ b/internal/features/users/timezone_http_live_test.go
+@@ -0,0 +1,363 @@
++//go:build integration
++
++package users_test
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/url"
++	"strings"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// Часовой пояс пользователя (docs/features/user-timezone/draft-spec.md §6, TS-021/TS-022).
++// HTTP — только через живой бинарь и реальный вход (§TD-8).
++
++const (
++	tzAlmaty = "Asia/Almaty"
++	tzMoscow = "Europe/Moscow"
++)
++
++type tzBody struct {
++	Timezone string `json:"timezone"`
++}
++
++func (s *UsersLiveSuite) setMyTimezone(b *testutil.Browser, body any) (int, []byte) {
++	return b.Do(http.MethodPut, "/api/v1/users/me/timezone", body)
++}
++
++// meTimezone — пояс из GET /api/v1/auth/me (читается из БД на каждый запрос).
++func (s *UsersLiveSuite) meTimezone(b *testutil.Browser) string {
++	st, raw := b.Do(http.MethodGet, "/api/v1/auth/me", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var me tzBody
++	s.Require().NoError(json.Unmarshal(raw, &me), string(raw))
++	return me.Timezone
++}
++
++// userTimezone — пояс сотрудника глазами администратора (GET /api/v1/users/:id).
++func (s *UsersLiveSuite) userTimezone(id string) string {
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/users/"+id, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var u tzBody
++	s.Require().NoError(json.Unmarshal(raw, &u), string(raw))
++	return u.Timezone
++}
++
++func (s *UsersLiveSuite) userVersion(id string) (version int64) {
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT version FROM users WHERE id = $1::uuid`, id).Scan(&version))
++	return version
++}
++
++// TS-021: свой пояс — PUT /api/v1/users/me/timezone доступен исполнителю; /auth/me и
++// SSR-layout отдают новое значение сразу следующим запросом (DS-031, DS-033).
++func (s *UsersLiveSuite) TestTS021_OwnTimezone_ExecutorChangesOwn() {
++	u := s.newExecutor("tz-own")
++	exec := s.NewBrowser()
++
++	// Ответ входа и /auth/me несут пояс; умолчание — Алматы.
++	st, raw := exec.Do(http.MethodPost, "/api/v1/auth/login", map[string]string{"login": "tz-own", "password": "password1"})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var login tzBody
++	s.Require().NoError(json.Unmarshal(raw, &login))
++	s.Equal(tzAlmaty, login.Timezone)
++	s.Equal(tzAlmaty, s.meTimezone(exec))
++
++	st, page := exec.Do(http.MethodGet, "/", nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(page), `<body data-timezone="Asia/Almaty">`)
++	s.Contains(string(page), `<option value="Asia/Almaty" selected>Алматы (UTC&#43;5)</option>`)
++	s.Contains(string(page), `<option value="Europe/Moscow">Москва (UTC&#43;3)</option>`)
++
++	version := s.userVersion(u.ID)
++	st, raw = s.setMyTimezone(exec, map[string]any{"timezone": tzMoscow})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.JSONEq(`{"timezone":"Europe/Moscow"}`, string(raw))
++
++	s.Equal(tzMoscow, s.meTimezone(exec), "новое значение — сразу следующим запросом, без перелогина")
++	s.Equal(tzMoscow, s.userTimezone(u.ID))
++	s.Equal(version, s.userVersion(u.ID), "last-write-wins: version не увеличивается")
++
++	st, page = exec.Do(http.MethodGet, "/", nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(page), `<body data-timezone="Europe/Moscow">`)
++	s.Contains(string(page), `<option value="Europe/Moscow" selected>Москва (UTC&#43;3)</option>`)
++
++	// Повтор безопасен; пояс переживает повторный вход (хранится в БД, не в сессии).
++	st, _ = s.setMyTimezone(exec, map[string]any{"timezone": tzMoscow})
++	s.Equal(http.StatusOK, st)
++	again := s.NewBrowser()
++	again.Login("tz-own", "password1")
++	s.Equal(tzMoscow, s.meTimezone(again))
++
++	// Пояс вне перечня select'а валиден (любое имя IANA) и показывается в select'е.
++	st, raw = s.setMyTimezone(exec, map[string]any{"timezone": "Asia/Kolkata"})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	st, page = exec.Do(http.MethodGet, "/", nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(page), `<option value="Asia/Kolkata" selected>Asia/Kolkata (UTC&#43;5:30)</option>`)
++}
++
++// TS-021: администратор — тоже «любой авторизованный»: свой пояс меняет тем же endpoint'ом.
++func (s *UsersLiveSuite) TestTS021_OwnTimezone_AdminChangesOwn() {
++	s.SeedUser("tz-admin", "password1", "Админ Пояс", "admin", true)
++	adm := s.NewBrowser()
++	adm.Login("tz-admin", "password1")
++	st, raw := s.setMyTimezone(adm, map[string]any{"timezone": tzMoscow})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(tzMoscow, s.meTimezone(adm))
++}
++
++// TS-021: невалидный пояс → 400 VALIDATION details.fields[] (timezone: invalid / required),
++// запись не изменена (abuse cases §3: обход каталога, 10 000 символов, Mars/Olympus).
++func (s *UsersLiveSuite) TestTS021_OwnTimezone_Validation() {
++	u := s.newExecutor("tz-bad")
++	exec := s.NewBrowser()
++	exec.Login("tz-bad", "password1")
++	st, _ := s.setMyTimezone(exec, map[string]any{"timezone": tzMoscow})
++	s.Require().Equal(http.StatusOK, st)
++
++	for name, c := range map[string]struct {
++		body any
++		want string
++	}{
++		"неизвестный":          {map[string]any{"timezone": "Mars/Olympus"}, "invalid"},
++		"обход каталога":       {map[string]any{"timezone": "../../etc/passwd"}, "invalid"},
++		"абсолютный путь":      {map[string]any{"timezone": "/etc/passwd"}, "invalid"},
++		"65 символов":          {map[string]any{"timezone": strings.Repeat("a", 65)}, "invalid"},
++		"10 000 символов":      {map[string]any{"timezone": strings.Repeat("A", 10000)}, "invalid"},
++		"пояс сервера":         {map[string]any{"timezone": "Local"}, "invalid"},
++		"пробелы по краям":     {map[string]any{"timezone": " Europe/Moscow "}, "invalid"},
++		"sql-инъекция":         {map[string]any{"timezone": "Asia/Almaty'; DROP TABLE users;--"}, "invalid"},
++		"пустая строка":        {map[string]any{"timezone": ""}, "required"},
++		"поле не передано":     {map[string]any{}, "required"},
++		"null":                 {map[string]any{"timezone": nil}, "required"},
++		"только чужой id":      {map[string]any{"user_id": u.ID}, "required"},
++		"несуществующий город": {map[string]any{"timezone": "Europe/Atlantis"}, "invalid"},
++	} {
++		st, raw := s.setMyTimezone(exec, c.body)
++		s.Equal(http.StatusBadRequest, st, "%s: %s", name, raw)
++		s.Equal("VALIDATION", s.errOf(raw).Code, name)
++		s.Equal(map[string]string{"timezone": c.want}, s.fields(raw), name)
++	}
++
++	// Мусор вместо JSON / не тот тип → 400, не 500.
++	for _, body := range []string{`{"timezone":`, `[]`, `{"timezone":123}`, `{"timezone":{"a":1}}`} {
++		resp := exec.Request(http.MethodPut, "/api/v1/users/me/timezone", body,
++			map[string]string{"Content-Type": "application/json"})
++		_ = resp.Body.Close()
++		s.Equal(http.StatusBadRequest, resp.StatusCode, body)
++	}
++
++	s.Equal(tzMoscow, s.meTimezone(exec), "после отказов запись не изменена")
++	s.Equal(tzMoscow, s.userTimezone(u.ID))
++}
++
++// TS-021: чужой user_id в теле игнорируется — меняется пояс владельца сессии (abuse case 2).
++func (s *UsersLiveSuite) TestTS021_OwnTimezone_ForeignUserIDIgnored() {
++	victim := s.newExecutor("tz-victim")
++	attacker := s.newExecutor("tz-attacker")
++	b := s.NewBrowser()
++	b.Login("tz-attacker", "password1")
++
++	st, raw := s.setMyTimezone(b, map[string]any{"timezone": tzMoscow, "user_id": victim.ID, "id": victim.ID})
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal(tzMoscow, s.userTimezone(attacker.ID), "изменён пояс владельца сессии")
++	s.Equal(tzAlmaty, s.userTimezone(victim.ID), "чужой пояс не тронут")
++
++	// И через query — тоже нет.
++	st, _ = b.Do(http.MethodPut, "/api/v1/users/me/timezone?user_id="+victim.ID, map[string]any{"timezone": "Asia/Tashkent"})
++	s.Equal(http.StatusOK, st)
++	s.Equal("Asia/Tashkent", s.userTimezone(attacker.ID))
++	s.Equal(tzAlmaty, s.userTimezone(victim.ID))
++}
++
++// TS-021 (негатив): без сессии → 401; маршрут не перехватывается admin-группой и /:id.
++func (s *UsersLiveSuite) TestTS021_OwnTimezone_Anonymous401_AndRouting() {
++	anon := s.NewBrowser()
++	st, raw := s.setMyTimezone(anon, map[string]any{"timezone": tzMoscow})
++	s.Equal(http.StatusUnauthorized, st, string(raw))
++	s.Equal("UNAUTHORIZED", s.errOf(raw).Code)
++
++	// Соседние пути по-прежнему под admin-гардом: исполнителю 403, а не «свой профиль».
++	s.newExecutor("tz-route")
++	exec := s.NewBrowser()
++	exec.Login("tz-route", "password1")
++	for _, c := range []struct{ method, path string }{
++		{http.MethodGet, "/api/v1/users/me"},
++		{http.MethodPut, "/api/v1/users/me"},
++		{http.MethodGet, "/api/v1/users/me/timezone"},
++	} {
++		var body any
++		if c.method != http.MethodGet {
++			body = map[string]any{"timezone": tzMoscow}
++		}
++		st, _ := exec.Do(c.method, c.path, body)
++		s.Contains([]int{http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed}, st, "%s %s", c.method, c.path)
++	}
++	s.Equal(tzAlmaty, s.meTimezone(exec))
++}
++
++// TS-022: администратор задаёт пояс другому — POST/PUT/GET /api/v1/users (DS-056).
++func (s *UsersLiveSuite) TestTS022_AdminSetsTimezone() {
++	// POST без поля → Asia/Almaty; ответ содержит timezone.
++	st, u, raw := s.create(s.admin, map[string]any{"login": "tz-adm-default", "name": "Пояс Умолчание", "role": "executor", "password": "password1"})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Contains(string(raw), `"timezone":"Asia/Almaty"`)
++
++	// POST с полем.
++	st, m, raw := s.create(s.admin, map[string]any{"login": "tz-adm-moscow", "name": "Пояс Москва", "role": "executor", "password": "password1", "timezone": tzMoscow})
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Contains(string(raw), `"timezone":"Europe/Moscow"`)
++	s.Equal(tzMoscow, s.userTimezone(m.ID))
++
++	// POST с невалидным → 400 details.fields[], пользователь не создан.
++	for _, bad := range []any{"Mars/Olympus", "", "../../etc/passwd", strings.Repeat("a", 65), "Local"} {
++		st, _, raw = s.create(s.admin, map[string]any{"login": "tz-adm-bad", "name": "Плохой Пояс", "role": "executor", "password": "password1", "timezone": bad})
++		s.Equal(http.StatusBadRequest, st, "%v: %s", bad, raw)
++		s.Equal("VALIDATION", s.errOf(raw).Code)
++		s.Equal(map[string]string{"timezone": "invalid"}, s.fields(raw), "%v", bad)
++	}
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/users?q=tz-adm-bad", nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(raw), `"total":0`)
++
++	// PUT с полем → 200, значение в ответе.
++	st, raw = s.put(s.admin, u.ID, card(u, map[string]any{"timezone": tzMoscow}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Contains(string(raw), `"timezone":"Europe/Moscow"`)
++	s.Equal(tzMoscow, s.userTimezone(u.ID))
++
++	// PUT без поля → пояс не меняется (остальные поля — меняются).
++	st, raw = s.put(s.admin, u.ID, card(u, map[string]any{"name": "Пояс Переименован"}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Contains(string(raw), `"name":"Пояс Переименован"`)
++	s.Contains(string(raw), `"timezone":"Europe/Moscow"`)
++
++	// PUT с невалидным → 400, ни пояс, ни имя не изменены.
++	st, raw = s.put(s.admin, u.ID, card(u, map[string]any{"name": "Не Должно Сохраниться", "timezone": "Mars/Olympus"}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"timezone": "invalid"}, s.fields(raw))
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/users/"+u.ID, nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(raw), `"name":"Пояс Переименован"`)
++	s.Contains(string(raw), `"timezone":"Europe/Moscow"`)
++
++	// GET /users (список) содержит timezone в каждом элементе.
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/users?q=tz-adm-&sort=login&order=asc", nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var list struct {
++		Items []struct {
++			Login    string `json:"login"`
++			Timezone string `json:"timezone"`
++		} `json:"items"`
++		Total int `json:"total"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	s.Equal(2, list.Total)
++	got := map[string]string{}
++	for _, it := range list.Items {
++		got[it.Login] = it.Timezone
++	}
++	s.Equal(map[string]string{"tz-adm-default": tzMoscow, "tz-adm-moscow": tzMoscow}, got)
++
++	// Сотрудник видит пояс, заданный администратором, без перелогина — и сам его меняет.
++	b := s.NewBrowser()
++	b.Login("tz-adm-default", "password1")
++	s.Equal(tzMoscow, s.meTimezone(b))
++	st, _ = s.setMyTimezone(b, map[string]any{"timezone": "Asia/Tashkent"})
++	s.Require().Equal(http.StatusOK, st)
++
++	// Устаревшая форма администратора (без поля timezone) не затирает пояс, который
++	// сотрудник только что сменил сам (§1 «Логика» п.6).
++	st, raw = s.put(s.admin, u.ID, card(u, map[string]any{"phone": "+7 900"}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Contains(string(raw), `"timezone":"Asia/Tashkent"`)
++	// С полем — last-write-wins: сохраняется последняя запись.
++	st, _ = s.put(s.admin, u.ID, card(u, map[string]any{"timezone": tzAlmaty}))
++	s.Require().Equal(http.StatusOK, st)
++	s.Equal(tzAlmaty, s.meTimezone(b))
++}
++
++// TS-022 (негатив): исполнитель чужой пояс через PUT /api/v1/users/:id не меняет → 403.
++func (s *UsersLiveSuite) TestTS022_ExecutorCannotSetForeignTimezone() {
++	victim := s.newExecutor("tz-403-victim")
++	s.newExecutor("tz-403-exec")
++	exec := s.NewBrowser()
++	exec.Login("tz-403-exec", "password1")
++
++	st, raw := s.put(exec, victim.ID, card(victim, map[string]any{"timezone": tzMoscow}))
++	s.Equal(http.StatusForbidden, st, string(raw))
++	s.Equal("FORBIDDEN", s.errOf(raw).Code)
++	s.Equal(tzAlmaty, s.userTimezone(victim.ID))
++
++	st, raw = exec.Do(http.MethodPost, "/api/v1/users", map[string]any{"login": "tz-403-new", "name": "x", "role": "executor", "password": "password1", "timezone": tzMoscow})
++	s.Equal(http.StatusForbidden, st, string(raw))
++
++	st, _ = exec.Do(http.MethodPost, "/users/"+victim.ID, url.Values{"name": {victim.Name}, "login": {victim.Login}, "role": {"executor"}, "is_active": {"on"}, "timezone": {tzMoscow}})
++	s.Equal(http.StatusForbidden, st)
++	s.Equal(tzAlmaty, s.userTimezone(victim.ID))
++}
++
++// TS-022: SSR-форма сотрудника — поле «Часовой пояс» (экран §8.1, DS-056).
++func (s *UsersLiveSuite) TestTS022_SSRForm_Timezone() {
++	// Форма создания: по умолчанию «Алматы (UTC+5)».
++	st, page := s.admin.Do(http.MethodGet, "/users/new", nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(page), `data-testid="user-timezone"`)
++	s.Contains(string(page), `<option value="Asia/Almaty" selected>Алматы (UTC&#43;5)</option>`)
++
++	form := func(tz string) url.Values {
++		v := url.Values{"name": {"Форма Пояс"}, "login": {"tz-ssr"}, "role": {"executor"}, "phone": {""}, "password": {"password1"}, "is_active": {"on"}}
++		if tz != "" {
++			v.Set("timezone", tz)
++		}
++		return v
++	}
++
++	// Невалидный пояс подменой значения → 422, текст под полем, сотрудник не создан.
++	st, page = s.admin.Do(http.MethodPost, "/users", form("Mars/Olympus"))
++	s.Equal(http.StatusUnprocessableEntity, st)
++	s.Contains(string(page), `data-testid="error-timezone">Неизвестный часовой пояс<`)
++	s.Contains(string(page), `value="Форма Пояс"`, "введённое не теряется")
++
++	resp := s.admin.Request(http.MethodPost, "/users", form(tzMoscow), nil)
++	_ = resp.Body.Close()
++	s.Require().Equal(http.StatusSeeOther, resp.StatusCode)
++
++	var id, tz string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT id::text, timezone FROM users WHERE login = 'tz-ssr'`).Scan(&id, &tz))
++	s.Equal(tzMoscow, tz)
++
++	// Форма правки показывает сохранённый пояс.
++	st, page = s.admin.Do(http.MethodGet, "/users/"+id, nil)
++	s.Require().Equal(http.StatusOK, st)
++	s.Contains(string(page), `<option value="Europe/Moscow" selected>Москва (UTC&#43;3)</option>`)
++	s.Contains(string(page), `<option value="Asia/Almaty">Алматы (UTC&#43;5)</option>`, "выбран пояс сотрудника, а не умолчание")
++
++	// Правка: новый пояс сохраняется.
++	edit := form("Asia/Tashkent")
++	edit.Del("password")
++	resp = s.admin.Request(http.MethodPost, "/users/"+id, edit, nil)
++	_ = resp.Body.Close()
++	s.Require().Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("Asia/Tashkent", s.userTimezone(id))
++
++	// Правка невалидным → 422 под полем, пояс прежний.
++	st, page = s.admin.Do(http.MethodPost, "/users/"+id, func() url.Values { v := form("../../etc/passwd"); v.Del("password"); return v }())
++	s.Equal(http.StatusUnprocessableEntity, st)
++	s.Contains(string(page), `data-testid="error-timezone">Неизвестный часовой пояс<`)
++	s.Equal("Asia/Tashkent", s.userTimezone(id))
++
++	// Форма без поля (устаревшая вкладка до релиза) — пояс не трогается.
++	stale := form("")
++	stale.Del("password")
++	resp = s.admin.Request(http.MethodPost, "/users/"+id, stale, nil)
++	_ = resp.Body.Close()
++	s.Require().Equal(http.StatusSeeOther, resp.StatusCode)
++	s.Equal("Asia/Tashkent", s.userTimezone(id))
++}
+diff --git a/internal/features/users/validate.go b/internal/features/users/validate.go
+index 9e6d78f..d9ed32f 100644
+--- a/internal/features/users/validate.go
++++ b/internal/features/users/validate.go
+@@ -6,6 +6,7 @@ import (
+ 	"unicode/utf8"
+ 
+ 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
++	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+ 
+ // Роли (plan.md §2).
+@@ -48,6 +49,9 @@ type Input struct {
+ 	Phone    string
+ 	Password string // пусто при правке — не менять
+ 	IsActive bool
++	// Timezone — имя IANA; nil — не передан: при создании пояс по умолчанию, при правке
++	// колонка не трогается (DS-056).
++	Timezone *string
+ }
+ 
+ // normalize — trim, логин в нижний регистр (вход регистронезависимый).
+@@ -97,5 +101,19 @@ func (in Input) validate(passwordRequired bool) []errorspkg.Field {
+ 	case len(in.Password) > passwordMaxBytes:
+ 		add("password", msgTooLong)
+ 	}
++	if in.Timezone != nil && !timezone.Valid(*in.Timezone) {
++		add("timezone", msgInvalid)
++	}
+ 	return f
+ }
++
++// validateTimezone — свой пояс (PUT /users/me/timezone): пусто → required, не имя IANA → invalid.
++func validateTimezone(tz string) []errorspkg.Field {
++	switch {
++	case tz == "":
++		return []errorspkg.Field{{Name: "timezone", Message: msgRequired}}
++	case !timezone.Valid(tz):
++		return []errorspkg.Field{{Name: "timezone", Message: msgInvalid}}
++	}
++	return nil
++}
+diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
+index f89ac15..d36694f 100644
+--- a/internal/seeddemo/seeddemo.go
++++ b/internal/seeddemo/seeddemo.go
+@@ -199,14 +199,16 @@ type columnRow struct {
+ // assigneeIdx); индекс указан в комментарии строки.
+ // ---------------------------------------------------------------------------------------
+ 
+-// demoExecutor — исполнители-инженеры (admin не создаётся: существующий не трогается).
+-type demoExecutor struct{ login, name, phone string }
++// demoExecutor — исполнители-инженеры (admin не создаётся: существующий не трогается —
++// его пояс остаётся умолчанием Asia/Almaty). timezone пуст — пояс по умолчанию; один
++// исполнитель — в Москве (user-timezone, DS-033: демо показывает оба пояса).
++type demoExecutor struct{ login, name, phone, timezone string }
+ 
+ var demoExecutors = []demoExecutor{
+-	{login: "sidorov", name: "Сидоров Олег", phone: "+7 916 400-00-01"},  // 0 — источники, электроника
+-	{login: "volkov", name: "Волков Павел", phone: "+7 916 400-00-02"},   // 1 — ТО, чиллеры, очистка
+-	{login: "egorova", name: "Егорова Ирина", phone: "+7 916 400-00-03"}, // 2 — оптика, головки
+-	{login: "kim", name: "Ким Артём", phone: "+7 916 400-00-04"},         // 3 — сварка, технолог резки
++	{login: "sidorov", name: "Сидоров Олег", phone: "+7 916 400-00-01"},                           // 0 — источники, электроника
++	{login: "volkov", name: "Волков Павел", phone: "+7 916 400-00-02", timezone: "Europe/Moscow"}, // 1 — ТО, чиллеры, очистка
++	{login: "egorova", name: "Егорова Ирина", phone: "+7 916 400-00-03"},                          // 2 — оптика, головки
++	{login: "kim", name: "Ким Артём", phone: "+7 916 400-00-04"},                                  // 3 — сварка, технолог резки
+ }
+ 
+ type executorRow struct{ ID string }
+@@ -222,9 +224,10 @@ func (s *seeder) seedExecutors() ([]executorRow, error) {
+ 	out := make([]executorRow, 0, len(demoExecutors))
+ 	for _, e := range demoExecutors {
+ 		if _, err := s.tx.Exec(s.ctx,
+-			`INSERT INTO users (login, password_hash, name, role, phone) VALUES ($1, $2, $3, 'executor', $4)
++			`INSERT INTO users (login, password_hash, name, role, phone, timezone)
++			 VALUES ($1, $2, $3, 'executor', $4, COALESCE(NULLIF($5, ''), 'Asia/Almaty'))
+ 			 ON CONFLICT (login) DO NOTHING`,
+-			e.login, string(hash), e.name, e.phone); err != nil {
++			e.login, string(hash), e.name, e.phone, e.timezone); err != nil {
+ 			return nil, err
+ 		}
+ 		var id string
+diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
+index c1330ad..a2803d6 100644
+--- a/internal/seeddemo/seeddemo_integration_test.go
++++ b/internal/seeddemo/seeddemo_integration_test.go
+@@ -103,6 +103,18 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
+ 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT is_active FROM users WHERE id = $1`, adminID).Scan(&stillActive))
+ 	s.True(stillActive)
+ 
++	// TS-F5 (user-timezone, DS-033): админ — Asia/Almaty (умолчание, не тронут), ровно один
++	// исполнитель — Europe/Moscow, остальные — умолчание.
++	var adminTZ string
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT timezone FROM users WHERE id = $1`, adminID).Scan(&adminTZ))
++	s.Equal("Asia/Almaty", adminTZ)
++	var moscow, almaty int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT count(*) FILTER (WHERE timezone = 'Europe/Moscow'), count(*) FILTER (WHERE timezone = 'Asia/Almaty')
++		FROM users WHERE role = 'executor'`).Scan(&moscow, &almaty))
++	s.Equal(1, moscow)
++	s.Equal(3, almaty)
++
+ 	assertStockInvariant(s.T(), s.Pool)
+ 	s.assertWarehouses()
+ 	s.assertExecutorPayouts()
+diff --git a/internal/server/middleware/auth.go b/internal/server/middleware/auth.go
+index dadfaed..a0da24d 100644
+--- a/internal/server/middleware/auth.go
++++ b/internal/server/middleware/auth.go
+@@ -28,13 +28,15 @@ const (
+ )
+ 
+ // Principal — кто делает запрос: читается из БД на каждом запросе, поэтому смена
+-// роли и блокировка действуют сразу, без перелогина.
++// роли, блокировка и смена часового пояса действуют сразу, без перелогина.
+ type Principal struct {
+ 	ID       string
+ 	Login    string
+ 	Name     string
+ 	Role     string
+ 	IsActive bool
++	// Timezone — часовой пояс пользователя (IANA, DS-031): по нему показывается время.
++	Timezone string
+ }
+ 
+ func (p *Principal) IsAdmin() bool { return p.Role == RoleAdmin }
+@@ -75,7 +77,7 @@ func (a *Auth) resolve(c fiber.Ctx) (*Principal, error) {
+ 	c.Locals(UserIDKey, p.ID)
+ 	c.Locals(PrincipalKey, p)
+ 	c.Locals(SessionIDKey, sid)
+-	c.Locals(ssr.LocalViewer, ssr.Viewer{Name: p.Name, Role: p.Role})
++	c.Locals(ssr.LocalViewer, ssr.Viewer{Name: p.Name, Role: p.Role, Timezone: p.Timezone})
+ 	return p, nil
+ }
+ 
+diff --git a/internal/ssr/render.go b/internal/ssr/render.go
+index b8d3450..59a18f6 100644
+--- a/internal/ssr/render.go
++++ b/internal/ssr/render.go
+@@ -29,6 +29,8 @@ import (
+ 	"strings"
+ 
+ 	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+ 
+ // SharedRoot — общий набор шаблонов (layout "base") относительно корня модуля.
+@@ -87,6 +89,10 @@ func NewRenderer(root string, sharedRoots ...string) (*Renderer, error) {
+ // Funcs — функции шаблонов, общие для всех наборов.
+ var Funcs = template.FuncMap{
+ 	"initials": Initials,
++	// timeIn — время в поясе пользователя (DS-031, DS-032): {{ timeIn $.Shell.User.Timezone
++	// "02.01.2006 15:04" .CreatedAt }}. Значение — time.Time или *time.Time (nil → "").
++	// Форматировать время в шаблонах напрямую (.Format) нельзя — выйдет пояс сервера.
++	"timeIn": timezone.Format,
+ }
+ 
+ // Render пишет страницу page в layout в w — без HTTP (unit-тесты, печатные формы).
+diff --git a/internal/ssr/render_test.go b/internal/ssr/render_test.go
+index 9891629..d0bf135 100644
+--- a/internal/ssr/render_test.go
++++ b/internal/ssr/render_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"strings"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 	"github.com/stretchr/testify/assert"
+@@ -138,6 +139,42 @@ func TestShellBuilder_Build(t *testing.T) {
+ 	assert.True(t, sh.IsAdmin)
+ 	assert.Equal(t, "csrf-x", sh.CSRFToken)
+ 	assert.Len(t, sh.Menu, 2, "admin видит «Администрирование»")
++
++	// TS-040 (user-timezone, DS-031/DS-033): пояс viewer'а доходит до layout; у viewer'а без
++	// пояса (и у гостя) — умолчание Asia/Almaty, шаблон никогда не получает пустой пояс.
++	assert.Equal(t, "Asia/Almaty", sh.User.Timezone)
++	assert.Equal(t, "Asia/Almaty", ViewerTimezone(c))
++	c.Locals(LocalViewer, Viewer{Name: "Админ", Role: RoleAdmin, Timezone: "Europe/Moscow"})
++	sh = b.Build(c, "Остатки")
++	assert.Equal(t, "Europe/Moscow", sh.User.Timezone)
++	assert.Equal(t, "Europe/Moscow", ViewerTimezone(c))
++}
++
++// TS-040 (user-timezone): layout отдаёт пояс атрибутом <body data-timezone> и select'ом в
++// сайдбаре (над «Тема»); гостю select не рисуется.
++func TestTS040_Renderer_TimezoneInLayout(t *testing.T) {
++	html := render(t, Shell{Title: "x", User: Viewer{Name: "Сидоров Пётр", Role: "executor", Timezone: "Europe/Moscow"}})
++	assert.Contains(t, html, `<body data-timezone="Europe/Moscow">`)
++	assert.Contains(t, html, `data-testid="timezone-select"`)
++	assert.Contains(t, html, `<option value="Europe/Moscow" selected>Москва (UTC&#43;3)</option>`)
++	assert.Contains(t, html, `<option value="Asia/Almaty">Алматы (UTC&#43;5)</option>`)
++	assert.Contains(t, html, "timezone.js")
++	assert.Less(t, strings.Index(html, `data-testid="timezone-select"`), strings.Index(html, `data-testid="theme-toggle"`),
++		"select — над кнопкой «Тема»")
++	assert.Less(t, strings.Index(html, "js/api.js"), strings.Index(html, "js/timezone.js"), "KT.time нужен KT.api")
++
++	guest := render(t, Shell{Title: "x"})
++	assert.NotContains(t, guest, `data-testid="timezone-select"`)
++}
++
++// TS-041 (user-timezone, DS-032): шаблонная функция timeIn — время в поясе пользователя.
++func TestTS041_Funcs_TimeIn(t *testing.T) {
++	fn, ok := Funcs["timeIn"].(func(string, string, any) string)
++	require.True(t, ok, "timeIn зарегистрирована в ssr.Funcs")
++	moment := time.Date(2026, 10, 6, 19, 30, 0, 0, time.UTC) // TS-F5
++	assert.Equal(t, "07.10.2026 00:30", fn("Asia/Almaty", "02.01.2006 15:04", moment))
++	assert.Equal(t, "06.10.2026 22:30", fn("Europe/Moscow", "02.01.2006 15:04", moment))
++	assert.Equal(t, "06.10.2026", fn("Europe/Moscow", "02.01.2006", &moment))
+ }
+ 
+ func TestInitials(t *testing.T) {
+diff --git a/internal/ssr/shell.go b/internal/ssr/shell.go
+index 7b7dc6b..e051018 100644
+--- a/internal/ssr/shell.go
++++ b/internal/ssr/shell.go
+@@ -3,9 +3,12 @@ package ssr
+ import (
+ 	"context"
+ 	"strings"
++	"time"
+ 	"unicode"
+ 
+ 	"github.com/gofiber/fiber/v3"
++
++	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+ 
+ // BadgeSource — источник счётчиков сайдбара (ADR-004): StockService.NavBadges реализует
+@@ -28,6 +31,18 @@ const LocalCSRFToken = "ssr_csrf_token"
+ type Viewer struct {
+ 	Name string
+ 	Role string
++	// Timezone — часовой пояс пользователя (IANA, DS-031). В Shell.User всегда непустой:
++	// Build подставляет пояс по умолчанию. Шаблоны: {{ timeIn $.Shell.User.Timezone … }}.
++	Timezone string
++}
++
++// ViewerTimezone — пояс пользователя текущего запроса для экранов без Shell (печатные
++// формы); гость/пусто → пояс по умолчанию.
++func ViewerTimezone(c fiber.Ctx) string {
++	if v, _ := c.Locals(LocalViewer).(Viewer); v.Timezone != "" {
++		return v.Timezone
++	}
++	return timezone.Default
+ }
+ 
+ // Shell — данные общего layout "base", одинаковые для любой страницы любой фичи.
+@@ -72,6 +87,7 @@ func (b ShellBuilder) Build(c fiber.Ctx, title string) Shell {
+ 	v, _ := c.Locals(LocalViewer).(Viewer)
+ 	token, _ := c.Locals(LocalCSRFToken).(string)
+ 	isAdmin := v.Role == RoleAdmin
++	v.Timezone = ViewerTimezone(c)
+ 	var badges map[string]int
+ 	if b.src != nil {
+ 		badges = b.src.NavBadges(c.Context())
+@@ -86,6 +102,11 @@ func (b ShellBuilder) Build(c fiber.Ctx, title string) Shell {
+ 	}
+ }
+ 
++// Timezones — пункты select'а «Часовой пояс» в сайдбаре (подписи смещения — на сейчас).
++func (s Shell) Timezones() []timezone.Option {
++	return timezone.Options(time.Now(), s.User.Timezone)
++}
++
+ // NavActive — подсвечивать ли пункт меню с URL url для текущего ActivePath (ADR-006).
+ // "/" — только точное совпадение (иначе подсвечивался бы на любой странице); остальные
+ // пункты — точное совпадение либо ActivePath — вложенный путь (url + "/" + …).
+diff --git a/pkg/timezone/timezone.go b/pkg/timezone/timezone.go
+new file mode 100644
+index 0000000..cd507aa
+--- /dev/null
++++ b/pkg/timezone/timezone.go
+@@ -0,0 +1,135 @@
++// Package timezone — часовой пояс пользователя (DS-031, DS-033): валидация имени IANA,
++// перевод времени в пояс для SSR-шаблонов и перечень значений select'а.
++//
++// Хранение времени — UTC (timestamptz); пояс влияет только на ПОКАЗ.
++package timezone
++
++import (
++	"fmt"
++	"regexp"
++	"time"
++
++	// База IANA вшивается в бинарь: образ без /usr/share/zoneinfo не ломает LoadLocation.
++	_ "time/tzdata"
++)
++
++const (
++	// Default — пояс по умолчанию для новых и существующих пользователей (DS-033).
++	Default = "Asia/Almaty"
++	// MaxLen — предел длины имени пояса (CHECK в БД: 1..64).
++	MaxLen = 64
++)
++
++var nameRe = regexp.MustCompile(`^[A-Za-z0-9_+\-/]+$`)
++
++// Valid — имя распознаётся как пояс IANA: 1–64 символа, только [A-Za-z0-9_+-/],
++// известно time.LoadLocation. "Local" отклоняется — это пояс сервера, а не имя IANA.
++func Valid(name string) bool {
++	if name == "" || len(name) > MaxLen || !nameRe.MatchString(name) || name == "Local" {
++		return false
++	}
++	_, err := time.LoadLocation(name)
++	return err == nil
++}
++
++// Load — пояс по имени; неизвестное/пустое имя → пояс по умолчанию (страница не ломается).
++func Load(name string) *time.Location {
++	if Valid(name) {
++		if loc, err := time.LoadLocation(name); err == nil {
++			return loc
++		}
++	}
++	loc, err := time.LoadLocation(Default)
++	if err != nil { // недостижимо: tzdata вшита
++		return time.FixedZone(Default, 5*60*60)
++	}
++	return loc
++}
++
++// In — момент t в поясе name (см. Load).
++func In(t time.Time, name string) time.Time { return t.In(Load(name)) }
++
++// Format — время в поясе name по layout. v — time.Time или *time.Time; nil/нулевое → "".
++// Шаблонная функция SSR «время в поясе пользователя» (ssr.Funcs "timeIn").
++func Format(name, layout string, v any) string {
++	var t time.Time
++	switch x := v.(type) {
++	case time.Time:
++		t = x
++	case *time.Time:
++		if x == nil {
++			return ""
++		}
++		t = *x
++	default:
++		return ""
++	}
++	if t.IsZero() {
++		return ""
++	}
++	return In(t, name).Format(layout)
++}
++
++// Option — пункт select'а «Часовой пояс».
++type Option struct {
++	Value string // имя IANA
++	Label string // «Алматы (UTC+5)»
++}
++
++// zones — фиксированный перечень select'а (§2 спеки): первые два — Алматы и Москва,
++// далее остальные по алфавиту подписи. Валидатор принимает и пояса вне перечня.
++var zones = []struct{ name, city string }{
++	{"Asia/Almaty", "Алматы"},
++	{"Europe/Moscow", "Москва"},
++	{"Asia/Aqtau", "Актау"},
++	{"Asia/Ashgabat", "Ашхабад"},
++	{"Asia/Baku", "Баку"},
++	{"Asia/Bishkek", "Бишкек"},
++	{"Asia/Vladivostok", "Владивосток"},
++	{"Asia/Dushanbe", "Душанбе"},
++	{"Asia/Yekaterinburg", "Екатеринбург"},
++	{"Asia/Yerevan", "Ереван"},
++	{"Asia/Irkutsk", "Иркутск"},
++	{"Europe/Kaliningrad", "Калининград"},
++	{"Asia/Krasnoyarsk", "Красноярск"},
++	{"Europe/Minsk", "Минск"},
++	{"Asia/Novosibirsk", "Новосибирск"},
++	{"Asia/Omsk", "Омск"},
++	{"Europe/Samara", "Самара"},
++	{"Asia/Tashkent", "Ташкент"},
++	{"Asia/Tbilisi", "Тбилиси"},
++	{"Asia/Yakutsk", "Якутск"},
++}
++
++// Options — пункты select'а с подписью смещения на момент now. current вне перечня
++// (задан через API) добавляется последним пунктом, чтобы select показывал факт.
++func Options(now time.Time, current string) []Option {
++	out := make([]Option, 0, len(zones)+1)
++	found := current == ""
++	for _, z := range zones {
++		out = append(out, Option{Value: z.name, Label: z.city + " (" + offsetLabel(now, z.name) + ")"})
++		found = found || z.name == current
++	}
++	if !found {
++		label := current
++		if Valid(current) {
++			label += " (" + offsetLabel(now, current) + ")"
++		}
++		out = append(out, Option{Value: current, Label: label})
++	}
++	return out
++}
++
++// offsetLabel — «UTC+5», «UTC-3», «UTC+5:30».
++func offsetLabel(now time.Time, name string) string {
++	_, sec := In(now, name).Zone()
++	sign := "+"
++	if sec < 0 {
++		sign, sec = "-", -sec
++	}
++	h, m := sec/3600, sec%3600/60
++	if m == 0 {
++		return fmt.Sprintf("UTC%s%d", sign, h)
++	}
++	return fmt.Sprintf("UTC%s%d:%02d", sign, h, m)
++}
+diff --git a/pkg/timezone/timezone_test.go b/pkg/timezone/timezone_test.go
+new file mode 100644
+index 0000000..d62d172
+--- /dev/null
++++ b/pkg/timezone/timezone_test.go
+@@ -0,0 +1,101 @@
++package timezone
++
++import (
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++)
++
++// fixtureMoment — TS-F5: 2026-10-06T19:30:00Z = 00:30 7 октября по Алматы, 22:30 6 октября по Москве.
++var fixtureMoment = time.Date(2026, 10, 6, 19, 30, 0, 0, time.UTC)
++
++// TS-021 / TS-022 (unit): валидатор имени пояса.
++func TestTS021_Valid(t *testing.T) {
++	for _, name := range []string{"Asia/Almaty", "Europe/Moscow", "UTC", "America/Argentina/Buenos_Aires", "Etc/GMT+5"} {
++		assert.True(t, Valid(name), name)
++	}
++	bad := map[string]string{
++		"пусто":            "",
++		"неизвестный":      "Mars/Olympus",
++		"обход каталога":   "../../etc/passwd",
++		"абсолютный путь":  "/etc/passwd",
++		"65 символов":      strings.Repeat("a", 65),
++		"10 000 символов":  strings.Repeat("A", 10000),
++		"пояс сервера":     "Local",
++		"пробел":           "Asia/Almaty ",
++		"кириллица":        "Алматы",
++		"sql":              "Asia/Almaty';--",
++		"каталог без зоны": "Asia/",
++	}
++	for label, name := range bad {
++		assert.False(t, Valid(name), label)
++	}
++}
++
++func TestLoad_FallsBackToDefault(t *testing.T) {
++	assert.Equal(t, "Europe/Moscow", Load("Europe/Moscow").String())
++	for _, name := range []string{"", "Mars/Olympus", "Local", "../../etc/passwd"} {
++		assert.Equal(t, Default, Load(name).String(), "%q", name)
++	}
++}
++
++// TS-041 (unit, форматтер SSR): один момент — разные дата и время в разных поясах.
++func TestTS041_Format(t *testing.T) {
++	const layout = "02.01.2006 15:04"
++	assert.Equal(t, "07.10.2026 00:30", Format("Asia/Almaty", layout, fixtureMoment))
++	assert.Equal(t, "06.10.2026 22:30", Format("Europe/Moscow", layout, fixtureMoment))
++	// Дата без времени тоже зависит от пояса (печатные формы, история оборудования).
++	assert.Equal(t, "07.10.2026", Format("Asia/Almaty", "02.01.2006", fixtureMoment))
++	assert.Equal(t, "06.10.2026", Format("Europe/Moscow", "02.01.2006", fixtureMoment))
++
++	// Исходный пояс значения не важен — важен момент.
++	almaty := fixtureMoment.In(Load("Asia/Almaty"))
++	assert.Equal(t, "06.10.2026 22:30", Format("Europe/Moscow", layout, almaty))
++
++	// *time.Time (PaidAt), nil и нулевое время.
++	assert.Equal(t, "06.10.2026 22:30", Format("Europe/Moscow", layout, &fixtureMoment))
++	assert.Empty(t, Format("Europe/Moscow", layout, (*time.Time)(nil)))
++	assert.Empty(t, Format("Europe/Moscow", layout, time.Time{}))
++	assert.Empty(t, Format("Europe/Moscow", layout, "2026-10-06"))
++
++	// Неизвестный пояс → пояс по умолчанию, не паника и не UTC.
++	assert.Equal(t, "07.10.2026 00:30", Format("Mars/Olympus", layout, fixtureMoment))
++	assert.Equal(t, "07.10.2026 00:30", Format("", layout, fixtureMoment))
++}
++
++func TestOptions(t *testing.T) {
++	opts := Options(fixtureMoment, Default)
++	assert.Equal(t, Option{Value: "Asia/Almaty", Label: "Алматы (UTC+5)"}, opts[0])
++	assert.Equal(t, Option{Value: "Europe/Moscow", Label: "Москва (UTC+3)"}, opts[1])
++	assert.Len(t, opts, len(zones))
++
++	// Остальные — по алфавиту подписи; все значения валидны и уникальны.
++	seen := map[string]bool{}
++	for i, o := range opts {
++		assert.True(t, Valid(o.Value), o.Value)
++		assert.False(t, seen[o.Value], o.Value)
++		seen[o.Value] = true
++		if i > 2 {
++			assert.Less(t, opts[i-1].Label, o.Label)
++		}
++	}
++
++	// Пояс вне перечня (задан через API) — добавлен последним, select показывает факт.
++	extra := Options(fixtureMoment, "Asia/Kolkata")
++	assert.Len(t, extra, len(zones)+1)
++	assert.Equal(t, Option{Value: "Asia/Kolkata", Label: "Asia/Kolkata (UTC+5:30)"}, extra[len(extra)-1])
++
++	// Невалидное значение (ре-рендер формы с ошибкой) — без смещения.
++	bogus := Options(fixtureMoment, "Mars/Olympus")
++	assert.Equal(t, Option{Value: "Mars/Olympus", Label: "Mars/Olympus"}, bogus[len(bogus)-1])
++
++	assert.Len(t, Options(fixtureMoment, ""), len(zones))
++}
++
++func TestOffsetLabel(t *testing.T) {
++	assert.Equal(t, "UTC+0", offsetLabel(fixtureMoment, "UTC"))
++	assert.Equal(t, "UTC-3", offsetLabel(fixtureMoment, "America/Argentina/Buenos_Aires"))
++	assert.Equal(t, "UTC+5:45", offsetLabel(fixtureMoment, "Asia/Kathmandu"))
++}

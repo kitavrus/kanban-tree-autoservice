@@ -1,0 +1,885 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index fff8ab0..2076610 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -12,6 +12,8 @@ import (
+ 	"github.com/redis/go-redis/v9"
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/config"
++	"github.com/kitavrus/kanban-tree/internal/features/board"
++	"github.com/kitavrus/kanban-tree/internal/filestore"
+ 	"github.com/kitavrus/kanban-tree/internal/observability"
+ 	"github.com/kitavrus/kanban-tree/internal/server"
+ )
+@@ -58,6 +60,20 @@ func main() {
+ 		os.Exit(1)
+ 	}
+ 
++	// Сборщик файлов-сирот UPLOADS_DIR — фоновый тикер в процессе сервера (не отдельная
++	// команда): каталог и БД уже здесь, отдельный планировщик (cron) не нужен, первый проход
++	// при старте ловит сирот сразу после аварийного рестарта. Идемпотентен — два инстанса
++	// (blue-green) на одном каталоге не конфликтуют.
++	if cfg.UploadsGC.Interval > 0 {
++		files, err := filestore.NewLocal(cfg.UploadsDir)
++		if err != nil {
++			logger.Error("uploads gc init", "err", err)
++			os.Exit(1)
++		}
++		go filestore.RunOrphanCollector(ctx, files, board.NewAttachmentRepo(pool),
++			cfg.UploadsGC.Interval, cfg.UploadsGC.MinAge, logger)
++	}
++
+ 	go func() {
+ 		<-ctx.Done()
+ 		logger.Info("shutdown")
+diff --git a/internal/config/config.go b/internal/config/config.go
+index b57e36b..2edc8cc 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -3,6 +3,7 @@ package config
+ import (
+ 	"fmt"
+ 	"os"
++	"time"
+ )
+ 
+ // Config — env-контракт приложения. Имена переменных — референс LiveSuite (§TD-8):
+@@ -15,6 +16,7 @@ type Config struct {
+ 	LogLevel     string
+ 	OTLPEndpoint string // пусто → трейсинг no-op
+ 	UploadsDir   string // каталог LocalFileStore вложений заказов (фаза 7), дефолт ./uploads
++	UploadsGC    UploadsGC
+ 	Auth         AuthConfig
+ 	Firm         FirmInfo
+ }
+@@ -28,6 +30,38 @@ type FirmInfo struct {
+ 	Phone   string
+ }
+ 
++// UploadsGC — фоновый сборщик файлов-сирот UPLOADS_DIR (файл без строки task_attachments
++// после падения процесса между записью файла и commit). Interval = 0 — сборщик выключен.
++type UploadsGC struct {
++	Interval time.Duration // период проходов; первый — сразу при старте
++	MinAge   time.Duration // файл моложе не трогается (идущая загрузка)
++}
++
++// uploadsGCMinAgeFloor — нижняя граница MinAge: меньшее значение рискует удалить файл
++// загрузки, строка которой ещё не вставлена.
++const uploadsGCMinAgeFloor = time.Minute
++
++// uploadsGCIntervalFloor — нижняя граница периода: чаще — горячий цикл по каталогу и БД.
++// Live-тест (UPLOADS_GC_INTERVAL=1s) — ровно на границе.
++const uploadsGCIntervalFloor = time.Second
++
++func loadUploadsGC() (UploadsGC, error) {
++	var g UploadsGC
++	raw := getenv("UPLOADS_GC_INTERVAL", "6h")
++	d, err := time.ParseDuration(raw)
++	if err != nil || d < 0 || (d > 0 && d < uploadsGCIntervalFloor) {
++		return g, fmt.Errorf("UPLOADS_GC_INTERVAL '%s': ожидается 0 (выключить) или длительность ≥ %s", raw, uploadsGCIntervalFloor)
++	}
++	g.Interval = d
++	if g.MinAge, err = duration("UPLOADS_GC_MIN_AGE", "1h"); err != nil {
++		return g, err
++	}
++	if g.MinAge < uploadsGCMinAgeFloor {
++		return g, fmt.Errorf("UPLOADS_GC_MIN_AGE (%s) меньше %s", g.MinAge, uploadsGCMinAgeFloor)
++	}
++	return g, nil
++}
++
+ func loadFirm() FirmInfo {
+ 	return FirmInfo{
+ 		Name:    os.Getenv("FIRM_NAME"),
+@@ -53,6 +87,9 @@ func Load() (*Config, error) {
+ 		return nil, err
+ 	}
+ 	cfg.Auth = auth
++	if cfg.UploadsGC, err = loadUploadsGC(); err != nil {
++		return nil, err
++	}
+ 	cfg.Firm = loadFirm()
+ 	return cfg, nil
+ }
+diff --git a/internal/config/config_test.go b/internal/config/config_test.go
+new file mode 100644
+index 0000000..1c637b5
+--- /dev/null
++++ b/internal/config/config_test.go
+@@ -0,0 +1,56 @@
++package config
++
++import (
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestLoadUploadsGC_Defaults(t *testing.T) {
++	t.Setenv("UPLOADS_GC_INTERVAL", "")
++	t.Setenv("UPLOADS_GC_MIN_AGE", "")
++	g, err := loadUploadsGC()
++	require.NoError(t, err)
++	assert.Equal(t, UploadsGC{Interval: 6 * time.Hour, MinAge: time.Hour}, g)
++}
++
++func TestLoadUploadsGC_Values(t *testing.T) {
++	cases := []struct {
++		name, interval, minAge string
++		want                   UploadsGC
++		wantErr                bool
++	}{
++		{name: "выключен", interval: "0", minAge: "1h", want: UploadsGC{Interval: 0, MinAge: time.Hour}},
++		{name: "свои значения", interval: "30m", minAge: "2h", want: UploadsGC{Interval: 30 * time.Minute, MinAge: 2 * time.Hour}},
++		{name: "граница min age", interval: "1h", minAge: "1m", want: UploadsGC{Interval: time.Hour, MinAge: time.Minute}},
++		{name: "min age ниже порога", interval: "1h", minAge: "30s", wantErr: true},
++		{name: "min age ноль", interval: "1h", minAge: "0", wantErr: true},
++		{name: "граница интервала", interval: "1s", minAge: "1h", want: UploadsGC{Interval: time.Second, MinAge: time.Hour}},
++		{name: "интервал ниже порога", interval: "500ms", minAge: "1h", wantErr: true},
++		{name: "отрицательный интервал", interval: "-1h", minAge: "1h", wantErr: true},
++		{name: "мусор в интервале", interval: "often", minAge: "1h", wantErr: true},
++		{name: "мусор в min age", interval: "1h", minAge: "old", wantErr: true},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			t.Setenv("UPLOADS_GC_INTERVAL", tc.interval)
++			t.Setenv("UPLOADS_GC_MIN_AGE", tc.minAge)
++			g, err := loadUploadsGC()
++			if tc.wantErr {
++				require.Error(t, err)
++				return
++			}
++			require.NoError(t, err)
++			assert.Equal(t, tc.want, g)
++		})
++	}
++}
++
++func TestLoad_UploadsGCErrorFailsConfig(t *testing.T) {
++	t.Setenv("DATABASE_URL", "postgres://x")
++	t.Setenv("UPLOADS_GC_MIN_AGE", "5s")
++	_, err := Load()
++	require.ErrorContains(t, err, "UPLOADS_GC_MIN_AGE")
++}
+diff --git a/internal/features/board/attachments_gc_http_live_test.go b/internal/features/board/attachments_gc_http_live_test.go
+new file mode 100644
+index 0000000..27495c1
+--- /dev/null
++++ b/internal/features/board/attachments_gc_http_live_test.go
+@@ -0,0 +1,57 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"time"
++
++	"github.com/google/uuid"
++)
++
++// age — состарить файл каталога вложений (mtime) на d: имитация файла, оставшегося от
++// процесса, упавшего d назад.
++func (s *AttachmentsLiveSuite) age(name string, d time.Duration) {
++	mt := time.Now().Add(-d)
++	s.Require().NoError(os.Chtimes(filepath.Join(s.uploads, name), mt, mt))
++}
++
++// TestAttachments_OrphanCollector_RemovesOnlyOrphans — фоновый сборщик сирот в бинаре
++// сервера (UPLOADS_GC_INTERVAL=1s, MIN_AGE по умолчанию 1h) на реальной БД:
++//   - старый файл со строкой task_attachments (загружен через API) — остаётся;
++//   - старый файл без строки (падение между Put и INSERT) — удаляется;
++//   - старый файл, строку которого удалили, а файл — нет (падение после commit DELETE) —
++//     удаляется;
++//   - брошенный temp .upload-* — удаляется;
++//   - свежий файл без строки (идущая загрузка) и чужой файл (не uuid) — остаются.
++func (s *AttachmentsLiveSuite) TestAttachments_OrphanCollector_RemovesOnlyOrphans() {
++	taskID := s.newTask()
++	alive := s.mustUpload(s.admin, taskID, "живой.png", fileOf(pngSig, 64))
++	aliveKey := s.storageKey(alive.ID)
++	gone := s.mustUpload(s.admin, taskID, "без-строки.pdf", fileOf(pdfSig, 64))
++	goneKey := s.storageKey(gone.ID)
++	_, err := s.Pool.Exec(context.Background(), `DELETE FROM task_attachments WHERE id = $1`, gone.ID)
++	s.Require().NoError(err)
++
++	orphanKey, youngKey := uuid.NewString(), uuid.NewString()
++	for _, n := range []string{orphanKey, youngKey, ".upload-crashed", "не-ключ.txt"} {
++		s.Require().NoError(os.WriteFile(filepath.Join(s.uploads, n), []byte("x"), 0o600))
++	}
++	for _, n := range []string{aliveKey, goneKey, orphanKey, ".upload-crashed", "не-ключ.txt"} {
++		s.age(n, 2*time.Hour)
++	}
++
++	s.Eventually(func() bool {
++		f := s.diskFiles()
++		return !f[orphanKey] && !f[goneKey] && !f[".upload-crashed"]
++	}, 10*time.Second, 100*time.Millisecond, "сироты удалены сборщиком")
++
++	f := s.diskFiles()
++	s.True(f[aliveKey], "файл со строкой в БД не тронут")
++	s.True(f[youngKey], "свежий файл без строки (идущая загрузка) не тронут")
++	s.True(f["не-ключ.txt"], "чужой файл (не uuid-ключ) не тронут")
++	s.Require().NoError(os.Remove(filepath.Join(s.uploads, youngKey)))
++	s.Require().NoError(os.Remove(filepath.Join(s.uploads, "не-ключ.txt")))
++}
+diff --git a/internal/features/board/attachments_gc_integration_test.go b/internal/features/board/attachments_gc_integration_test.go
+new file mode 100644
+index 0000000..1bd7577
+--- /dev/null
++++ b/internal/features/board/attachments_gc_integration_test.go
+@@ -0,0 +1,141 @@
++//go:build integration
++
++package board
++
++import (
++	"context"
++	"io"
++	"log/slog"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/internal/filestore"
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// OrphanSweepSuite — AttachmentRepo.ExistingKeys как filestore.KeyIndex + проход
++// SweepOrphans на реальной БД (без HTTP; бинарь с тикером — attachments_gc_http_live_test.go).
++type OrphanSweepSuite struct {
++	testutil.BaseSuite
++
++	repo     *AttachmentRepo
++	userID   string
++	clientID string
++	colID    string
++}
++
++var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
++
++func TestOrphanSweepSuite(t *testing.T) {
++	suite.Run(t, new(OrphanSweepSuite))
++}
++
++func (s *OrphanSweepSuite) SetupSuite() {
++	s.BaseSuite.SetupSuite()
++	s.repo = NewAttachmentRepo(s.Pool)
++	ctx := context.Background()
++	s.userID = s.SeedUser("gc-suite-user", "password1", "Сборщик", "admin", true)
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO clients (company_name) VALUES ('Клиент сборщика') RETURNING id`).Scan(&s.clientID))
++	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id FROM columns WHERE name = 'Новые'`).Scan(&s.colID))
++}
++
++func (s *OrphanSweepSuite) newTask() int64 {
++	var id int64
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
++		INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, 'Заказ сборщика', 1024, $3)
++		RETURNING id`, s.colID, s.clientID, s.userID).Scan(&id))
++	return id
++}
++
++// stored — файл в хранилище (+ строка task_attachments при withRow), состаренный на age.
++func (s *OrphanSweepSuite) stored(fs *filestore.LocalFileStore, taskID int64, withRow bool, age time.Duration) string {
++	ctx := context.Background()
++	key := filestore.NewKey()
++	_, err := fs.Put(ctx, key, strings.NewReader("x"), 10)
++	s.Require().NoError(err)
++	if withRow {
++		_, err = s.repo.Insert(ctx, attachmentRow{TaskID: taskID, Kind: "pdf", OriginalName: "a.pdf",
++			ContentType: "application/pdf", Size: 1, StorageKey: key, UserID: s.userID})
++		s.Require().NoError(err)
++	}
++	mt := time.Now().Add(-age)
++	s.Require().NoError(os.Chtimes(filepath.Join(fs.Dir(), key), mt, mt))
++	return key
++}
++
++func (s *OrphanSweepSuite) TestExistingKeys() {
++	ctx := context.Background()
++	fs, err := filestore.NewLocal(s.T().TempDir())
++	s.Require().NoError(err)
++	taskID := s.newTask()
++	a := s.stored(fs, taskID, true, 0)
++	b := s.stored(fs, taskID, true, 0)
++	missing := filestore.NewKey()
++
++	got, err := s.repo.ExistingKeys(ctx, []string{a, missing, b})
++	s.Require().NoError(err)
++	s.Equal(map[string]struct{}{a: {}, b: {}}, got)
++
++	got, err = s.repo.ExistingKeys(ctx, []string{})
++	s.Require().NoError(err)
++	s.Empty(got)
++}
++
++// TestSweep_RealDB — сироты всех трёх происхождений удаляются, живые/свежие — нет:
++// нет строки (падение между Put и INSERT), строка удалена (падение после commit DELETE),
++// строка ушла каскадом при удалении заказа (падение до удаления файлов заказа).
++func (s *OrphanSweepSuite) TestSweep_RealDB() {
++	ctx := context.Background()
++	fs, err := filestore.NewLocal(s.T().TempDir())
++	s.Require().NoError(err)
++	taskID, doomedTask := s.newTask(), s.newTask()
++
++	alive := s.stored(fs, taskID, true, 2*time.Hour)
++	noRow := s.stored(fs, taskID, false, 2*time.Hour)
++	youngNoRow := s.stored(fs, taskID, false, time.Minute)
++	deletedRow := s.stored(fs, taskID, true, 2*time.Hour)
++	cascaded := s.stored(fs, doomedTask, true, 2*time.Hour)
++	_, err = s.Pool.Exec(ctx, `DELETE FROM task_attachments WHERE storage_key = $1`, deletedRow)
++	s.Require().NoError(err)
++	_, err = s.Pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, doomedTask)
++	s.Require().NoError(err)
++
++	res, err := fs.SweepOrphans(ctx, s.repo, time.Hour, time.Now(), quiet)
++	s.Require().NoError(err)
++	s.Equal(filestore.SweepResult{Scanned: 5, Young: 1, Removed: 3}, res)
++
++	for key, want := range map[string]bool{alive: true, youngNoRow: true, noRow: false, deletedRow: false, cascaded: false} {
++		_, err := os.Stat(filepath.Join(fs.Dir(), key))
++		s.Equal(want, err == nil, "ключ %s: ожидалось наличие=%v", key, want)
++	}
++
++	// повторный проход идемпотентен
++	res, err = fs.SweepOrphans(ctx, s.repo, time.Hour, time.Now(), quiet)
++	s.Require().NoError(err)
++	s.Zero(res.Removed)
++}
++
++// TestSweep_DBUnavailableKeepsFiles — БД недоступна → ошибка прохода, ни один ключевой
++// файл не удалён (без ответа БД живой файл не отличить от сироты).
++func (s *OrphanSweepSuite) TestSweep_DBUnavailableKeepsFiles() {
++	ctx := context.Background()
++	fs, err := filestore.NewLocal(s.T().TempDir())
++	s.Require().NoError(err)
++	key := s.stored(fs, s.newTask(), false, 2*time.Hour)
++
++	pool, err := pgxpool.New(ctx, s.DSN)
++	s.Require().NoError(err)
++	pool.Close() // запрос в закрытый пул — ошибка, как при недоступной БД
++	closed := NewAttachmentRepo(pool)
++	_, err = fs.SweepOrphans(ctx, closed, time.Hour, time.Now(), quiet)
++	s.Require().Error(err)
++	_, statErr := os.Stat(filepath.Join(fs.Dir(), key))
++	s.NoError(statErr, "файл на месте")
++}
+diff --git a/internal/features/board/attachments_http_live_test.go b/internal/features/board/attachments_http_live_test.go
+index 6b311f2..b0235df 100644
+--- a/internal/features/board/attachments_http_live_test.go
++++ b/internal/features/board/attachments_http_live_test.go
+@@ -40,8 +40,10 @@ type AttachmentsLiveSuite struct {
+ func TestAttachmentsLiveSuite(t *testing.T) {
+ 	dir := t.TempDir()
+ 	suite.Run(t, &AttachmentsLiveSuite{
+-		uploads:   dir,
+-		LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server", ExtraEnv: []string{"UPLOADS_DIR=" + dir}},
++		uploads: dir,
++		// UPLOADS_GC_INTERVAL=1s — сборщик сирот тикает часто (attachments_gc_http_live_test.go);
++		// свежие файлы остальных тестов моложе UPLOADS_GC_MIN_AGE (1h) и им не трогаются.
++		LiveSuite: testutil.LiveSuite{BinaryPkg: "./cmd/server", ExtraEnv: []string{"UPLOADS_DIR=" + dir, "UPLOADS_GC_INTERVAL=1s"}},
+ 	})
+ }
+ 
+diff --git a/internal/features/board/attachments_repo.go b/internal/features/board/attachments_repo.go
+index cd18209..ae1e8b2 100644
+--- a/internal/features/board/attachments_repo.go
++++ b/internal/features/board/attachments_repo.go
+@@ -3,6 +3,7 @@ package board
+ import (
+ 	"context"
+ 	"errors"
++	"fmt"
+ 	"time"
+ 
+ 	"github.com/jackc/pgx/v5"
+@@ -121,3 +122,21 @@ func attachmentKeysTx(ctx context.Context, tx pgx.Tx, taskID int64) ([]string, e
+ 	}
+ 	return pgx.CollectRows(rows, pgx.RowTo[string])
+ }
++
++// ExistingKeys — подмножество storage_key, для которых есть строка (filestore.KeyIndex для
++// сборщика файлов-сирот). Поиск по UNIQUE-индексу storage_key.
++func (r *AttachmentRepo) ExistingKeys(ctx context.Context, keys []string) (map[string]struct{}, error) {
++	rows, err := r.pool.Query(ctx, `SELECT storage_key FROM task_attachments WHERE storage_key = ANY($1)`, keys)
++	if err != nil {
++		return nil, fmt.Errorf("attachments existing keys: %w", err)
++	}
++	found, err := pgx.CollectRows(rows, pgx.RowTo[string])
++	if err != nil {
++		return nil, fmt.Errorf("attachments existing keys: %w", err)
++	}
++	out := make(map[string]struct{}, len(found))
++	for _, k := range found {
++		out[k] = struct{}{}
++	}
++	return out, nil
++}
+diff --git a/internal/filestore/filestore.go b/internal/filestore/filestore.go
+index 9e0edd6..841bb89 100644
+--- a/internal/filestore/filestore.go
++++ b/internal/filestore/filestore.go
+@@ -79,7 +79,7 @@ func (s *LocalFileStore) Put(ctx context.Context, key string, r io.Reader, maxBy
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-	tmp, err := os.CreateTemp(s.dir, ".upload-*")
++	tmp, err := os.CreateTemp(s.dir, tempPrefix+"*")
+ 	if err != nil {
+ 		return 0, fmt.Errorf("filestore: create temp: %w", err)
+ 	}
+diff --git a/internal/filestore/orphans.go b/internal/filestore/orphans.go
+new file mode 100644
+index 0000000..09459fc
+--- /dev/null
++++ b/internal/filestore/orphans.go
+@@ -0,0 +1,172 @@
++package filestore
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"log/slog"
++	"os"
++	"path/filepath"
++	"strings"
++	"time"
++
++	"github.com/google/uuid"
++)
++
++// Сборщик файлов-сирот. Файл вложения пишется на диск ДО INSERT строки, а при удалении
++// стирается ПОСЛЕ commit — аварийное падение процесса между этими шагами оставляет файл
++// без строки в БД. Такой файл никто не прочитает, его место не освобождается никогда.
++//
++// Сиротой считается объект каталога, у которого:
++//   - mtime старше minAge (Put пишет поток во временный файл, mtime = время последней
++//     записи; rename сохраняет его, а строка вставляется сразу после Put — минимальный
++//     возраст с запасом отделяет идущую загрузку от брошенной);
++//   - имя — uuid-ключ, которого нет в KeyIndex, ИЛИ временный файл Put (".upload-*"):
++//     успешный Put его переименовывает, неуспешный удаляет — старый .upload-* остаётся
++//     только после падения процесса.
++//
++// Прочие файлы и каталоги (не ключ и не temp) не трогаются: каталог мог быть указан на
++// чужие данные — сборщик удаляет только то, что мог создать сам LocalFileStore.
++
++// tempPrefix — префикс временных файлов Put (os.CreateTemp(dir, tempPrefix+"*")).
++const tempPrefix = ".upload-"
++
++// orphanBatch — ключей на один запрос KeyIndex (ограничение размера массива параметра).
++const orphanBatch = 500
++
++// KeyIndex — источник истины «какие ключи живы» (строки task_attachments). Возвращает
++// подмножество keys, для которых строка существует.
++type KeyIndex interface {
++	ExistingKeys(ctx context.Context, keys []string) (map[string]struct{}, error)
++}
++
++// massGuardMin — предохранитель от массового удаления: столько и больше старых ключей, и
++// НИ ОДНОГО нет в БД → проход прерывается без удаления ключей (ErrSweepSuspicious). Так
++// выглядит не авария, а чужая/пустая БД (не тот DATABASE_URL, восстановленный старый бэкап,
++// staging на prod-томе) — стереть весь каталог по её ответу было бы необратимо.
++const massGuardMin = 20
++
++// ErrSweepSuspicious — сработал предохранитель massGuardMin; каталог разбирает человек.
++var ErrSweepSuspicious = errors.New("filestore: sweep aborted — no stored key is known to the index")
++
++// SweepResult — итог одного прохода (лог/тесты).
++type SweepResult struct {
++	Scanned int // объектов каталога просмотрено
++	Young   int // пропущено как моложе minAge
++	Removed int // удалено сирот (ключи + временные файлы)
++	Failed  int // сироты, которые не удалось удалить (ошибка ФС)
++}
++
++// SweepOrphans — один проход сборщика по каталогу хранилища. now — «текущее время»
++// (параметр для детерминированных тестов). Ключи сверяются с KeyIndex ЦЕЛИКОМ до первого
++// удаления: ошибка индекса или срабатывание предохранителя не удаляют ни одного ключевого
++// файла (без ответа БД живой файл не отличить от сироты).
++func (s *LocalFileStore) SweepOrphans(ctx context.Context, idx KeyIndex, minAge time.Duration, now time.Time, logger *slog.Logger) (SweepResult, error) {
++	var res SweepResult
++	if minAge <= 0 {
++		return res, fmt.Errorf("filestore: sweep min age must be positive, got %s", minAge)
++	}
++	entries, err := os.ReadDir(s.dir)
++	if err != nil {
++		return res, fmt.Errorf("filestore: read dir: %w", err)
++	}
++
++	cutoff := now.Add(-minAge)
++	var keys []string
++	for _, e := range entries {
++		if !e.Type().IsRegular() {
++			continue
++		}
++		name := e.Name()
++		isTemp := strings.HasPrefix(name, tempPrefix)
++		if !isTemp && !isKey(name) {
++			continue
++		}
++		res.Scanned++
++		info, err := e.Info()
++		if errors.Is(err, os.ErrNotExist) {
++			continue // удалён параллельно (Delete / соседний инстанс)
++		}
++		if err != nil {
++			return res, fmt.Errorf("filestore: stat %s: %w", name, err)
++		}
++		if info.ModTime().After(cutoff) {
++			res.Young++
++			continue
++		}
++		if isTemp {
++			s.removeOrphan(ctx, logger, name, &res)
++			continue
++		}
++		keys = append(keys, name)
++	}
++
++	var orphans []string
++	for start := 0; start < len(keys); start += orphanBatch {
++		if err := ctx.Err(); err != nil {
++			return res, err
++		}
++		batch := keys[start:min(start+orphanBatch, len(keys))]
++		alive, err := idx.ExistingKeys(ctx, batch)
++		if err != nil {
++			return res, fmt.Errorf("filestore: key index: %w", err)
++		}
++		for _, k := range batch {
++			if _, ok := alive[k]; !ok {
++				orphans = append(orphans, k)
++			}
++		}
++	}
++	if len(keys) >= massGuardMin && len(orphans) == len(keys) {
++		return res, fmt.Errorf("%w (%d old keys)", ErrSweepSuspicious, len(keys))
++	}
++	for _, k := range orphans {
++		s.removeOrphan(ctx, logger, k, &res)
++	}
++	return res, nil
++}
++
++// isKey — имя в канонической форме NewKey (lowercase uuid с дефисами). uuid.Validate мало:
++// он принимает и 32 hex без дефисов, {uuid}, urn:uuid:, верхний регистр — чужие файлы с
++// такими именами (md5 и т.п.) сборщик не трогает.
++func isKey(name string) bool {
++	u, err := uuid.Parse(name)
++	return err == nil && u.String() == name
++}
++
++func (s *LocalFileStore) removeOrphan(ctx context.Context, logger *slog.Logger, name string, res *SweepResult) {
++	err := os.Remove(filepath.Join(s.dir, name))
++	switch {
++	case err == nil:
++		res.Removed++
++		logger.InfoContext(ctx, "orphan file removed", "name", name)
++	case errors.Is(err, os.ErrNotExist):
++		// уже удалён параллельно — цель достигнута, в счётчики не идёт
++	default:
++		res.Failed++
++		logger.ErrorContext(ctx, "orphan file remove failed", "name", name, "err", err)
++	}
++}
++
++// RunOrphanCollector — фоновый сборщик: первый проход сразу при старте (сироты появляются
++// именно при падении процесса, т.е. к моменту следующего старта), дальше каждые interval.
++// Возвращается по отмене ctx. Ошибка прохода логируется и не останавливает сборщик.
++func RunOrphanCollector(ctx context.Context, s *LocalFileStore, idx KeyIndex, interval, minAge time.Duration, logger *slog.Logger) {
++	t := time.NewTicker(interval)
++	defer t.Stop()
++	for {
++		res, err := s.SweepOrphans(ctx, idx, minAge, time.Now(), logger)
++		switch {
++		case err != nil && ctx.Err() == nil:
++			logger.ErrorContext(ctx, "orphan sweep failed", "err", err, "removed", res.Removed)
++		case err == nil:
++			logger.InfoContext(ctx, "orphan sweep done", "scanned", res.Scanned, "young", res.Young,
++				"removed", res.Removed, "failed", res.Failed)
++		}
++		select {
++		case <-ctx.Done():
++			return
++		case <-t.C:
++		}
++	}
++}
+diff --git a/internal/filestore/orphans_test.go b/internal/filestore/orphans_test.go
+new file mode 100644
+index 0000000..73975fe
+--- /dev/null
++++ b/internal/filestore/orphans_test.go
+@@ -0,0 +1,262 @@
++package filestore
++
++import (
++	"context"
++	"errors"
++	"io"
++	"log/slog"
++	"os"
++	"path/filepath"
++	"sort"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++// fakeIndex — KeyIndex в памяти: alive — ключи «со строкой в БД»; err — сбой БД.
++type fakeIndex struct {
++	mu      sync.Mutex
++	alive   map[string]struct{}
++	err     error
++	batches []int
++}
++
++func (f *fakeIndex) ExistingKeys(_ context.Context, keys []string) (map[string]struct{}, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.batches = append(f.batches, len(keys))
++	if f.err != nil {
++		return nil, f.err
++	}
++	out := map[string]struct{}{}
++	for _, k := range keys {
++		if _, ok := f.alive[k]; ok {
++			out[k] = struct{}{}
++		}
++	}
++	return out, nil
++}
++
++func (f *fakeIndex) calls() int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return len(f.batches)
++}
++
++var (
++	sweepNow = time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
++	quiet    = slog.New(slog.NewTextHandler(io.Discard, nil))
++)
++
++// putAged — файл в каталоге хранилища с заданным возрастом относительно sweepNow.
++func putAged(t *testing.T, s *LocalFileStore, name string, age time.Duration) {
++	t.Helper()
++	p := filepath.Join(s.Dir(), name)
++	require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
++	mt := sweepNow.Add(-age)
++	require.NoError(t, os.Chtimes(p, mt, mt))
++}
++
++func sorted(names []string) []string {
++	sort.Strings(names)
++	return names
++}
++
++func TestSweepOrphans_RemovesOnlyOldUnknownKeysAndTemps(t *testing.T) {
++	s := newStore(t)
++	aliveOld, orphanOld, orphanYoung := NewKey(), NewKey(), NewKey()
++	putAged(t, s, aliveOld, 3*time.Hour)
++	putAged(t, s, orphanOld, 2*time.Hour)
++	putAged(t, s, orphanYoung, 10*time.Minute)
++	putAged(t, s, ".upload-111", 2*time.Hour)   // брошенный temp после падения
++	putAged(t, s, ".upload-222", 5*time.Minute) // идущая загрузка
++	putAged(t, s, "readme.txt", 48*time.Hour)   // чужой файл — не ключ и не temp
++	// неканонические формы uuid (uuid.Validate их принимает) — не ключи NewKey, не трогаются
++	nonCanon := []string{
++		strings.ReplaceAll(NewKey(), "-", ""), // 32 hex, как md5
++		strings.ToUpper(NewKey()),
++		"{" + NewKey() + "}",
++		"urn:uuid:" + NewKey(),
++	}
++	for _, n := range nonCanon {
++		putAged(t, s, n, 48*time.Hour)
++	}
++	require.NoError(t, os.Mkdir(filepath.Join(s.Dir(), NewKey()), 0o750))
++
++	idx := &fakeIndex{alive: map[string]struct{}{aliveOld: {}}}
++	res, err := s.SweepOrphans(context.Background(), idx, time.Hour, sweepNow, quiet)
++	require.NoError(t, err)
++
++	assert.Equal(t, SweepResult{Scanned: 5, Young: 2, Removed: 2, Failed: 0}, res)
++	var left []string
++	for _, n := range entries(t, s.Dir()) {
++		if fi, _ := os.Stat(filepath.Join(s.Dir(), n)); fi != nil && fi.Mode().IsRegular() {
++			left = append(left, n)
++		}
++	}
++	assert.Equal(t, sorted(append([]string{aliveOld, orphanYoung, ".upload-222", "readme.txt"}, nonCanon...)), sorted(left))
++	assert.Equal(t, []int{2}, idx.batches, "в индекс — одна пачка из двух старых ключей; temp и молодые — нет")
++}
++
++func TestSweepOrphans_BoundaryAgeIsOrphan(t *testing.T) {
++	s := newStore(t)
++	k := NewKey()
++	putAged(t, s, k, time.Hour) // ровно minAge — уже не «моложе»
++	res, err := s.SweepOrphans(context.Background(), &fakeIndex{}, time.Hour, sweepNow, quiet)
++	require.NoError(t, err)
++	assert.Equal(t, 1, res.Removed)
++	assert.Empty(t, entries(t, s.Dir()))
++}
++
++func TestSweepOrphans_IndexErrorKeepsKeys(t *testing.T) {
++	s := newStore(t)
++	k := NewKey()
++	putAged(t, s, k, 2*time.Hour)
++	boom := errors.New("db down")
++	res, err := s.SweepOrphans(context.Background(), &fakeIndex{err: boom}, time.Hour, sweepNow, quiet)
++	require.ErrorIs(t, err, boom)
++	assert.Zero(t, res.Removed)
++	assert.Equal(t, []string{k}, entries(t, s.Dir()), "без ответа БД ключевой файл не удаляется")
++}
++
++func TestSweepOrphans_MassGuard(t *testing.T) {
++	cases := []struct {
++		name        string
++		total, live int
++		wantErr     bool
++		wantRemoved int
++	}{
++		{name: "порог, ни одного живого — прерывание", total: massGuardMin, live: 0, wantErr: true},
++		{name: "порог, один живой — удаление", total: massGuardMin, live: 1, wantRemoved: massGuardMin - 1},
++		{name: "ниже порога, ни одного живого — удаление", total: massGuardMin - 1, live: 0, wantRemoved: massGuardMin - 1},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			s := newStore(t)
++			alive := map[string]struct{}{}
++			for i := range tc.total {
++				k := NewKey()
++				putAged(t, s, k, 2*time.Hour)
++				if i < tc.live {
++					alive[k] = struct{}{}
++				}
++			}
++			putAged(t, s, ".upload-old", 2*time.Hour)
++			res, err := s.SweepOrphans(context.Background(), &fakeIndex{alive: alive}, time.Hour, sweepNow, quiet)
++			if tc.wantErr {
++				require.ErrorIs(t, err, ErrSweepSuspicious)
++				assert.Len(t, entries(t, s.Dir()), tc.total, "ни один ключевой файл не удалён")
++				assert.Equal(t, 1, res.Removed, "temp не зависит от БД — удалён")
++				return
++			}
++			require.NoError(t, err)
++			assert.Equal(t, tc.wantRemoved+1, res.Removed)
++			assert.Len(t, entries(t, s.Dir()), tc.live)
++		})
++	}
++}
++
++func TestIsKey(t *testing.T) {
++	k := NewKey()
++	assert.True(t, isKey(k))
++	for _, n := range []string{"", "x", strings.ToUpper(k), strings.ReplaceAll(k, "-", ""), "{" + k + "}", "urn:uuid:" + k, k + ".tmp"} {
++		assert.False(t, isKey(n), n)
++	}
++}
++
++func TestSweepOrphans_Batches(t *testing.T) {
++	s := newStore(t)
++	const n = orphanBatch*2 + 7
++	alive := map[string]struct{}{}
++	for i := range n {
++		k := NewKey()
++		putAged(t, s, k, 2*time.Hour)
++		if i%2 == 0 {
++			alive[k] = struct{}{}
++		}
++	}
++	idx := &fakeIndex{alive: alive}
++	res, err := s.SweepOrphans(context.Background(), idx, time.Hour, sweepNow, quiet)
++	require.NoError(t, err)
++	assert.Equal(t, []int{orphanBatch, orphanBatch, 7}, idx.batches)
++	assert.Equal(t, n-len(alive), res.Removed)
++	assert.Len(t, entries(t, s.Dir()), len(alive))
++}
++
++func TestSweepOrphans_EmptyDirAndBadMinAge(t *testing.T) {
++	s := newStore(t)
++	idx := &fakeIndex{}
++	res, err := s.SweepOrphans(context.Background(), idx, time.Hour, sweepNow, quiet)
++	require.NoError(t, err)
++	assert.Equal(t, SweepResult{}, res)
++	assert.Zero(t, idx.calls(), "пустой каталог — без запроса в БД")
++
++	_, err = s.SweepOrphans(context.Background(), idx, 0, sweepNow, quiet)
++	require.Error(t, err)
++}
++
++func TestSweepOrphans_CanceledContext(t *testing.T) {
++	s := newStore(t)
++	k := NewKey()
++	putAged(t, s, k, 2*time.Hour)
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	_, err := s.SweepOrphans(ctx, &fakeIndex{}, time.Hour, sweepNow, quiet)
++	require.ErrorIs(t, err, context.Canceled)
++	assert.Equal(t, []string{k}, entries(t, s.Dir()))
++}
++
++// Put пишет temp с тем же префиксом, что распознаёт сборщик (контракт двух половин):
++// недописанный поток виден в каталоге именно как tempPrefix*.
++func TestPut_TempPrefixMatchesSweeper(t *testing.T) {
++	s := newStore(t)
++	pr, pw := io.Pipe()
++	errc := make(chan error, 1)
++	go func() {
++		_, err := s.Put(context.Background(), NewKey(), pr, 1<<20)
++		errc <- err
++	}()
++	_, err := pw.Write([]byte("partial"))
++	require.NoError(t, err)
++	names := entries(t, s.Dir())
++	require.Len(t, names, 1)
++	assert.True(t, strings.HasPrefix(names[0], tempPrefix), names[0])
++	require.NoError(t, pw.Close())
++	require.NoError(t, <-errc)
++}
++
++func TestRunOrphanCollector_SweepsAtStartAndStopsOnCancel(t *testing.T) {
++	s := newStore(t)
++	k := NewKey()
++	p := filepath.Join(s.Dir(), k)
++	require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
++	old := time.Now().Add(-2 * time.Hour)
++	require.NoError(t, os.Chtimes(p, old, old))
++
++	idx := &fakeIndex{}
++	ctx, cancel := context.WithCancel(context.Background())
++	done := make(chan struct{})
++	go func() {
++		RunOrphanCollector(ctx, s, idx, 10*time.Millisecond, time.Hour, quiet)
++		close(done)
++	}()
++
++	require.Eventually(t, func() bool { return len(entries(t, s.Dir())) == 0 }, 2*time.Second, 5*time.Millisecond)
++	// следующий файл-сирота подбирается уже тиком, не стартовым проходом
++	k2 := NewKey()
++	p2 := filepath.Join(s.Dir(), k2)
++	require.NoError(t, os.WriteFile(p2, []byte("x"), 0o600))
++	require.NoError(t, os.Chtimes(p2, old, old))
++	require.Eventually(t, func() bool { return len(entries(t, s.Dir())) == 0 }, 2*time.Second, 5*time.Millisecond)
++
++	cancel()
++	select {
++	case <-done:
++	case <-time.After(2 * time.Second):
++		t.Fatal("сборщик не остановился по отмене ctx")
++	}
++}

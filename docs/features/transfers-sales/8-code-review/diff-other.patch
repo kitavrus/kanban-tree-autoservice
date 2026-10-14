@@ -1,0 +1,857 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 887d5ec..c121c89 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -152,8 +152,10 @@ export type SupplierList = { items: Supplier[]; total: number; limit: number; of
+ export type TransferStatus = 'requested' | 'in_transit' | 'received' | 'cancelled';
+ export type TransferDirection = 'client_to_warehouse' | 'warehouse_to_client' | 'warehouse_to_warehouse' | 'supplier_to_warehouse';
+ export type TransferItemKind = 'product' | 'equipment';
++// price — цена продажи: только товар накладной «склад → клиент» (transfers-sales §6.1); нет
++// поля / null → цена каталога на момент сохранения.
+ export type NewTransferItem =
+-  | { kind: 'product'; product_id: string; qty_sent: number }
++  | { kind: 'product'; product_id: string; qty_sent: number; price?: number | null }
+   | { kind: 'equipment'; equipment_id: string };
+ type NewTransferBase = { note?: string; items: NewTransferItem[]; send?: boolean };
+ /** Тело POST /api/v1/transfers: набор точек маршрута — по направлению (лишняя → 400).
+@@ -175,6 +177,10 @@ export type TransferItem = {
+   equipment_client_name: string | null;
+   qty_sent: number | string | null;
+   qty_received: number | string | null;
++  /** Цена продажи и сумма строки (price × qty_sent) — только товар накладной «склад → клиент»,
++   *  иначе null (transfers-sales §6.1). */
++  price: number | string | null;
++  line_total: number | string | null;
+ };
+ /** Точки маршрута, не положенные направлению, — null. */
+ export type Transfer = {
+@@ -193,6 +199,8 @@ export type Transfer = {
+   status: TransferStatus;
+   note: string;
+   version: number;
++  /** Сумма накладной: Σ line_total; 0.00 вне «склад → клиент» и без товаров (transfers-sales). */
++  amount: number | string;
+   items: TransferItem[];
+   warnings: { product_id: string; warehouse_id: string; stock: number | string; kind: 'negative' | 'below_min' }[];
+ };
+@@ -217,6 +225,8 @@ export type TransferSummary = {
+   created_at: string;
+   updated_at: string;
+   version: number;
++  /** Сумма накладной (0.00 вне «склад → клиент»). */
++  amount: number | string;
+ };
+ export type TransferList = { items: TransferSummary[]; total: number; limit: number; offset: number };
+ /** Фильтры списка §6.1; created_from / created_to — календарные даты YYYY-MM-DD в поясе пользователя. */
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index f3fd354..71d70a5 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -65,6 +65,9 @@ export type Task = TaskCard & {
+   created_at: string;
+   updated_at: string;
+   description_html: string;
++  /** transfers-sales DS-014: «Продано по накладным» — Σ сумм накладных «склад → клиент» заказа
++   *  в статусах in_transit / received; уже входит в total_amount. */
++  transfers_amount: number | string;
+ };
+ 
+ export type NewTask = {
+@@ -268,6 +271,8 @@ export type CardTransfer = {
+   warehouse_name: string;
+   items_count: number;
+   created_at: string;
++  /** transfers-sales §6.3: сумма документа (0.00 для приёма от клиента и накладной без товаров). */
++  amount: number | string;
+ };
+ 
+ /** Тело POST /api/v1/tasks/:id/equipment (board.TaskEquipmentCreateRequest). Упразднённый
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 0d3bc1a..3152878 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -56,6 +56,8 @@ export class OrderCardPage {
+   readonly subtaskAdd: Locator;
+ 
+   readonly total: Locator;
++  /** «Продано по накладным» над итогом — есть, пока сумма больше нуля (transfers-sales §8.2). */
++  readonly transfersAmount: Locator;
+ 
+   // Вложения (фаза 7, D21)
+   readonly attachments: Locator;
+@@ -115,6 +117,7 @@ export class OrderCardPage {
+     this.subtaskAdd = page.getByTestId('card-subtask-add');
+ 
+     this.total = page.getByTestId('card-total');
++    this.transfersAmount = page.getByTestId('card-transfers-amount');
+ 
+     this.attachments = page.getByTestId('card-attachments');
+     this.attachmentsLocked = page.getByTestId('card-attachments-locked');
+@@ -312,6 +315,11 @@ export class OrderCardPage {
+     return this.transferRow(transferId).getByTestId('card-transfer-link');
+   }
+ 
++  /** Сумма накладной в строке блока «Перемещения заказа» (только если больше нуля). */
++  transferAmount(transferId: number): Locator {
++    return this.transferRow(transferId).getByTestId('card-transfer-amount');
++  }
++
+   transferStatus(transferId: number): Locator {
+     return this.transferRow(transferId).getByTestId('card-transfer-status');
+   }
+diff --git a/e2e/pages/TransfersPage.ts b/e2e/pages/TransfersPage.ts
+index a4b1bbb..2226bba 100644
+--- a/e2e/pages/TransfersPage.ts
++++ b/e2e/pages/TransfersPage.ts
+@@ -47,6 +47,10 @@ export class TransfersPage {
+   readonly taskEquipmentOptions: Locator;
+   readonly receiveNow: Locator;
+   readonly qtyHead: Locator;
++  /** Колонки «Цена» / «Сумма» и итог «Сумма накладной» — только у «возврата клиенту» (transfers-sales §8.1). */
++  readonly priceHead: Locator;
++  readonly totalHead: Locator;
++  readonly amount: Locator;
+   readonly factHead: Locator;
+   readonly uiDialog: Locator;
+   readonly placeholder: Locator;
+@@ -104,6 +108,9 @@ export class TransfersPage {
+     this.taskEquipmentOptions = page.getByTestId('st-task-equipment-option');
+     this.receiveNow = page.getByTestId('st-receive-now');
+     this.qtyHead = page.getByTestId('st-qty-head');
++    this.priceHead = page.getByTestId('st-price-head');
++    this.totalHead = page.getByTestId('st-total-head');
++    this.amount = page.getByTestId('st-amount');
+     this.factHead = page.getByTestId('st-fact-head');
+     this.uiDialog = page.getByTestId('ui-dialog');
+     this.placeholder = page.getByTestId('st-placeholder');
+@@ -208,6 +215,25 @@ export class TransfersPage {
+     return this.itemRow('product', productId).getByTestId('st-item-qty');
+   }
+ 
++  /** Цена продажи товарной строки накладной (редактор заявки). */
++  itemPrice(productId: string): Locator {
++    return this.itemRow('product', productId).getByTestId('st-item-price');
++  }
++
++  itemPriceError(productId: string): Locator {
++    return this.itemRow('product', productId).getByTestId('st-item-price-error');
++  }
++
++  /** «Сумма» товарной строки накладной (редактор заявки; пересчитывается при вводе). */
++  itemTotal(productId: string): Locator {
++    return this.itemRow('product', productId).getByTestId('st-item-total');
++  }
++
++  /** Сумма накладной в строке списка — только у «возврата клиенту» с товарами. */
++  rowAmount(id: number): Locator {
++    return this.row(id).getByTestId('st-row-amount');
++  }
++
+   itemError(kind: 'product' | 'equipment', key: string): Locator {
+     return this.itemRow(kind, key).getByTestId('st-item-error');
+   }
+diff --git a/e2e/tests/transfers-sales.spec.ts b/e2e/tests/transfers-sales.spec.ts
+new file mode 100644
+index 0000000..eaed8b2
+--- /dev/null
++++ b/e2e/tests/transfers-sales.spec.ts
+@@ -0,0 +1,354 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { TransfersPage } from '../pages/TransfersPage';
++import { StockPage } from '../pages/StockPage';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import type { AdminApi, NewTransfer } from '../fixtures/auth';
++import { contrastOf } from '../fixtures/contrast';
++
++// Накладная клиенту — товар с ценой в документе «возврат клиенту», сумма накладной и итог
++// заказа (docs/features/transfers-sales/draft-spec.md §8.1, §8.2; TS-030). Общая dev-БД
++// (§TD-6.2): свои клиенты, оборудование, заказы, услуги и товары через uniq()+adminApi, склады
++// — сид «Алматы» / «Москва». Заказ с документами не удаляется (DS-012) — _boardCleanup его
++// оставляет (409 — ожидаемо, до части transfers-revert).
++test.use({ colorScheme: 'light' });
++
++const THEMES = ['light', 'dark'] as const;
++
++type Uniq = (s: string) => string;
++
++/** Клиент + заказ (услуга ценой servicePrice, если задана) + count единиц оборудования заказа
++ *  на складе «Алматы». */
++async function orderAtAlmaty(adminApi: AdminApi, uniq: Uniq, tag: string, opts: { units?: number; servicePrice?: number; assigneeId?: string } = {}) {
++  const almaty = await adminApi.warehouseByName('Алматы');
++  const client = await adminApi.createClient({ company_name: uniq(`${tag} клиент`), phones: [{ phone: '9990000601', note: '' }] });
++  const columns = (await adminApi.listColumns()).items;
++  const task = await adminApi.createTask({
++    title: uniq(`${tag} заказ`), client_id: client.id, column_id: columnByName(columns, 'Новые').id,
++    ...(opts.assigneeId ? { assignee_id: opts.assigneeId } : {}),
++  });
++  const units = [];
++  if (opts.units) {
++    const type = await adminApi.createEquipmentType({ name: uniq(`${tag} тип`) });
++    for (let i = 0; i < opts.units; i++) {
++      const eq = await adminApi.createEquipment(client.id, {
++        type_id: type.id, brand: `Brand${tag}`, model: uniq(`${tag} модель ${i}`), serial: uniq(`sn-${tag}-${i}`),
++      });
++      await adminApi.addTaskEquipmentAt(task.id, eq.id, almaty.id);
++      units.push(eq);
++    }
++  }
++  if (opts.servicePrice !== undefined) {
++    const cat = await adminApi.createCategory({ kind: 'service', name: uniq(`${tag} услуги`) });
++    const svc = await adminApi.createService({ category_id: cat.id, name: uniq(`${tag} услуга`), price: opts.servicePrice });
++    await adminApi.createSubtask(task.id, svc.id);
++  }
++  return { almaty, client, task, units };
++}
++
++/** Товар каталога с ценой и остатком на «Алматы». */
++async function pricedProduct(adminApi: AdminApi, uniq: Uniq, label: string, price: number, stock: number) {
++  const cat = await adminApi.createCategory({ kind: 'product', name: uniq(`${label} категория`) });
++  return adminApi.createProduct({ category_id: cat.id, name: uniq(`${label} товар`), price, stock });
++}
++
++async function pairStock(adminApi: AdminApi, productName: string, warehouseId: string): Promise<number> {
++  const list = await adminApi.getStock({ q: productName, scope: 'all' });
++  const cell = list.items[0]?.by_warehouse.find((c) => c.warehouse_id === warehouseId);
++  return Number(cell?.stock ?? NaN);
++}
++
++test.describe('TR: перемещения — накладная клиенту', () => {
++  test('TR-017 (TS-030): возврат клиенту с продажей товара — «+ Товар» с ценой каталога, правка цены, «Отправить» → «Принять»: сумма накладной в документе и списке, «Продано по накладным» и итог в карточке заказа, остаток уменьшился; отрицательная и нечисловая цена → ошибка под полем; отмена накладной «в пути» → строка «Продано по накладным» исчезла, остаток вернулся', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    allowHttpErrors,
++  }) => {
++    const { almaty, client, task, units } = await orderAtAlmaty(adminApi, uniq, 'TR017', { units: 1, servicePrice: 1000 });
++    const unit = units[0];
++    const product = await pricedProduct(adminApi, uniq, 'TR-017', 250.5, 40);
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    const tr = new TransfersPage(page);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.total).toHaveText('Итог заказа: 1000.00');
++    await expect(card.transfersAmount).toHaveCount(0); // накладных нет — строки нет
++    await expect(card.equipmentLocation(unit.id)).toHaveText('на складе Алматы');
++
++    // «Вернуть клиенту» → форма накладной: единица предвыбрана, есть «+ Товар», колонки цены.
++    await card.transferReturn.click();
++    await expect(tr.direction).toHaveText('Возврат клиенту');
++    await expect(tr.itemRow('equipment', unit.id)).toBeVisible();
++    await expect(tr.priceHead).toHaveText('Цена');
++    await expect(tr.totalHead).toHaveText('Сумма');
++    await expect(tr.amount).toHaveText('0.00');
++    await expect(tr.itemRow('equipment', unit.id).getByTestId('st-item-price')).toHaveCount(0); // у единицы цены нет
++
++    // «+ Товар»: цена подставилась из каталога; суммы пересчитываются при вводе, без запроса.
++    await tr.addProductRow(product.name, product.id, 2);
++    await expect(tr.itemPrice(product.id)).toHaveValue('250.50');
++    await expect(tr.itemTotal(product.id)).toHaveText('501.00');
++    await expect(tr.amount).toHaveText('501.00');
++    await tr.itemPrice(product.id).fill('300,25'); // запятая → точка
++    await expect(tr.itemPrice(product.id)).toHaveValue('300.25');
++    await expect(tr.itemTotal(product.id)).toHaveText('600.50');
++    await expect(tr.amount).toHaveText('600.50');
++
++    // негатив: отрицательная цена → 400, ошибка под полем цены, документ не создан.
++    allowHttpErrors((url, status) => url.endsWith('/api/v1/transfers') && status === 400);
++    await tr.itemPrice(product.id).fill('-5');
++    await tr.send.click();
++    await expect(tr.itemPriceError(product.id)).toHaveText('Цена не может быть отрицательной');
++    await expect(tr.itemPrice(product.id)).toHaveClass(/is-invalid/);
++    await expect(tr.cardTitle).toHaveText('Новое перемещение');
++    // негатив: не число — ошибка под полем без запроса; три знака после запятой — от сервера.
++    await tr.itemPrice(product.id).fill('abc');
++    await tr.send.click();
++    await expect(tr.itemPriceError(product.id)).toHaveText('Некорректная цена');
++    await tr.itemPrice(product.id).fill('1.999');
++    await tr.send.click();
++    await expect(tr.itemPriceError(product.id)).toHaveText('Некорректная цена');
++    await expect(tr.cardTitle).toHaveText('Новое перемещение');
++    expect((await adminApi.getCard(task.id)).transfers.filter((t) => t.direction === 'warehouse_to_client')).toHaveLength(0);
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(40);
++
++    // «Отправить»: «В пути», цена и суммы — значения сервера; товар списан со склада.
++    await tr.itemPrice(product.id).fill('300.25');
++    await tr.send.click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    const id = await tr.currentId();
++    await expect(tr.amount).toHaveText('600.50');
++    await expect(tr.viewItem('product', product.id).getByTestId('st-view-price')).toHaveText('300.25');
++    await expect(tr.viewItem('product', product.id).getByTestId('st-view-total')).toHaveText('600.50');
++    await expect(tr.viewItem('equipment', unit.id).getByTestId('st-view-price')).toHaveText('');
++    await expect(tr.rowAmount(id)).toHaveText('600.50');
++    await expect(tr.warnings).toHaveCount(0); // остатка хватает
++    const sent = await adminApi.getTransfer(id);
++    expect(sent).toMatchObject({ direction: 'warehouse_to_client', status: 'in_transit', task_id: task.id });
++    expect(Number(sent.amount)).toBe(600.5);
++    const line = sent.items.find((it) => it.kind === 'product')!;
++    expect(Number(line.price)).toBe(300.25);
++    expect(Number(line.line_total)).toBe(600.5);
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(38);
++
++    // «Остатки»: остаток на «Алматы» уменьшился; проданное клиенту «в пути» не числится.
++    const stock = new StockPage(page);
++    await stock.goto();
++    await stock.chooseScope('Все товары');
++    await stock.q.fill(product.name);
++    await expect(stock.cell(product.id, 'Алматы')).toContainText('38');
++    await expect(stock.row(product.id).getByTestId('stock-cell-transit')).toHaveText('0');
++
++    // карточка заказа: накладная «в пути» уже в итоге.
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.transfersAmount).toHaveText('600.50');
++    await expect(card.total).toHaveText('Итог заказа: 1600.50');
++    await expect(card.transferAmount(id)).toHaveText('600.50');
++    await expect(card.transferStatus(id)).toHaveText('В пути');
++
++    // «Принять»: единица «у клиента», сумма остаётся в итоге, остаток не меняется.
++    await card.transferLink(id).click();
++    await expect(tr.cardTitle).toHaveText(`Перемещение #${id}`);
++    await tr.confirmReceive('Клиент получил оборудование?');
++    await expect(tr.cardStatus).toHaveText('Получено');
++    await expect(tr.amount).toHaveText('600.50');
++    await expect(tr.factHead).toHaveCount(0); // факт по товару накладной не вводится
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(38);
++
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.equipmentLocation(unit.id)).toHaveText('у клиента');
++    await expect(card.transferStatus(id)).toHaveText('Получено');
++    await expect(card.transfersAmount).toHaveText('600.50');
++    await expect(card.total).toHaveText('Итог заказа: 1600.50');
++    const paidCard = await adminApi.getCard(task.id);
++    expect(Number(paidCard.task.transfers_amount)).toBe(600.5);
++    expect(Number(paidCard.task.total_amount)).toBe(1600.5);
++    expect(paidCard.task.is_paid).toBe(false); // отметка «Оплачен» у заказа одна — накладная её не трогает
++
++    // вторая накладная того же заказа — заявка на количество больше остатка: в итог не входит;
++    // «Отправить» → предупреждение об отрицательном остатке; отмена «в пути» → сумма ушла из
++    // итога, остаток вернулся.
++    const second = await adminApi.createTransfer({
++      direction: 'warehouse_to_client', from_warehouse_id: almaty.id, task_id: task.id,
++      items: [{ kind: 'product', product_id: product.id, qty_sent: 50, price: 10 }],
++    } satisfies NewTransfer);
++    expect(Number(second.amount)).toBe(500);
++    expect(Number((await adminApi.getCard(task.id)).task.transfers_amount)).toBe(600.5);
++    await tr.goto(second.id);
++    await expect(tr.itemPrice(product.id)).toHaveValue('10.00');
++    await expect(tr.amount).toHaveText('500.00');
++    await tr.send.click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.warnings).toContainText(product.name);
++    await expect(tr.warnings).toContainText('отрицательный');
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(-12);
++    expect(Number((await adminApi.getCard(task.id)).task.total_amount)).toBe(2100.5);
++
++    await tr.cancel.click();
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(tr.cardStatus).toHaveText('Отменён');
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(38);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.transferStatus(second.id)).toHaveText('Отменён');
++    await expect(card.transfersAmount).toHaveText('600.50');
++    await expect(card.total).toHaveText('Итог заказа: 1600.50');
++  });
++
++  test('TR-018 (TS-030): отмена единственной накладной «в пути» — строка «Продано по накладным» исчезает из карточки заказа, остаток возвращается; заявка в итог не входит', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, client, task } = await orderAtAlmaty(adminApi, uniq, 'TR018');
++    const product = await pricedProduct(adminApi, uniq, 'TR-018', 15, 10);
++    // цена не передана — берётся из каталога (DS-039).
++    const doc = await adminApi.createTransfer({
++      direction: 'warehouse_to_client', from_warehouse_id: almaty.id, task_id: task.id,
++      items: [{ kind: 'product', product_id: product.id, qty_sent: 2 }],
++    });
++    expect(Number(doc.items[0].price)).toBe(15);
++    expect(Number(doc.amount)).toBe(30);
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    const tr = new TransfersPage(page);
++    // заявка: сумма у документа есть, в итоге заказа её нет.
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.transferAmount(doc.id)).toHaveText('30.00');
++    await expect(card.transfersAmount).toHaveCount(0);
++    await expect(card.total).toHaveText('Итог заказа: 0.00');
++
++    await adminApi.transferAction(doc.id, 'send');
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(8);
++    await board.goto(`?client_id=${client.id}&task=${task.id}`);
++    await card.waitOpen();
++    await expect(card.transfersAmount).toHaveText('30.00');
++    await expect(card.total).toHaveText('Итог заказа: 30.00');
++
++    // отмена «в пути» из документа.
++    await card.transferLink(doc.id).click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await tr.cancel.click();
++    await page.getByTestId('ui-dialog-ok').click();
++    await expect(tr.cardStatus).toHaveText('Отменён');
++    await expect(tr.amount).toHaveText('30.00'); // сумма документа остаётся, из итога её убирает статус
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(10);
++
++    await tr.taskLink.click();
++    await card.waitOpen();
++    await expect(card.transferStatus(doc.id)).toHaveText('Отменён');
++    await expect(card.transfersAmount).toHaveCount(0);
++    await expect(card.total).toHaveText('Итог заказа: 0.00');
++  });
++
++  test('TR-019 (TS-030): исполнитель оформляет накладную — «+ Товар» доступен, цена из каталога правится, «Сохранить» → «Отправить»', async ({
++    page,
++    adminApi,
++    uniq,
++    makeUser,
++    loginAs,
++  }) => {
++    const exec = await makeUser({ login: uniq('tr019-exec'), name: uniq('TR-019 Исполнитель') });
++    const { almaty, task, units } = await orderAtAlmaty(adminApi, uniq, 'TR019', { units: 1, assigneeId: exec.id });
++    const product = await pricedProduct(adminApi, uniq, 'TR-019', 99.9, 5);
++
++    await loginAs(page, exec.login, exec.password);
++    const tr = new TransfersPage(page);
++    await tr.gotoNew('warehouse_to_client', task.id);
++    await expect(tr.itemRow('equipment', units[0].id)).toBeVisible();
++    await tr.addProductRow(product.name, product.id, 1);
++    await expect(tr.itemPrice(product.id)).toHaveValue('99.90');
++    await tr.itemPrice(product.id).fill('120');
++    await expect(tr.amount).toHaveText('120.00');
++    await tr.save.click();
++    await expect(tr.toast).toHaveText('Сохранено');
++    await expect(tr.cardStatus).toHaveText('Заявка');
++    const id = await tr.currentId();
++    await expect(tr.itemPrice(product.id)).toHaveValue('120.00'); // значение сервера
++    await expect(tr.amount).toHaveText('120.00');
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(5); // заявка остаток не двигает
++
++    await tr.send.click();
++    await expect(tr.cardStatus).toHaveText('В пути');
++    await expect(tr.rowAmount(id)).toHaveText('120.00');
++    const sent = await adminApi.getTransfer(id);
++    expect(Number(sent.amount)).toBe(120);
++    expect(await pairStock(adminApi, product.name, almaty.id)).toBe(4);
++  });
++
++  test('TR-020 (TS-030, TS-045, TS-046): накладная с колонками цены и итоги карточки заказа — 375×812 без горизонтальной прокрутки, суммы читаемы в светлой и тёмной теме', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++  }) => {
++    const { almaty, client, task, units } = await orderAtAlmaty(adminApi, uniq, 'TR020', { units: 1, servicePrice: 500 });
++    const product = await pricedProduct(adminApi, uniq, 'TR-020 товар с длинным названием для узкого экрана', 12345.67, 20);
++    const other = await pricedProduct(adminApi, uniq, 'TR-020 b', 0.5, 20);
++    const mk = (send: boolean, withUnit: boolean) =>
++      adminApi.createTransfer({
++        direction: 'warehouse_to_client', from_warehouse_id: almaty.id, task_id: task.id, send,
++        items: [
++          ...(withUnit ? [{ kind: 'equipment' as const, equipment_id: units[0].id }] : []),
++          { kind: 'product', product_id: product.id, qty_sent: 3, price: 12345.67 },
++          { kind: 'product', product_id: other.id, qty_sent: 1.5 },
++        ],
++      });
++    const inTransit = await mk(true, false);
++    const requested = await mk(false, true);
++    expect(Number(inTransit.amount)).toBe(37037.76); // 37037.01 + 0.75
++
++    await page.setViewportSize({ width: 375, height: 812 });
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    const tr = new TransfersPage(page);
++    for (const theme of THEMES) {
++      // последний зарегистрированный init-скрипт задаёт тему (эталон — polish.spec.ts).
++      await page.addInitScript((t) => localStorage.setItem('kt-theme', t), theme);
++      const where = `${theme} 375×812`;
++
++      // карточка заказа: суммы в блоке «Перемещения заказа» и строка «Продано по накладным».
++      await board.goto(`?client_id=${client.id}&task=${task.id}`);
++      await card.waitOpen();
++      await expect(page.locator('html')).toHaveAttribute('data-bs-theme', theme);
++      await card.total.scrollIntoViewIfNeeded();
++      await expect(card.transfersAmount).toHaveText('37037.76');
++      await expect(card.total).toHaveText('Итог заказа: 37537.76');
++      await expect(card.transferAmount(inTransit.id)).toHaveText('37037.76');
++      await expect(card.transferAmount(requested.id)).toHaveText('37037.76');
++      await card.expectNoHorizontalScroll();
++      expect(await contrastOf(card.transfersAmount), `карточка ${where}: «Продано по накладным»`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(card.total), `карточка ${where}: итог заказа`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(card.transferAmount(inTransit.id)), `карточка ${where}: сумма накладной`).toBeGreaterThanOrEqual(4.5);
++
++      // заявка: редактор с колонками «Цена» / «Сумма».
++      await tr.goto(requested.id);
++      await expect(tr.cardStatus).toHaveText('Заявка');
++      await expect(tr.itemPrice(product.id)).toHaveValue('12345.67');
++      await expect(tr.itemTotal(product.id)).toHaveText('37037.01');
++      await expect(tr.amount).toHaveText('37037.76');
++      await tr.expectNoHorizontalScroll();
++      expect(await contrastOf(tr.amount), `заявка ${where}: «Сумма накладной»`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.itemTotal(product.id)), `заявка ${where}: сумма строки`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.itemPrice(product.id)), `заявка ${where}: поле цены`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.priceHead), `заявка ${where}: заголовок «Цена»`).toBeGreaterThanOrEqual(4.5);
++
++      // накладная «в пути»: просмотр и строка списка с суммой.
++      await tr.goto(inTransit.id);
++      await expect(tr.cardStatus).toHaveText('В пути');
++      await expect(tr.viewItem('product', product.id).getByTestId('st-view-total')).toHaveText('37037.01');
++      await expect(tr.amount).toHaveText('37037.76');
++      await tr.expectNoHorizontalScroll();
++      expect(await contrastOf(tr.amount), `документ ${where}: «Сумма накладной»`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.viewItem('product', product.id).getByTestId('st-view-price')), `документ ${where}: цена`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.viewItem('product', product.id).getByTestId('st-view-total')), `документ ${where}: сумма строки`).toBeGreaterThanOrEqual(4.5);
++      expect(await contrastOf(tr.rowAmount(inTransit.id)), `список ${where}: сумма накладной`).toBeGreaterThanOrEqual(4.5);
++    }
++  });
++});
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 913cdf7..1b20f1a 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -502,6 +502,8 @@
+       '<span class="badge ' + st[1] + '" data-testid="card-transfer-status">' + esc(st[0]) + '</span>' +
+       '<span class="small text-body-secondary">строк: <span data-testid="card-transfer-count">' + esc(t.items_count) + '</span></span>' +
+       '<span class="small text-body-secondary ms-auto" data-testid="card-transfer-date">' + esc(fmtDate(t.created_at)) + '</span>' +
++      // сумма накладной — справа, только если больше нуля (transfers-sales §8.2 п.1)
++      (num(t.amount) > 0 ? '<span class="fw-semibold text-nowrap" data-testid="card-transfer-amount">' + money(t.amount) + '</span>' : '') +
+       '</div>';
+   }
+ 
+@@ -1322,8 +1324,13 @@
+     });
+   }
+ 
++  // renderTotal — итог заказа; над ним — «Продано по накладным» (transfers-sales DS-014), пока
++  // сумма больше нуля: она уже входит в total_amount.
+   function renderTotal() {
+-    $('#card-total').innerHTML = '<strong data-testid="card-total">Итог заказа: ' + money(card.task.total_amount) + '</strong>';
++    var sold = num(card.task.transfers_amount);
++    $('#card-total').innerHTML =
++      (sold > 0 ? '<div class="mb-1" data-testid="card-transfers-amount-row">Продано по накладным: <span data-testid="card-transfers-amount">' + money(sold) + '</span></div>' : '') +
++      '<strong data-testid="card-total">Итог заказа: ' + money(card.task.total_amount) + '</strong>';
+   }
+ 
+   // ==================================================================
+diff --git a/web/ssr/_shared/js/transfers.js b/web/ssr/_shared/js/transfers.js
+index a122152..3562114 100644
+--- a/web/ssr/_shared/js/transfers.js
++++ b/web/ssr/_shared/js/transfers.js
+@@ -37,12 +37,22 @@
+   function $(sel, root) { return (root || document).querySelector(sel); }
+   function $$(sel, root) { return [].slice.call((root || document).querySelectorAll(sel)); }
+   function num(v) { return String(v == null ? 0 : v); }
++  // money — сумма с двумя знаками, как в карточке заказа (task-card.js).
++  function money(v) { var n = Number(v); return (isFinite(n) ? n : 0).toFixed(2); }
++  // lineTotal — «Сумма» строки накладной: цена × количество, округление до 2 знаков (сервер
++  // считает так же: round(price × qty_sent, 2)); нечисловой ввод — 0.
++  function lineTotal(price, qty) {
++    var p = Number(price), q = Number(qty);
++    if (price === '' || qty === '' || !isFinite(p) || !isFinite(q)) return 0;
++    return Math.round(p * q * 100) / 100;
++  }
+ 
+   // DIR — направления (DS-002): подпись, точки маршрута, допустимые строки (DS-004).
+   // equipment: 'task' — единицы оборудования заказа, 'search' — поиск по складу отправления.
+   var DIR = {
+     client_to_warehouse: { label: 'Приём от клиента', to: true, task: true, equipment: 'task' },
+-    warehouse_to_client: { label: 'Возврат клиенту', from: true, task: true, equipment: 'task' },
++    // priced — накладная: товарные строки несут цену продажи, у документа есть сумма (DS-011)
++    warehouse_to_client: { label: 'Возврат клиенту', from: true, task: true, products: true, priced: true, equipment: 'task' },
+     warehouse_to_warehouse: { label: 'Склад → склад', from: true, to: true, products: true, equipment: 'search' },
+     supplier_to_warehouse: { label: 'Приход от поставщика', to: true, supplier: true, products: true }
+   };
+@@ -76,6 +86,12 @@
+     equipment_id: 'Проверьте оборудование',
+     qty_sent: 'Количество должно быть больше нуля'
+   };
++  // Цена продажи товарной строки накладной (transfers-sales §6.1).
++  var PRICE_TEXT = {
++    invalid: 'Некорректная цена',
++    negative: 'Цена не может быть отрицательной',
++    not_allowed: 'Цена указывается только у товара в накладной клиенту'
++  };
+   var ROW_CODE_TEXT = { duplicate: 'уже есть в другой строке', archived: 'товар в архиве', not_found: 'не найдено' };
+   var RECEIVE_TEXT = {
+     exceeds_sent: 'Факт больше отправленного',
+@@ -241,7 +257,8 @@
+       return {
+         kind: it.kind, product_id: it.product_id, product_name: it.product_name, unit: it.unit,
+         equipment_id: it.equipment_id, equipment_name: it.equipment_name, equipment_serial: it.equipment_serial,
+-        equipment_client_name: it.equipment_client_name, qty: it.qty_sent == null ? '' : num(it.qty_sent)
++        equipment_client_name: it.equipment_client_name, qty: it.qty_sent == null ? '' : num(it.qty_sent),
++        price: it.price == null ? '' : money(it.price)
+       };
+     });
+   }
+@@ -343,6 +360,8 @@
+         '<span class="fw-semibold text-break" data-testid="st-row-route">#' + esc(t.id) + ' · ' + esc(routeText(t)) + '</span>' +
+         '<span class="d-flex flex-wrap justify-content-end gap-1">' + directionBadge(t) + badge(t.status) + '</span></div>' +
+         (party ? '<div class="small text-break" data-testid="st-row-party">' + esc(party) + '</div>' : '') +
++        // сумма накладной — справа под маршрутом, только у «возврата клиенту» с товарами (§8.1 п.1)
++        (dirOf(t).priced && Number(t.amount) > 0 ? '<div class="small fw-semibold text-end" data-testid="st-row-amount">' + esc(money(t.amount)) + '</div>' : '') +
+         '<div class="small' + (active ? '' : ' text-body-secondary') + '">' +
+         '<span data-testid="st-row-date">' + esc(fmtDate(t.created_at)) + '</span> · строк: <span data-testid="st-row-count">' + esc(t.items_count) + '</span>' +
+         (t.note ? ' · ' + esc(t.note) : '') + '</div>' +
+@@ -405,7 +424,18 @@
+     return '<div data-testid="st-item-name">' + esc(it.product_name) + (it.unit ? ', ' + esc(it.unit) : '') + '</div>';
+   }
+ 
++  // priceCellsHTML — ячейки «Цена» и «Сумма» строки редактора накладной: у товара — текстовый
++  // инпут цены и сумма строки, у строки-единицы обе пустые (§8.1 п.2).
++  function priceCellsHTML(it) {
++    if (it.kind !== 'product') return '<td></td><td></td>';
++    return '<td style="min-width:110px;width:130px">' +
++      '<input type="text" inputmode="decimal" autocomplete="off" class="form-control form-control-sm text-end" data-testid="st-item-price" aria-label="Цена" value="' + esc(it.price == null ? '' : it.price) + '">' +
++      '<div class="text-danger small d-none" data-testid="st-item-price-error" data-item-error data-price-error></div></td>' +
++      '<td class="text-end text-nowrap" data-testid="st-item-total">' + esc(money(lineTotal(it.price, it.qty))) + '</td>';
++  }
++
+   function editRowHTML(it, i) {
++    var priced = dirOf(state.current).priced;
+     var key = it.kind === 'equipment' ? it.equipment_id : it.product_id;
+     return '<tr data-testid="st-item-row" data-kind="' + esc(it.kind) + '" data-key="' + esc(key) + '" data-index="' + i + '">' +
+       '<td>' + kindBadge(it.kind) + '</td>' +
+@@ -413,6 +443,7 @@
+       '<td style="width:130px">' + (it.kind === 'product'
+         ? '<input type="number" step="any" min="0" class="form-control form-control-sm" data-testid="st-item-qty" aria-label="Количество" value="' + esc(it.qty) + '">'
+         : '<span class="text-body-secondary">—</span>') + '</td>' +
++      (priced ? priceCellsHTML(it) : '') +
+       '<td style="width:44px" class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-testid="st-item-remove" title="Убрать строку" aria-label="Убрать строку">×</button></td>' +
+       '</tr>';
+   }
+@@ -420,7 +451,7 @@
+   // viewRowHTML — строка просмотра. Расхождение факта с количеством подсвечено в любую
+   // сторону (data-diff; приход от поставщика — и недопоставка, и излишек, DS-015); недостача
+   // дополнительно помечена data-loss.
+-  function viewRowHTML(it, showFact) {
++  function viewRowHTML(it, showFact, priced) {
+     var hasFact = showFact && it.kind === 'product' && it.qty_received != null;
+     var diff = hasFact && Number(it.qty_received) !== Number(it.qty_sent);
+     var loss = hasFact && Number(it.qty_received) < Number(it.qty_sent);
+@@ -430,6 +461,8 @@
+       '<td data-testid="st-view-sent">' + (it.kind === 'product' ? esc(num(it.qty_sent)) : '<span class="text-body-secondary">—</span>') + '</td>' +
+       (showFact ? '<td data-testid="st-view-received"' + (diff ? ' class="text-danger fw-semibold" data-diff="true"' + (loss ? ' data-loss="true"' : '') + ' title="Расхождение с количеством документа"' : '') + '>' +
+         (it.kind === 'product' ? esc(num(it.qty_received)) : '<span class="text-body-secondary">—</span>') + '</td>' : '') +
++      (priced ? '<td class="text-end text-nowrap" data-testid="st-view-price">' + (it.price == null ? '' : esc(money(it.price))) + '</td>' +
++        '<td class="text-end text-nowrap" data-testid="st-view-total">' + (it.line_total == null ? '' : esc(money(it.line_total))) + '</td>' : '') +
+       '</tr>';
+   }
+ 
+@@ -463,6 +496,18 @@
+   }
+ 
+   // qtyHead — заголовок колонки количества: в приходе от поставщика — «Заказано» (§8.1 п.7).
++  // priceHeadHTML — заголовки колонок «Цена» и «Сумма» накладной.
++  function priceHeadHTML(t) {
++    return dirOf(t).priced ? '<th class="text-end" data-testid="st-price-head">Цена</th><th class="text-end" data-testid="st-total-head">Сумма</th>' : '';
++  }
++
++  // amountHTML — «Сумма накладной» справа под таблицей (§8.1 п.4): в заявке пересчитывается на
++  // клиенте при вводе (updateAmount), после сохранения — значение сервера.
++  function amountHTML(t) {
++    if (!dirOf(t).priced) return '';
++    return '<div class="text-end fw-semibold mb-3" data-testid="st-amount-row">Сумма накладной: <span data-testid="st-amount">' + esc(money(t.amount)) + '</span></div>';
++  }
++
+   function qtyHead(t) { return dirOf(t).supplier ? 'Заказано' : 'Кол-во'; }
+ 
+   function directionHTML(t) {
+@@ -511,7 +556,8 @@
+       '<div class="text-danger small d-none" data-field-error="note" data-testid="st-note-error"></div></div>' +
+       '<div class="text-danger small mb-1 d-none" data-field-error="items" data-testid="st-items-error"></div>' +
+       '<div class="table-responsive"><table class="table table-sm align-middle mb-2" data-testid="st-items">' +
+-      '<thead><tr><th>Тип</th><th>Наименование</th><th data-testid="st-qty-head">' + qtyHead(t) + '</th><th></th></tr></thead><tbody id="st-items-tbody"></tbody></table></div>' +
++      '<thead><tr><th>Тип</th><th>Наименование</th><th data-testid="st-qty-head">' + qtyHead(t) + '</th>' + priceHeadHTML(t) + '<th></th></tr></thead><tbody id="st-items-tbody"></tbody></table></div>' +
++      amountHTML(t) +
+       '<div class="row g-2 mb-3">';
+     if (d.products) {
+       html += '<div class="col-sm-6"><select class="form-select form-select-sm" id="st-add-product" data-testid="st-add-product" aria-label="Добавить товар"></select></div>';
+@@ -555,8 +601,9 @@
+       '</dl>' +
+       '<div class="table-responsive"><table class="table table-sm align-middle" data-testid="st-items">' +
+       '<thead><tr><th>Тип</th><th>Наименование</th><th data-testid="st-qty-head">' + qtyHead(t) + '</th>' +
+-      (showFact ? '<th data-testid="st-fact-head">' + (d.supplier ? 'Получено' : 'Факт') + '</th>' : '') + '</tr></thead><tbody>' +
+-      t.items.map(function (it) { return viewRowHTML(it, showFact); }).join('') + '</tbody></table></div>';
++      (showFact ? '<th data-testid="st-fact-head">' + (d.supplier ? 'Получено' : 'Факт') + '</th>' : '') + priceHeadHTML(t) + '</tr></thead><tbody>' +
++      t.items.map(function (it) { return viewRowHTML(it, showFact, d.priced); }).join('') + '</tbody></table></div>' +
++      amountHTML(t);
+     if (t.status === 'in_transit') {
+       html += '<div class="d-flex flex-wrap justify-content-end gap-2">' +
+         '<button type="button" class="btn btn-outline-secondary me-auto" data-testid="st-cancel" data-act="cancel">Отменить отправку</button>' +
+@@ -584,6 +631,7 @@
+ 
+   function emptyRowsText(t) {
+     var d = dirOf(t);
++    if (d.equipment === 'task' && d.products) return 'Строк нет — добавьте оборудование заказа или товар';
+     if (d.equipment === 'task') return 'Строк нет — добавьте оборудование заказа';
+     if (!d.equipment) return 'Строк нет — добавьте товар';
+     return 'Строк нет — добавьте товар или оборудование';
+@@ -595,7 +643,7 @@
+     var tbody = $('#st-items-tbody');
+     if (!tbody) return;
+     tbody.innerHTML = state.items.map(editRowHTML).join('') ||
+-      '<tr data-testid="st-items-empty"><td colspan="4" class="text-body-secondary small">' + esc(emptyRowsText(state.current)) + '</td></tr>';
++      '<tr data-testid="st-items-empty"><td colspan="' + (dirOf(state.current).priced ? 6 : 4) + '" class="text-body-secondary small">' + esc(emptyRowsText(state.current)) + '</td></tr>';
+     var sel = $('#st-add-product');
+     if (sel) {
+       sel.innerHTML = productOptions();
+@@ -603,22 +651,47 @@
+       if (sel._cbSync) sel._cbSync();
+     }
+     renderTaskEquipment();
++    updateAmount();
+   }
+ 
+-  // readQty — перенести введённые количества из DOM в модель (перед перерисовкой строк).
++  // readQty — перенести введённые количества и цены из DOM в модель (перед перерисовкой строк).
+   function readQty() {
+     $$('#st-items-tbody tr[data-index]').forEach(function (tr) {
+       var inp = $('[data-testid="st-item-qty"]', tr);
++      var price = $('[data-testid="st-item-price"]', tr);
+       var it = state.items[Number(tr.dataset.index)];
+       if (inp && it) it.qty = inp.value.trim();
++      if (price && it) it.price = price.value.trim();
+     });
+   }
+ 
++  // updateAmount — «Сумма» строк и «Сумма накладной» редактора из введённого, без запроса
++  // (§8.1 «Ввод цены»).
++  function updateAmount() {
++    var out = $('#st-card [data-testid="st-amount"]');
++    if (!out || !$('#st-items-tbody')) return;
++    var cents = 0;
++    $$('#st-items-tbody tr[data-index]').forEach(function (tr) {
++      var qty = $('[data-testid="st-item-qty"]', tr);
++      var price = $('[data-testid="st-item-price"]', tr);
++      var cell = $('[data-testid="st-item-total"]', tr);
++      if (!qty || !price || !cell) return;
++      var sum = lineTotal(price.value.trim(), qty.value.trim());
++      cell.textContent = money(sum);
++      cents += Math.round(sum * 100);
++    });
++    out.textContent = money(cents / 100);
++  }
++
+   function addProduct(id) {
+     var p = state.products.filter(function (x) { return x.id === id; })[0];
+     if (!p) return;
+     readQty();
+-    state.items.push({ kind: 'product', product_id: p.id, product_name: p.name, unit: p.unit, qty: '' });
++    // накладная: цена подставляется из каталога и правится в строке (DS-039)
++    state.items.push({
++      kind: 'product', product_id: p.id, product_name: p.name, unit: p.unit, qty: '',
++      price: dirOf(state.current).priced ? money(p.price) : ''
++    });
+     renderRows();
+     var rows = $$('#st-items-tbody [data-testid="st-item-qty"]');
+     if (rows.length) rows[rows.length - 1].focus();
+@@ -915,6 +988,17 @@
+           text = ROW_TEXT[m[2]] || 'Проверьте строку';
+           if (ROW_CODE_TEXT[f.message] && m[2] !== 'qty_sent') text += ' (' + ROW_CODE_TEXT[f.message] + ')';
+         }
++        if (m[2] === 'price') {
++          // цена: под полем цены строки; not_allowed в UI недостижим — страховка тостом (§8.1)
++          text = PRICE_TEXT[f.message] || PRICE_TEXT.invalid;
++          var priceInp = tr && $('[data-testid="st-item-price"]', tr);
++          var priceErr = tr && $('[data-price-error]', tr);
++          if (f.message === 'not_allowed' || !priceInp || !priceErr) { rest.push(text); return; }
++          priceErr.textContent = text;
++          priceErr.classList.remove('d-none');
++          priceInp.classList.add('is-invalid');
++          return;
++        }
+         if (!rowError(tr, esc(text))) rest.push(text);
+         var inp = tr && m[2] === 'qty_sent' && $('[data-testid="st-item-qty"]', tr);
+         if (inp) inp.classList.add('is-invalid');
+@@ -1002,6 +1086,8 @@
+       var row = { kind: 'product', product_id: it.product_id };
+       // пустое/нечисловое количество не передаётся — сервер ответит qty_sent: required
+       if (it.qty !== '' && !Number.isNaN(n)) row.qty_sent = n;
++      // цена — только в накладной; пустая не передаётся — сервер подставит цену каталога (DS-039)
++      if (d.priced && it.price !== '' && it.price != null) row.price = Number(it.price);
+       return row;
+     });
+     return body;
+@@ -1035,8 +1121,23 @@
+     return p.then(function () { setBusy(false); }, function (err) { setBusy(false); handleError(err); });
+   }
+ 
++  // priceFormatErrors — цена, которая не число («abc»), в JSON-число не превращается: ошибка
++  // показывается под полем без запроса, в форме ответа сервера (items[i].price: invalid).
++  function priceFormatErrors() {
++    readQty();
++    if (!dirOf(state.current).priced) return [];
++    var out = [];
++    state.items.forEach(function (it, i) {
++      if (it.kind !== 'product' || it.price === '' || it.price == null) return;
++      if (!/^-?\d+(\.\d+)?$/.test(it.price)) out.push({ name: 'items[' + i + '].price', message: 'invalid' });
++    });
++    return out;
++  }
++
+   function save() {
+     var t = state.current;
++    var bad = priceFormatErrors();
++    if (bad.length) return Promise.reject({ status: 400, fields: bad });
+     var body = collectForm();
+     if (t.new) return KT.api.post(API, body);
+     body.version = t.version;
+@@ -1050,7 +1151,10 @@
+   function doSend() {
+     var t = state.current;
+     var p;
+-    if (t.new) {
++    var bad = priceFormatErrors();
++    if (bad.length) {
++      p = Promise.reject({ status: 400, fields: bad });
++    } else if (t.new) {
+       var body = collectForm();
+       body.send = true;
+       p = KT.api.post(API, body);
+@@ -1336,6 +1440,13 @@
+       }
+     });
+     card.addEventListener('input', function (e) {
++      var testid = e.target.getAttribute && e.target.getAttribute('data-testid');
++      if (testid === 'st-item-price' || testid === 'st-item-qty') {
++        // запятая в цене заменяется на точку; суммы пересчитываются сразу (§8.1 «Ввод цены»)
++        if (testid === 'st-item-price' && e.target.value.indexOf(',') !== -1) e.target.value = e.target.value.replace(/,/g, '.');
++        updateAmount();
++        return;
++      }
+       if (e.target.id === 'st-task') {
+         clearTimeout(taskTimer);
+         taskTimer = setTimeout(onTaskInput, SEARCH_DEBOUNCE_MS);
+@@ -1367,8 +1478,8 @@
+     var q = new URLSearchParams(window.location.search);
+     var id = q.get('id');
+     var newTask = parseInt(q.get('task_id'), 10);
+-    // каталог товаров и поставщики нужны только товарным направлениям — они у администратора
+-    var products = state.isAdmin ? loadProducts(0, []) : Promise.resolve([]);
++    // каталог товаров нужен и исполнителю: «+ Товар» в накладной клиенту (transfers-sales DS-011)
++    var products = loadProducts(0, []);
+     loadSupplierFilter();
+     products.then(function (items) { state.products = items; }, function () { state.products = []; })
+       .then(function () { return loadList(false); })
+diff --git a/web/ssr/board/templates/pages/print-handover.html b/web/ssr/board/templates/pages/print-handover.html
+index 7a52b1e..dc510b8 100644
+--- a/web/ssr/board/templates/pages/print-handover.html
++++ b/web/ssr/board/templates/pages/print-handover.html
+@@ -76,6 +76,11 @@
+ </section>
+ 
+ <section class="print-section print-total" data-testid="print-total">
++  {{/* «Продано по накладным» (transfers-sales DS-014) — уже входит в итог; строки нет, пока
++       у заказа нет отправленных накладных с товаром. */}}
++  {{ if ne (printf "%s" .Card.Task.TransfersAmount) "0.00" }}
++  <p data-testid="print-transfers-amount">Продано по накладным: {{ .Card.Task.TransfersAmount }}</p>
++  {{ end }}
+   <h2>Итого: {{ .Card.Task.TotalAmount }}</h2>
+   <p data-testid="print-payment">
+     {{ if .Card.Task.IsPaid }}Оплачено{{ if .Card.Task.PaidAt }} {{ timeIn .Timezone "02.01.2006" .Card.Task.PaidAt }}{{ end }}{{ else }}Не оплачено{{ end }}

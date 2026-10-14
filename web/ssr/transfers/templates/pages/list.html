@@ -1,0 +1,138 @@
+{{ define "content" }}
+<div id="st" data-testid="st-root" data-is-admin="{{ .IsAdmin }}">
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+    <!-- Панель фильтров (§8.1 п.2): комбинация — «И» -->
+    <div class="d-flex flex-wrap align-items-center gap-2" data-testid="st-filters">
+      <select class="form-select form-select-sm" id="st-filter-status" data-testid="st-filter-status" style="max-width:170px" aria-label="Статус">
+        <option value="">Все статусы</option>
+        <option value="requested">Заявка</option>
+        <option value="in_transit">В пути</option>
+        <option value="received">Получено</option>
+        <option value="cancelled">Отменён</option>
+      </select>
+      <select class="form-select form-select-sm" id="st-filter-warehouse" data-testid="st-filter-warehouse" style="max-width:210px" aria-label="Склад">
+        <option value="">Все склады</option>
+        {{ range .Warehouses }}<option value="{{ .ID }}" data-active="{{ .IsActive }}" data-name="{{ .Name }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>
+        {{ end }}
+      </select>
+      <!-- Направление: исполнитель видит только документы с клиентом (DS-018) -->
+      <select class="form-select form-select-sm" id="st-filter-direction" data-testid="st-filter-direction" style="max-width:210px" aria-label="Направление">
+        <option value="">Все направления</option>
+        <option value="client_to_warehouse">Приём от клиента</option>
+        <option value="warehouse_to_client">Возврат клиенту</option>
+        {{ if .IsAdmin }}<option value="warehouse_to_warehouse">Склад → склад</option>
+        <option value="supplier_to_warehouse">Приход от поставщика</option>{{ end }}
+      </select>
+      {{ if .IsAdmin }}<select class="form-select form-select-sm" id="st-filter-supplier" data-testid="st-filter-supplier" style="max-width:210px" aria-label="Поставщик">
+        <option value="">Все поставщики</option>
+      </select>{{ end }}
+      <input type="text" inputmode="numeric" class="form-control form-control-sm" id="st-filter-task" data-testid="st-filter-task" style="max-width:120px" placeholder="Заказ №" aria-label="Заказ">
+      <div>
+        <div class="d-flex flex-wrap align-items-center gap-1">
+          <label class="small text-body-secondary mb-0" for="st-filter-from">Период с</label>
+          <input type="date" class="form-control form-control-sm" id="st-filter-from" data-testid="st-filter-from" style="max-width:150px">
+          <label class="small text-body-secondary mb-0" for="st-filter-to">по</label>
+          <input type="date" class="form-control form-control-sm" id="st-filter-to" data-testid="st-filter-to" style="max-width:150px">
+        </div>
+        <div class="text-danger small d-none" id="st-filter-period-error" data-testid="st-filter-period-error" role="alert"></div>
+      </div>
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="st-filter-reset" data-testid="st-filter-reset">Сбросить</button>
+    </div>
+    <!-- «Новое перемещение» — меню выбора направления (§8.1 п.1) -->
+    <div class="dropdown ms-auto">
+      <button type="button" class="btn btn-primary btn-sm dropdown-toggle" id="st-new" data-testid="st-new" data-bs-toggle="dropdown" aria-expanded="false">Новое перемещение</button>
+      <ul class="dropdown-menu dropdown-menu-end" data-testid="st-new-menu" aria-labelledby="st-new">
+        <li><button type="button" class="dropdown-item" data-testid="st-new-direction" data-direction="client_to_warehouse">Приём от клиента</button></li>
+        <li><button type="button" class="dropdown-item" data-testid="st-new-direction" data-direction="warehouse_to_client">Возврат клиенту</button></li>
+        {{ if .IsAdmin }}<li><button type="button" class="dropdown-item" data-testid="st-new-direction" data-direction="warehouse_to_warehouse">Склад → склад</button></li>
+        <li><button type="button" class="dropdown-item" data-testid="st-new-direction" data-direction="supplier_to_warehouse">Приход от поставщика</button></li>{{ end }}
+      </ul>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <!-- Список документов (master) -->
+    <div class="col-lg-5">
+      <div class="list-group" id="st-list" data-testid="st-list"></div>
+      <div class="empty-state d-none" id="st-empty" data-testid="st-empty">
+        <div class="mb-2">Перемещений нет</div>
+        <button type="button" class="btn btn-primary btn-sm" data-st-new data-testid="st-empty-new">Новое перемещение</button>
+      </div>
+      <div class="d-flex align-items-center gap-2 mt-2">
+        <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="st-more" data-testid="st-more">Показать ещё</button>
+        <span class="text-body-secondary small d-none" id="st-shown" data-testid="st-shown"></span>
+      </div>
+    </div>
+
+    <!-- Документ (detail) -->
+    <div class="col-lg-7">
+      <div class="card" id="st-detail" data-testid="st-detail">
+        <div class="card-body">
+          <div class="text-body-secondary" id="st-placeholder" data-testid="st-placeholder">Выберите перемещение</div>
+          <div class="d-none" id="st-card"></div>
+        </div>
+      </div>
+      <p class="text-body-secondary small mt-2">Оборудование клиента принимается в ремонт и возвращается документом по заказу: при отправке оно числится «в пути», при приёмке — на складе назначения либо у клиента.{{ if .IsAdmin }} Склад → склад: при отправке товары списываются со склада отправления, при приёмке приходуются по факту (недостача — потеря при перемещении). Приход от поставщика: остаток растёт на фактически полученное количество при приёмке.{{ end }} Отмена отправленного перемещения возвращает всё в точку отправления.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Тосты (DS-052): правый верхний угол, 5 секунд -->
+<div class="toast-container position-fixed top-0 end-0 p-3" id="st-toasts" style="z-index:1090;max-width:min(380px,100vw)" aria-live="polite"></div>
+
+<!-- Модалка «Приёмка» (§8.1 п.6): факт — только по товарным строкам (DS-037); документы с
+     клиентом принимаются диалогом без полей. Подсказку и заголовок колонки подставляет JS
+     по направлению. -->
+<div class="modal fade" id="st-receive-modal" tabindex="-1" aria-hidden="true" data-testid="st-receive-modal">
+  <div class="modal-dialog modal-lg">
+    <form class="modal-content" id="st-receive-form" novalidate>
+      <div class="modal-header">
+        <h2 class="modal-title fs-5">Приёмка</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger d-none" id="st-receive-error" data-testid="st-receive-error"></div>
+        <p class="text-body-secondary small" id="st-receive-hint" data-testid="st-receive-hint">Укажите фактически полученное количество товаров. Недостача будет списана как потеря при перемещении. Оборудование принимается целиком.</p>
+        <div class="table-responsive">
+          <table class="table align-middle mb-0">
+            <thead><tr><th>Наименование</th><th id="st-receive-sent-head" data-testid="st-receive-sent-head">Отправлено</th><th style="width:170px">Факт</th></tr></thead>
+            <tbody id="st-receive-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="submit" class="btn btn-primary" id="st-receive-confirm" data-testid="st-receive-confirm">Принять</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Диалог «Отменить проведение» (transfers-revert §8.1): обязательная причина; ошибки причины —
+     под полем, мешающий документ (откат в обратном порядке) — над кнопками, ссылкой. -->
+<div class="modal fade" id="st-unreceive-modal" tabindex="-1" aria-hidden="true" aria-labelledby="st-unreceive-title" data-testid="st-unreceive-modal">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" id="st-unreceive-form" novalidate>
+      <div class="modal-header">
+        <h2 class="modal-title fs-5 text-break" id="st-unreceive-title" data-testid="st-unreceive-title">Отменить проведение перемещения?</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-body-secondary small">Остатки и местоположение оборудования будут возвращены в состояние «в пути».</p>
+        <label class="form-label" for="st-unreceive-reason">Причина</label>
+        <textarea class="form-control" id="st-unreceive-reason" data-testid="st-unreceive-reason" rows="3"></textarea>
+        <div class="text-danger small d-none" id="st-unreceive-reason-error" data-testid="st-unreceive-reason-error"></div>
+        <div class="alert alert-danger d-none mt-3 mb-0 text-break" id="st-unreceive-error" data-testid="st-unreceive-error"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="submit" class="btn btn-primary" id="st-unreceive-confirm" data-testid="st-unreceive-confirm">Отменить проведение</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{ end }}
+
+{{ define "scripts" }}
+<script src="/assets/ssr-shared/js/transfers.js"></script>
+{{ end }}

@@ -1,0 +1,33 @@
+diff --git a/migrations/0011_executor_payouts.down.sql b/migrations/0011_executor_payouts.down.sql
+new file mode 100644
+index 0000000..04ee3bb
+--- /dev/null
++++ b/migrations/0011_executor_payouts.down.sql
+@@ -0,0 +1,7 @@
++-- Откат выплат исполнителям: отметки, даты и суммы выплат теряются.
++DROP INDEX IF EXISTS subtasks_executor_unpaid_idx;
++ALTER TABLE subtasks
++    DROP CONSTRAINT IF EXISTS subtasks_executor_payout_check,
++    DROP COLUMN executor_payout,
++    DROP COLUMN executor_paid_at,
++    DROP COLUMN is_executor_paid;
+diff --git a/migrations/0011_executor_payouts.up.sql b/migrations/0011_executor_payouts.up.sql
+new file mode 100644
+index 0000000..67a52f0
+--- /dev/null
++++ b/migrations/0011_executor_payouts.up.sql
+@@ -0,0 +1,14 @@
++-- Выплаты исполнителям (D62–D69): статус «выплачено ли исполнителю за услугу заказа».
++-- Флаг и дата — как is_paid/paid_at заказа; executor_payout — сумма выплаты исполнителю,
++-- отдельная от price (цена для клиента). Связь «отметка только при назначенном исполнителе»
++-- держит сервис, не CHECK: subtasks.assignee_id — ON DELETE SET NULL (удаление сотрудника
++-- не должно упираться в выплаченные услуги).
++ALTER TABLE subtasks
++    ADD COLUMN is_executor_paid boolean NOT NULL DEFAULT false,
++    ADD COLUMN executor_paid_at timestamptz NULL,
++    ADD COLUMN executor_payout  numeric(12,2) NULL
++        CONSTRAINT subtasks_executor_payout_check CHECK (executor_payout IS NULL OR executor_payout >= 0);
++
++-- Отчёт «Выплаты» и фильтр доски выбирают невыплаченные услуги с исполнителем.
++CREATE INDEX subtasks_executor_unpaid_idx ON subtasks (assignee_id)
++    WHERE assignee_id IS NOT NULL AND NOT is_executor_paid;

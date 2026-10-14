@@ -1,0 +1,1003 @@
+diff --git a/internal/features/board/pagination_http_live_test.go b/internal/features/board/pagination_http_live_test.go
+new file mode 100644
+index 0000000..b994f95
+--- /dev/null
++++ b/internal/features/board/pagination_http_live_test.go
+@@ -0,0 +1,144 @@
++//go:build integration
++
++package board_test
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/url"
++)
++
++// ---- pagination DS-002: GET /api/v1/tasks — column_id, per_column, column_total ----
++// Методы BoardLiveSuite (тот же suite.Run, §TD-8): реальный бинарь + TCP + логин. Каждый
++// тест заводит своего клиента и фильтрует по client_id — чужие заказы suite не мешают.
++
++type pgCardDTO struct {
++	ID          int64  `json:"id"`
++	ColumnID    string `json:"column_id"`
++	Title       string `json:"title"`
++	ColumnTotal *int   `json:"column_total"` // указатель — проверяем, что ключ присутствует
++}
++
++type pgListDTO struct {
++	Items  []pgCardDTO `json:"items"`
++	Total  int         `json:"total"`
++	Limit  int         `json:"limit"`
++	Offset int         `json:"offset"`
++}
++
++func (s *BoardLiveSuite) pgList(query url.Values) pgListDTO {
++	st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks?"+query.Encode(), nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var l pgListDTO
++	s.Require().NoError(json.Unmarshal(raw, &l), string(raw))
++	return l
++}
++
++// pgTasks — n заказов клиента в колонке, в порядке создания (новый заказ — в конец
++// колонки, т.е. порядок position,id = порядок создания).
++func (s *BoardLiveSuite) pgTasks(clientID, columnID, prefix string, n int) []int64 {
++	ids := make([]int64, 0, n)
++	for i := 0; i < n; i++ {
++		st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
++			"title": fmt.Sprintf("%s %d", prefix, i+1), "client_id": clientID, "column_id": columnID,
++		})
++		s.Require().Equal(http.StatusCreated, st, string(raw))
++		ids = append(ids, m.Task.ID)
++	}
++	return ids
++}
++
++// TS-002: per_column=2 на колонке с 5 заказами → 2 карточки этой колонки, column_total=5
++// у каждой; total — все подходящие под фильтр (без окна per_column).
++func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_PerColumnWindow_TS002() {
++	c := s.newClient("Клиент-TS-002")
++	colA := s.columnID("Новые")
++	colB := s.columnID("Согласование")
++	idsA := s.pgTasks(c, colA, "TS-002 A", 5)
++	idsB := s.pgTasks(c, colB, "TS-002 B", 1)
++
++	l := s.pgList(url.Values{"client_id": {c}, "per_column": {"2"}, "limit": {"1000"}})
++	s.Equal(6, l.Total, "total — без окна per_column")
++	s.Equal(1000, l.Limit)
++
++	var gotA, gotB []int64
++	for _, it := range l.Items {
++		s.Require().NotNil(it.ColumnTotal, "column_total всегда присутствует")
++		switch it.ColumnID {
++		case colA:
++			gotA = append(gotA, it.ID)
++			s.Equal(5, *it.ColumnTotal)
++		case colB:
++			gotB = append(gotB, it.ID)
++			s.Equal(1, *it.ColumnTotal)
++		}
++	}
++	s.Equal(idsA[:2], gotA, "первые 2 по position,id")
++	s.Equal(idsB, gotB)
++	s.Len(l.Items, 3)
++
++	// без per_column — прежний контракт: все карточки, column_total тоже заполнен.
++	l = s.pgList(url.Values{"client_id": {c}})
++	s.Equal(6, l.Total)
++	s.Len(l.Items, 6)
++	for _, it := range l.Items {
++		s.Require().NotNil(it.ColumnTotal)
++	}
++}
++
++// TS-003: column_id=X&limit=2&offset=2 → карточки 3–4 колонки X в порядке position,id;
++// total=5 (с учётом column_id).
++func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_ColumnIDLimitOffset_TS003() {
++	c := s.newClient("Клиент-TS-003")
++	colA := s.columnID("Новые")
++	ids := s.pgTasks(c, colA, "TS-003", 5)
++	s.pgTasks(c, s.columnID("Согласование"), "TS-003 other", 2)
++
++	l := s.pgList(url.Values{"client_id": {c}, "column_id": {colA}, "limit": {"2"}, "offset": {"2"}})
++	s.Equal(5, l.Total)
++	s.Equal(2, l.Offset)
++	s.Require().Len(l.Items, 2)
++	s.Equal(ids[2], l.Items[0].ID)
++	s.Equal(ids[3], l.Items[1].ID)
++	for _, it := range l.Items {
++		s.Equal(colA, it.ColumnID)
++		s.Require().NotNil(it.ColumnTotal)
++		s.Equal(5, *it.ColumnTotal)
++	}
++
++	// хвост: offset=4 → 1 карточка (последняя).
++	l = s.pgList(url.Values{"client_id": {c}, "column_id": {colA}, "limit": {"50"}, "offset": {"4"}})
++	s.Require().Len(l.Items, 1)
++	s.Equal(ids[4], l.Items[0].ID)
++
++	// невалидные параметры → 400 VALIDATION по своему полю (DS-002).
++	for q, field := range map[string]string{
++		"column_id=bad": "column_id", "per_column=0": "per_column", "per_column=1001": "per_column", "per_column=x": "per_column",
++	} {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks?"+q, nil)
++		s.Require().Equal(http.StatusBadRequest, st, "%s: %s", q, raw)
++		s.Equal("VALIDATION", s.errOf(raw).Code)
++		s.Contains(s.fields(raw), field, q)
++	}
++}
++
++// TS-004: фильтр q + per_column → column_total считается с учётом фильтра.
++func (s *BoardLiveSuite) TestBoardLiveSuite_Pagination_ColumnTotalRespectsFilter_TS004() {
++	c := s.newClient("Клиент-TS-004")
++	colA := s.columnID("Новые")
++	s.pgTasks(c, colA, "TS004match", 3)
++	s.pgTasks(c, colA, "TS004other", 4)
++
++	l := s.pgList(url.Values{"client_id": {c}, "q": {"TS004match"}, "per_column": {"1"}})
++	s.Equal(3, l.Total)
++	s.Require().Len(l.Items, 1)
++	s.Require().NotNil(l.Items[0].ColumnTotal)
++	s.Equal(3, *l.Items[0].ColumnTotal)
++	s.Contains(l.Items[0].Title, "TS004match")
++
++	l = s.pgList(url.Values{"client_id": {c}, "per_column": {"1"}})
++	s.Equal(7, l.Total)
++	s.Require().Len(l.Items, 1)
++	s.Equal(7, *l.Items[0].ColumnTotal)
++}
+diff --git a/internal/features/board/tasks_dto.go b/internal/features/board/tasks_dto.go
+index dc617f3..3ec11fc 100644
+--- a/internal/features/board/tasks_dto.go
++++ b/internal/features/board/tasks_dto.go
+@@ -30,6 +30,10 @@ type TaskCard struct {
+ 	// Одно имя итога и в GET /tasks, и в карточке (design-go-layers.md §DTO OrderCard).
+ 	TotalAmount numeric.Amount `json:"total_amount"`
+ 	LastLog     *TaskLastLog   `json:"last_log"` // null — записей журнала нет (AC-012)
++	// ColumnTotal — pagination DS-002: число заказов ЭТОЙ колонки, подходящих под фильтры
++	// (без учёта окна per_column и limit/offset). Всегда присутствует в GET /tasks; в
++	// GET /tasks/:id и mutation-ответах — 0 (не вычисляется, клиент его там не читает).
++	ColumnTotal int `json:"column_total"`
+ }
+ 
+ // TaskLastLog — последняя запись журнала работ ЛЮБОЙ услуги заказа (карточка доски, AC-012).
+@@ -42,6 +46,12 @@ type TaskLastLog struct {
+ // TaskListResponse — гарантия порядка items (контракт): columns.position, columns.id,
+ // tasks.position, tasks.id — по колонкам слева направо, внутри колонки сверху вниз;
+ // стабилен между запросами. Дефолты: limit=500 (1..1000), offset=0.
++//
++// pagination DS-002 (аддитивно): query column_id (uuid) — только эта колонка; per_column
++// (1..1000) — не более N первых (tasks.position, tasks.id) карточек каждой колонки, limit/
++// offset применяются ПОСЛЕ окна. Total — число заказов под фильтрами (с column_id, без окна
++// per_column); на странице за пределами выдачи (offset ≥ числа строк) items пуст и total=0
++// (count(*) OVER () — прежнее поведение). Счётчик по колонке — TaskCard.ColumnTotal.
+ type TaskListResponse struct {
+ 	Items  []TaskCard `json:"items"`
+ 	Total  int        `json:"total"`
+diff --git a/internal/features/board/tasks_filter.go b/internal/features/board/tasks_filter.go
+index 6a32177..0e40219 100644
+--- a/internal/features/board/tasks_filter.go
++++ b/internal/features/board/tasks_filter.go
+@@ -17,6 +17,8 @@ const (
+ 	tasksDefaultLimit = 500
+ 	tasksMaxLimit     = 1000
+ 	taskFilterQMax    = 100
++	// tasksPerColumnMax — верхняя граница окна per_column (pagination DS-002: 1..1000).
++	tasksPerColumnMax = 1000
+ )
+ 
+ // taskNoRe — design-sql.md §Board List Query: `q` трактуется как номер заказа `#N`/`N`.
+@@ -32,8 +34,13 @@ type TaskFilter struct {
+ 	Paid       *bool
+ 	AssigneeID *string
+ 	Due        string
+-	Limit      int
+-	Offset     int
++	// ColumnID — фильтр по колонке (pagination DS-002, догрузка «Показать ещё» DS-001).
++	ColumnID *string
++	// PerColumn — окно «не более N первых (t.position, t.id) карточек на колонку»
++	// (pagination DS-002); nil — без окна. limit/offset применяются ПОСЛЕ окна.
++	PerColumn *int
++	Limit     int
++	Offset    int
+ }
+ 
+ // ParseTaskFilter — разбор и валидация query GET /tasks (design-sql.md §Board List Query,
+@@ -118,6 +125,23 @@ func ParseTaskFilter(c fiber.Ctx, a Actor) (TaskFilter, error) {
+ 		add("due")
+ 	}
+ 
++	// pagination DS-002: column_id/per_column — аддитивные опциональные параметры.
++	if raw := strings.TrimSpace(c.Query("column_id")); raw != "" {
++		if uuid.Validate(raw) != nil {
++			add("column_id")
++		} else {
++			f.ColumnID = &raw
++		}
++	}
++	if raw := c.Query("per_column"); raw != "" {
++		n, err := strconv.Atoi(raw)
++		if err != nil || n < 1 || n > tasksPerColumnMax {
++			add("per_column")
++		} else {
++			f.PerColumn = &n
++		}
++	}
++
+ 	f.Limit = tasksDefaultLimit
+ 	if raw := c.Query("limit"); raw != "" {
+ 		n, err := strconv.Atoi(raw)
+diff --git a/internal/features/board/tasks_filter_test.go b/internal/features/board/tasks_filter_test.go
+index d6433a2..bdee84e 100644
+--- a/internal/features/board/tasks_filter_test.go
++++ b/internal/features/board/tasks_filter_test.go
+@@ -1,11 +1,14 @@
+ package board
+ 
+ import (
++	"errors"
+ 	"net/http/httptest"
+ 	"testing"
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 	"github.com/stretchr/testify/require"
++
++	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
+ )
+ 
+ // parseFilter — ParseTaskFilter(c fiber.Ctx, a Actor) требует реальный fiber.Ctx; здесь он
+@@ -98,3 +101,47 @@ func TestParseTaskFilter_EnumValidation(t *testing.T) {
+ 	require.NotNil(t, f.AssigneeID)
+ 	require.Equal(t, validUUID, *f.AssigneeID)
+ }
++
++// TestParseTaskFilter_ColumnAndPerColumn — TS-001 (pagination DS-002): column_id невалидный
++// → VALIDATION по полю column_id; per_column 0/1001/abc → по полю per_column; валидные
++// значения попадают в фильтр, отсутствующие — nil (без окна / без фильтра по колонке).
++func TestParseTaskFilter_ColumnAndPerColumn(t *testing.T) {
++	cases := map[string]string{
++		"column_id=not-a-uuid": "column_id",
++		"per_column=0":         "per_column",
++		"per_column=1001":      "per_column",
++		"per_column=abc":       "per_column",
++		"per_column=-3":        "per_column",
++	}
++	for q, field := range cases {
++		_, err := parseFilter(t, q, admin)
++		require.Error(t, err, "q=%s", q)
++		var ae *errorspkg.AppError
++		require.True(t, errors.As(err, &ae), "q=%s", q)
++		require.Equal(t, "VALIDATION", ae.Code, "q=%s", q)
++		names := make([]string, 0, len(ae.Fields))
++		for _, fl := range ae.Fields {
++			names = append(names, fl.Name)
++		}
++		require.Equal(t, []string{field}, names, "q=%s", q)
++	}
++
++	f, err := parseFilter(t, "", admin)
++	require.NoError(t, err)
++	require.Nil(t, f.ColumnID)
++	require.Nil(t, f.PerColumn)
++
++	f, err = parseFilter(t, "column_id="+validUUID+"&per_column=50&limit=1000", admin)
++	require.NoError(t, err)
++	require.NotNil(t, f.ColumnID)
++	require.Equal(t, validUUID, *f.ColumnID)
++	require.NotNil(t, f.PerColumn)
++	require.Equal(t, 50, *f.PerColumn)
++	require.Equal(t, 1000, f.Limit)
++
++	for _, n := range []string{"1", "1000"} {
++		f, err = parseFilter(t, "per_column="+n, admin)
++		require.NoError(t, err, "per_column=%s", n)
++		require.NotNil(t, f.PerColumn)
++	}
++}
+diff --git a/internal/features/board/tasks_repo.go b/internal/features/board/tasks_repo.go
+index c016554..35e32d8 100644
+--- a/internal/features/board/tasks_repo.go
++++ b/internal/features/board/tasks_repo.go
+@@ -288,7 +288,43 @@ func (r *TaskRepo) Get(ctx context.Context, id int64) (*Task, error) {
+ 
+ // boardListSQL — design-sql.md §Board List Query, `due_date`/`position` приведены к text
+ // (TaskCard.DueDate/Position — *string/string, не time.Time/Amount).
++//
++// pagination DS-002: фильтры считаются в CTE base по «лёгким» колонкам; там же окна
++// row_number()/count(*) по колонке (column_total) и count(*) OVER () (total — без окна
++// per_column, но с column_id). Тяжёлые скаляры (подзадачи, итог, последний лог) — только
++// для строк, прошедших окно $11 и LIMIT/OFFSET. Порядок items — прежний контракт.
+ const boardListSQL = `
++WITH base AS (
++  SELECT t.id,
++         row_number() OVER (PARTITION BY t.column_id ORDER BY t.position, t.id) AS rn,
++         count(*) OVER (PARTITION BY t.column_id)                               AS column_total,
++         count(*) OVER ()                                                       AS total
++  FROM tasks t
++  JOIN columns c  ON c.id = t.column_id
++  JOIN clients cl ON cl.id = t.client_id
++  WHERE ($1::uuid IS NULL OR t.client_id = $1)
++    AND ($2::text IS NULL OR t.title ILIKE '%' || $2 || '%' ESCAPE '\' OR cl.company_name ILIKE '%' || $2 || '%' ESCAPE '\'
++         OR t.id = $3::bigint)
++    AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM subtasks s JOIN services sv ON sv.id = s.service_id
++                                     WHERE s.task_id = t.id AND sv.category_id = $4))
++    AND ($5::boolean IS NULL OR t.is_paid = $5)
++    AND ($6::uuid IS NULL OR t.assignee_id = $6
++         OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.assignee_id = $6))
++    AND ($7::text IS NULL OR (NOT c.is_final AND (
++           ($7 = 'overdue' AND t.due_date < current_date)
++        OR ($7 = 'soon'    AND t.due_date <= current_date + 1)
++        OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
++                   AND s.due_date < current_date))))
++    AND ($10::uuid IS NULL OR t.column_id = $10)
++), page AS (
++  SELECT b.id, b.column_total, b.total
++  FROM base b
++  JOIN tasks t   ON t.id = b.id
++  JOIN columns c ON c.id = t.column_id
++  WHERE ($11::int IS NULL OR b.rn <= $11)
++  ORDER BY c.position, c.id, t.position, t.id
++  LIMIT $8 OFFSET $9
++)
+ SELECT t.id, t.column_id, t.client_id, cl.company_name, t.title, t.assignee_id, u.name,
+        t.due_date::text, t.is_paid, t.position::text, t.version,
+        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id)                       AS subtasks_total,
+@@ -297,27 +333,14 @@ SELECT t.id, t.column_id, t.client_id, cl.company_name, t.title, t.assignee_id,
+                                            AND s.due_date < current_date)             AS subtasks_late,
+        ` + totalAmountSelectSQL + ` AS total_amount,
+        ll.text, ll.cut, ll.author_name, ll.created_at,
+-       count(*) OVER () AS total
+-FROM tasks t
++       p.column_total, p.total
++FROM page p
++JOIN tasks t    ON t.id = p.id
+ JOIN columns c  ON c.id = t.column_id
+ JOIN clients cl ON cl.id = t.client_id
+ LEFT JOIN users u ON u.id = t.assignee_id
+ ` + lastLogJoinSQL + `
+-WHERE ($1::uuid IS NULL OR t.client_id = $1)
+-  AND ($2::text IS NULL OR t.title ILIKE '%' || $2 || '%' ESCAPE '\' OR cl.company_name ILIKE '%' || $2 || '%' ESCAPE '\'
+-       OR t.id = $3::bigint)
+-  AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM subtasks s JOIN services sv ON sv.id = s.service_id
+-                                   WHERE s.task_id = t.id AND sv.category_id = $4))
+-  AND ($5::boolean IS NULL OR t.is_paid = $5)
+-  AND ($6::uuid IS NULL OR t.assignee_id = $6
+-       OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.assignee_id = $6))
+-  AND ($7::text IS NULL OR (NOT c.is_final AND (
+-         ($7 = 'overdue' AND t.due_date < current_date)
+-      OR ($7 = 'soon'    AND t.due_date <= current_date + 1)
+-      OR EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
+-                 AND s.due_date < current_date))))
+-ORDER BY c.position, c.id, t.position, t.id
+-LIMIT $8 OFFSET $9`
++ORDER BY c.position, c.id, t.position, t.id`
+ 
+ // List — design-sql.md §Board List Query. Q-3 передаётся вызывающей стороной уже
+ // экранированным (pkg/sqlutil.EscapeLike, tasks_filter.go).
+@@ -331,7 +354,8 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
+ 	}
+ 
+ 	rows, err := r.pool.Query(ctx, boardListSQL,
+-		f.ClientID, q, f.TaskNo, f.CategoryID, f.Paid, f.AssigneeID, due, f.Limit, f.Offset)
++		f.ClientID, q, f.TaskNo, f.CategoryID, f.Paid, f.AssigneeID, due, f.Limit, f.Offset,
++		f.ColumnID, f.PerColumn)
+ 	if err != nil {
+ 		return nil, 0, err
+ 	}
+@@ -347,7 +371,7 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
+ 		var llCreatedAt sql.NullTime
+ 		if err := rows.Scan(&c.ID, &c.ColumnID, &c.ClientID, &c.ClientName, &c.Title, &c.AssigneeID, &c.AssigneeName,
+ 			&c.DueDate, &c.IsPaid, &c.Position, &c.Version, &c.SubtasksTotal, &c.SubtasksDone, &c.SubtasksLate,
+-			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &total); err != nil {
++			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &c.ColumnTotal, &total); err != nil {
+ 			return nil, 0, err
+ 		}
+ 		c.TotalAmount = numeric.Amount(totalAmount)
+diff --git a/internal/features/catalog/pagination_http_live_test.go b/internal/features/catalog/pagination_http_live_test.go
+new file mode 100644
+index 0000000..db3bad6
+--- /dev/null
++++ b/internal/features/catalog/pagination_http_live_test.go
+@@ -0,0 +1,152 @@
++//go:build integration
++
++package catalog_test
++
++import (
++	"context"
++	"html"
++	"net/http"
++	"net/url"
++	"regexp"
++	"strconv"
++	"strings"
++)
++
++// ---- pagination DS-005/DS-006: SSR-пейджер /catalog/products и /catalog/services ----
++// Методы CatalogLiveSuite (§TD-8: реальный бинарь + TCP + логин). Позиции — своей
++// категории (генерация SQL одним INSERT … generate_series — через API 150 POST'ов дольше
++// без пользы для сценария); выдача фильтруется по category — чужие данные suite не мешают.
++
++var (
++	pgPrevRe  = regexp.MustCompile(`href="([^"]*)" rel="prev" data-testid="catalog-prev"`)
++	pgNextRe  = regexp.MustCompile(`href="([^"]*)" rel="next" data-testid="catalog-next"`)
++	pgShownRe = regexp.MustCompile(`data-testid="catalog-shown">([^<]*)<`)
++	pgRowRe   = regexp.MustCompile(`data-testid="(?:product|service)-row" data-name="([^"]*)"`)
++)
++
++// pgSeed — n позиций kind ('product'|'service') в новой категории; имена «<prefix> 001…».
++func (s *CatalogLiveSuite) pgSeed(kind, prefix string, n int) string {
++	ctx := context.Background()
++	var catID string
++	s.Require().NoError(s.Pool.QueryRow(ctx,
++		`INSERT INTO catalog_categories (kind, name) VALUES ($1, $2 || ' ' || gen_random_uuid()) RETURNING id`,
++		kind, prefix).Scan(&catID))
++	table := "products"
++	if kind == "service" {
++		table = "services"
++	}
++	_, err := s.Pool.Exec(ctx, `INSERT INTO `+table+` (category_id, name)
++		SELECT $1::uuid, $2 || ' ' || lpad(g::text, 3, '0') FROM generate_series(1, $3::int) g`, catID, prefix, n)
++	s.Require().NoError(err)
++	return catID
++}
++
++func (s *CatalogLiveSuite) pgPage(path string) string {
++	st, raw := s.admin.Do(http.MethodGet, path, nil)
++	s.Require().Equal(http.StatusOK, st, path)
++	return string(raw)
++}
++
++func pgHref(re *regexp.Regexp, page string) (*url.URL, bool) {
++	m := re.FindStringSubmatch(page)
++	if m == nil {
++		return nil, false
++	}
++	u, err := url.Parse(html.UnescapeString(m[1]))
++	if err != nil {
++		return nil, false
++	}
++	return u, true
++}
++
++func pgRows(page string) []string {
++	var out []string
++	for _, m := range pgRowRe.FindAllStringSubmatch(page, -1) {
++		out = append(out, html.UnescapeString(m[1]))
++	}
++	return out
++}
++
++// TS-005: /catalog/products?offset=100 при >100 товарах → 200, пейджер «Показаны 101–…»,
++// ссылка назад; offset=-5/abc → как 0.
++func (s *CatalogLiveSuite) TestCatalogLiveSuite_SSRProductsPager_TS005() {
++	cat := s.pgSeed("product", "TS005 Товар", 150)
++	base := "/catalog/products?category=" + cat
++
++	first := s.pgPage(base)
++	s.Contains(first, `data-testid="catalog-pager"`)
++	s.Equal("Показаны 1–100 из 150", pgShownRe.FindStringSubmatch(first)[1])
++	rows := pgRows(first)
++	s.Require().Len(rows, 100)
++	s.Equal("TS005 Товар 001", rows[0])
++	_, hasPrev := pgHref(pgPrevRe, first)
++	s.False(hasPrev, "на первой странице «Назад» неактивна")
++	next, ok := pgHref(pgNextRe, first)
++	s.Require().True(ok)
++	s.Equal("100", next.Query().Get("offset"))
++	s.Equal(cat, next.Query().Get("category"))
++	s.NotContains(first, `data-testid="categories-truncated"`, "DS-006: категорий меньше лимита — пометки нет")
++
++	second := s.pgPage(base + "&offset=100")
++	s.Contains(second, "Показаны 101–150 из 150")
++	rows = pgRows(second)
++	s.Require().Len(rows, 50)
++	s.Equal("TS005 Товар 101", rows[0])
++	prev, ok := pgHref(pgPrevRe, second)
++	s.Require().True(ok, "ссылка назад")
++	s.Equal("", prev.Query().Get("offset"), "назад на первую страницу — без offset")
++	_, hasNext := pgHref(pgNextRe, second)
++	s.False(hasNext)
++
++	for _, bad := range []string{"-5", "abc"} {
++		p := s.pgPage(base + "&offset=" + url.QueryEscape(bad))
++		s.Contains(p, "Показаны 1–100 из 150", "offset=%s → как 0", bad)
++	}
++
++	// за пределами total → пустая таблица + «Назад» (не 404).
++	beyond := s.pgPage(base + "&offset=1000")
++	s.Empty(pgRows(beyond))
++	back, ok := pgHref(pgPrevRe, beyond)
++	s.Require().True(ok)
++	s.Equal("100", back.Query().Get("offset"), "назад — на последнюю непустую страницу")
++}
++
++// TS-006: /catalog/services?offset=… — то же для услуг, фильтры q/category/archived
++// сохраняются в ссылках пейджера.
++func (s *CatalogLiveSuite) TestCatalogLiveSuite_SSRServicesPager_TS006() {
++	cat := s.pgSeed("service", "TS006 Услуга", 230)
++	q := "TS006 Услуга"
++	base := "/catalog/services?category=" + cat + "&archived=1&q=" + url.QueryEscape(q)
++
++	first := s.pgPage(base)
++	s.Contains(first, "Показаны 1–100 из 230")
++	s.Len(pgRows(first), 100)
++	next, ok := pgHref(pgNextRe, first)
++	s.Require().True(ok)
++	s.Equal("/catalog/services", next.Path)
++	s.Equal("100", next.Query().Get("offset"))
++	s.Equal(cat, next.Query().Get("category"))
++	s.Equal("1", next.Query().Get("archived"))
++	s.Equal(q, next.Query().Get("q"))
++
++	lastURL := *next
++	v := lastURL.Query()
++	v.Set("offset", "200")
++	lastURL.RawQuery = v.Encode()
++	page := s.pgPage(lastURL.String())
++	s.Contains(page, "Показаны 201–230 из 230")
++	rows := pgRows(page)
++	s.Require().Len(rows, 30)
++	s.True(strings.HasPrefix(rows[0], "TS006 Услуга 201"), rows[0])
++	prev, ok := pgHref(pgPrevRe, page)
++	s.Require().True(ok)
++	s.Equal("100", prev.Query().Get("offset"))
++	s.Equal(cat, prev.Query().Get("category"))
++	s.Equal("1", prev.Query().Get("archived"))
++	s.Equal(q, prev.Query().Get("q"))
++
++	// некратный offset округляется вниз до начала страницы.
++	v.Set("offset", strconv.Itoa(150))
++	lastURL.RawQuery = v.Encode()
++	s.Contains(s.pgPage(lastURL.String()), "Показаны 101–200 из 230")
++}
+diff --git a/internal/features/catalog/ssr_categories.go b/internal/features/catalog/ssr_categories.go
+index e2d6107..251a36c 100644
+--- a/internal/features/catalog/ssr_categories.go
++++ b/internal/features/catalog/ssr_categories.go
+@@ -25,12 +25,13 @@ func redirectTab(kind string) string {
+ 
+ // listCategoryPanel — категории вида kind (активные и архивные — панель управления
+ // показывает все, «Показать архивные» списка товаров/услуг на панель не влияет).
+-func (h *ssrCategories) list(c fiber.Ctx, kind string) ([]CategoryResponse, error) {
++// pagination DS-006: lookup с лимитом defaultLimit, TruncVM — для пометки «показаны N из M».
++func (h *ssrCategories) list(c fiber.Ctx, kind string) ([]CategoryResponse, TruncVM, error) {
+ 	resp, err := h.svc.List(c.Context(), CategoryListQuery{Kind: kind, IncludeArchived: true, Limit: defaultLimit}, true)
+ 	if err != nil {
+-		return nil, err
++		return nil, TruncVM{}, err
+ 	}
+-	return resp.Items, nil
++	return resp.Items, TruncVM{Shown: len(resp.Items), Total: resp.Total}, nil
+ }
+ 
+ // createCategory — POST /catalog/categories.
+diff --git a/internal/features/catalog/ssr_pager.go b/internal/features/catalog/ssr_pager.go
+new file mode 100644
+index 0000000..bcb7604
+--- /dev/null
++++ b/internal/features/catalog/ssr_pager.go
+@@ -0,0 +1,85 @@
++package catalog
++
++import (
++	"net/url"
++	"strconv"
++)
++
++// ssrPageSize — pagination DS-005: SSR-списки товаров и услуг выдаются страницами по 100
++// позиций (параметр URL `offset`, не `page` — §API-1). Лимиты API (defaultLimit/maxLimit)
++// не меняются (DS-008).
++const ssrPageSize = 100
++
++// PagerVM — пейджер-partial «catalogPager» (web/ssr/catalog/templates/partials/
++// catalog-pager.html): «Показаны 101–200 из 2345» + ссылки «‹ Назад»/«Вперёд ›».
++type PagerVM struct {
++	Show    bool // пейджер нужен: позиций больше одной страницы или открыта не первая
++	From    int  // 1-based номер первой строки страницы (0 — строк нет)
++	To      int
++	Total   int
++	PrevURL string // "" — ссылки нет
++	NextURL string
++}
++
++// parseSSROffset — pagination DS-005: offset кратен ssrPageSize; невалидный/отрицательный
++// → 0, некратный округляется вниз до начала страницы.
++func parseSSROffset(raw string) int {
++	n, err := strconv.Atoi(raw)
++	if err != nil || n < 0 {
++		return 0
++	}
++	return n - n%ssrPageSize
++}
++
++// buildPager — ссылки пейджера сохраняют фильтры q/category/archived (DS-005); смена
++// фильтра/поиска идёт через форму/ссылки без offset — сброс на первую страницу. offset за
++// пределами total → пустая страница, «Назад» ведёт на последнюю непустую (не 404).
++func buildPager(path, q, category string, archived bool, offset, shown, total int) PagerVM {
++	p := PagerVM{Total: total, Show: total > ssrPageSize || offset > 0}
++	if shown > 0 {
++		p.From, p.To = offset+1, offset+shown
++	}
++	link := func(off int) string {
++		v := url.Values{}
++		if q != "" {
++			v.Set("q", q)
++		}
++		if category != "" {
++			v.Set("category", category)
++		}
++		if archived {
++			v.Set("archived", "1")
++		}
++		if off > 0 {
++			v.Set("offset", strconv.Itoa(off))
++		}
++		if len(v) == 0 {
++			return path
++		}
++		return path + "?" + v.Encode()
++	}
++	if offset > 0 {
++		prev := offset - ssrPageSize
++		if offset >= total { // за пределами выдачи — назад на последнюю непустую страницу
++			prev = 0
++			if total > 0 {
++				prev = (total - 1) / ssrPageSize * ssrPageSize
++			}
++		}
++		p.PrevURL = link(max(prev, 0))
++	}
++	if offset+shown < total && shown > 0 {
++		p.NextURL = link(offset + ssrPageSize)
++	}
++	return p
++}
++
++// TruncVM — pagination DS-006: категории — lookup с лимитом defaultLimit; при total >
++// len(items) шаблон рендерит пометку «показаны N из M» (data-testid="categories-truncated").
++type TruncVM struct {
++	Shown int
++	Total int
++}
++
++// Truncated — есть ли что показать в пометке.
++func (t TruncVM) Truncated() bool { return t.Total > t.Shown }
+diff --git a/internal/features/catalog/ssr_pager_test.go b/internal/features/catalog/ssr_pager_test.go
+new file mode 100644
+index 0000000..05e2614
+--- /dev/null
++++ b/internal/features/catalog/ssr_pager_test.go
+@@ -0,0 +1,47 @@
++package catalog
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++// TestParseSSROffset — pagination DS-005 (к TS-005/TS-006): невалидный/отрицательный → 0,
++// некратный 100 — вниз до начала страницы.
++func TestParseSSROffset(t *testing.T) {
++	cases := map[string]int{"": 0, "abc": 0, "-5": 0, "0": 0, "100": 100, "150": 100, "2300": 2300, "99": 0}
++	for raw, want := range cases {
++		require.Equal(t, want, parseSSROffset(raw), "raw=%q", raw)
++	}
++}
++
++// TestBuildPager — pagination DS-005: подпись «Показаны 101–200 из 2345», ссылки сохраняют
++// q/category/archived; за пределами total — «Назад» на последнюю непустую страницу.
++func TestBuildPager(t *testing.T) {
++	p := buildPager("/catalog/products", "болт", "c1", true, 100, 100, 2345)
++	require.True(t, p.Show)
++	require.Equal(t, 101, p.From)
++	require.Equal(t, 200, p.To)
++	require.Equal(t, "/catalog/products?archived=1&category=c1&q=%D0%B1%D0%BE%D0%BB%D1%82", p.PrevURL)
++	require.Equal(t, "/catalog/products?archived=1&category=c1&offset=200&q=%D0%B1%D0%BE%D0%BB%D1%82", p.NextURL)
++
++	p = buildPager("/catalog/products", "", "", false, 0, 50, 50)
++	require.False(t, p.Show, "одна страница — пейджер не нужен")
++	require.Empty(t, p.PrevURL)
++	require.Empty(t, p.NextURL)
++
++	p = buildPager("/catalog/services", "", "", false, 2300, 45, 2345)
++	require.Equal(t, 2301, p.From)
++	require.Equal(t, 2345, p.To)
++	require.Empty(t, p.NextURL)
++	require.Equal(t, "/catalog/services?offset=2200", p.PrevURL)
++
++	p = buildPager("/catalog/services", "", "", false, 5000, 0, 250)
++	require.True(t, p.Show)
++	require.Zero(t, p.From)
++	require.Empty(t, p.NextURL)
++	require.Equal(t, "/catalog/services?offset=200", p.PrevURL)
++
++	p = buildPager("/catalog/services", "", "", false, 100, 0, 0)
++	require.Equal(t, "/catalog/services", p.PrevURL)
++}
+diff --git a/internal/features/catalog/ssr_products.go b/internal/features/catalog/ssr_products.go
+index 5f04d73..314abe9 100644
+--- a/internal/features/catalog/ssr_products.go
++++ b/internal/features/catalog/ssr_products.go
+@@ -21,8 +21,10 @@ type ProductsListVM struct {
+ 	Flash          string
+ 	CatError       string
+ 	Categories     []CategoryResponse
++	CatTrunc       TruncVM // pagination DS-006: пометка «показаны N из M» в панели категорий
+ 	Items          []ProductResponse
+ 	Total          int
++	Pager          PagerVM // pagination DS-005: страница по ssrPageSize позиций
+ }
+ 
+ // ProductFormVM — /catalog/products/new и /catalog/products/:id.
+@@ -43,6 +45,7 @@ type ProductFormVM struct {
+ 	IsActive   bool
+ 	Units      []string
+ 	Categories []CategoryResponse
++	CatTrunc   TruncVM // pagination DS-006: пометка «показаны N из M» под select категории
+ 	Errors     map[string]string
+ 	Error      string
+ }
+@@ -65,19 +68,21 @@ func (h *SSR) productsList(c fiber.Ctx) error {
+ 	vm := ProductsListVM{Q: c.Query("q"), ActiveCategory: c.Query("category"), Flash: flashes[c.Query("flash")], CatError: catErrorText(c.Query("cat_error"))}
+ 	vm.Archived, _ = strconv.ParseBool(c.Query("archived"))
+ 
+-	cats, err := h.cat.list(c, KindProduct)
++	cats, trunc, err := h.cat.list(c, KindProduct)
+ 	if err != nil {
+ 		return err
+ 	}
+-	vm.Categories = cats
++	vm.Categories, vm.CatTrunc = cats, trunc
++	offset := parseSSROffset(c.Query("offset")) // pagination DS-005
+ 
+ 	resp, err := h.prodSvc.List(c.Context(), ProductListQuery{
+-		CategoryID: vm.ActiveCategory, Q: vm.Q, IncludeArchived: vm.Archived, Limit: defaultLimit,
++		CategoryID: vm.ActiveCategory, Q: vm.Q, IncludeArchived: vm.Archived, Limit: ssrPageSize, Offset: offset,
+ 	}, true)
+ 	if err != nil {
+ 		return err
+ 	}
+ 	vm.Items, vm.Total = resp.Items, resp.Total
++	vm.Pager = buildPager("/catalog/products", vm.Q, vm.ActiveCategory, vm.Archived, offset, len(resp.Items), resp.Total)
+ 	vm.Shell = h.shell.Build(c, "Каталог: товары")
+ 	vm.Tabs = h.tabs(c, "products")
+ 	return h.r.Page(c, "products-list", vm)
+@@ -86,33 +91,36 @@ func (h *SSR) productsList(c fiber.Ctx) error {
+ // productCategoryOptions — активные категории вида product + текущая категория товара,
+ // даже если она в архиве (иначе выбор при редактировании теряется, task.md: «архивный
+ // товар/категория не предлагается ПРИ ДОБАВЛЕНИИ», но уже выбранная должна остаться видна).
+-func (h *SSR) productCategoryOptions(c fiber.Ctx, currentID string) ([]CategoryResponse, error) {
++//
++// pagination DS-006: TruncVM — активных категорий больше defaultLimit → пометка под select.
++func (h *SSR) productCategoryOptions(c fiber.Ctx, currentID string) ([]CategoryResponse, TruncVM, error) {
+ 	resp, err := h.catSvc.List(c.Context(), CategoryListQuery{Kind: KindProduct, IncludeArchived: false, Limit: defaultLimit}, true)
+ 	if err != nil {
+-		return nil, err
++		return nil, TruncVM{}, err
+ 	}
+ 	opts := resp.Items
++	trunc := TruncVM{Shown: len(resp.Items), Total: resp.Total}
+ 	if currentID == "" {
+-		return opts, nil
++		return opts, trunc, nil
+ 	}
+ 	for _, o := range opts {
+ 		if o.ID == currentID {
+-			return opts, nil
++			return opts, trunc, nil
+ 		}
+ 	}
+ 	cur, err := h.catSvc.Get(c.Context(), currentID)
+ 	if err != nil {
+-		return opts, nil //nolint:nilerr // категория могла быть удалена — форма просто не покажет её
++		return opts, trunc, nil //nolint:nilerr // категория могла быть удалена — форма просто не покажет её
+ 	}
+-	return append([]CategoryResponse{*cur}, opts...), nil
++	return append([]CategoryResponse{*cur}, opts...), trunc, nil
+ }
+ 
+ func (h *SSR) productFormNew(c fiber.Ctx) error {
+-	opts, err := h.productCategoryOptions(c, c.Query("category"))
++	opts, catTrunc, err := h.productCategoryOptions(c, c.Query("category"))
+ 	if err != nil {
+ 		return err
+ 	}
+-	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{IsNew: true, IsActive: true, CategoryID: c.Query("category"), Categories: opts})
++	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{IsNew: true, IsActive: true, CategoryID: c.Query("category"), Categories: opts, CatTrunc: catTrunc})
+ }
+ 
+ func productFormFrom(c fiber.Ctx) ProductFormVM {
+@@ -148,14 +156,14 @@ func (h *SSR) productFormEdit(c fiber.Ctx) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	opts, err := h.productCategoryOptions(c, p.CategoryID)
++	opts, catTrunc, err := h.productCategoryOptions(c, p.CategoryID)
+ 	if err != nil {
+ 		return err
+ 	}
+ 	return h.renderProductForm(c, fiber.StatusOK, ProductFormVM{
+ 		ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
+ 		Price: p.Price.String(), Stock: p.Stock.String(), MinStock: p.MinStock.String(),
+-		Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts,
++		Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts, CatTrunc: catTrunc,
+ 	})
+ }
+ 
+@@ -206,11 +214,11 @@ func (h *SSR) productRemove(c fiber.Ctx) error {
+ 		if gerr != nil {
+ 			return err
+ 		}
+-		opts, _ := h.productCategoryOptions(c, p.CategoryID)
++		opts, catTrunc, _ := h.productCategoryOptions(c, p.CategoryID)
+ 		vm := ProductFormVM{
+ 			ID: p.ID, CategoryID: p.CategoryID, Name: p.Name, SKU: p.SKU, Unit: p.Unit,
+ 			Price: p.Price.String(), Stock: p.Stock.String(), MinStock: p.MinStock.String(),
+-			Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts,
++			Box: p.Box, Place: p.Place, IsActive: p.IsActive, Categories: opts, CatTrunc: catTrunc,
+ 		}
+ 		return h.productFormError(c, vm, err)
+ 	}
+@@ -236,8 +244,8 @@ func (h *SSR) productFormError(c fiber.Ctx, vm ProductFormVM, err error) error {
+ 	if len(app.Fields) > 0 {
+ 		status = fiber.StatusUnprocessableEntity
+ 	}
+-	opts, _ := h.productCategoryOptions(c, vm.CategoryID)
+-	vm.Categories = opts
++	opts, catTrunc, _ := h.productCategoryOptions(c, vm.CategoryID)
++	vm.Categories, vm.CatTrunc = opts, catTrunc
+ 	return h.renderProductForm(c, status, vm)
+ }
+ 
+diff --git a/internal/features/catalog/ssr_services.go b/internal/features/catalog/ssr_services.go
+index ffcbe3b..e4ceb46 100644
+--- a/internal/features/catalog/ssr_services.go
++++ b/internal/features/catalog/ssr_services.go
+@@ -21,8 +21,10 @@ type ServicesListVM struct {
+ 	Flash          string
+ 	CatError       string
+ 	Categories     []CategoryResponse
++	CatTrunc       TruncVM // pagination DS-006: пометка «показаны N из M» в панели категорий
+ 	Items          []ServiceResponse
+ 	Total          int
++	Pager          PagerVM // pagination DS-005: страница по ssrPageSize позиций
+ }
+ 
+ // ServiceProductRowVM — строка комплекта в form-view (совпадает с ServiceProductInput,
+@@ -53,6 +55,7 @@ type ServiceFormVM struct {
+ 	IsActive       bool
+ 	Products       []ServiceProductRowVM
+ 	Categories     []CategoryResponse
++	CatTrunc       TruncVM // pagination DS-006: пометка «показаны N из M» под select категории
+ 	ProductOptions []ProductOptionVM
+ 	Errors         map[string]string
+ 	Error          string
+@@ -98,19 +101,21 @@ func (h *SSR) servicesList(c fiber.Ctx) error {
+ 	vm := ServicesListVM{Q: c.Query("q"), ActiveCategory: c.Query("category"), Flash: flashes[c.Query("flash")], CatError: catErrorText(c.Query("cat_error"))}
+ 	vm.Archived, _ = strconv.ParseBool(c.Query("archived"))
+ 
+-	cats, err := h.cat.list(c, KindService)
++	cats, trunc, err := h.cat.list(c, KindService)
+ 	if err != nil {
+ 		return err
+ 	}
+-	vm.Categories = cats
++	vm.Categories, vm.CatTrunc = cats, trunc
++	offset := parseSSROffset(c.Query("offset")) // pagination DS-005
+ 
+ 	resp, err := h.svcSvc.List(c.Context(), ServiceListQuery{
+-		CategoryID: vm.ActiveCategory, Q: vm.Q, IncludeArchived: vm.Archived, Limit: defaultLimit,
++		CategoryID: vm.ActiveCategory, Q: vm.Q, IncludeArchived: vm.Archived, Limit: ssrPageSize, Offset: offset,
+ 	}, true)
+ 	if err != nil {
+ 		return err
+ 	}
+ 	vm.Items, vm.Total = resp.Items, resp.Total
++	vm.Pager = buildPager("/catalog/services", vm.Q, vm.ActiveCategory, vm.Archived, offset, len(resp.Items), resp.Total)
+ 	vm.Shell = h.shell.Build(c, "Каталог: услуги")
+ 	vm.Tabs = h.tabs(c, "services")
+ 	return h.r.Page(c, "services-list", vm)
+@@ -118,25 +123,28 @@ func (h *SSR) servicesList(c fiber.Ctx) error {
+ 
+ // serviceCategoryOptions — активные категории вида service + текущая категория услуги,
+ // даже архивная (иначе выбор при редактировании теряется — эталон productCategoryOptions).
+-func (h *SSR) serviceCategoryOptions(c fiber.Ctx, currentID string) ([]CategoryResponse, error) {
++//
++// pagination DS-006: TruncVM — активных категорий больше defaultLimit → пометка под select.
++func (h *SSR) serviceCategoryOptions(c fiber.Ctx, currentID string) ([]CategoryResponse, TruncVM, error) {
+ 	resp, err := h.catSvc.List(c.Context(), CategoryListQuery{Kind: KindService, IncludeArchived: false, Limit: defaultLimit}, true)
+ 	if err != nil {
+-		return nil, err
++		return nil, TruncVM{}, err
+ 	}
+ 	opts := resp.Items
++	trunc := TruncVM{Shown: len(resp.Items), Total: resp.Total}
+ 	if currentID == "" {
+-		return opts, nil
++		return opts, trunc, nil
+ 	}
+ 	for _, o := range opts {
+ 		if o.ID == currentID {
+-			return opts, nil
++			return opts, trunc, nil
+ 		}
+ 	}
+ 	cur, err := h.catSvc.Get(c.Context(), currentID)
+ 	if err != nil {
+-		return opts, nil //nolint:nilerr // категория могла быть удалена — форма просто не покажет её
++		return opts, trunc, nil //nolint:nilerr // категория могла быть удалена — форма просто не покажет её
+ 	}
+-	return append([]CategoryResponse{*cur}, opts...), nil
++	return append([]CategoryResponse{*cur}, opts...), trunc, nil
+ }
+ 
+ // serviceProductOptions — активные товары (комбобокс строки комплекта не предлагает
+@@ -168,7 +176,7 @@ func (h *SSR) serviceProductOptions(c fiber.Ctx, existingIDs []string) ([]Produc
+ }
+ 
+ func (h *SSR) serviceFormNew(c fiber.Ctx) error {
+-	catOpts, err := h.serviceCategoryOptions(c, c.Query("category"))
++	catOpts, catTrunc, err := h.serviceCategoryOptions(c, c.Query("category"))
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -178,7 +186,7 @@ func (h *SSR) serviceFormNew(c fiber.Ctx) error {
+ 	}
+ 	return h.renderServiceForm(c, fiber.StatusOK, ServiceFormVM{
+ 		IsNew: true, IsActive: true, CategoryID: c.Query("category"),
+-		Categories: catOpts, ProductOptions: prodOpts, Products: []ServiceProductRowVM{{}},
++		Categories: catOpts, CatTrunc: catTrunc, ProductOptions: prodOpts, Products: []ServiceProductRowVM{{}},
+ 	})
+ }
+ 
+@@ -268,7 +276,7 @@ func (h *SSR) serviceFormEdit(c fiber.Ctx) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	catOpts, err := h.serviceCategoryOptions(c, sv.CategoryID)
++	catOpts, catTrunc, err := h.serviceCategoryOptions(c, sv.CategoryID)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -286,7 +294,7 @@ func (h *SSR) serviceFormEdit(c fiber.Ctx) error {
+ 	}
+ 	return h.renderServiceForm(c, fiber.StatusOK, ServiceFormVM{
+ 		ID: sv.ID, CategoryID: sv.CategoryID, Name: sv.Name, Price: price, IsActive: sv.IsActive,
+-		Products: serviceRowsFrom(sv), Categories: catOpts, ProductOptions: prodOpts,
++		Products: serviceRowsFrom(sv), Categories: catOpts, CatTrunc: catTrunc, ProductOptions: prodOpts,
+ 	})
+ }
+ 
+@@ -337,7 +345,7 @@ func (h *SSR) serviceRemove(c fiber.Ctx) error {
+ 		if gerr != nil {
+ 			return err
+ 		}
+-		catOpts, _ := h.serviceCategoryOptions(c, sv.CategoryID)
++		catOpts, catTrunc, _ := h.serviceCategoryOptions(c, sv.CategoryID)
+ 		ids := make([]string, len(sv.Products))
+ 		for i, p := range sv.Products {
+ 			ids[i] = p.ProductID
+@@ -349,7 +357,7 @@ func (h *SSR) serviceRemove(c fiber.Ctx) error {
+ 		}
+ 		vm := ServiceFormVM{
+ 			ID: sv.ID, CategoryID: sv.CategoryID, Name: sv.Name, Price: price, IsActive: sv.IsActive,
+-			Products: serviceRowsFrom(sv), Categories: catOpts, ProductOptions: prodOpts,
++			Products: serviceRowsFrom(sv), Categories: catOpts, CatTrunc: catTrunc, ProductOptions: prodOpts,
+ 		}
+ 		return h.serviceFormError(c, vm, err)
+ 	}
+@@ -373,8 +381,8 @@ func (h *SSR) serviceFormError(c fiber.Ctx, vm ServiceFormVM, err error) error {
+ 	if len(app.Fields) > 0 {
+ 		status = fiber.StatusUnprocessableEntity
+ 	}
+-	catOpts, _ := h.serviceCategoryOptions(c, vm.CategoryID)
+-	vm.Categories = catOpts
++	catOpts, catTrunc, _ := h.serviceCategoryOptions(c, vm.CategoryID)
++	vm.Categories, vm.CatTrunc = catOpts, catTrunc
+ 	ids := make([]string, len(vm.Products))
+ 	for i, p := range vm.Products {
+ 		ids[i] = p.ProductID
