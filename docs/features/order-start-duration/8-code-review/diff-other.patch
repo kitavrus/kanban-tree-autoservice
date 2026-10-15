@@ -1,0 +1,1183 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 2eb0834..ec9c8df 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -22,6 +22,12 @@ export function testPlate(): string {
+   return p;
+ }
+ 
++// todayYmd — «сегодня» (YYYY-MM-DD) в поясе tz (по умолчанию Asia/Almaty — пояс seed-пользователей):
++// «Начать с» по умолчанию у заказов фикстур (order-start-duration).
++export function todayYmd(tz = 'Asia/Almaty'): string {
++  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
++}
++
+ export type Role = 'admin' | 'executor';
+ // timezone — часовой пояс IANA (user-timezone DS-031/DS-056): не передан при создании → Asia/Almaty,
+ // не передан при правке → не меняется (internal/features/users/dto.go, §TD-6.2).
+@@ -517,7 +523,13 @@ export class AdminApi {
+    *  ни plate_number, ни equipment_id, дописывается новый автомобиль клиента с уникальным
+    *  госномером из букв (цифры совпадали бы с поиском доски по номеру заказа). */
+   async createTask(t: import('./board-types').NewTask): Promise<import('./board-types').Task> {
+-    const data = t.plate_number || t.equipment_id ? t : { ...t, plate_number: testPlate(), new_equipment: {} };
++    const car = t.plate_number || t.equipment_id ? t : { ...t, plate_number: testPlate(), new_equipment: {} };
++    // order-start-duration: план работ обязателен — по умолчанию начало сегодня, 1 день.
++    const data = {
++      ...car,
++      start_date: t.start_date === undefined ? todayYmd() : t.start_date,
++      duration_days: t.duration_days === undefined ? 1 : t.duration_days,
++    };
+     const res = await this.ctx.post('/api/v1/tasks', { data, headers: await this.headers() });
+     expect(res.status(), `создание заказа ${t.title}: ${await res.text()}`).toBe(201);
+     const body: import('./board-types').TaskMutationResponse = await res.json();
+@@ -529,9 +541,19 @@ export class AdminApi {
+     return this.createTask({ ...t, plate_number: car.plate_number, equipment_id: car.id });
+   }
+ 
+-  /** Не проверяет статус — BD-010 (конфликт версии) ждёт 409, а не 200. */
++  /** Не проверяет статус — BD-010 (конфликт версии) ждёт 409, а не 200. PUT — полная замена
++   *  шапки: план работ, не заданный в t (undefined), берётся текущим из заказа. */
+   async updateTask(id: number, t: import('./board-types').UpdateTask): Promise<{ status: number; body: import('./board-types').TaskMutationResponse }> {
+-    const res = await this.ctx.put(`/api/v1/tasks/${id}`, { data: t, headers: await this.headers() });
++    let data = t;
++    if (t.start_date === undefined || t.duration_days === undefined) {
++      const cur = await this.getTask(id);
++      data = {
++        ...t,
++        start_date: t.start_date === undefined ? cur.start_date : t.start_date,
++        duration_days: t.duration_days === undefined ? cur.duration_days : t.duration_days,
++      };
++    }
++    const res = await this.ctx.put(`/api/v1/tasks/${id}`, { data, headers: await this.headers() });
+     return { status: res.status(), body: await res.json() };
+   }
+ 
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index d92d9a3..9290249 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -41,6 +41,10 @@ export type TaskCard = {
+   title: string;
+   assignee_id: string | null;
+   assignee_name: string | null;
++  // order-start-duration: план работ — начало (YYYY-MM-DD) и дней на работу (1..60);
++  // due_date — плановое окончание start_date + duration_days − 1 (вычисляет сервер).
++  start_date: string;
++  duration_days: number;
+   due_date: string | null;
+   is_paid: boolean;
+   position: string;
+@@ -63,12 +67,16 @@ export type Task = TaskCard & {
+   description_html: string;
+ };
+ 
+-/** Шапка заказа — общая часть POST и PUT /api/v1/tasks (board.TaskHeader). */
++/** Шапка заказа — общая часть POST и PUT /api/v1/tasks (board.TaskHeader). order-start-duration:
++ *  start_date/duration_days обязательны на сервере; adminApi.createTask/updateTask без них
++ *  подставляют план (новый заказ — сегодня, 1 день; правка — текущий план заказа). due_date во
++ *  входе не принимается (400). */
+ export type TaskHeader = {
+   title: string;
+   column_id: string;
+   assignee_id?: string | null;
+-  due_date?: string | null;
++  start_date?: string | null;
++  duration_days?: number | null;
+   is_paid?: boolean | null;
+   description?: string | null;
+ };
+diff --git a/e2e/pages/BoardPage.ts b/e2e/pages/BoardPage.ts
+index 180146d..53dae4b 100644
+--- a/e2e/pages/BoardPage.ts
++++ b/e2e/pages/BoardPage.ts
+@@ -25,7 +25,8 @@ export class BoardPage {
+   readonly taskClient: Locator;
+   readonly taskColumn: Locator;
+   readonly taskAssignee: Locator;
+-  readonly taskDue: Locator;
++  readonly taskStart: Locator;
++  readonly taskDuration: Locator;
+   readonly taskPaid: Locator;
+   readonly taskSave: Locator;
+   readonly taskDelete: Locator;
+@@ -68,7 +69,8 @@ export class BoardPage {
+     this.taskClient = page.getByTestId('task-client');
+     this.taskColumn = page.getByTestId('task-column');
+     this.taskAssignee = page.getByTestId('task-assignee');
+-    this.taskDue = page.getByTestId('task-due');
++    this.taskStart = page.getByTestId('task-start');
++    this.taskDuration = page.getByTestId('task-duration');
+     this.taskPaid = page.getByTestId('task-paid');
+     this.taskSave = page.getByTestId('task-save');
+     this.taskDelete = page.getByTestId('task-delete');
+@@ -260,12 +262,13 @@ export class BoardPage {
+     await expect(this.columnForm).toBeVisible();
+   }
+ 
+-  async fillTask(t: { title?: string; client?: string; column?: string; assignee?: string; due?: string }) {
++  async fillTask(t: { title?: string; client?: string; column?: string; assignee?: string; start?: string; days?: number }) {
+     if (t.title !== undefined) await this.taskTitle.fill(t.title);
+     if (t.client !== undefined) await this.chooseCombobox(this.taskClient, t.client);
+     if (t.column !== undefined) await this.chooseCombobox(this.taskColumn, t.column);
+     if (t.assignee !== undefined) await this.chooseCombobox(this.taskAssignee, t.assignee);
+-    if (t.due !== undefined) await this.taskDue.fill(t.due);
++    if (t.start !== undefined) await this.taskStart.fill(t.start);
++    if (t.days !== undefined) await this.taskDuration.fill(String(t.days));
+   }
+ 
+   async fillColumn(c: { name?: string; color?: string; position?: number; isFinal?: boolean; consumes?: boolean }) {
+diff --git a/e2e/pages/NewOrderDialog.ts b/e2e/pages/NewOrderDialog.ts
+index f8873dd..8cd2256 100644
+--- a/e2e/pages/NewOrderDialog.ts
++++ b/e2e/pages/NewOrderDialog.ts
+@@ -27,12 +27,21 @@ export class NewOrderDialog {
+   readonly plateSuggestions: Locator;
+   readonly plateSuggestion: Locator;
+   readonly clientNewAction: Locator;
+-  readonly due: Locator;
++  readonly start: Locator;
++  readonly duration: Locator;
++  readonly plannedEnd: Locator;
++  readonly startError: Locator;
++  readonly durationError: Locator;
+   readonly capacity: Locator;
+   readonly capacityWarning: Locator;
+ 
+   constructor(readonly page: Page) {
+-    this.due = page.getByTestId('task-due');
++    // План работ (order-start-duration): «Начать с» + «Дней на работу», подсказка планового окончания.
++    this.start = page.getByTestId('task-start');
++    this.duration = page.getByTestId('task-duration');
++    this.plannedEnd = page.getByTestId('task-planned-end');
++    this.startError = page.getByTestId('task-start-error');
++    this.durationError = page.getByTestId('task-duration-error');
+     this.capacity = page.getByTestId('task-capacity');
+     this.capacityWarning = page.getByTestId('task-capacity-warning');
+     this.plate = page.getByTestId('task-plate');
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 05782c9..638d362 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -3,7 +3,7 @@ import { NewOrderDialog } from './NewOrderDialog';
+ 
+ // POM карточки заказа (фаза 6, testid-контракт js/task-card.js — KT.taskCard). Разделяет
+ // шапку (переиспользует testid простой формы фазы 5 — task-title/task-client/task-column/
+-// task-assignee/task-due/task-paid/task-save/task-delete/task-error) и новые разделы
++// task-assignee/task-start/task-duration/task-paid/task-save/task-delete/task-error) и новые разделы
+ // автомобиля/услуг/товаров/журнала/итогов/печати (префикс card-*). Автомобиль заказа
+ // (one-car-order) — ровно один, в карточке только читается: «госномер · владелец · История». Комбобоксы —
+ // js/combobox.js переносит testid на видимую кнопку, выбор — клик по кнопке и затем по
+@@ -17,7 +17,9 @@ export class OrderCardPage {
+   readonly taskClient: Locator;
+   readonly taskColumn: Locator;
+   readonly taskAssignee: Locator;
+-  readonly taskDue: Locator;
++  readonly taskStart: Locator;
++  readonly taskDuration: Locator;
++  readonly plannedEnd: Locator;
+   readonly taskPaid: Locator;
+   readonly description: Locator;
+   readonly saveBtn: Locator;
+@@ -69,7 +71,10 @@ export class OrderCardPage {
+     this.taskClient = page.getByTestId('task-client');
+     this.taskColumn = page.getByTestId('task-column');
+     this.taskAssignee = page.getByTestId('task-assignee');
+-    this.taskDue = page.getByTestId('task-due');
++    // План работ (order-start-duration): «Начать с», «Дней на работу», подсказка окончания.
++    this.taskStart = page.getByTestId('task-start');
++    this.taskDuration = page.getByTestId('task-duration');
++    this.plannedEnd = page.getByTestId('task-planned-end');
+     this.taskPaid = page.getByTestId('task-paid');
+     this.description = page.getByTestId('card-description');
+     this.saveBtn = page.getByTestId('task-save');
+@@ -125,12 +130,13 @@ export class OrderCardPage {
+     await expect(this.modal).toBeVisible();
+   }
+ 
+-  async fillHeader(t: { title?: string; client?: string; column?: string; assignee?: string; due?: string; description?: string }) {
++  async fillHeader(t: { title?: string; client?: string; column?: string; assignee?: string; start?: string; days?: number; description?: string }) {
+     if (t.title !== undefined) await this.taskTitle.fill(t.title);
+     if (t.client !== undefined) await this.chooseCombobox(this.taskClient, t.client);
+     if (t.column !== undefined) await this.chooseCombobox(this.taskColumn, t.column);
+     if (t.assignee !== undefined) await this.chooseCombobox(this.taskAssignee, t.assignee);
+-    if (t.due !== undefined) await this.taskDue.fill(t.due);
++    if (t.start !== undefined) await this.taskStart.fill(t.start);
++    if (t.days !== undefined) await this.taskDuration.fill(String(t.days));
+     if (t.description !== undefined) await this.description.fill(t.description);
+   }
+ 
+diff --git a/e2e/tests/board.spec.ts b/e2e/tests/board.spec.ts
+index 3c4423c..7a24f3c 100644
+--- a/e2e/tests/board.spec.ts
++++ b/e2e/tests/board.spec.ts
+@@ -40,7 +40,9 @@ test.describe('BD: карточка и цвет колонки', () => {
+       client_id: client.id,
+       column_id: newCol.id,
+       assignee_id: assignee.id,
+-      due_date: '2030-01-15',
++      // срок на карточке — плановое окончание: 13.01 + 3 дня − 1 = 15.01.
++      start_date: '2030-01-13',
++      duration_days: 3,
+       is_paid: true,
+     });
+ 
+@@ -381,7 +383,8 @@ test.describe('BD: конфликт версии', () => {
+       title: task.title,
+       column_id: task.column_id,
+       assignee_id: task.assignee_id,
+-      due_date: task.due_date,
++      start_date: task.start_date,
++      duration_days: task.duration_days,
+       is_paid: task.is_paid,
+       version: task.version,
+     });
+@@ -430,7 +433,10 @@ test.describe('BD: оплата — только администратор', ()
+     // Актуальная версия: с устаревшей сервер сначала отвечает 409 TASK_VERSION_CONFLICT (AC-010).
+     const current = await adminApi.getTask(task.id);
+     const res = await page.request.put(`/api/v1/tasks/${task.id}`, {
+-      data: { title: current.title, column_id: current.column_id, is_paid: false, version: current.version },
++      data: {
++        title: current.title, column_id: current.column_id, is_paid: false, version: current.version,
++        start_date: current.start_date, duration_days: current.duration_days,
++      },
+       headers: { 'X-Csrf-Token': await csrfToken(page) },
+       failOnStatusCode: false,
+     });
+diff --git a/e2e/tests/calendar-gantt.spec.ts b/e2e/tests/calendar-gantt.spec.ts
+index 5f4cd66..16b6c6c 100644
+--- a/e2e/tests/calendar-gantt.spec.ts
++++ b/e2e/tests/calendar-gantt.spec.ts
+@@ -3,8 +3,9 @@ import { OrderCardPage } from '../pages/OrderCardPage';
+ 
+ // Диаграмма Ганта выбранного дня на «Календаре» (internal/features/calendar/gantt.go): машины,
+ // стоящие в ремонте в этот день, полосами по шкале из 28 дней (выбранный — 8-й столбец):
+-// со дня приёмки по срок / выдачу; без срока — до правого края. Клик по полосе открывает
+-// карточку заказа на этой же странице.
++// с «Начать с» по плановое окончание (начало + «Дней на работу» − 1) / выдачу; плановое
++// окончание прошло, машина не выдана — до правого края. Клик по полосе открывает карточку
++// заказа на этой же странице.
+ test.use({ colorScheme: 'light' });
+ 
+ function addDays(ymd: string, n: number): string {
+@@ -17,37 +18,64 @@ function short(ymd: string): string {
+ }
+ 
+ test.describe('GANTT: диаграмма выбранного дня', () => {
+-  test('GANTT-001: полоса со сроком и бессрочная, клик открывает карточку', async ({ adminPage: page, adminApi, uniq }) => {
++  test('GANTT-001: полоса по плану и просроченная бессрочная, клик открывает карточку', async ({ adminPage: page, adminApi, uniq }) => {
+     const today = (await adminApi.getCalendar()).today;
+     const due = addDays(today, 4);
+     const columns = (await adminApi.listColumns()).items;
+     const col = columns.find((c) => !c.is_final)!;
+     const client = await adminApi.createClient({ company_name: uniq('GANTT-001 Клиент'), phones: [{ phone: '9990000961', note: '' }] });
+-    const withDue = await adminApi.createTask({ title: uniq('GANTT-001 со сроком'), client_id: client.id, column_id: col.id, due_date: due });
+-    const noDue = await adminApi.createTask({ title: uniq('GANTT-001 без срока'), client_id: client.id, column_id: col.id });
++    const planned = await adminApi.createTask({ title: uniq('GANTT-001 по плану'), client_id: client.id, column_id: col.id, start_date: today, duration_days: 5 });
++    // план 3 дня назад на 2 дня — плановое окончание позавчера, машина не выдана.
++    const overdue = await adminApi.createTask({
++      title: uniq('GANTT-001 просрочен'), client_id: client.id, column_id: col.id, start_date: addDays(today, -3), duration_days: 2,
++    });
+ 
+     await page.goto(`/calendar?month=${today.slice(0, 7)}&day=${today}`);
+     const gantt = page.getByTestId('cal-gantt');
+     await expect(gantt).toBeVisible();
+     await expect(page.getByTestId('cal-gantt-load')).toHaveCount(28);
+ 
+-    // со сроком: сегодня (8-й столбец) .. срок — 5 дней.
+-    const r1 = gantt.locator(`[data-testid="cal-gantt-row"][data-task-id="${withDue.id}"]`);
++    // по плану: сегодня (8-й столбец) .. плановое окончание — 5 дней, отметка окончания в 12-м.
++    const r1 = gantt.locator(`[data-testid="cal-gantt-row"][data-task-id="${planned.id}"]`);
+     await expect(r1).toHaveAttribute('data-col', '8');
+     await expect(r1).toHaveAttribute('data-span', '5');
+     await expect(r1.getByTestId('cal-gantt-period')).toContainText(`${short(today)} → срок ${short(due)}`);
+     await expect(r1.getByTestId('cal-gantt-period')).toContainText('5 дн.');
++    await expect(r1.getByTestId('cal-gantt-due')).toHaveAttribute('style', /grid-column: 12\b/);
++    await expect(r1.getByTestId('cal-gantt-due')).toHaveAttribute('title', 'Плановое окончание');
+ 
+-    // без срока: от сегодня до правого края шкалы (28 − 7 = 21 столбец).
+-    const r2 = gantt.locator(`[data-testid="cal-gantt-row"][data-task-id="${noDue.id}"]`);
+-    await expect(r2).toHaveAttribute('data-span', '21');
+-    await expect(r2.getByTestId('cal-gantt-period')).toContainText('срок не указан');
++    // просрочен: с начала (5-й столбец) до правого края шкалы (28 − 4 = 24 столбца).
++    const r2 = gantt.locator(`[data-testid="cal-gantt-row"][data-task-id="${overdue.id}"]`);
++    await expect(r2).toHaveAttribute('data-col', '5');
++    await expect(r2).toHaveAttribute('data-span', '24');
++    await expect(r2.getByTestId('cal-gantt-period')).toContainText(`срок ${short(addDays(today, -2))} просрочен`);
+ 
+     // клик по полосе — карточка заказа здесь же, без перехода на доску.
+     await r1.getByTestId('cal-gantt-bar').click();
+     const card = new OrderCardPage(page);
+-    await expect(card.title).toHaveText(`Заказ #${withDue.id}`);
++    await expect(card.title).toHaveText(`Заказ #${planned.id}`);
+     await expect(page).toHaveURL(/\/calendar/);
+     await card.close();
+   });
++
++  test('GANTT-002: заказ с будущим «Начать с» — место только в плановые дни', async ({ adminPage: page, adminApi, uniq }) => {
++    const today = (await adminApi.getCalendar()).today;
++    const start = addDays(today, 9);
++    const col = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
++    const client = await adminApi.createClient({ company_name: uniq('GANTT-002 Клиент'), phones: [{ phone: '9990000962', note: '' }] });
++    const t = await adminApi.createTask({ title: uniq('GANTT-002 позже'), client_id: client.id, column_id: col.id, start_date: start, duration_days: 3 });
++
++    // накануне начала машины ещё нет — ни в загрузке дня, ни на диаграмме.
++    await page.goto(`/calendar?month=${start.slice(0, 7)}&day=${addDays(start, -1)}`);
++    await expect(page.getByTestId('cal-gantt')).toBeVisible();
++    await expect(page.locator(`[data-testid="cal-gantt-row"][data-task-id="${t.id}"]`)).toHaveCount(0);
++
++    // в день начала — полоса ровно 3 дня с 8-го столбца.
++    await page.goto(`/calendar?month=${start.slice(0, 7)}&day=${start}`);
++    const row = page.locator(`[data-testid="cal-gantt-row"][data-task-id="${t.id}"]`);
++    await expect(row).toHaveAttribute('data-col', '8');
++    await expect(row).toHaveAttribute('data-span', '3');
++    await expect(row).toHaveAttribute('data-days', '3');
++    await expect(row.getByTestId('cal-gantt-period')).toContainText(`${short(start)} → срок ${short(addDays(start, 2))}`);
++  });
+ });
+diff --git a/e2e/tests/calendar-new-order.spec.ts b/e2e/tests/calendar-new-order.spec.ts
+index 07e02e0..a59444d 100644
+--- a/e2e/tests/calendar-new-order.spec.ts
++++ b/e2e/tests/calendar-new-order.spec.ts
+@@ -3,8 +3,9 @@ import { NewOrderDialog, uniqPlate } from '../pages/NewOrderDialog';
+ import { OrderCardPage } from '../pages/OrderCardPage';
+ 
+ // Новый заказ со страницы «Календарь» (js/calendar.js → KT.taskCard, та же карточка, что на
+-// доске): «+ Заказ со сроком на этот день» открывает диалог со сроком = выбранный день; после
+-// сохранения и закрытия карточки страница перерисовывается и заказ виден на диаграмме дня.
++// доске): «+ Заказ с началом в этот день» открывает диалог с «Начать с» = выбранный день и
++// 1 днём на работу; после сохранения и закрытия карточки страница перерисовывается и заказ
++// виден на диаграмме дня.
+ test.use({ colorScheme: 'light' });
+ 
+ function addDays(ymd: string, n: number): string {
+@@ -12,8 +13,13 @@ function addDays(ymd: string, n: number): string {
+   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+ }
+ 
++function ymdText(ymd: string): string {
++  const [y, m, d] = ymd.split('-');
++  return `${d}.${m}.${y}`;
++}
++
+ test.describe('CALNO: новый заказ из календаря', () => {
+-  test('CALNO-001: заказ со сроком на выбранный день появляется на диаграмме дня', async ({
++  test('CALNO-001: заказ с началом в выбранный день появляется на диаграмме дня', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+@@ -30,11 +36,15 @@ test.describe('CALNO: новый заказ из календаря', () => {
+     await page.goto(`/calendar?month=${day.slice(0, 7)}&day=${day}`);
+     await expect(page.getByTestId('cal-gantt-title')).toBeVisible();
+ 
++    await expect(page.getByTestId('cal-day-add')).toHaveText('+ Заказ с началом в этот день');
+     await page.getByTestId('cal-day-add').click();
+     await expect(page.getByTestId('task-form')).toBeVisible();
+     await expect(card.title).toHaveText('Новый заказ');
+-    await expect(dlg.due).toHaveValue(day);
+-    await expect(dlg.capacity).toContainText('Сегодня в ремонте');
++    await expect(dlg.start).toHaveValue(day);
++    await expect(dlg.duration).toHaveValue('1');
++    await expect(dlg.plannedEnd).toHaveText(`Плановое окончание: ${ymdText(day)}`);
++    // загрузка — на день начала, а не на сегодня.
++    await expect(dlg.capacity).toContainText(`${ymdText(day)} в ремонте`);
+ 
+     await dlg.useFoundCar(plate);
+     await expect(dlg.client).toContainText(client.company_name);
+@@ -44,6 +54,8 @@ test.describe('CALNO: новый заказ из календаря', () => {
+     _boardCleanup(id);
+ 
+     const task = await adminApi.getTask(id);
++    expect(task.start_date).toBe(day);
++    expect(task.duration_days).toBe(1);
+     expect(task.due_date).toBe(day);
+     expect(task.client_id).toBe(client.id);
+     expect((await adminApi.getCard(id)).car.equipment_id).toBe(car.id);
+@@ -53,10 +65,11 @@ test.describe('CALNO: новый заказ из календаря', () => {
+     await expect(page.locator(`[data-testid="cal-gantt-row"][data-task-id="${id}"]`)).toBeVisible();
+   });
+ 
+-  test('CALNO-002: «+ Заказ» в шапке — без срока; у прошедшего дня кнопки «со сроком» нет', async ({ adminPage: page, adminApi }) => {
++  test('CALNO-002: «+ Заказ» в шапке — начало сегодня, 1 день; у прошедшего дня кнопки «с началом» нет', async ({ adminPage: page, adminApi }) => {
+     const today = (await adminApi.getCalendar()).today;
+     const past = addDays(today, -1);
+     const dlg = new NewOrderDialog(page);
++    const todayFree = (await adminApi.getCalendar(today, today)).days[0].free;
+ 
+     await page.goto(`/calendar?month=${past.slice(0, 7)}&day=${past}`);
+     await expect(page.getByTestId('cal-gantt-title')).toBeVisible();
+@@ -65,7 +78,11 @@ test.describe('CALNO: новый заказ из календаря', () => {
+     await page.getByTestId('task-add').click();
+     await expect(page.getByTestId('task-form')).toBeVisible();
+     await expect(dlg.plate).toBeVisible();
+-    await expect(dlg.due).toHaveValue('');
+-    await expect(dlg.capacityWarning).toBeHidden();
++    await expect(dlg.start).toHaveValue(today);
++    await expect(dlg.duration).toHaveValue('1');
++    await expect(dlg.capacity).toContainText('Сегодня в ремонте');
++    // предупреждение — только если сегодня (единственный плановый день) мест нет.
++    if (todayFree > 0) await expect(dlg.capacityWarning).toBeHidden();
++    else await expect(dlg.capacityWarning).toContainText(ymdText(today));
+   });
+ });
+diff --git a/e2e/tests/new-order-capacity.spec.ts b/e2e/tests/new-order-capacity.spec.ts
+index 3063775..36ceef3 100644
+--- a/e2e/tests/new-order-capacity.spec.ts
++++ b/e2e/tests/new-order-capacity.spec.ts
+@@ -2,12 +2,15 @@ import { test, expect } from '../fixtures/board';
+ import { BoardPage } from '../pages/BoardPage';
+ 
+ // Загрузка сервиса в диалоге «Новый заказ» (js/task-card.js «Загрузка сервиса», GET
+-// /api/v1/calendar): строка «Сегодня в ремонте X из N, свободно K» и предупреждение, если от
+-// сегодня до выбранного срока есть дни без свободных мест. Сохранение не блокируется.
++// /api/v1/calendar): строка «Сегодня (или DD.MM.YYYY — день начала) в ремонте X из N, свободно
++// K» и предупреждение, если в плановые дни заказа (с «Начать с» по начало + «Дней на работу» − 1;
++// прошедшие дни не проверяются) есть дни без свободных мест. Сохранение не блокируется.
+ // Вместимость — общая настройка сервиса: тест ставит минимум (5) и возвращает прежнее значение.
++// БД общая (заказы с прошедшим планом занимают место во всех будущих днях), поэтому ожидания по
++// загрузке берутся из того же API календаря.
+ test.use({ colorScheme: 'light' });
+ 
+-const HORIZON = 20; // день срока, который тест заполняет до отказа (в пределах окна API)
++const HORIZON = 20; // день, который тест заполняет до отказа (в пределах окна API)
+ 
+ function ymdText(ymd: string): string {
+   const [y, m, d] = ymd.split('-');
+@@ -20,7 +23,7 @@ function addDays(ymd: string, n: number): string {
+ }
+ 
+ test.describe('CAP: загрузка сервиса в новом заказе', () => {
+-  test('CAP-001: загрузка на сегодня и предупреждение о днях без мест до срока', async ({
++  test('CAP-001: загрузка на день начала и предупреждение о плановых днях без мест', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+@@ -31,43 +34,57 @@ test.describe('CAP: загрузка сервиса в новом заказе',
+       const today = (await adminApi.getCalendar()).today; // «сегодня» в поясе пользователя
+       const fullDay = addDays(today, HORIZON);
+ 
+-      // заполняем день срока до отказа: заказы, принятые сегодня со сроком fullDay, занимают
+-      // место с сегодня по fullDay включительно.
++      // заполняем fullDay до отказа однодневными заказами с началом в этот день — соседние дни
++      // ими не заняты.
+       const occupied = (await adminApi.getCalendar(fullDay, fullDay)).days[0].occupied;
+       const columns = (await adminApi.listColumns()).items;
+       const col = columns.find((c) => !c.is_final)!;
+       const client = await adminApi.createClient({ company_name: uniq('CAP-001 Клиент'), phones: [{ phone: '9990000901', note: '' }] });
+       for (let i = occupied; i < 5; i++) {
+-        await adminApi.createTask({ title: uniq(`CAP-001 заказ ${i}`), client_id: client.id, column_id: col.id, due_date: fullDay });
++        await adminApi.createTask({ title: uniq(`CAP-001 заказ ${i}`), client_id: client.id, column_id: col.id, start_date: fullDay, duration_days: 1 });
+       }
+-      const window = await adminApi.getCalendar(today, fullDay);
+-      expect(window.days.at(-1)!.free, 'день срока заполнен').toBe(0);
+-      const todayDay = window.days[0];
+-      const fullDates = window.days.filter((d) => d.free <= 0).map((d) => d.date);
++      const full = (await adminApi.getCalendar(fullDay, fullDay)).days[0];
++      expect(full.free, 'день заполнен').toBe(0);
++      const todayDay = (await adminApi.getCalendar(today, today)).days[0];
++      const tail = await adminApi.getCalendar(addDays(fullDay, -2), fullDay);
++      const tailFull = tail.days.filter((d) => d.free <= 0).map((d) => d.date);
+ 
+       const board = new BoardPage(page);
+       const dlg = board.newOrder;
+       await board.goto();
+       await board.openTaskAdd();
+ 
+-      // строка загрузки на сегодня — по данным календаря.
++      // по умолчанию — начало сегодня, 1 день: строка загрузки на сегодня по данным календаря.
++      await expect(dlg.start).toHaveValue(today);
++      await expect(dlg.duration).toHaveValue('1');
+       await expect(dlg.capacity).toHaveText(`Сегодня в ремонте ${todayDay.occupied} из 5, свободно ${todayDay.free}`);
+-      await expect(dlg.capacityWarning).toBeHidden();
++      if (todayDay.free > 0) await expect(dlg.capacityWarning).toBeHidden();
++      else await expect(dlg.capacityWarning).toContainText(ymdText(today));
+ 
+-      // срок в заполненный день — предупреждение с первым днём без мест.
+-      await dlg.due.fill(fullDay);
++      // начало в заполненный день — строка загрузки этого дня и предупреждение с ним.
++      await dlg.start.fill(fullDay);
++      await expect(dlg.capacity).toHaveText(`${ymdText(fullDay)} в ремонте ${full.occupied} из 5, свободно 0`);
+       await expect(dlg.capacityWarning).toBeVisible();
+-      await expect(dlg.capacityWarning).toContainText('До срока нет свободных мест');
+-      await expect(dlg.capacityWarning).toContainText(ymdText(fullDates[0]));
++      await expect(dlg.capacityWarning).toContainText('В плановые дни нет свободных мест');
++      await expect(dlg.capacityWarning).toContainText(ymdText(fullDay));
+       // заказ не блокируется.
+       await expect(board.taskSave).toBeEnabled();
+ 
+-      // срок в прошлом / без срока — предупреждения нет.
+-      await dlg.due.fill(addDays(today, -1));
++      // план целиком в прошлом — предупреждения нет.
++      await dlg.start.fill(addDays(today, -10));
+       await expect(dlg.capacityWarning).toBeHidden();
+-      await dlg.due.fill(fullDay);
+-      await expect(dlg.capacityWarning).toBeVisible();
+-      await dlg.due.fill('');
++
++      // план из трёх дней, кончающийся в заполненный день, — первый день без мест в окне.
++      await dlg.start.fill(addDays(fullDay, -2));
++      await dlg.duration.fill('3');
++      await dlg.duration.blur();
++      await expect(dlg.plannedEnd).toHaveText(`Плановое окончание: ${ymdText(fullDay)}`);
++      await expect(dlg.capacityWarning).toContainText(ymdText(tailFull[0]));
++
++      // некорректный план (61 день) — подсказки и предупреждения нет.
++      await dlg.duration.fill('61');
++      await dlg.duration.blur();
++      await expect(dlg.plannedEnd).toHaveText('');
+       await expect(dlg.capacityWarning).toBeHidden();
+     } finally {
+       await adminApi.setCalendarMaxCars(before.max_cars);
+diff --git a/e2e/tests/order-card.spec.ts b/e2e/tests/order-card.spec.ts
+index f232392..0e70e29 100644
+--- a/e2e/tests/order-card.spec.ts
++++ b/e2e/tests/order-card.spec.ts
+@@ -85,7 +85,7 @@ test.describe('OC: deep-link /?task=N', () => {
+ });
+ 
+ test.describe('OC: шапка заказа', () => {
+-  test('OC-003: title/описание/срок сохраняются кнопкой и переживают reload', async ({ adminPage: page, adminApi, uniq }) => {
++  test('OC-003: title/описание/план работ сохраняются кнопкой и переживают reload', async ({ adminPage: page, adminApi, uniq }) => {
+     const { client, columns } = await setup(adminApi, uniq, 'OC-003');
+     const task = await adminApi.createTask({ title: uniq('OC-003 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
+     const board = new BoardPage(page);
+@@ -96,7 +96,8 @@ test.describe('OC: шапка заказа', () => {
+ 
+     const newTitle = uniq('OC-003 переименован');
+     const desc = 'Первый абзац\n\nВторой абзац';
+-    await card.fillHeader({ title: newTitle, due: '2031-02-20', description: desc });
++    await card.fillHeader({ title: newTitle, start: '2031-02-18', days: 3, description: desc });
++    await expect(card.plannedEnd).toHaveText('Плановое окончание: 20.02.2031');
+     await card.save();
+     await expect(card.error).toBeHidden();
+ 
+@@ -104,8 +105,12 @@ test.describe('OC: шапка заказа', () => {
+     await board.openTaskEdit(task.id);
+     await card.waitOpen();
+     await expect(card.taskTitle).toHaveValue(newTitle);
+-    await expect(card.taskDue).toHaveValue('2031-02-20');
++    await expect(card.taskStart).toHaveValue('2031-02-18');
++    await expect(card.taskDuration).toHaveValue('3');
++    await expect(card.plannedEnd).toHaveText('Плановое окончание: 20.02.2031');
+     await expect(card.description).toHaveValue(desc);
++    const saved = await adminApi.getTask(task.id);
++    expect(`${saved.start_date}|${saved.duration_days}|${saved.due_date}`).toBe('2031-02-18|3|2031-02-20');
+   });
+ 
+   test('OC-004: конкурентная правка шапки — вторая вкладка видит «уже изменён», данные первой на месте', async ({
+diff --git a/e2e/tests/order-plan.spec.ts b/e2e/tests/order-plan.spec.ts
+new file mode 100644
+index 0000000..e30ad5c
+--- /dev/null
++++ b/e2e/tests/order-plan.spec.ts
+@@ -0,0 +1,139 @@
++import { test, expect, columnByName } from '../fixtures/board';
++import { BoardPage } from '../pages/BoardPage';
++import { OrderCardPage } from '../pages/OrderCardPage';
++import { uniqPlate } from '../pages/NewOrderDialog';
++
++// План работ заказа (order-start-duration): в диалоге «Новый заказ» и в шапке карточки вместо
++// «Срок» — «Начать с» + «Дней на работу» (1–60); срок заказа на доске (метка 📅) — плановое
++// окончание = начало + дни − 1. Календарь загрузки: машина занимает место ровно в плановые дни
++// (заказ с будущим началом — только с него), диаграмма Ганта — полоса этих дней.
++test.use({ colorScheme: 'light' });
++
++function addDays(ymd: string, n: number): string {
++  const [y, m, d] = ymd.split('-').map(Number);
++  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
++}
++
++function ymdText(ymd: string): string {
++  const [y, m, d] = ymd.split('-');
++  return `${d}.${m}.${y}`;
++}
++
++test.describe('PLAN: «Начать с» и «Дней на работу»', () => {
++  test('PLAN-001: новый заказ с будущим началом на 3 дня занимает место ровно эти дни; правка дней пересчитывает окончание и метку доски', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    _boardCleanup,
++  }) => {
++    const client = await adminApi.createClient({ company_name: uniq('PLAN-001 Соколов А. А.'), phones: [{ phone: '9990000971', note: '' }] });
++    const columns = (await adminApi.listColumns()).items;
++    const col = columnByName(columns, 'Приёмка');
++    const today = (await adminApi.getCalendar()).today;
++    const start = addDays(today, 12);
++
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    const dlg = board.newOrder;
++    await board.goto(`?client_id=${client.id}`);
++    await board.columnAddTaskBtn(col.id).click();
++    await expect(board.taskForm).toBeVisible();
++
++    // по умолчанию — сегодня, 1 день; подсказка планового окончания пересчитывается на вводе.
++    await expect(dlg.start).toHaveValue(today);
++    await expect(dlg.duration).toHaveValue('1');
++    await expect(dlg.plannedEnd).toHaveText(`Плановое окончание: ${ymdText(today)}`);
++
++    await dlg.fillNewCar(uniqPlate());
++    await dlg.chooseClient(client.company_name);
++    await dlg.start.fill(start);
++    await dlg.duration.fill('3');
++    await dlg.duration.blur();
++    await expect(dlg.plannedEnd).toHaveText(`Плановое окончание: ${ymdText(addDays(start, 2))}`);
++    await expect(dlg.capacity).toContainText(`${ymdText(start)} в ремонте`);
++
++    await board.taskSave.click();
++    await expect(card.title).toContainText('Заказ #');
++    const id = Number(/#(\d+)/.exec((await card.title.textContent()) ?? '')![1]);
++    _boardCleanup(id);
++    // карточка созданного заказа — план в шапке.
++    await expect(card.taskStart).toHaveValue(start);
++    await expect(card.taskDuration).toHaveValue('3');
++
++    const task = await adminApi.getTask(id);
++    expect(`${task.start_date}|${task.duration_days}|${task.due_date}`).toBe(`${start}|3|${addDays(start, 2)}`);
++
++    // календарь: место занято ровно с начала по плановое окончание.
++    const win = await adminApi.getCalendar(addDays(start, -1), addDays(start, 3));
++    const busy = win.days.filter((d) => d.task_ids.includes(id)).map((d) => d.date);
++    expect(busy).toEqual([start, addDays(start, 1), addDays(start, 2)]);
++    await card.close();
++
++    // диаграмма Ганта дня начала — полоса 3 дня с 8-го столбца.
++    await page.goto(`/calendar?month=${start.slice(0, 7)}&day=${start}`);
++    const row = page.locator(`[data-testid="cal-gantt-row"][data-task-id="${id}"]`);
++    await expect(row).toHaveAttribute('data-col', '8');
++    await expect(row).toHaveAttribute('data-span', '3');
++    await expect(row).toHaveAttribute('data-days', '3');
++
++    // правка «Дней на работу» в карточке (открыта с диаграммы) — сохраняется кнопкой.
++    await row.getByTestId('cal-gantt-bar').click();
++    await expect(card.title).toHaveText(`Заказ #${id}`);
++    await expect(card.taskDuration).toHaveValue('3');
++    await card.fillHeader({ days: 5 });
++    await expect(card.plannedEnd).toHaveText(`Плановое окончание: ${ymdText(addDays(start, 4))}`);
++    await card.save();
++    await expect(card.error).toBeHidden();
++    await expect.poll(async () => (await adminApi.getTask(id)).due_date).toBe(addDays(start, 4));
++    await card.close();
++    // закрытие карточки после правки перерисовывает календарь — полоса стала 5 дней.
++    await expect(page.locator(`[data-testid="cal-gantt-row"][data-task-id="${id}"]`)).toHaveAttribute('data-span', '5');
++
++    // доска: метка 📅 — новое плановое окончание.
++    await board.goto(`?client_id=${client.id}`);
++    await expect(board.card(id).getByTestId('task-card-due')).toContainText(ymdText(addDays(start, 4)));
++    await expect(board.card(id).getByTestId('task-card-due')).toHaveAttribute('data-due', 'ok');
++  });
++
++  test('PLAN-002: «Начать с» и «Дней на работу» обязательны, дни — от 1 до 60 (ошибки под полями, заказ не создаётся)', async ({
++    adminPage: page,
++    adminApi,
++    uniq,
++    _boardCleanup,
++  }) => {
++    const client = await adminApi.createClient({ company_name: uniq('PLAN-002 Клиент'), phones: [{ phone: '9990000972', note: '' }] });
++    const board = new BoardPage(page);
++    const card = new OrderCardPage(page);
++    const dlg = board.newOrder;
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskAdd();
++    await dlg.fillNewCar(uniqPlate());
++    await dlg.chooseClient(client.company_name);
++
++    await dlg.start.fill('');
++    await dlg.duration.fill('');
++    await board.taskSave.click();
++    await expect(dlg.startError).toHaveText('Обязательное поле');
++    await expect(dlg.durationError).toHaveText('Обязательное поле');
++    await expect(card.title).toHaveText('Новый заказ');
++
++    for (const bad of ['0', '61', '2.5']) {
++      await dlg.duration.fill(bad);
++      await board.taskSave.click();
++      await expect(dlg.durationError, `дни = ${bad}`).toHaveText('От 1 до 60 дней');
++    }
++    await expect(card.title).toHaveText('Новый заказ');
++
++    // исправленный план — ошибки уходят, заказ создаётся.
++    await dlg.start.fill('2031-07-01');
++    await dlg.duration.fill('60');
++    await expect(dlg.durationError).toBeHidden();
++    await expect(dlg.plannedEnd).toHaveText('Плановое окончание: 29.08.2031');
++    await board.taskSave.click();
++    await expect(card.title).toContainText('Заказ #');
++    const id = Number(/#(\d+)/.exec((await card.title.textContent()) ?? '')![1]);
++    _boardCleanup(id);
++    const task = await adminApi.getTask(id);
++    expect(`${task.start_date}|${task.duration_days}|${task.due_date}`).toBe('2031-07-01|60|2031-08-29');
++  });
++});
+diff --git a/e2e/tests/user-timezone.spec.ts b/e2e/tests/user-timezone.spec.ts
+index ae71927..6269185 100644
+--- a/e2e/tests/user-timezone.spec.ts
++++ b/e2e/tests/user-timezone.spec.ts
+@@ -307,7 +307,9 @@ test.describe('TZ: пояс применяется во всей системе'
+     const moscowUser = await makeUser({ login: uniq('tz011-moscow'), name: uniq('Админ Москва TZ-011'), role: 'admin', timezone: TZ_MOSCOW });
+     const client = await adminApi.createClient({ company_name: uniq('TZ-011 клиент'), phones: [{ phone: '9990000301', note: '' }] });
+     const column = columnByName((await adminApi.listColumns()).items, 'Приёмка');
+-    const mk = (label: string, due: string) => adminApi.createTask({ title: uniq(`TZ-011 ${label}`), client_id: client.id, column_id: column.id, due_date: due });
++    // order-start-duration: срок на доске — плановое окончание; однодневный план с началом в день срока.
++    const mk = (label: string, due: string) =>
++      adminApi.createTask({ title: uniq(`TZ-011 ${label}`), client_id: client.id, column_id: column.id, start_date: due, duration_days: 1 });
+     // «Сейчас» = момент TS-F5: в Алматы уже 7 октября, в Москве и в браузере (Нью-Йорк) — 6-е.
+     const due6 = await mk('срок 6 октября', TZ_FIXTURE.moscow.today);
+     const due8 = await mk('срок 8 октября', '2026-10-08');
+diff --git a/web/ssr/_layout/templates/partials/task-modal.html b/web/ssr/_layout/templates/partials/task-modal.html
+index bb25e45..1415a90 100644
+--- a/web/ssr/_layout/templates/partials/task-modal.html
++++ b/web/ssr/_layout/templates/partials/task-modal.html
+@@ -77,13 +77,31 @@
+               <option value="">Не назначен</option>
+             </select>
+           </div>
++          <!-- План работ (order-start-duration): «Начать с» + «Дней на работу» (1–60); срок заказа
++               на доске — плановое окончание = начало + дни − 1, считается сервером (здесь —
++               подсказка task-planned-end). Новый заказ: начало по умолчанию сегодня (из календаря —
++               выбранный день), 1 день. -->
+           <div class="col-md-4">
+-            <label class="form-label" for="task-due">Срок</label>
+-            <input type="date" class="form-control" id="task-due" data-testid="task-due">
++            <div class="row g-2 align-items-end">
++              <div class="col-7">
++                <label class="form-label" for="task-start">Начать с *</label>
++                <input type="date" class="form-control" id="task-start" data-testid="task-start" required>
++              </div>
++              <div class="col-5">
++                <label class="form-label" for="task-duration">Дней на работу *</label>
++                <input type="number" class="form-control" id="task-duration" data-testid="task-duration"
++                       min="1" max="60" step="1" inputmode="numeric" required>
++              </div>
++              <div class="col-12 mt-0">
++                <div class="text-danger small d-none" data-error-for="start_date" data-testid="task-start-error"></div>
++                <div class="text-danger small d-none" data-error-for="duration_days" data-testid="task-duration-error"></div>
++                <div class="small text-body-secondary" id="task-planned-end" data-testid="task-planned-end" aria-live="polite"></div>
++              </div>
++            </div>
+           </div>
+           <!-- Новый заказ: загрузка сервиса (GET /api/v1/calendar, js/task-card.js «Загрузка
+-               сервиса») — сколько машин в ремонте сегодня и предупреждение, если до срока
+-               есть дни без свободных мест. Только предупреждение, сохранение не блокирует. -->
++               сервиса») — сколько машин в ремонте в день начала и предупреждение, если в плановые
++               дни нет свободных мест. Только предупреждение, сохранение не блокирует. -->
+           <div class="col-12 d-none" id="task-capacity-wrap" data-testid="task-capacity-wrap">
+             <div class="small text-body-secondary" id="task-capacity" data-testid="task-capacity" aria-live="polite"></div>
+             <div class="alert alert-warning py-2 mt-2 mb-0 d-none" id="task-capacity-warning" data-testid="task-capacity-warning" role="alert"></div>
+diff --git a/web/ssr/_shared/js/board.js b/web/ssr/_shared/js/board.js
+index a5fc238..b5ff7ff 100644
+--- a/web/ssr/_shared/js/board.js
++++ b/web/ssr/_shared/js/board.js
+@@ -436,7 +436,7 @@
+       (totalAmount > 0 ? '<div class="small task-card-total" data-testid="task-card-total">Итог: ' + fmtMoneyCents(Math.round(totalAmount * 100)) + '</div>' : '') +
+       (t.last_log ? '<div class="small text-body-secondary task-card-last-log" data-testid="task-card-last-log">💬 ' + esc(t.last_log.text) + ' — ' + esc(t.last_log.author_name) + '</div>' : '') +
+       '  <div class="task-card-foot">' +
+-      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '" data-testid="task-card-due" data-due="' + esc(ds || 'ok') + '">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
++      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '" data-testid="task-card-due" data-due="' + esc(ds || 'ok') + '" title="Плановое окончание">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
+       (t.assignee_name ? '<span class="avatar" title="' + esc(t.assignee_name) + '">' + esc(initials(t.assignee_name)) + '</span>' : '') +
+       '  </div>' +
+       '</div>';
+diff --git a/web/ssr/_shared/js/calendar.js b/web/ssr/_shared/js/calendar.js
+index 215ddcd..68dc2d5 100644
+--- a/web/ssr/_shared/js/calendar.js
++++ b/web/ssr/_shared/js/calendar.js
+@@ -2,7 +2,8 @@
+    - сохранение вместимости (admin): PUT /api/v1/calendar/settings {max_cars}, затем
+      перезагрузка страницы — счётчики «свободно» пересчитываются сервером;
+    - новый заказ: та же карточка заказа, что на доске (js/task-card.js, KT.taskCard).
+-     «+ Заказ» в шапке — без срока, «+ Заказ со сроком на этот день» — срок = выбранный день;
++     «+ Заказ» в шапке — «Начать с» сегодня, «+ Заказ с началом в этот день» — «Начать с» =
++     выбранный день (дней на работу по умолчанию — 1);
+      клик по заказу (список дня, полоса диаграммы Ганта — [data-open-task]) открывает его
+      карточку здесь же, без перехода на доску (обычный клик; с Ctrl/⌘ — ссылка /?task=N).
+      Справочники карточки (колонки/исполнители/клиенты) грузятся при первом открытии; после
+@@ -81,10 +82,10 @@
+     });
+   }
+ 
+-  function openNewOrder(dueDate) {
++  function openNewOrder(startDate) {
+     showError('');
+     ensureCardData().then(function () {
+-      KT.taskCard.open(null, null, { dueDate: dueDate || '' });
++      KT.taskCard.open(null, null, { startDate: startDate || '' });
+     }).catch(function (err) {
+       showError('Не удалось открыть новый заказ: ' + ((err && err.message) || 'ошибка сети'));
+     });
+@@ -112,7 +113,7 @@
+       openOrder(id);
+     });
+     document.querySelectorAll('[data-testid="cal-day-add"]').forEach(function (b) {
+-      b.addEventListener('click', function () { openNewOrder(b.dataset.due); });
++      b.addEventListener('click', function () { openNewOrder(b.dataset.start); });
+     });
+   }
+ 
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index a6cad26..45b4fe3 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -32,7 +32,7 @@
+   var card = null;           // последний известный OrderCardResponse (или null — новый заказ)
+   var taskId = null;         // null — режим «новый заказ»
+   var defaultColumnId = null;
+-  var defaultDueDate = '';      // срок нового заказа по умолчанию (календарь: выбранный день)
++  var defaultStartDate = '';    // «Начать с» нового заказа (календарь: выбранный день; иначе сегодня)
+   var saving = false;        // защита от двойного submit шапки
+   var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
+   // upload (фаза 7) — идущая загрузка вложения {gen, name, percent} либо null; переживает
+@@ -171,11 +171,11 @@
+   }
+ 
+   // ---------- открытие/закрытие ----------
+-  // opts (только новый заказ): {dueDate: 'YYYY-MM-DD'} — срок по умолчанию.
++  // opts (только новый заказ): {startDate: 'YYYY-MM-DD'} — «Начать с» по умолчанию (иначе сегодня).
+   function open(id, defColId, opts) {
+     taskId = id || null;
+     defaultColumnId = defColId || null;
+-    defaultDueDate = (!id && opts && opts.dueDate) || '';
++    defaultStartDate = (!id && opts && opts.startDate) || '';
+     card = null;
+     rowQueue = {};
+     eqHistory = {};
+@@ -248,9 +248,12 @@
+     resetCar();
+     $('#task-column').value = defaultColumnId || (data.columns[0] && data.columns[0].id) || '';
+     $('#task-assignee').value = '';
+-    $('#task-due').value = '';
++    // План работ: у нового заказа — начало сегодня (или выбранный в календаре день), 1 день;
++    // у существующего поля заполнит renderAll после загрузки карточки.
++    $('#task-start').value = taskId ? '' : (defaultStartDate || KT.time.today());
++    $('#task-duration').value = taskId ? '' : '1';
++    updatePlannedEnd();
+     resetCapacity(!taskId);
+-    if (defaultDueDate) { $('#task-due').value = defaultDueDate; checkDueCapacity(); }
+     $('#task-description').value = '';
+     var paid = $('#task-paid');
+     paid.checked = false;
+@@ -357,7 +360,9 @@
+       if (document.activeElement !== $('#task-client')) $('#task-client').value = t.client_id;
+       if (document.activeElement !== $('#task-column')) $('#task-column').value = t.column_id;
+       if (document.activeElement !== $('#task-assignee')) $('#task-assignee').value = t.assignee_id || '';
+-      if (document.activeElement !== $('#task-due')) $('#task-due').value = t.due_date || '';
++      if (document.activeElement !== $('#task-start')) $('#task-start').value = t.start_date || '';
++      if (document.activeElement !== $('#task-duration')) $('#task-duration').value = t.duration_days ? String(t.duration_days) : '';
++      updatePlannedEnd();
+       if (document.activeElement !== $('#task-description')) $('#task-description').value = descriptionHtmlToText(t.description_html);
+       var paid = $('#task-paid');
+       paid.checked = !!t.is_paid;
+@@ -1130,17 +1135,17 @@
+ 
+   // ==================================================================
+   // Загрузка сервиса в диалоге «Новый заказ» (GET /api/v1/calendar, internal/features/calendar):
+-  // «Сегодня в ремонте X из N, свободно K» и предупреждение, если от сегодня до выбранного
+-  // срока есть дни без свободных мест (free == 0). Только информация — сохранение не блокирует.
+-  // «Сегодня» — дата в поясе пользователя (KT.time.today), как и у сервера (пояс зрителя).
++  // «Сегодня (или DD.MM.YYYY — день начала) в ремонте X из N, свободно K» и предупреждение, если
++  // в плановые дни заказа (с «Начать с» по начало + «Дней на работу» − 1; прошедшие дни не
++  // проверяются) есть дни без свободных мест (free == 0). Только информация — сохранение не
++  // блокирует. «Сегодня» — дата в поясе пользователя (KT.time.today), как и у сервера.
+   // ==================================================================
+ 
+   var CAPACITY_SPAN = 62;       // предел окна GET /calendar (calendar.maxSpanDays)
+-  var CAPACITY_HORIZON = 366;   // дальше года вперёд не проверяем
+   var CAPACITY_DAYS_SHOWN = 5;  // сколько занятых дней перечислять в предупреждении
+-  // Ответы устаревших запросов (другое открытие / другой срок) отбрасываются: todaySeq —
+-  // строка «сегодня», dueSeq — предупреждение по сроку (счётчики раздельные: срок по умолчанию
+-  // проверяется сразу при открытии, параллельно со строкой «сегодня»).
++  // Ответы устаревших запросов (другое открытие / другой план) отбрасываются: todaySeq —
++  // строка загрузки дня начала, dueSeq — предупреждение по плановым дням (счётчики раздельные:
++  // план по умолчанию проверяется сразу при открытии, параллельно со строкой загрузки).
+   var todaySeq = 0;
+   var dueSeq = 0;
+ 
+@@ -1151,8 +1156,26 @@
+     return KT.api.get('/api/v1/calendar?from=' + from + '&to=' + to);
+   }
+ 
+-  // resetCapacity — состояние блока при открытии карточки: у нового заказа — загрузка сегодня,
+-  // у существующего блок скрыт.
++  var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
++
++  // plan — план работ из полей формы: {start, days, end}; end (плановое окончание) — '' при
++  // неполном/некорректном плане. days — целое 1..60 либо NaN.
++  function plan() {
++    var start = $('#task-start').value;
++    var raw = String($('#task-duration').value).trim();
++    var days = raw === '' ? NaN : Number(raw);
++    var ok = DATE_RE.test(start) && Number.isInteger(days) && days >= 1 && days <= 60;
++    return { start: start, days: days, raw: raw, end: ok ? KT.time.addDays(start, days - 1) : '' };
++  }
++
++  // updatePlannedEnd — подсказка «Плановое окончание: DD.MM.YYYY» под полями плана.
++  function updatePlannedEnd() {
++    var p = plan();
++    $('#task-planned-end').textContent = p.end ? 'Плановое окончание: ' + ymdText(p.end) : '';
++  }
++
++  // resetCapacity — состояние блока при открытии карточки: у нового заказа — загрузка дня начала
++  // и проверка плановых дней, у существующего блок скрыт.
+   function resetCapacity(isNew) {
+     todaySeq++;
+     dueSeq++;
+@@ -1160,12 +1183,23 @@
+     $('#task-capacity').textContent = '';
+     hideCapacityWarning();
+     if (!isNew) return;
++    refreshStartLoad();
++    checkPlanCapacity();
++  }
++
++  // refreshStartLoad — «в ремонте X из N» на день начала (без даты начала — на сегодня).
++  function refreshStartLoad() {
++    if (taskId) return;
++    todaySeq++;
+     var seq = todaySeq;
+     var today = KT.time.today();
+-    calendarWindow(today, today).then(function (r) {
++    var start = $('#task-start').value;
++    var day = DATE_RE.test(start) ? start : today;
++    var label = day === today ? 'Сегодня' : ymdText(day);
++    calendarWindow(day, day).then(function (r) {
+       if (seq !== todaySeq) return;
+       var d = (r.days || [])[0] || { occupied: 0, free: r.capacity };
+-      $('#task-capacity').textContent = 'Сегодня в ремонте ' + d.occupied + ' из ' + r.capacity + ', свободно ' + d.free;
++      $('#task-capacity').textContent = label + ' в ремонте ' + d.occupied + ' из ' + r.capacity + ', свободно ' + d.free;
+       $('#task-capacity').dataset.free = String(d.free);
+     }).catch(function () {
+       if (seq === todaySeq) $('#task-capacity').textContent = 'Не удалось загрузить загрузку сервиса';
+@@ -1178,22 +1212,22 @@
+     w.textContent = '';
+   }
+ 
+-  // checkDueCapacity — срок изменён: дни от сегодня до срока (включительно) без свободных мест.
+-  // Окно API ограничено CAPACITY_SPAN днями — длинный период запрашивается кусками.
+-  function checkDueCapacity() {
++  // checkPlanCapacity — план изменён: плановые дни (с max(начало, сегодня) по плановое окончание
++  // включительно) без свободных мест. Окно API ограничено CAPACITY_SPAN днями (план — не больше
++  // 60 дней, но запросы режутся кусками на случай расширения границы).
++  function checkPlanCapacity() {
+     if (taskId) return;
+     dueSeq++;
+     var seq = dueSeq;
+     hideCapacityWarning();
+     var today = KT.time.today();
+-    var due = $('#task-due').value;
+-    if (!due || due < today) return;
+-    var last = KT.time.addDays(today, CAPACITY_HORIZON - 1);
+-    if (due < last) last = due;
++    var p = plan();
++    if (!p.end || p.end < today) return;
++    var first = p.start < today ? today : p.start;
+     var reqs = [];
+-    for (var from = today; from <= last; from = KT.time.addDays(from, CAPACITY_SPAN)) {
++    for (var from = first; from <= p.end; from = KT.time.addDays(from, CAPACITY_SPAN)) {
+       var to = KT.time.addDays(from, CAPACITY_SPAN - 1);
+-      reqs.push(calendarWindow(from, to < last ? to : last));
++      reqs.push(calendarWindow(from, to < p.end ? to : p.end));
+     }
+     Promise.all(reqs).then(function (rs) {
+       if (seq !== dueSeq) return;
+@@ -1203,11 +1237,23 @@
+       var shown = full.slice(0, CAPACITY_DAYS_SHOWN).map(ymdText).join(', ');
+       if (full.length > CAPACITY_DAYS_SHOWN) shown += ' и ещё ' + (full.length - CAPACITY_DAYS_SHOWN);
+       var w = $('#task-capacity-warning');
+-      w.textContent = '⚠ До срока нет свободных мест: ' + shown + '. Заказ можно сохранить, но сервис будет перегружен.';
++      w.textContent = '⚠ В плановые дни нет свободных мест: ' + shown + '. Заказ можно сохранить, но сервис будет перегружен.';
+       w.classList.remove('d-none');
+     }).catch(function () { /* предупреждение необязательно — без него заказ сохраняется как обычно */ });
+   }
+ 
++  // planPayload — поля плана для POST/PUT /api/v1/tasks и локальные ошибки (пустая дата,
++  // дни не целое 1..60) — те же коды, что у сервера (tasks_validate.go).
++  function planPayload() {
++    var p = plan();
++    var errs = [];
++    if (!p.start) errs.push({ name: 'start_date', message: 'required' });
++    else if (!DATE_RE.test(p.start)) errs.push({ name: 'start_date', message: 'invalid_date' });
++    if (p.raw === '') errs.push({ name: 'duration_days', message: 'required' });
++    else if (!Number.isInteger(p.days) || p.days < 1 || p.days > 60) errs.push({ name: 'duration_days', message: 'out_of_range' });
++    return { start_date: p.start || null, duration_days: Number.isInteger(p.days) ? p.days : null, errors: errs };
++  }
++
+   // ==================================================================
+   // Новый заказ по госномеру: поиск автомобиля, «Новый автомобиль», новый клиент.
+   // Сохранение — ОДИН POST /api/v1/tasks (plate_number + equipment_id | new_equipment
+@@ -1240,11 +1286,19 @@
+     archived: 'Тип в архиве — выберите другой',
+     conflict: 'Противоречивые данные',
+     plate_mismatch: 'Госномер не совпадает с найденным автомобилем — проверьте номер',
+-    foreign_client: 'Автомобиль принадлежит другому клиенту'
++    foreign_client: 'Автомобиль принадлежит другому клиенту',
++    invalid_date: 'Неверная дата'
++  };
++
++  // PLAN_ERROR_TEXT — out_of_range полей плана работ (границы — tasks_validate.go).
++  var PLAN_ERROR_TEXT = {
++    start_date: 'Дата вне допустимого диапазона (2000–2099)',
++    duration_days: 'От 1 до 60 дней'
+   };
+ 
+   function fieldText(f) {
+     if (f.name === 'plate_number' && PLATE_ERROR_TEXT[f.message]) return PLATE_ERROR_TEXT[f.message];
++    if (f.message === 'out_of_range' && PLAN_ERROR_TEXT[f.name]) return PLAN_ERROR_TEXT[f.name];
+     return FIELD_ERROR_TEXT[f.message] || f.message;
+   }
+ 
+@@ -1492,16 +1546,21 @@
+ 
+   // newOrderPayload — тело POST /api/v1/tasks нового заказа; null — локальная ошибка (показана).
+   function newOrderPayload() {
+-    var due = $('#task-due').value;
++    var pl = planPayload();
+     var assignee = $('#task-assignee').value;
+     var body = {
+       plate_number: plateTidy($('#task-plate').value),
+       column_id: $('#task-column').value,
+       assignee_id: assignee || null,
+-      due_date: due || null,
++      start_date: pl.start_date,
++      duration_days: pl.duration_days,
+       is_paid: $('#task-paid').checked,
+       description: $('#task-description').value
+     };
++    if (pl.errors.length) {
++      showFieldErrors(pl.errors);
++      return null;
++    }
+     if (carMode()) {
+       var chosen = chosenCar();
+       if (!chosen) {
+@@ -1597,19 +1656,30 @@
+   // Шапка заказа (AC-001/AC-002/AC-003/AC-004/AC-017)
+   // ==================================================================
+ 
++  // headerPayload — тело PUT /api/v1/tasks/:id (полная замена шапки, план работ обязателен);
++  // null — локальная ошибка плана (показана под полями).
+   function headerPayload() {
+-    var due = $('#task-due').value;
++    var pl = planPayload();
++    if (pl.errors.length) {
++      showFieldErrors(pl.errors);
++      return null;
++    }
+     var assignee = $('#task-assignee').value;
+     return {
+       title: $('#task-title').value.trim(),
+       column_id: $('#task-column').value,
+       assignee_id: assignee || null,
+-      due_date: due || null,
++      start_date: pl.start_date,
++      duration_days: pl.duration_days,
+       is_paid: $('#task-paid').checked,
+       description: $('#task-description').value
+     };
+   }
+ 
++  // PLAN_FIELDS — поля плана работ: их ошибки показываются под полями и в карточке
++  // существующего заказа (остальные ошибки правки шапки — в шапке, как прежде).
++  var PLAN_FIELDS = { start_date: true, duration_days: true };
++
+   function showHeaderError(msg) {
+     var el = $('#task-error');
+     el.textContent = msg;
+@@ -1625,10 +1695,24 @@
+     ['#task-title', '#task-description'].forEach(function (sel) {
+       var el = $(sel); if (el) el.addEventListener('input', function () { headerDirty = true; });
+     });
+-    ['#task-client', '#task-column', '#task-assignee', '#task-due', '#task-paid'].forEach(function (sel) {
++    ['#task-client', '#task-column', '#task-assignee', '#task-start', '#task-duration', '#task-paid'].forEach(function (sel) {
+       var el = $(sel); if (el) el.addEventListener('change', function () { headerDirty = true; });
+     });
+-    $('#task-due').addEventListener('change', checkDueCapacity);
++    // План работ: подсказка планового окончания — на каждый ввод; загрузка дня начала и
++    // предупреждение по плановым дням — по change (дата выбрана / число дней введено).
++    $('#task-duration').addEventListener('input', function () {
++      headerDirty = true;
++      clearFieldError('duration_days');
++      updatePlannedEnd();
++    });
++    $('#task-start').addEventListener('input', function () { clearFieldError('start_date'); updatePlannedEnd(); });
++    $('#task-start').addEventListener('change', function () {
++      clearFieldError('start_date');
++      updatePlannedEnd();
++      refreshStartLoad();
++      checkPlanCapacity();
++    });
++    $('#task-duration').addEventListener('change', function () { updatePlannedEnd(); checkPlanCapacity(); });
+ 
+     $('#task-save-btn').addEventListener('click', function () {
+       if (saving) return;
+@@ -1642,8 +1726,12 @@
+       var req;
+       if (taskId) {
+         var payload = headerPayload();
+-        payload.version = card ? card.task.version : null;
+-        req = KT.api.put('/api/v1/tasks/' + taskId, payload);
++        if (!payload) {
++          req = Promise.reject({ local: true });
++        } else {
++          payload.version = card ? card.task.version : null;
++          req = KT.api.put('/api/v1/tasks/' + taskId, payload);
++        }
+       } else {
+         // новый заказ: дождаться поиска по ТЕКУЩЕМУ госномеру (debounce мог не сработать),
+         // затем один атомарный POST. null — локальная ошибка формы уже показана.
+@@ -1675,9 +1763,12 @@
+           return;
+         }
+         if (err && err.fields && err.fields.length) {
+-          // правка шапки существующего заказа: клиента в теле нет (one-car-order) — все ошибки
+-          // полей показываются в шапке.
+-          showHeaderError(err.fields.map(function (f) { return f.message; }).join('; '));
++          // правка шапки существующего заказа: клиента в теле нет (one-car-order) — ошибки
++          // плана работ под его полями, остальные — в шапке.
++          var planErrs = err.fields.filter(function (f) { return PLAN_FIELDS[f.name]; });
++          var rest = err.fields.filter(function (f) { return !PLAN_FIELDS[f.name]; });
++          if (planErrs.length) showFieldErrors(planErrs);
++          if (rest.length) showHeaderError(rest.map(function (f) { return f.message; }).join('; '));
+           return;
+         }
+         showHeaderError((err && err.message) || 'Не удалось сохранить заказ');
+diff --git a/web/ssr/calendar/templates/pages/calendar.html b/web/ssr/calendar/templates/pages/calendar.html
+index cb8d41a..e86ea7c 100644
+--- a/web/ssr/calendar/templates/pages/calendar.html
++++ b/web/ssr/calendar/templates/pages/calendar.html
+@@ -50,13 +50,13 @@
+         <h3 class="h6 mb-0" data-testid="cal-gantt-title">Сроки машин в ремонте{{ with $.Selected }} — {{ .Title }}{{ end }}</h3>
+         <span class="small text-body-secondary" data-testid="cal-gantt-range">шкала: {{ .RangeTitle }}</span>
+         {{ with $.Selected }}{{ if not .IsPast }}
+-        <button type="button" class="btn btn-outline-primary btn-sm" data-testid="cal-day-add" data-due="{{ .Date }}">+ Заказ со сроком на этот день</button>
++        <button type="button" class="btn btn-outline-primary btn-sm" data-testid="cal-day-add" data-start="{{ .Date }}">+ Заказ с началом в этот день</button>
+         {{ end }}{{ end }}
+         <div class="ms-auto d-flex flex-wrap gap-3 small text-body-secondary gantt-legend">
+           <span><i class="gantt-key"></i>в ремонте (цвет — колонка)</span>
+           <span><i class="gantt-key open-ended"></i>бессрочно — пока не выдана</span>
+           <span><i class="gantt-key finished"></i>выдана</span>
+-          <span><i class="gantt-key-due"></i>срок</span>
++          <span><i class="gantt-key-due"></i>срок (плановое окончание)</span>
+         </div>
+       </div>
+       {{ if .Rows }}
+@@ -84,7 +84,7 @@
+             </div>
+             <div class="gantt-track">
+               {{ range $g.Days }}<div class="gantt-bg{{ if .IsWeekend }} is-weekend{{ end }}{{ if .IsToday }} is-today{{ end }}{{ if .IsSelected }} is-selected{{ end }}" style="grid-column: {{ .Col }}"></div>{{ end }}
+-              {{ if .DueCol }}<div class="gantt-due{{ if .Overdue }} is-overdue{{ end }}" style="grid-column: {{ .DueCol }}" title="Срок"></div>{{ end }}
++              {{ if .DueCol }}<div class="gantt-due{{ if .Overdue }} is-overdue{{ end }}" style="grid-column: {{ .DueCol }}" title="Плановое окончание" data-testid="cal-gantt-due"></div>{{ end }}
+               <a href="/?task={{ .ID }}" data-open-task="{{ .ID }}" data-testid="cal-gantt-bar"
+                  class="gantt-bar{{ if .CutLeft }} cut-left{{ end }}{{ if .CutRight }} cut-right{{ end }}{{ if .OpenEnded }} open-ended{{ end }}{{ if .IsFinished }} finished{{ end }}"
+                  style="grid-column: {{ .Col }} / span {{ .Span }}; --cal-col: {{ .ColumnColor }}"
+@@ -104,9 +104,9 @@
+   {{ end }}
+ 
+   <p class="text-body-secondary small mt-3 mb-0">
+-    Машина занимает место со дня приёмки до выдачи (перенос заказа в финальную колонку, например «Выдан»). Пока машина не выдана,
+-    место занято по срок заказа; если срок не указан или уже прошёл — место считается занятым и во все следующие
+-    дни, пока машину не выдадут. Удалённые заказы не учитываются.
++    Машина занимает место с дня начала работ («Начать с» в заказе) до выдачи (перенос заказа в финальную колонку, например «Выдан»).
++    Пока машина не выдана, место занято по плановое окончание — начало плюс «Дней на работу»; если плановое окончание уже
++    прошло — место считается занятым и во все следующие дни, пока машину не выдадут. Удалённые заказы не учитываются.
+   </p>
+ </div>
+ 

@@ -1,0 +1,9 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/rule_usage_audit.py --project /Users/igorpotema/mycode/kanban-tree-autoservice --last 3
+(exit 0)
+
+RULE-USAGE: логов 20, поиск внутри sandbox 8, заблокировано хуком 89 (не нарушения)
+  [OK  ] fff (поиск: где лежит / где встречается)
+         вызовов правила 157 · конкурента 8 · доля 95%
+  [OK  ] context-mode (объём: длинный вывод в sandbox)
+         вызовов правила 202 · конкурента 274 · доля 42%
+RULE-USAGE: PASS

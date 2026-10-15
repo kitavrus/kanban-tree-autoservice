@@ -1,0 +1,1968 @@
+diff --git a/internal/features/board/board_fuzz_test.go b/internal/features/board/board_fuzz_test.go
+index 621800a..c682694 100644
+--- a/internal/features/board/board_fuzz_test.go
++++ b/internal/features/board/board_fuzz_test.go
+@@ -77,22 +77,23 @@ func FuzzParseTaskFilter(f *testing.F) {
+ 
+ // FuzzTaskInputValidate — design-tests.md §Fuzz Targets: normalize()+validate() не должны
+ // паниковать; поля ошибок — подмножество {title, client_id, column_id, assignee_id,
+-// due_date} (version — только у TaskUpdateRequest, здесь не участвует).
++// start_date, duration_days, plate_number, equipment_id} (version — только у
++// TaskUpdateRequest, здесь не участвует).
+ func FuzzTaskInputValidate(f *testing.F) {
+-	f.Add("Заказ", validUUID, validUUID, "", "", "А123ВС 77", validUUID, false)
+-	f.Add("", "", "", "\x00", "2026-02-30", "", "", true)
+-	f.Add(strings.Repeat("я", 250), "not-a-uuid", "not-a-uuid", "bad", "bad-date", "А*1", "nope", false)
+-	f.Add(strings.Repeat("a", 201), validUUID, validUUID, validUUID, "2026-01-15", strings.Repeat("Б", 30), "\x00", true)
++	f.Add("Заказ", validUUID, validUUID, "", "2026-10-15", 1, "А123ВС 77", validUUID, false)
++	f.Add("", "", "", "\x00", "2026-02-30", 0, "", "", true)
++	f.Add(strings.Repeat("я", 250), "not-a-uuid", "not-a-uuid", "bad", "bad-date", -5, "А*1", "nope", false)
++	f.Add(strings.Repeat("a", 201), validUUID, validUUID, validUUID, "0000-01-15", 61, strings.Repeat("Б", 30), "\x00", true)
+ 
+-	allowed := map[string]bool{"title": true, "client_id": true, "column_id": true, "assignee_id": true, "due_date": true,
+-		"plate_number": true, "equipment_id": true}
++	allowed := map[string]bool{"title": true, "client_id": true, "column_id": true, "assignee_id": true,
++		"start_date": true, "duration_days": true, "plate_number": true, "equipment_id": true}
+ 
+ 	// one-car-order: клиент и автомобиль — только в TaskCreateRequest (prepare), не в шапке.
+-	f.Fuzz(func(t *testing.T, title, clientID, columnID, assigneeID, dueDate, plate, equipmentID string, isPaid bool) {
++	f.Fuzz(func(t *testing.T, title, clientID, columnID, assigneeID, startDate string, durationDays int, plate, equipmentID string, isPaid bool) {
+ 		in := TaskCreateRequest{
+ 			TaskHeader: TaskHeader{
+ 				Title: title, ColumnID: columnID,
+-				AssigneeID: &assigneeID, DueDate: &dueDate, IsPaid: &isPaid,
++				AssigneeID: &assigneeID, StartDate: &startDate, DurationDays: &durationDays, IsPaid: &isPaid,
+ 			},
+ 			ClientID: clientID, PlateNumber: plate, EquipmentID: equipmentID,
+ 		}
+diff --git a/internal/features/board/board_http_live_test.go b/internal/features/board/board_http_live_test.go
+index 0a8636e..884b21d 100644
+--- a/internal/features/board/board_http_live_test.go
++++ b/internal/features/board/board_http_live_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"net/url"
+ 	"sync"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/stretchr/testify/suite"
+ 
+@@ -70,6 +71,8 @@ type taskCardDTO struct {
+ 	Title         string  `json:"title"`
+ 	AssigneeID    *string `json:"assignee_id"`
+ 	AssigneeName  *string `json:"assignee_name"`
++	StartDate     string  `json:"start_date"`
++	DurationDays  int     `json:"duration_days"`
+ 	DueDate       *string `json:"due_date"`
+ 	IsPaid        bool    `json:"is_paid"`
+ 	Position      string  `json:"position"`
+@@ -223,7 +226,8 @@ func (s *BoardLiveSuite) newTask(clientID, columnID string) taskDTO {
+ func taskCard(t taskDTO, patch map[string]any) map[string]any {
+ 	m := map[string]any{
+ 		"title": t.Title, "column_id": t.ColumnID,
+-		"assignee_id": t.AssigneeID, "due_date": t.DueDate, "is_paid": t.IsPaid, "version": t.Version,
++		"assignee_id": t.AssigneeID, "start_date": t.StartDate, "duration_days": t.DurationDays,
++		"is_paid": t.IsPaid, "version": t.Version,
+ 	}
+ 	for k, v := range patch {
+ 		m[k] = v
+@@ -846,15 +850,15 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_TaskValidation400() {
+ 	col := s.columnID("Приёмка")
+ 
+ 	// one-car-order: заказа без автомобиля нет — прежний режим «title + client_id» → 400.
+-	st, _, raw := s.createTask(s.admin, map[string]any{"title": "Без машины", "client_id": c, "column_id": col})
++	st, _, raw := s.createTask(s.admin, withPlan(map[string]any{"title": "Без машины", "client_id": c, "column_id": col}))
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal("required", s.fields(raw)["plate_number"])
+ 	s.Equal("required", s.fields(raw)["equipment_id"])
+ 
+ 	// title не обязателен — генерируется из госномера.
+-	st, created, raw := s.createTask(s.admin, map[string]any{
++	st, created, raw := s.createTask(s.admin, withPlan(map[string]any{
+ 		"client_id": c, "column_id": col, "plate_number": "ЮТЕСТ", "new_equipment": map[string]any{},
+-	})
++	}))
+ 	s.Require().Equal(http.StatusCreated, st, string(raw))
+ 	s.Equal("ЮТЕСТ", created.Title)
+ 
+@@ -881,9 +885,151 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_TaskValidation400() {
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal("not_found", s.fields(raw)["assignee_id"])
+ 
+-	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": col, "due_date": "2026-13-40"}))
++	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": col, "start_date": "2026-13-40"}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("invalid_date", s.fields(raw)["start_date"])
++}
++
++// order-start-duration (TD-4 валидация): POST без плана работ → 400 по каждому полю; формат/окно
++// даты, границы 1..60; due_date во входе не принимается (неизвестное поле → 400, не 500);
++// мусорный тип duration_days → 400.
++func (s *BoardLiveSuite) TestBoardLiveSuite_TaskPlanValidation400() {
++	c := s.newClient("Клиент-План-Валидация")
++	col := s.columnID("Приёмка")
++	body := func(patch map[string]any) map[string]any {
++		m := map[string]any{"title": "План", "client_id": c, "column_id": col}
++		for k, v := range patch {
++			m[k] = v
++		}
++		return withNewCar(m)
++	}
++
++	st, _, raw := s.createTask(s.admin, body(map[string]any{"start_date": nil, "duration_days": nil}))
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+-	s.Equal("invalid_date", s.fields(raw)["due_date"])
++	s.Equal(map[string]string{"start_date": "required", "duration_days": "required"}, s.fields(raw))
++
++	st, _, raw = s.createTask(s.admin, body(map[string]any{"start_date": "  "}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("required", s.fields(raw)["start_date"])
++
++	for _, tc := range []struct {
++		patch       map[string]any
++		field, code string
++	}{
++		{map[string]any{"start_date": "15.10.2026"}, "start_date", "invalid_date"},
++		{map[string]any{"start_date": "2026-02-30"}, "start_date", "invalid_date"},
++		{map[string]any{"start_date": "0000-01-01"}, "start_date", "out_of_range"},
++		{map[string]any{"start_date": "2100-01-01"}, "start_date", "out_of_range"},
++		{map[string]any{"duration_days": 0}, "duration_days", "out_of_range"},
++		{map[string]any{"duration_days": 61}, "duration_days", "out_of_range"},
++		{map[string]any{"duration_days": -1}, "duration_days", "out_of_range"},
++	} {
++		st, _, raw = s.createTask(s.admin, body(tc.patch))
++		s.Equal(http.StatusBadRequest, st, "%v → %s", tc.patch, raw)
++		s.Equal(tc.code, s.fields(raw)[tc.field], "%v", tc.patch)
++	}
++
++	for _, patch := range []map[string]any{
++		{"due_date": "2026-10-20"}, // срок больше не вводится
++		{"duration_days": "3"},     // строка вместо числа
++		{"duration_days": 1.5},     // не целое
++		{"start_date": 20261015},   // число вместо строки
++	} {
++		st, _, raw = s.createTask(s.admin, body(patch))
++		s.Equal(http.StatusBadRequest, st, "%v → %s", patch, raw)
++	}
++}
++
++// order-start-duration: POST сохраняет план и возвращает вычисленное плановое окончание
++// (start_date + duration_days − 1); границы 1 и 60 дней; PUT меняет оба поля — due_date в ответе,
++// GET и списке доски пересчитан; PUT без плана → 400, с due_date → 400; фильтр due — по плану.
++func (s *BoardLiveSuite) TestBoardLiveSuite_TaskPlan_CreateUpdate() {
++	c := s.newClient("Клиент-План-Заказа")
++	col := s.columnID("Приёмка")
++
++	st, t, raw := s.createTask(s.admin, withNewCar(map[string]any{
++		"title": "План 3 дня", "client_id": c, "column_id": col, "start_date": "2031-03-30", "duration_days": 3,
++	}))
++	s.Require().Equal(http.StatusCreated, st, string(raw))
++	s.Equal("2031-03-30", t.StartDate)
++	s.Equal(3, t.DurationDays)
++	s.Require().NotNil(t.DueDate)
++	s.Equal("2031-04-01", *t.DueDate, "через границу месяца")
++
++	for _, tc := range []struct {
++		days int
++		due  string
++	}{{1, "2031-03-30"}, {60, "2031-05-28"}} {
++		st, b, raw := s.createTask(s.admin, withNewCar(map[string]any{
++			"title": "План граница", "client_id": c, "column_id": col, "start_date": "2031-03-30", "duration_days": tc.days,
++		}))
++		s.Require().Equal(http.StatusCreated, st, string(raw))
++		s.Equal(tc.due, *b.DueDate, "days=%d", tc.days)
++	}
++
++	// PUT: новое начало и дни → плановое окончание пересчитано в ответе, GET и списке.
++	st, m, raw := s.mutate(s.admin, http.MethodPut, "/api/v1/tasks/"+itoa(t.ID), taskCard(t, map[string]any{
++		"start_date": "2031-04-10", "duration_days": 5,
++	}))
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("2031-04-10", m.Task.StartDate)
++	s.Equal(5, m.Task.DurationDays)
++	s.Equal("2031-04-14", *m.Task.DueDate)
++	st, got, raw := s.getTask(s.admin, t.ID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Equal("2031-04-10|5|2031-04-14", got.StartDate+"|"+itoa(int64(got.DurationDays))+"|"+*got.DueDate)
++	st, raw = s.admin.Do(http.MethodGet, "/api/v1/tasks?assignee=all&client_id="+c, nil)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	var list taskListDTO
++	s.Require().NoError(json.Unmarshal(raw, &list))
++	found := false
++	for _, it := range list.Items {
++		if it.ID == t.ID {
++			found = true
++			s.Equal("2031-04-10|5|2031-04-14", it.StartDate+"|"+itoa(int64(it.DurationDays))+"|"+*it.DueDate)
++		}
++	}
++	s.True(found, "заказ в списке доски")
++
++	// PUT — полная замена шапки: без плана → 400 по полям; due_date во входе → 400.
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/tasks/"+itoa(t.ID), taskCard(m.Task, map[string]any{"start_date": nil, "duration_days": nil}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal(map[string]string{"start_date": "required", "duration_days": "required"}, s.fields(raw))
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/tasks/"+itoa(t.ID), taskCard(m.Task, map[string]any{"due_date": "2031-05-01"}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/tasks/"+itoa(t.ID), taskCard(m.Task, map[string]any{"duration_days": 61}))
++	s.Equal(http.StatusBadRequest, st, string(raw))
++	s.Equal("out_of_range", s.fields(raw)["duration_days"])
++	st, got, _ = s.getTask(s.admin, t.ID)
++	s.Require().Equal(http.StatusOK, st)
++	s.Equal(m.Task.Version, got.Version, "отклонённые PUT заказ не меняли")
++
++	// фильтр «Горит/просрочено» — по плановому окончанию: план прошёл → overdue; кончается
++	// сегодня → soon; длинный план в будущем — ни там, ни там.
++	fc := s.newClient("Клиент-План-Фильтр")
++	today, err := time.Parse(time.DateOnly, testToday())
++	s.Require().NoError(err)
++	mk := func(title string, startOffset, days int) int64 {
++		st, x, raw := s.createTask(s.admin, withNewCar(map[string]any{"title": title, "client_id": fc, "column_id": col,
++			"start_date": today.AddDate(0, 0, startOffset).Format(time.DateOnly), "duration_days": days}))
++		s.Require().Equal(http.StatusCreated, st, string(raw))
++		return x.ID
++	}
++	overdue, soon, later := mk("План прошёл", -5, 2), mk("План сегодня", -2, 3), mk("План потом", 0, 10)
++	ids := func(due string) map[int64]bool {
++		st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks?assignee=all&client_id="+fc+"&due="+due, nil)
++		s.Require().Equal(http.StatusOK, st, string(raw))
++		var l taskListDTO
++		s.Require().NoError(json.Unmarshal(raw, &l))
++		out := map[int64]bool{}
++		for _, it := range l.Items {
++			out[it.ID] = true
++		}
++		return out
++	}
++	s.Equal(map[int64]bool{overdue: true}, ids("overdue"))
++	s.Equal(map[int64]bool{overdue: true, soon: true}, ids("soon"))
++	s.NotContains(ids("soon"), later)
+ }
+ 
+ // LV-034/AC-006.
+diff --git a/internal/features/board/car_order_http_live_test.go b/internal/features/board/car_order_http_live_test.go
+index e81fda3..f1fc680 100644
+--- a/internal/features/board/car_order_http_live_test.go
++++ b/internal/features/board/car_order_http_live_test.go
+@@ -108,7 +108,7 @@ func (s *CarOrderLiveSuite) lookup(b *testutil.Browser, plate string) (int, look
+ }
+ 
+ func (s *CarOrderLiveSuite) createTask(b *testutil.Browser, body map[string]any) (int, carTaskDTO, []byte) {
+-	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", body)
++	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", withPlan(body))
+ 	var t carTaskDTO
+ 	if st == http.StatusCreated {
+ 		s.Require().NoError(json.Unmarshal(raw, &t), string(raw))
+diff --git a/internal/features/board/migration_order_start_duration_integration_test.go b/internal/features/board/migration_order_start_duration_integration_test.go
+new file mode 100644
+index 0000000..a748bc5
+--- /dev/null
++++ b/internal/features/board/migration_order_start_duration_integration_test.go
+@@ -0,0 +1,141 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	_ "github.com/golang-migrate/migrate/v4/database/postgres"
++	_ "github.com/golang-migrate/migrate/v4/source/file"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// OrderStartDurationMigrationSuite — миграция 0018 (order-start-duration): бэкфилл
++// tasks.start_date (день приёмки в поясе Asia/Almaty) и duration_days (до прежнего срока, ≤ 60,
++// иначе 1), due_date — вычисляемое плановое окончание; down возвращает due_date обычной колонкой
++// со значением плана.
++type OrderStartDurationMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestOrderStartDurationMigrationSuite(t *testing.T) {
++	suite.Run(t, new(OrderStartDurationMigrationSuite))
++}
++
++const osdAdminID = "aaaaaaaa-0018-0018-0018-000000000001"
++
++func (s *OrderStartDurationMigrationSuite) scalar(q string, args ...any) string {
++	var v string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), q, args...).Scan(&v), q)
++	return v
++}
++
++func (s *OrderStartDurationMigrationSuite) exec(q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	s.Require().NoError(err, q)
++}
++
++// TestMigration0018_Backfill_UpDown — случаи бэкфилла:
++//
++//	(a) срок не раньше приёмки → дни = срок − начало + 1, плановое окончание = прежний срок;
++//	(b) срок раньше дня приёмки → 1 день;
++//	(c) срока нет → 1 день;
++//	(d) срок дальше 60 дней от приёмки → 60 (кламп CHECK);
++//	(e) приёмка вечером по UTC — уже следующий день в Алматы → начало = дата по Алматы;
++//	(f) срок в день приёмки → 1 день.
++//
++// После up — start_date/duration_days NOT NULL с DEFAULT, CHECK 1..60, due_date GENERATED; down →
++// due_date обычная колонка со значением плана, повторный up даёт те же начало и дни.
++func (s *OrderStartDurationMigrationSuite) TestMigration0018_Backfill_UpDown() {
++	ctx := context.Background()
++	mig, err := migrate.New(migrateRoot(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(17))
++	defer func() {
++		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'start_date'`))
++
++	// ---- данные «до» (0017) ----
++	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'osd-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, osdAdminID)
++	column := s.scalar(`SELECT id::text FROM columns WHERE deleted_at IS NULL ORDER BY position, id LIMIT 1`)
++	client := s.scalar(`INSERT INTO clients (company_name) VALUES ('OSD клиент') RETURNING id::text`)
++	car := s.scalar(`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'ОСД 018') RETURNING id::text`, client)
++	task := func(title, createdAt string, due any) string {
++		return s.scalar(`
++			INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by, created_at, due_date)
++			VALUES ($1, $2, $3, $4, 1, $5, $6::timestamptz, $7::date) RETURNING id::text`,
++			column, client, car, title, osdAdminID, createdAt, due)
++	}
++	tA := task("OSD (a)", "2026-10-10T06:00:00Z", "2026-10-14")
++	tB := task("OSD (b)", "2026-10-10T06:00:00Z", "2026-10-08")
++	tC := task("OSD (c)", "2026-10-10T06:00:00Z", nil)
++	tD := task("OSD (d)", "2026-10-10T06:00:00Z", "2027-01-30")
++	tE := task("OSD (e)", "2026-10-14T20:30:00Z", "2026-10-16") // 01:30 15.10 по Алматы (UTC+5)
++	tF := task("OSD (f)", "2026-10-10T06:00:00Z", "2026-10-10")
++	defer func() {
++		_, _ = s.Pool.Exec(ctx, `DELETE FROM tasks WHERE client_id = $1`, client)
++		_, _ = s.Pool.Exec(ctx, `DELETE FROM clients WHERE id = $1`, client) // машина — каскадом
++		_, _ = s.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, osdAdminID)
++	}()
++
++	plan := func(id string) string {
++		return s.scalar(`SELECT start_date::text || '|' || duration_days::text || '|' || due_date::text FROM tasks WHERE id = $1::bigint`, id)
++	}
++
++	// ---- up → 0018 ----
++	s.Require().NoError(mig.Migrate(18))
++	for _, col := range []string{"start_date", "duration_days"} {
++		s.Equal("NO", s.scalar(`SELECT is_nullable FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = $1`, col), "%s NOT NULL", col)
++	}
++	s.Equal("ALWAYS", s.scalar(`SELECT is_generated FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'due_date'`), "due_date вычисляемая")
++	s.Equal("1", s.scalar(`SELECT count(*)::text FROM pg_constraint WHERE conname = 'tasks_duration_days_chk'`))
++
++	s.Equal("2026-10-10|5|2026-10-14", plan(tA), "(a) дни до прежнего срока")
++	s.Equal("2026-10-10|1|2026-10-10", plan(tB), "(b) срок раньше приёмки → 1")
++	s.Equal("2026-10-10|1|2026-10-10", plan(tC), "(c) без срока → 1")
++	s.Equal("2026-10-10|60|2026-12-08", plan(tD), "(d) кламп до 60 дней")
++	s.Equal("2026-10-15|2|2026-10-16", plan(tE), "(e) начало — дата приёмки по Алматы")
++	s.Equal("2026-10-10|1|2026-10-10", plan(tF), "(f) срок в день приёмки → 1")
++
++	// плановое окончание пересчитывается при правке, напрямую не пишется; CHECK 1..60.
++	s.exec(`UPDATE tasks SET start_date = '2026-11-01', duration_days = 3 WHERE id = $1::bigint`, tC)
++	s.Equal("2026-11-01|3|2026-11-03", plan(tC))
++	_, err = s.Pool.Exec(ctx, `UPDATE tasks SET due_date = '2026-12-01' WHERE id = $1::bigint`, tC)
++	s.Error(err, "due_date вычисляемая — запись запрещена")
++	for _, days := range []int{0, 61} {
++		_, err = s.Pool.Exec(ctx, `UPDATE tasks SET duration_days = $2 WHERE id = $1::bigint`, tC, days)
++		s.Error(err, "CHECK duration_days: %d", days)
++	}
++	// прямой INSERT без новых полей — DEFAULT: сегодня, 1 день.
++	tG := s.scalar(`INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by) VALUES ($1, $2, $3, 'OSD (g)', 1, $4) RETURNING id::text`,
++		column, client, car, osdAdminID)
++	s.Equal("true|1|true", s.scalar(`SELECT (start_date = CURRENT_DATE)::text || '|' || duration_days::text || '|' || (due_date = start_date)::text FROM tasks WHERE id = $1::bigint`, tG))
++
++	// ---- down → 0017: due_date — обычная колонка со значением плана ----
++	s.Require().NoError(mig.Migrate(17))
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'tasks' AND column_name IN ('start_date', 'duration_days')`))
++	s.Equal("NEVER|YES", s.scalar(`SELECT is_generated || '|' || is_nullable FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'due_date'`))
++	due := func(id string) string {
++		return s.scalar(`SELECT coalesce(due_date::text, '-') FROM tasks WHERE id = $1::bigint`, id)
++	}
++	s.Equal("2026-10-14", due(tA))
++	s.Equal("2026-11-03", due(tC), "план после правки")
++	s.Equal("2026-12-08", due(tD))
++	s.exec(`UPDATE tasks SET due_date = NULL WHERE id = $1::bigint`, tB) // срок снова вводится вручную
++
++	// ---- повторный up поверх отката ----
++	s.Require().NoError(mig.Migrate(18))
++	s.Equal("2026-10-10|5|2026-10-14", plan(tA))
++	s.Equal("2026-10-10|1|2026-10-10", plan(tB))
++	s.Equal("2026-10-15|2|2026-10-16", plan(tE))
++}
+diff --git a/internal/features/board/one_car_helpers_live_test.go b/internal/features/board/one_car_helpers_live_test.go
+index 47f3949..4ff0f63 100644
+--- a/internal/features/board/one_car_helpers_live_test.go
++++ b/internal/features/board/one_car_helpers_live_test.go
+@@ -6,6 +6,9 @@ import (
+ 	"strconv"
+ 	"strings"
+ 	"sync/atomic"
++	"time"
++
++	"github.com/kitavrus/kanban-tree/pkg/timezone"
+ )
+ 
+ // one-car-order: заказа без автомобиля нет — POST /api/v1/tasks требует plate_number и
+@@ -28,12 +31,9 @@ func testPlate() string {
+ }
+ 
+ // withNewCar — копия тела POST /api/v1/tasks с новым автомобилем (plate_number + new_equipment),
+-// если тело ещё не задаёт автомобиль.
++// если тело ещё не задаёт автомобиль, и с планом работ по умолчанию (withPlan).
+ func withNewCar(body map[string]any) map[string]any {
+-	out := make(map[string]any, len(body)+2)
+-	for k, v := range body {
+-		out[k] = v
+-	}
++	out := withPlan(body)
+ 	if _, ok := out["plate_number"]; !ok {
+ 		out["plate_number"] = testPlate()
+ 	}
+@@ -44,3 +44,25 @@ func withNewCar(body map[string]any) map[string]any {
+ 	}
+ 	return out
+ }
++
++// testToday — «сегодня» фикстур плана работ (пояс seed-пользователя — Asia/Almaty).
++func testToday() string {
++	return time.Now().In(timezone.Load(timezone.Default)).Format(time.DateOnly)
++}
++
++// withPlan — копия тела POST/PUT /api/v1/tasks с планом работ (order-start-duration: start_date
++// и duration_days обязательны): не заданные поля — начало сегодня, 1 день. Ключ со значением
++// nil (негативные сценарии) сохраняется как есть.
++func withPlan(body map[string]any) map[string]any {
++	out := make(map[string]any, len(body)+4)
++	for k, v := range body {
++		out[k] = v
++	}
++	if _, ok := out["start_date"]; !ok {
++		out["start_date"] = testToday()
++	}
++	if _, ok := out["duration_days"]; !ok {
++		out["duration_days"] = 1
++	}
++	return out
++}
+diff --git a/internal/features/board/order_card_http_live_test.go b/internal/features/board/order_card_http_live_test.go
+index e87525f..d1d6156 100644
+--- a/internal/features/board/order_card_http_live_test.go
++++ b/internal/features/board/order_card_http_live_test.go
+@@ -177,9 +177,9 @@ func (s *OrderCardLiveSuite) newTask(clientID, columnID string) (int64, int64) {
+ // newTaskWithCar — заказ на уже существующий автомобиль equipmentID (найден по госномеру,
+ // клиент заказа — владелец автомобиля).
+ func (s *OrderCardLiveSuite) newTaskWithCar(equipmentID, plate, columnID string) int64 {
+-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
+ 		"title": "Заказ карточки", "column_id": columnID, "plate_number": plate, "equipment_id": equipmentID,
+-	})
++	}))
+ 	s.Require().Equal(http.StatusCreated, st, string(raw))
+ 	var m struct {
+ 		Task struct {
+@@ -367,7 +367,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
+ 	// PUT description=null — не меняет сохранённый HTML.
+ 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", m.Task.ID), map[string]any{
+ 		"title": "Заказ с описанием", "column_id": col,
+-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": m.Task.Version, "description": nil,
++		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": m.Task.Version, "description": nil,
+ 	})
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 	st, card, raw = s.getCard(s.admin, m.Task.ID)
+@@ -377,7 +377,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
+ 	// PUT с новым description — переписывает.
+ 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", m.Task.ID), map[string]any{
+ 		"title": "Заказ с описанием", "column_id": col,
+-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": int64(2), "description": "Новый текст",
++		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": int64(2), "description": "Новый текст",
+ 	})
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 	st, card, raw = s.getCard(s.admin, m.Task.ID)
+@@ -404,9 +404,9 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_DeepLink_SSR() {
+ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_NewCarInCard() {
+ 	c := s.newClient("Клиент-Автомобиль-Новый")
+ 	col := s.columnID("Приёмка")
+-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
+ 		"client_id": c, "column_id": col, "plate_number": "н002нн 77", "new_equipment": map[string]any{},
+-	})
++	}))
+ 	s.Require().Equal(http.StatusCreated, st, string(raw))
+ 	var m struct {
+ 		Task struct {
+@@ -458,7 +458,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_PutCannotChangeClientOrC
+ 	otherCar := s.newEquipment(c2)
+ 
+ 	base := func(extra map[string]any) map[string]any {
+-		m := map[string]any{"title": "Заказ", "column_id": col, "assignee_id": nil, "due_date": nil, "is_paid": false, "version": version}
++		m := map[string]any{"title": "Заказ", "column_id": col, "assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version}
+ 		for k, v := range extra {
+ 			m[k] = v
+ 		}
+@@ -523,22 +523,22 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_ForeignOrUnknownCar400()
+ 	col := s.columnID("Приёмка")
+ 	foreignEqID := s.newEquipment(c2)
+ 
+-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
+ 		"client_id": c1, "column_id": col, "plate_number": "М001ММ 77", "equipment_id": foreignEqID,
+-	})
++	}))
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal("foreign_client", s.fields(raw)["equipment_id"])
+ 
+ 	unknown := "00000000-0000-0000-0000-000000000000"
+-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
+ 		"column_id": col, "plate_number": "М001ММ 77", "equipment_id": unknown,
+-	})
++	}))
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal("not_found", s.fields(raw)["equipment_id"])
+ 
+-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
+ 		"client_id": c1, "column_id": col, "plate_number": "М001ММ 77", "equipment_id": "",
+-	})
++	}))
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal("required", s.fields(raw)["equipment_id"])
+ }
+@@ -878,7 +878,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_UnaffectedByRowMutat
+ 
+ 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
+ 		"title": "Заказ карточки", "column_id": col,
+-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
++		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
+ 	})
+ 	s.Require().Equal(http.StatusOK, st, string(raw), "version, захваченный ДО row-мутаций, всё ещё актуален")
+ }
+@@ -891,13 +891,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_ConflictOnHeader() {
+ 
+ 	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
+ 		"title": "Первая правка", "column_id": col,
+-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
++		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
+ 	})
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 
+ 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
+ 		"title": "Вторая правка", "column_id": col,
+-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
++		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
+ 	})
+ 	s.Equal(http.StatusConflict, st, string(raw))
+ 	s.Equal("TASK_VERSION_CONFLICT", s.errOf(raw).Code)
+@@ -1061,7 +1061,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Access_ExecutorRowEndpoints(
+ 
+ 	st, raw = exec.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
+ 		"title": "Заказ карточки", "column_id": col,
+-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
++		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
+ 	})
+ 	s.Equal(http.StatusOK, st, string(raw), "правка без смены is_paid — доступна executor")
+ }
+@@ -1258,9 +1258,9 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Executor_CarOrderAllowed() {
+ 	col := s.columnID("Приёмка")
+ 	eqID := s.newEquipment(c)
+ 
+-	st, raw := exec.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++	st, raw := exec.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
+ 		"column_id": col, "plate_number": "М001ММ 77", "equipment_id": eqID,
+-	})
++	}))
+ 	s.Require().Equal(http.StatusCreated, st, string(raw))
+ 	var m struct {
+ 		Task struct {
+diff --git a/internal/features/board/print_http_live_test.go b/internal/features/board/print_http_live_test.go
+index d5d112a..d5447ee 100644
+--- a/internal/features/board/print_http_live_test.go
++++ b/internal/features/board/print_http_live_test.go
+@@ -74,10 +74,10 @@ func (s *PrintLiveSuite) newTask(clientID, columnID, description string) (int64,
+ 
+ // newTaskWithPlate — заказ с новым автомобилем клиента с госномером plate (one-car-order).
+ func (s *PrintLiveSuite) newTaskWithPlate(clientID, columnID, description, plate string) (int64, int64) {
+-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
+ 		"title": "Заказ печати", "client_id": clientID, "column_id": columnID, "description": description,
+ 		"plate_number": plate, "new_equipment": map[string]any{},
+-	})
++	}))
+ 	s.Require().Equal(http.StatusCreated, st, string(raw))
+ 	var m printTaskCreated
+ 	s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
+@@ -87,7 +87,7 @@ func (s *PrintLiveSuite) newTaskWithPlate(clientID, columnID, description, plate
+ func (s *PrintLiveSuite) markPaid(taskID, clientID, columnID string, version int64) {
+ 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/tasks/"+taskID, map[string]any{
+ 		"title": "Заказ печати", "column_id": columnID,
+-		"assignee_id": nil, "due_date": nil, "is_paid": true, "version": version,
++		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": true, "version": version,
+ 	})
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ }
+diff --git a/internal/features/board/soft_delete_http_live_test.go b/internal/features/board/soft_delete_http_live_test.go
+index be94325..220eafd 100644
+--- a/internal/features/board/soft_delete_http_live_test.go
++++ b/internal/features/board/soft_delete_http_live_test.go
+@@ -654,7 +654,7 @@ func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
+ 		body               map[string]any
+ 		code               string
+ 	}{
+-		{"правка заказа", http.MethodPut, taskPath(taskID, ""), map[string]any{"title": "Новое название", "column_id": newCol, "version": json.Number(version)}, "TASK_NOT_FOUND"},
++		{"правка заказа", http.MethodPut, taskPath(taskID, ""), withPlan(map[string]any{"title": "Новое название", "column_id": newCol, "version": json.Number(version)}), "TASK_NOT_FOUND"},
+ 		{"перенос заказа", http.MethodPost, taskPath(taskID, "/move"), map[string]any{"column_id": wip}, "TASK_NOT_FOUND"},
+ 		{"добавление услуги", http.MethodPost, taskPath(taskID, "/subtasks"), map[string]any{"service_id": svc}, "TASK_NOT_FOUND"},
+ 		{"правка услуги", http.MethodPut, "/api/v1/subtasks/" + subtaskID, map[string]any{"status": "in_progress"}, "SUBTASK_NOT_FOUND"},
+diff --git a/internal/features/board/stock_engine_integration_test.go b/internal/features/board/stock_engine_integration_test.go
+index 86d0632..b6c5700 100644
+--- a/internal/features/board/stock_engine_integration_test.go
++++ b/internal/features/board/stock_engine_integration_test.go
+@@ -235,8 +235,9 @@ func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService
+ 	// подзадача-услуга с потребностью в товаре — напрямую SQL (subtask_products не входит
+ 	// в DTO заказа фазы 03, появится в фазе 6), заказ и его перенос — через сервис.
+ 	// one-car-order: заказ создаётся только с автомобилем (новый автомобиль клиента).
++	seStart, seDays := "2031-01-10", 2 // order-start-duration: план работ обязателен
+ 	create, err := taskSvc.Create(ctx, actor, board.TaskCreateRequest{
+-		TaskHeader:   board.TaskHeader{Title: "IT-010 заказ", ColumnID: seColTodo},
++		TaskHeader:   board.TaskHeader{Title: "IT-010 заказ", ColumnID: seColTodo, StartDate: &seStart, DurationDays: &seDays},
+ 		ClientID:     seClientID,
+ 		PlateNumber:  "ИТ010 77",
+ 		NewEquipment: &board.TaskNewEquipment{},
+diff --git a/internal/features/board/tasks_car_validate_test.go b/internal/features/board/tasks_car_validate_test.go
+index db99939..815930f 100644
+--- a/internal/features/board/tasks_car_validate_test.go
++++ b/internal/features/board/tasks_car_validate_test.go
+@@ -15,7 +15,7 @@ import (
+ 
+ func carReq(mut func(*TaskCreateRequest)) TaskCreateRequest {
+ 	in := TaskCreateRequest{
+-		TaskHeader:   TaskHeader{ColumnID: validUUID},
++		TaskHeader:   withPlan(TaskHeader{ColumnID: validUUID}),
+ 		ClientID:     validUUID,
+ 		PlateNumber:  " о718мр  199 ",
+ 		NewEquipment: &TaskNewEquipment{},
+diff --git a/internal/features/board/tasks_dto.go b/internal/features/board/tasks_dto.go
+index e845c80..bf1493b 100644
+--- a/internal/features/board/tasks_dto.go
++++ b/internal/features/board/tasks_dto.go
+@@ -23,13 +23,18 @@ type TaskCard struct {
+ 	Title           string  `json:"title"`
+ 	AssigneeID      *string `json:"assignee_id"`
+ 	AssigneeName    *string `json:"assignee_name"`
+-	DueDate         *string `json:"due_date"` // YYYY-MM-DD
+-	IsPaid          bool    `json:"is_paid"`
+-	Position        string  `json:"position"`
+-	Version         int64   `json:"version"`
+-	SubtasksTotal   int     `json:"subtasks_total"`
+-	SubtasksDone    int     `json:"subtasks_done"`
+-	SubtasksLate    int     `json:"subtasks_late"`
++	// StartDate/DurationDays — план работ (order-start-duration): начало (YYYY-MM-DD) и дней на
++	// работу (1..60). DueDate — плановое окончание start_date + duration_days − 1 (вычисляется
++	// БД, вводом не принимается); у действующих заказов всегда задан.
++	StartDate     string  `json:"start_date"`
++	DurationDays  int     `json:"duration_days"`
++	DueDate       *string `json:"due_date"` // YYYY-MM-DD
++	IsPaid        bool    `json:"is_paid"`
++	Position      string  `json:"position"`
++	Version       int64   `json:"version"`
++	SubtasksTotal int     `json:"subtasks_total"`
++	SubtasksDone  int     `json:"subtasks_done"`
++	SubtasksLate  int     `json:"subtasks_late"`
+ 	// TotalAmount/LastLog — фаза 6 (design-sql.md §Totals Expression/§Last Log Expression).
+ 	// Одно имя итога и в GET /tasks, и в карточке (design-go-layers.md §DTO OrderCard).
+ 	TotalAmount numeric.Amount `json:"total_amount"`
+@@ -80,12 +85,17 @@ type TaskResponse struct {
+ // 403 PAID_ADMIN_ONLY (AC-011). Клиента и автомобиля здесь нет (one-car-order): они задаются
+ // только при создании (TaskCreateRequest) и потом не меняются — PUT с client_id/equipment_id
+ // отклоняется как тело с неизвестным полем (strictJSON → 400 BAD_REQUEST).
++//
++// order-start-duration: план работ — StartDate (YYYY-MM-DD) и DurationDays (1..60), оба
++// обязательны и в POST, и в PUT; due_date вводом не принимается (то же strictJSON → 400) —
++// плановое окончание вычисляет БД.
+ type TaskHeader struct {
+-	Title      string  `json:"title"`
+-	ColumnID   string  `json:"column_id"`
+-	AssigneeID *string `json:"assignee_id"`
+-	DueDate    *string `json:"due_date"`
+-	IsPaid     *bool   `json:"is_paid"`
++	Title        string  `json:"title"`
++	ColumnID     string  `json:"column_id"`
++	AssigneeID   *string `json:"assignee_id"`
++	StartDate    *string `json:"start_date"`
++	DurationDays *int    `json:"duration_days"`
++	IsPaid       *bool   `json:"is_paid"`
+ 	// Description — plain text ≤10000 символов (design-errors.md §Validation Fields).
+ 	// POST: nil → "" (пусто); PUT (через embed в TaskUpdateRequest): nil → не менять.
+ 	Description *string `json:"description"`
+diff --git a/internal/features/board/tasks_repo.go b/internal/features/board/tasks_repo.go
+index 78047fc..ef28545 100644
+--- a/internal/features/board/tasks_repo.go
++++ b/internal/features/board/tasks_repo.go
+@@ -26,7 +26,9 @@ type Task struct {
+ 	Title           string
+ 	AssigneeID      *string
+ 	AssigneeName    *string
+-	DueDate         *string // YYYY-MM-DD
++	StartDate       string  // YYYY-MM-DD — начало работ (order-start-duration)
++	DurationDays    int     // дней на работу, 1..60
++	DueDate         *string // YYYY-MM-DD — плановое окончание (вычисляемая колонка)
+ 	IsPaid          bool
+ 	PaidAt          *time.Time
+ 	Position        string
+@@ -70,7 +72,8 @@ type taskRow struct {
+ 	CarID           string
+ 	ColumnID        string
+ 	AssigneeID      *string
+-	DueDate         *string
++	StartDate       string // YYYY-MM-DD; due_date (плановое окончание) вычисляет БД
++	DurationDays    int
+ 	IsPaid          bool
+ 	Position        string
+ 	DescriptionHTML string
+@@ -84,10 +87,10 @@ func NewTaskRepo(pool *pgxpool.Pool) *TaskRepo { return &TaskRepo{pool: pool} }
+ 
+ // taskWriteReturning — общий список колонок RETURNING для Insert/Update/Move (без JOIN —
+ // денормализованные поля добавляет только Get/List).
+-const taskWriteReturning = `id, column_id, client_id, title, assignee_id, due_date::text, is_paid, paid_at, position::text, version, created_at, updated_at`
++const taskWriteReturning = `id, column_id, client_id, title, assignee_id, start_date::text, duration_days, due_date::text, is_paid, paid_at, position::text, version, created_at, updated_at`
+ 
+ func scanTaskRow(row pgx.Row, t *Task) error {
+-	return row.Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.DueDate,
++	return row.Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.StartDate, &t.DurationDays, &t.DueDate,
+ 		&t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt)
+ }
+ 
+@@ -176,10 +179,10 @@ func (r *TaskRepo) LockTaskAny(ctx context.Context, tx pgx.Tx, id int64) (*Task,
+ 	var t Task
+ 	var deleted bool
+ 	err := tx.QueryRow(ctx, `
+-		SELECT id, column_id, client_id, title, assignee_id, due_date::text, is_paid, paid_at, position::text, version, description_html,
++		SELECT id, column_id, client_id, title, assignee_id, start_date::text, duration_days, due_date::text, is_paid, paid_at, position::text, version, description_html,
+ 		       deleted_at IS NOT NULL
+ 		FROM tasks WHERE id = $1 FOR UPDATE`, id).
+-		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.DescriptionHTML,
++		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.StartDate, &t.DurationDays, &t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.DescriptionHTML,
+ 			&deleted)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, false, errNotFound
+@@ -316,12 +319,12 @@ func (r *TaskRepo) Update(ctx context.Context, tx pgx.Tx, id, version int64, in
+ 	var t Task
+ 	err := scanTaskRow(tx.QueryRow(ctx, `
+ 		UPDATE tasks SET title = $3, column_id = $4::uuid, assignee_id = $5::uuid,
+-		       due_date = $6::date, is_paid = $7,
++		       start_date = $6::date, duration_days = $10, is_paid = $7,
+ 		       paid_at = CASE WHEN $7 AND NOT is_paid THEN now() WHEN NOT $7 THEN NULL ELSE paid_at END,
+ 		       position = $8::numeric, description_html = $9, version = version + 1, updated_at = now()
+ 		WHERE id = $1 AND version = $2
+ 		RETURNING `+taskWriteReturning,
+-		id, version, in.Title, in.ColumnID, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, in.DescriptionHTML), &t)
++		id, version, in.Title, in.ColumnID, in.AssigneeID, in.StartDate, in.IsPaid, in.Position, in.DescriptionHTML, in.DurationDays), &t)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+ 		return nil, errVersionConflict
+ 	}
+@@ -332,10 +335,10 @@ func (r *TaskRepo) Update(ctx context.Context, tx pgx.Tx, id, version int64, in
+ func (r *TaskRepo) Insert(ctx context.Context, tx pgx.Tx, in taskRow, createdBy string) (*Task, error) {
+ 	var t Task
+ 	err := scanTaskRow(tx.QueryRow(ctx, `
+-		INSERT INTO tasks (column_id, client_id, car_id, title, assignee_id, due_date, is_paid, paid_at, position, created_by, description_html)
+-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6::date, $7, CASE WHEN $7 THEN now() END, $8::numeric, $9::uuid, $10)
++		INSERT INTO tasks (column_id, client_id, car_id, title, assignee_id, start_date, duration_days, is_paid, paid_at, position, created_by, description_html)
++		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6::date, $11, $7, CASE WHEN $7 THEN now() END, $8::numeric, $9::uuid, $10)
+ 		RETURNING `+taskWriteReturning,
+-		in.ColumnID, in.ClientID, in.CarID, in.Title, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, createdBy, in.DescriptionHTML), &t)
++		in.ColumnID, in.ClientID, in.CarID, in.Title, in.AssigneeID, in.StartDate, in.IsPaid, in.Position, createdBy, in.DescriptionHTML, in.DurationDays), &t)
+ 	return &t, err
+ }
+ 
+@@ -416,7 +419,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
+ 	}
+ 	err := r.pool.QueryRow(ctx, `
+ 		SELECT t.id, t.column_id, t.client_id, cl.company_name, cl.deleted_at IS NOT NULL, t.title, t.assignee_id, u.name,
+-		       t.due_date::text, t.is_paid, t.paid_at, t.position::text, t.version, t.created_at, t.updated_at,
++		       t.start_date::text, t.duration_days, t.due_date::text, t.is_paid, t.paid_at, t.position::text, t.version, t.created_at, t.updated_at,
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id),
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done'),
+ 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done' AND s.due_date < COALESCE($2::date, current_date)),
+@@ -429,7 +432,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
+ 		`+lastLogJoinSQL+`
+ 		WHERE t.id = $1 AND t.deleted_at IS NULL`, id, todayArg).
+ 		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.ClientName, &t.ClientIsDeleted, &t.Title, &t.AssigneeID, &t.AssigneeName,
+-			&t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
++			&t.StartDate, &t.DurationDays, &t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
+ 			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount,
+ 			&llText, &llCut, &llAuthor, &llCreatedAt, &t.ExecutorUnpaidDone)
+ 	if errors.Is(err, pgx.ErrNoRows) {
+@@ -443,8 +446,10 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
+ 	return &t, nil
+ }
+ 
+-// boardListSQL — design-sql.md §Board List Query, `due_date`/`position` приведены к text
+-// (TaskCard.DueDate/Position — *string/string, не time.Time/Amount).
++// boardListSQL — design-sql.md §Board List Query, `start_date`/`due_date`/`position` приведены
++// к text (TaskCard.StartDate/DueDate/Position — string/*string/string, не time.Time/Amount).
++// Фильтр due (overdue/soon) — по плановому окончанию due_date (вычисляемая колонка,
++// order-start-duration).
+ //
+ // pagination DS-002: фильтры считаются в CTE base по «лёгким» колонкам; там же окна
+ // row_number()/count(*) по колонке (column_total) и count(*) OVER () (total — без окна
+@@ -500,7 +505,7 @@ WITH base AS (
+   LIMIT $8 OFFSET $9
+ )
+ SELECT t.id, t.column_id, t.client_id, cl.company_name, cl.deleted_at IS NOT NULL, t.title, t.assignee_id, u.name,
+-       t.due_date::text, t.is_paid, t.position::text, t.version,
++       t.start_date::text, t.duration_days, t.due_date::text, t.is_paid, t.position::text, t.version,
+        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id)                       AS subtasks_total,
+        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done') AS subtasks_done,
+        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
+@@ -553,7 +558,7 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
+ 		var llCut sql.NullBool
+ 		var llCreatedAt sql.NullTime
+ 		if err := rows.Scan(&c.ID, &c.ColumnID, &c.ClientID, &c.ClientName, &c.ClientIsDeleted, &c.Title, &c.AssigneeID, &c.AssigneeName,
+-			&c.DueDate, &c.IsPaid, &c.Position, &c.Version, &c.SubtasksTotal, &c.SubtasksDone, &c.SubtasksLate,
++			&c.StartDate, &c.DurationDays, &c.DueDate, &c.IsPaid, &c.Position, &c.Version, &c.SubtasksTotal, &c.SubtasksDone, &c.SubtasksLate,
+ 			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &c.ColumnTotal, &total, &c.ExecutorUnpaidDone); err != nil {
+ 			return nil, 0, err
+ 		}
+diff --git a/internal/features/board/tasks_service.go b/internal/features/board/tasks_service.go
+index 19deab5..7ef7b1b 100644
+--- a/internal/features/board/tasks_service.go
++++ b/internal/features/board/tasks_service.go
+@@ -126,7 +126,7 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
+ 
+ 		created, err := s.repo.Insert(ctx, tx, taskRow{
+ 			Title: title, ClientID: clientID, CarID: carID, ColumnID: in.ColumnID,
+-			AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
++			AssigneeID: assigneeID, StartDate: *in.StartDate, DurationDays: *in.DurationDays,
+ 			IsPaid: in.IsPaid != nil && *in.IsPaid, Position: pos, DescriptionHTML: descHTML,
+ 		}, a.ID)
+ 		if err != nil {
+@@ -276,7 +276,7 @@ func (s *TaskService) Update(ctx context.Context, a Actor, idStr string, in Task
+ 
+ 		if _, err := s.repo.Update(ctx, tx, id, *in.Version, taskRow{
+ 			Title: in.Title, ColumnID: in.ColumnID,
+-			AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
++			AssigneeID: assigneeID, StartDate: *in.StartDate, DurationDays: *in.DurationDays,
+ 			IsPaid: in.IsPaid != nil && *in.IsPaid, Position: pos, DescriptionHTML: descHTML,
+ 		}); err != nil {
+ 			if errors.Is(err, errVersionConflict) {
+@@ -627,6 +627,7 @@ func toTaskResponse(t Task) TaskResponse {
+ 			ID: t.ID, ColumnID: t.ColumnID, ClientID: t.ClientID, ClientName: t.ClientName,
+ 			ClientIsDeleted: t.ClientIsDeleted,
+ 			Title:           t.Title, AssigneeID: t.AssigneeID, AssigneeName: t.AssigneeName,
++			StartDate: t.StartDate, DurationDays: t.DurationDays,
+ 			DueDate: t.DueDate, IsPaid: t.IsPaid, Position: t.Position, Version: t.Version,
+ 			SubtasksTotal: t.SubtasksTotal, SubtasksDone: t.SubtasksDone, SubtasksLate: t.SubtasksLate,
+ 			TotalAmount: t.TotalAmount, LastLog: t.LastLog,
+diff --git a/internal/features/board/tasks_validate.go b/internal/features/board/tasks_validate.go
+index 4544d5e..921088c 100644
+--- a/internal/features/board/tasks_validate.go
++++ b/internal/features/board/tasks_validate.go
+@@ -12,11 +12,24 @@ import (
+ 	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
+ )
+ 
+-// msgNotFound/msgInvalidDate — коды полей заказов; msgRequired/msgTooLong/msgInvalid/
+-// msgInvalidText — общие (columns_validate.go).
++// msgNotFound/msgInvalidDate/msgOutOfRange — коды полей заказов; msgRequired/msgTooLong/
++// msgInvalid/msgInvalidText — общие (columns_validate.go).
+ const (
+ 	msgNotFound    = "not_found"
+ 	msgInvalidDate = "invalid_date"
++	msgOutOfRange  = "out_of_range"
++)
++
++// Границы плана работ заказа (order-start-duration): дней на работу — те же, что CHECK
++// tasks.duration_days; дата начала — разумное окно (опечатка в годе — ошибка поля, не 500 БД).
++const (
++	taskDurationMin = 1
++	taskDurationMax = 60
++)
++
++var (
++	taskStartMin = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
++	taskStartMax = time.Date(2099, 12, 31, 0, 0, 0, 0, time.UTC)
+ )
+ 
+ // taskTitleMax — design-errors.md §Validation Fields (`title`, trim 1..200).
+@@ -26,12 +39,12 @@ const taskTitleMax = 200
+ // символов; NULL — PUT «не менять», POST «пусто» — длина не проверяется).
+ const taskDescriptionMax = 10000
+ 
+-// dateLayout — YYYY-MM-DD (design-errors.md §Validation Fields `due_date`).
++// dateLayout — YYYY-MM-DD (design-errors.md §Validation Fields `due_date`; start_date заказа).
+ const dateLayout = "2006-01-02"
+ 
+-// normalize — trim текстовых полей; nil-указатели (assignee_id/due_date) остаются nil,
++// normalize — trim текстовых полей; nil-указатели (assignee_id/start_date) остаются nil,
+ // пустая строка внутри указателя не трактуется как отсутствие значения здесь — это делает
+-// nilIfEmpty() в сервисном слое перед записью в БД.
++// nilIfEmpty() в сервисном слое перед записью в БД (start_date пустой — ошибка required).
+ func (in TaskHeader) normalize() TaskHeader {
+ 	in.Title = strings.TrimSpace(in.Title)
+ 	in.ColumnID = strings.TrimSpace(in.ColumnID)
+@@ -39,9 +52,9 @@ func (in TaskHeader) normalize() TaskHeader {
+ 		v := strings.TrimSpace(*in.AssigneeID)
+ 		in.AssigneeID = &v
+ 	}
+-	if in.DueDate != nil {
+-		v := strings.TrimSpace(*in.DueDate)
+-		in.DueDate = &v
++	if in.StartDate != nil {
++		v := strings.TrimSpace(*in.StartDate)
++		in.StartDate = &v
+ 	}
+ 	return in
+ }
+@@ -78,11 +91,26 @@ func (in TaskHeader) validateWith(titleRequired bool) []errorspkg.Field {
+ 		add("assignee_id", msgInvalid)
+ 	}
+ 
+-	if in.DueDate != nil && *in.DueDate != "" {
+-		if _, err := time.Parse(dateLayout, *in.DueDate); err != nil {
+-			add("due_date", msgInvalidDate)
++	// План работ (order-start-duration): начало и дни обязательны; плановое окончание
++	// (due_date) вычисляет БД.
++	switch {
++	case in.StartDate == nil || *in.StartDate == "":
++		add("start_date", msgRequired)
++	default:
++		d, err := time.Parse(dateLayout, *in.StartDate)
++		switch {
++		case err != nil:
++			add("start_date", msgInvalidDate)
++		case d.Before(taskStartMin) || d.After(taskStartMax):
++			add("start_date", msgOutOfRange)
+ 		}
+ 	}
++	switch {
++	case in.DurationDays == nil:
++		add("duration_days", msgRequired)
++	case *in.DurationDays < taskDurationMin || *in.DurationDays > taskDurationMax:
++		add("duration_days", msgOutOfRange)
++	}
+ 
+ 	if in.Description != nil && utf8.RuneCountInString(*in.Description) > taskDescriptionMax {
+ 		add("description", msgTooLong)
+diff --git a/internal/features/board/tasks_validate_test.go b/internal/features/board/tasks_validate_test.go
+index ebda82d..1e179d1 100644
+--- a/internal/features/board/tasks_validate_test.go
++++ b/internal/features/board/tasks_validate_test.go
+@@ -12,9 +12,30 @@ func ptrInt64(v int64) *int64 { return &v }
+ 
+ const validUUID = "11111111-1111-1111-1111-111111111111"
+ 
++// withPlan — шапка с валидным планом работ (order-start-duration: start_date и duration_days
++// обязательны), чтобы проверки остальных полей видели только свои ошибки.
++func withPlan(h TaskHeader) TaskHeader {
++	if h.StartDate == nil {
++		h.StartDate = ptrStr("2026-10-15")
++	}
++	if h.DurationDays == nil {
++		h.DurationDays = ptrInt(3)
++	}
++	return h
++}
++
++// fieldsOf — ошибки валидации шапки как name → message.
++func fieldsOf(in TaskHeader) map[string]string {
++	got := map[string]string{}
++	for _, f := range in.normalize().validate() {
++		got[f.Name] = f.Message
++	}
++	return got
++}
++
+ // TestTaskCreateRequestValidate_EmptyTitle — UT-002.
+ func TestTaskCreateRequestValidate_EmptyTitle(t *testing.T) {
+-	in := TaskHeader{Title: "   ", ColumnID: validUUID}.normalize()
++	in := withPlan(TaskHeader{Title: "   ", ColumnID: validUUID}).normalize()
+ 	fields := in.validate()
+ 	assert.Len(t, fields, 1)
+ 	assert.Equal(t, "title", fields[0].Name)
+@@ -23,9 +44,9 @@ func TestTaskCreateRequestValidate_EmptyTitle(t *testing.T) {
+ 
+ // TestTaskCreateRequestValidate_TitleTooLong — UT-002.
+ func TestTaskCreateRequestValidate_TitleTooLong(t *testing.T) {
+-	in := TaskHeader{
++	in := withPlan(TaskHeader{
+ 		Title: strings.Repeat("я", taskTitleMax+1), ColumnID: validUUID,
+-	}.normalize()
++	}).normalize()
+ 	fields := in.validate()
+ 	assert.Len(t, fields, 1)
+ 	assert.Equal(t, "title", fields[0].Name)
+@@ -35,7 +56,7 @@ func TestTaskCreateRequestValidate_TitleTooLong(t *testing.T) {
+ // TestTaskHeaderValidate_MissingColumnID — UT-002. Клиента в шапке нет (one-car-order):
+ // клиент и автомобиль задаются только при создании (TaskCreateRequest.prepare).
+ func TestTaskHeaderValidate_MissingColumnID(t *testing.T) {
+-	in := TaskHeader{Title: "Заказ"}.normalize()
++	in := withPlan(TaskHeader{Title: "Заказ"}).normalize()
+ 	fields := in.validate()
+ 	assert.Len(t, fields, 1)
+ 	assert.Equal(t, "column_id", fields[0].Name)
+@@ -43,7 +64,7 @@ func TestTaskHeaderValidate_MissingColumnID(t *testing.T) {
+ }
+ 
+ func TestTaskHeaderValidate_InvalidColumnID(t *testing.T) {
+-	in := TaskHeader{Title: "Заказ", ColumnID: "also-not-a-uuid"}.normalize()
++	in := withPlan(TaskHeader{Title: "Заказ", ColumnID: "also-not-a-uuid"}).normalize()
+ 	fields := in.validate()
+ 	assert.Len(t, fields, 1)
+ 	assert.Equal(t, "column_id", fields[0].Name)
+@@ -51,38 +72,76 @@ func TestTaskHeaderValidate_InvalidColumnID(t *testing.T) {
+ }
+ 
+ func TestTaskCreateRequestValidate_InvalidAssigneeID(t *testing.T) {
+-	in := TaskHeader{
++	in := withPlan(TaskHeader{
+ 		Title: "Заказ", ColumnID: validUUID, AssigneeID: ptrStr("bad"),
+-	}.normalize()
++	}).normalize()
+ 	fields := in.validate()
+ 	assert.Len(t, fields, 1)
+ 	assert.Equal(t, "assignee_id", fields[0].Name)
+ 	assert.Equal(t, msgInvalid, fields[0].Message)
+ }
+ 
+-func TestTaskCreateRequestValidate_InvalidDueDate(t *testing.T) {
+-	in := TaskHeader{
+-		Title: "Заказ", ColumnID: validUUID, DueDate: ptrStr("2026-13-40"),
+-	}.normalize()
+-	fields := in.validate()
+-	assert.Len(t, fields, 1)
+-	assert.Equal(t, "due_date", fields[0].Name)
+-	assert.Equal(t, msgInvalidDate, fields[0].Message)
++// TestTaskHeaderValidate_PlanRequired — order-start-duration: без start_date/duration_days
++// (нет в теле или пустая дата) — required по каждому полю.
++func TestTaskHeaderValidate_PlanRequired(t *testing.T) {
++	got := fieldsOf(TaskHeader{Title: "Заказ", ColumnID: validUUID})
++	assert.Equal(t, map[string]string{"start_date": msgRequired, "duration_days": msgRequired}, got)
++
++	got = fieldsOf(TaskHeader{Title: "Заказ", ColumnID: validUUID, StartDate: ptrStr("   "), DurationDays: ptrInt(1)})
++	assert.Equal(t, map[string]string{"start_date": msgRequired}, got, "пустая дата после trim")
++}
++
++// TestTaskHeaderValidate_StartDate — формат YYYY-MM-DD, существующая дата, окно 2000..2099.
++func TestTaskHeaderValidate_StartDate(t *testing.T) {
++	cases := []struct {
++		start, want string
++	}{
++		{"2026-13-40", msgInvalidDate},
++		{"2026-02-30", msgInvalidDate},
++		{"15.10.2026", msgInvalidDate},
++		{"2026-10-15T00:00:00Z", msgInvalidDate},
++		{"0000-01-01", msgOutOfRange}, // год 0 — в PostgreSQL date нет (раньше — 500)
++		{"1999-12-31", msgOutOfRange},
++		{"2100-01-01", msgOutOfRange},
++		{"2000-01-01", ""},
++		{"2099-12-31", ""},
++		{" 2026-10-15 ", ""},
++	}
++	for _, c := range cases {
++		got := fieldsOf(withPlan(TaskHeader{Title: "Заказ", ColumnID: validUUID, StartDate: ptrStr(c.start)}))
++		if c.want == "" {
++			assert.Empty(t, got, "start_date=%q", c.start)
++			continue
++		}
++		assert.Equal(t, map[string]string{"start_date": c.want}, got, "start_date=%q", c.start)
++	}
++}
++
++// TestTaskHeaderValidate_DurationDays — дней на работу 1..60 (границы включительно).
++func TestTaskHeaderValidate_DurationDays(t *testing.T) {
++	for _, d := range []int{taskDurationMin - 1, -1, taskDurationMax + 1, 1000} {
++		got := fieldsOf(withPlan(TaskHeader{Title: "Заказ", ColumnID: validUUID, DurationDays: ptrInt(d)}))
++		assert.Equal(t, map[string]string{"duration_days": msgOutOfRange}, got, "duration_days=%d", d)
++	}
++	for _, d := range []int{taskDurationMin, 7, taskDurationMax} {
++		assert.Empty(t, fieldsOf(withPlan(TaskHeader{Title: "Заказ", ColumnID: validUUID, DurationDays: ptrInt(d)})), "duration_days=%d", d)
++	}
+ }
+ 
+ func TestTaskCreateRequestValidate_ValidInput(t *testing.T) {
+ 	in := TaskHeader{
+ 		Title: "  Заказ  ", ColumnID: validUUID,
+-		AssigneeID: ptrStr(validUUID), DueDate: ptrStr("2026-05-01"),
++		AssigneeID: ptrStr(validUUID), StartDate: ptrStr(" 2026-05-01 "), DurationDays: ptrInt(5),
+ 	}.normalize()
+ 	assert.Empty(t, in.validate())
+ 	assert.Equal(t, "Заказ", in.Title, "trim")
++	assert.Equal(t, "2026-05-01", *in.StartDate, "trim даты")
+ }
+ 
+ // TestTaskUpdateRequestValidate_MissingVersion — UT-002.
+ func TestTaskUpdateRequestValidate_MissingVersion(t *testing.T) {
+ 	in := TaskUpdateRequest{
+-		TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID},
++		TaskHeader: withPlan(TaskHeader{Title: "Заказ", ColumnID: validUUID}),
+ 	}.normalize()
+ 	fields := in.validate()
+ 	assert.Len(t, fields, 1)
+@@ -93,7 +152,7 @@ func TestTaskUpdateRequestValidate_MissingVersion(t *testing.T) {
+ func TestTaskUpdateRequestValidate_VersionZeroOrNegative(t *testing.T) {
+ 	for _, v := range []int64{0, -1} {
+ 		in := TaskUpdateRequest{
+-			TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID},
++			TaskHeader: withPlan(TaskHeader{Title: "Заказ", ColumnID: validUUID}),
+ 			Version:    ptrInt64(v),
+ 		}.normalize()
+ 		fields := in.validate()
+@@ -104,28 +163,41 @@ func TestTaskUpdateRequestValidate_VersionZeroOrNegative(t *testing.T) {
+ 
+ func TestTaskUpdateRequestValidate_ValidInput(t *testing.T) {
+ 	in := TaskUpdateRequest{
+-		TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID},
++		TaskHeader: withPlan(TaskHeader{Title: "Заказ", ColumnID: validUUID}),
+ 		Version:    ptrInt64(1),
+ 	}.normalize()
+ 	assert.Empty(t, in.validate())
+ }
+ 
++// TestTaskUpdateRequestValidate_PlanRequired — PUT — полная замена шапки: план обязателен и здесь.
++func TestTaskUpdateRequestValidate_PlanRequired(t *testing.T) {
++	in := TaskUpdateRequest{
++		TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID, DurationDays: ptrInt(61)},
++		Version:    ptrInt64(1),
++	}.normalize()
++	got := map[string]string{}
++	for _, f := range in.validate() {
++		got[f.Name] = f.Message
++	}
++	assert.Equal(t, map[string]string{"start_date": msgRequired, "duration_days": msgOutOfRange}, got)
++}
++
+ // TestTaskCreateRequestValidate_DescriptionTooLong — UT-002/AC-002: description >10000
+ // символов → 400 too_long; ровно 10000 — валидно (граница).
+ func TestTaskCreateRequestValidate_DescriptionTooLong(t *testing.T) {
+ 	tooLong := ptrStr(strings.Repeat("я", taskDescriptionMax+1))
+-	in := TaskHeader{
++	in := withPlan(TaskHeader{
+ 		Title: "Заказ", ColumnID: validUUID, Description: tooLong,
+-	}.normalize()
++	}).normalize()
+ 	fields := in.validate()
+ 	assert.Len(t, fields, 1)
+ 	assert.Equal(t, "description", fields[0].Name)
+ 	assert.Equal(t, msgTooLong, fields[0].Message)
+ 
+-	atLimit := TaskHeader{
++	atLimit := withPlan(TaskHeader{
+ 		Title: "Заказ", ColumnID: validUUID,
+ 		Description: ptrStr(strings.Repeat("я", taskDescriptionMax)),
+-	}.normalize()
++	}).normalize()
+ 	assert.Empty(t, atLimit.validate(), "ровно 10000 символов — валидно")
+ }
+ 
+@@ -133,7 +205,7 @@ func TestTaskCreateRequestValidate_DescriptionTooLong(t *testing.T) {
+ // не порождает ошибку валидации формата (сервис трактует nil как «не менять», не «пусто»).
+ func TestTaskUpdateRequestValidate_DescriptionNilKeepsValue(t *testing.T) {
+ 	in := TaskUpdateRequest{
+-		TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID, Description: nil},
++		TaskHeader: withPlan(TaskHeader{Title: "Заказ", ColumnID: validUUID, Description: nil}),
+ 		Version:    ptrInt64(1),
+ 	}.normalize()
+ 	assert.Empty(t, in.validate())
+diff --git a/internal/features/board/timezone_http_live_test.go b/internal/features/board/timezone_http_live_test.go
+index 4849ecf..26bf213 100644
+--- a/internal/features/board/timezone_http_live_test.go
++++ b/internal/features/board/timezone_http_live_test.go
+@@ -93,7 +93,8 @@ func (s *PrintLiveSuite) TestTS041_DueFilter_TodayInViewerTimezone() {
+ 
+ 	eastToday := time.Now().In(time.FixedZone("", 14*3600))
+ 	due := eastToday.AddDate(0, 0, -1).Format(time.DateOnly)
+-	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET due_date = $2::date WHERE id = $1`, taskID, due)
++	// order-start-duration: срок заказа — плановое окончание; однодневный план с началом due.
++	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET start_date = $2::date, duration_days = 1 WHERE id = $1`, taskID, due)
+ 	s.Require().NoError(err)
+ 	// Услуга с тем же сроком — для счётчика subtasks_late.
+ 	svc := s.newService("Услуга-Пояс-Срок", "100")
+@@ -201,7 +202,7 @@ func (s *PrintLiveSuite) TestTS041_CardAndMutations_SubtasksLate_TodayInViewerTi
+ 	putTask := func(b *testutil.Browser, title string) int {
+ 		st, raw := b.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
+ 			"title": title, "column_id": col,
+-			"assignee_id": nil, "due_date": nil, "is_paid": false, "version": getTask(b).Version,
++			"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": getTask(b).Version,
+ 		})
+ 		s.Require().Equal(http.StatusOK, st, string(raw))
+ 		var m struct {
+diff --git a/internal/features/calendar/calendar_http_live_test.go b/internal/features/calendar/calendar_http_live_test.go
+index 8f00a94..d6ec777 100644
+--- a/internal/features/calendar/calendar_http_live_test.go
++++ b/internal/features/calendar/calendar_http_live_test.go
+@@ -89,14 +89,15 @@ type errDTO struct {
+ 	} `json:"details"`
+ }
+ 
+-// insertTask — заказ с явным моментом приёмки (Asia/Almaty — пояс seed-пользователя).
+-func (s *CalendarLiveSuite) insertTask(title, columnID, createdAt string, due, finishedAt *string) int64 {
++// insertTask — заказ с планом работ start (YYYY-MM-DD) на days дней; finishedAt — момент выдачи
++// (день выдачи считается в поясе seed-пользователя Asia/Almaty).
++func (s *CalendarLiveSuite) insertTask(title, columnID, start string, days int, finishedAt *string) int64 {
+ 	var id int64
+ 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
+ 		WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'К 001') RETURNING id)
+-		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by, created_at, due_date, finished_at)
+-		VALUES ($1, $2, (SELECT id FROM car), $3, 1, $4, $5::timestamptz, $6::date, $7::timestamptz) RETURNING id`,
+-		columnID, s.clientID, title, s.adminID, createdAt, due, finishedAt).Scan(&id))
++		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by, start_date, duration_days, finished_at)
++		VALUES ($1, $2, (SELECT id FROM car), $3, 1, $4, $5::date, $6, $7::timestamptz) RETURNING id`,
++		columnID, s.clientID, title, s.adminID, start, days, finishedAt).Scan(&id))
+ 	return id
+ }
+ 
+@@ -175,17 +176,24 @@ func (s *CalendarLiveSuite) TestCalendar_RequiresAuth() {
+ 	s.Equal(http.StatusUnauthorized, code)
+ }
+ 
++// TestCalendar_OccupancyByDay — order-start-duration: машина занимает место с start_date по
++// плановое окончание (start_date + duration_days − 1); выданная — по день выдачи (в поясе
++// пользователя); не выданная с прошедшим планом — бессрочно; будущее начало — только с него.
+ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
+-	// Приёмка 2031-03-02 09:00 Алматы; срок 2031-03-04 — в будущем относительно «сегодня».
+-	withDue := s.insertTask("CAL А001АА", s.workColumnID, "2031-03-02T09:00:00+05:00", strp("2031-03-04"), nil)
+-	// Выдан 2031-03-03 (финальная колонка, finished_at задан явно).
+-	finished := s.insertTask("CAL В002ВВ", s.finalColumnID, "2031-03-01T10:00:00+05:00", nil, strp("2031-03-03T18:00:00+05:00"))
+-	// Без срока — бессрочно с 2031-03-05.
+-	open := s.insertTask("CAL С003СС", s.workColumnID, "2031-03-05T12:00:00+05:00", nil, nil)
+-	// Приёмка 2031-03-01 00:30 по Алматы = 2031-02-28 19:30 UTC — день берётся в поясе пользователя.
+-	tzEdge := s.insertTask("CAL Е004ЕЕ", s.finalColumnID, "2031-03-01T00:30:00+05:00", nil, strp("2031-03-01T20:00:00+05:00"))
++	// План 2031-03-02, 3 дня → 02..04.
++	planned := s.insertTask("CAL А001АА", s.workColumnID, "2031-03-02", 3, nil)
++	// План 01..05, выдан 2031-03-03 (финальная колонка) — место по день выдачи.
++	finished := s.insertTask("CAL В002ВВ", s.finalColumnID, "2031-03-01", 5, strp("2031-03-03T18:00:00+05:00"))
++	// Начало в будущем 2031-03-05, 2 дня → только 05..06.
++	future := s.insertTask("CAL С003СС", s.workColumnID, "2031-03-05", 2, nil)
++	// Выдан 2031-03-02 00:30 по Алматы = 2031-03-01 19:30 UTC — день выдачи в поясе пользователя.
++	tzEdge := s.insertTask("CAL Е004ЕЕ", s.finalColumnID, "2031-03-01", 1, strp("2031-03-02T00:30:00+05:00"))
++	// План давно прошёл, машина не выдана — бессрочно, во всех днях окна.
++	open := s.insertTask("CAL М006ММ", s.workColumnID, "2020-01-10", 2, nil)
++	// Выдан 2031-03-04 — раньше плановой даты начала 2031-03-06: занят только день начала.
++	early := s.insertTask("CAL Р007РР", s.finalColumnID, "2031-03-06", 2, strp("2031-03-04T12:00:00+05:00"))
+ 	// Удалённый заказ не учитывается.
+-	deleted := s.insertTask("CAL Х005ХХ", s.workColumnID, "2031-03-02T09:00:00+05:00", nil, nil)
++	deleted := s.insertTask("CAL Х005ХХ", s.workColumnID, "2031-03-02", 3, nil)
+ 	_, err := s.Pool.Exec(context.Background(),
+ 		`UPDATE tasks SET deleted_at = now(), deleted_by = $2, delete_reason = 'тест' WHERE id = $1`, deleted, s.adminID)
+ 	s.Require().NoError(err)
+@@ -195,15 +203,16 @@ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
+ 	s.Equal("2031-02-28", cal.From)
+ 
+ 	want := map[string][]int64{
+-		"2031-02-28": {},
+-		"2031-03-01": {finished, tzEdge},
+-		"2031-03-02": {finished, withDue},
+-		"2031-03-03": {finished, withDue},
+-		"2031-03-04": {withDue},
+-		"2031-03-05": {open},
++		"2031-02-28": {open},
++		"2031-03-01": {finished, tzEdge, open},
++		"2031-03-02": {finished, planned, tzEdge, open},
++		"2031-03-03": {finished, planned, open},
++		"2031-03-04": {planned, open},
++		"2031-03-05": {future, open},
++		"2031-03-06": {future, early, open},
+ 		"2031-03-07": {open},
+ 	}
+-	mine := map[int64]bool{withDue: true, finished: true, open: true, tzEdge: true, deleted: true}
++	mine := map[int64]bool{planned: true, finished: true, future: true, open: true, tzEdge: true, early: true, deleted: true}
+ 	for _, d := range cal.Days {
+ 		exp, ok := want[d.Date]
+ 		if !ok {
+@@ -227,16 +236,60 @@ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
+ 	s.NotContains(byID, deleted)
+ 	s.True(byID[finished].IsFinished)
+ 	s.Equal("2031-03-03", *byID[finished].EndDate)
++	s.Equal("2031-03-05", *byID[finished].DueDate, "due_date — плановое окончание")
+ 	s.True(byID[open].OpenEnded)
+ 	s.Nil(byID[open].EndDate)
+-	s.Equal("CAL Клиент", byID[withDue].ClientName)
+-	s.Equal("2031-03-02", byID[withDue].StartDate)
+-	s.Equal("2031-03-01", byID[tzEdge].StartDate)
++	s.Equal("2020-01-11", *byID[open].DueDate)
++	s.Equal("CAL Клиент", byID[planned].ClientName)
++	s.Equal("2031-03-02", byID[planned].StartDate)
++	s.Equal("2031-03-04", *byID[planned].EndDate)
++	s.Equal("2031-03-04", *byID[planned].DueDate)
++	s.Equal("2031-03-06", *byID[future].EndDate)
++	s.Equal("2031-03-02", *byID[tzEdge].EndDate, "день выдачи — по Алматы")
++	s.Equal("2031-03-06", *byID[early].EndDate, "конец не раньше начала")
++}
++
++// TestCalendar_PlanFromAPI — сквозь API заказов: POST с будущим «Начать с» и 3 днями занимает
++// место ровно эти 3 дня; PUT меняет начало и дни — календарь пересчитан.
++func (s *CalendarLiveSuite) TestCalendar_PlanFromAPI() {
++	code, body := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
++		"client_id": s.clientID, "column_id": s.workColumnID, "plate_number": "КАЛ 018", "new_equipment": map[string]any{},
++		"start_date": "2031-06-10", "duration_days": 3,
++	})
++	s.Require().Equal(http.StatusCreated, code, string(body))
++	var created struct {
++		Task struct {
++			ID      int64  `json:"id"`
++			Title   string `json:"title"`
++			Version int64  `json:"version"`
++		} `json:"task"`
++	}
++	s.Require().NoError(json.Unmarshal(body, &created))
++	id := created.Task.ID
++
++	daysOf := func() []string {
++		cal := s.getCalendar(s.admin, "2031-06-08", "2031-06-14")
++		var out []string
++		for _, d := range cal.Days {
++			if contains(d.TaskIDs, id) {
++				out = append(out, d.Date)
++			}
++		}
++		return out
++	}
++	s.Equal([]string{"2031-06-10", "2031-06-11", "2031-06-12"}, daysOf())
++
++	code, body = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", id), map[string]any{
++		"title": created.Task.Title, "column_id": s.workColumnID, "assignee_id": nil, "is_paid": false,
++		"start_date": "2031-06-12", "duration_days": 2, "version": created.Task.Version,
++	})
++	s.Require().Equal(http.StatusOK, code, string(body))
++	s.Equal([]string{"2031-06-12", "2031-06-13"}, daysOf())
+ }
+ 
+ func (s *CalendarLiveSuite) TestFinishedAtTrigger() {
+ 	ctx := context.Background()
+-	id := s.insertTask("CAL trigger", s.workColumnID, "2031-04-01T09:00:00+05:00", nil, nil)
++	id := s.insertTask("CAL trigger", s.workColumnID, "2031-04-01", 1, nil)
+ 	var finished *string
+ 	read := func() {
+ 		s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT finished_at::text FROM tasks WHERE id = $1`, id).Scan(&finished))
+@@ -256,7 +309,7 @@ func (s *CalendarLiveSuite) TestFinishedAtTrigger() {
+ }
+ 
+ func (s *CalendarLiveSuite) TestSSR_Page() {
+-	id := s.insertTask("CAL ssr К777КК", s.workColumnID, "2031-05-03T09:00:00+05:00", strp("2031-05-04"), nil)
++	id := s.insertTask("CAL ssr К777КК", s.workColumnID, "2031-05-03", 2, nil)
+ 	for _, b := range []*testutil.Browser{s.admin, s.executor} {
+ 		code, body := b.Do(http.MethodGet, "/calendar?month=2031-05&day=2031-05-03", nil)
+ 		s.Require().Equal(http.StatusOK, code)
+@@ -267,6 +320,8 @@ func (s *CalendarLiveSuite) TestSSR_Page() {
+ 		s.Contains(page, `data-testid="cal-gantt"`, "диаграмма Ганта выбранного дня")
+ 		s.Contains(page, `data-testid="cal-gantt-row" data-task-id="`+fmt.Sprint(id)+`" data-col="8" data-span="2" data-days="2"`, "03..04 мая со шкалой с 26 апреля")
+ 		s.Contains(page, "CAL ssr К777КК")
++		s.Contains(page, `title="Плановое окончание" data-testid="cal-gantt-due"`, "отметка планового окончания 04.05")
++		s.Contains(page, `data-testid="cal-day-add" data-start="2031-05-03"`, "новый заказ с началом в выбранный день")
+ 		s.Contains(page, `href="/calendar"`, "пункт сайдбара")
+ 	}
+ 	_, adminPage := s.admin.Do(http.MethodGet, "/calendar", nil)
+diff --git a/internal/features/calendar/dto.go b/internal/features/calendar/dto.go
+index b9fd0f1..0e7cfde 100644
+--- a/internal/features/calendar/dto.go
++++ b/internal/features/calendar/dto.go
+@@ -1,11 +1,16 @@
+ // Package calendar — календарь загрузки сервиса: сколько машин одновременно стоит в ремонте
+ // по дням и есть ли свободные места при заданной вместимости (настройка 5–12 машин).
+ //
+-// Машина (заказ) занимает место со дня приёмки (created_at в поясе пользователя):
+-//   - выданный заказ (финальная колонка) — по день выдачи (finished_at) включительно;
+-//   - не выданный со сроком сегодня или позже — по срок (due_date) включительно;
+-//   - не выданный без срока или с прошедшим сроком — бессрочно: машина стоит, пока её не
++// Машина (заказ) занимает место с дня начала работ (tasks.start_date; заказ с будущим началом —
++// только с этого дня):
++//   - выданный заказ (финальная колонка) — по день выдачи (finished_at в поясе пользователя)
++//     включительно;
++//   - не выданный с плановым окончанием (due_date = start_date + duration_days − 1) сегодня или
++//     позже — по плановое окончание включительно;
++//   - не выданный с прошедшим плановым окончанием — бессрочно: машина стоит, пока её не
+ //     выдадут, поэтому занимает место во всех будущих днях (open_ended).
++//
++// Конец не раньше начала (выдан раньше плановой даты начала — один день начала).
+ package calendar
+ 
+ // Settings — настройки календаря (GET/PUT /api/v1/calendar/settings).
+diff --git a/internal/features/calendar/gantt_test.go b/internal/features/calendar/gantt_test.go
+index e30325f..c843cb0 100644
+--- a/internal/features/calendar/gantt_test.go
++++ b/internal/features/calendar/gantt_test.go
+@@ -15,15 +15,15 @@ func TestBuildGantt_Bars(t *testing.T) {
+ 	require.Equal(t, day("2026-11-04"), to)
+ 
+ 	rows := []orderRow{
+-		// со сроком: 14..18 — 5 дней, столбцы 7..11
++		// план 14..18 — 5 дней, столбцы 7..11
+ 		{ID: 1, StartDate: "2026-10-14", DueDate: strp("2026-10-18")},
+-		// принят до шкалы, выдан 15-го: обрезан слева
+-		{ID: 2, StartDate: "2026-10-01", FinishedOn: strp("2026-10-15")},
+-		// без срока: бессрочно до правого края
+-		{ID: 3, StartDate: "2026-10-13"},
++		// начат до шкалы, выдан 15-го: обрезан слева
++		{ID: 2, StartDate: "2026-10-01", DueDate: strp("2026-10-03"), FinishedOn: strp("2026-10-15")},
++		// план 13..14 прошёл вчера: бессрочно до правого края
++		{ID: 3, StartDate: "2026-10-13", DueDate: strp("2026-10-14")},
+ 		// срок 10-го прошёл — бессрочно, просрочен, отметка срока в шкале
+ 		{ID: 4, StartDate: "2026-10-09", DueDate: strp("2026-10-10")},
+-		// 16-го не стоит в выбранный день — в диаграмму не попадает
++		// начало 16-го — в выбранный день места не занимает, в диаграмму не попадает
+ 		{ID: 5, StartDate: "2026-10-16", DueDate: strp("2026-10-17")},
+ 	}
+ 	win := build(rows, 5, today, from, to)
+@@ -72,7 +72,9 @@ func TestBuildGantt_Bars(t *testing.T) {
+ 	assert.Equal(t, 6, r3.Col)
+ 	assert.Equal(t, GanttDays-5, r3.Span, "до правого края шкалы")
+ 	assert.Equal(t, 3, r3.Days, "13..15 — пока стоит")
+-	assert.Equal(t, "срок не указан", r3.Status)
++	assert.True(t, r3.Overdue)
++	assert.Equal(t, 7, r3.DueCol, "отметка — плановое окончание 14.10")
++	assert.Equal(t, "срок 14.10 просрочен", r3.Status)
+ 
+ 	r4 := byID[4]
+ 	assert.True(t, r4.Overdue)
+@@ -80,6 +82,36 @@ func TestBuildGantt_Bars(t *testing.T) {
+ 	assert.Equal(t, "срок 10.10 просрочен", r4.Status)
+ }
+ 
++// TestBuildGantt_FutureStart — order-start-duration: заказ с будущим началом на диаграмме дня
++// начала — полоса ровно «Дней на работу», отметка срока — плановое окончание.
++func TestBuildGantt_FutureStart(t *testing.T) {
++	today := day("2026-10-15")
++	selected := day("2026-10-20")
++	from, to := GanttWindow(selected) // 13.10 .. 09.11
++	rows := []orderRow{{ID: 7, StartDate: "2026-10-20", DueDate: strp("2026-10-22")}}
++	win := build(rows, 5, today, from, to)
++	var ids []int64
++	for _, d := range win.Days {
++		switch d.Date {
++		case "2026-10-19", "2026-10-23":
++			assert.Empty(t, d.TaskIDs, "%s — вне плана", d.Date)
++		case "2026-10-20":
++			ids = d.TaskIDs
++		}
++	}
++	require.Equal(t, []int64{7}, ids)
++	g := buildGantt(selected, today, win, ids)
++	require.Len(t, g.Rows, 1)
++	r := g.Rows[0]
++	assert.Equal(t, GanttBefore+1, r.Col)
++	assert.Equal(t, 3, r.Span)
++	assert.Equal(t, 3, r.Days)
++	assert.Equal(t, GanttBefore+3, r.DueCol)
++	assert.False(t, r.CutLeft || r.CutRight || r.OpenEnded || r.Overdue)
++	assert.Equal(t, "20.10 → срок 22.10", r.Period)
++	assert.Equal(t, "до срока", r.Status)
++}
++
+ func TestBuildGantt_Empty(t *testing.T) {
+ 	selected := day("2026-10-20")
+ 	from, to := GanttWindow(selected)
+diff --git a/internal/features/calendar/repo.go b/internal/features/calendar/repo.go
+index f9e0c5b..4dea974 100644
+--- a/internal/features/calendar/repo.go
++++ b/internal/features/calendar/repo.go
+@@ -14,32 +14,33 @@ type Repo struct {
+ 
+ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
+ 
+-// orderRow — заказ с датами в поясе пользователя (YYYY-MM-DD).
++// orderRow — заказ с датами (YYYY-MM-DD): план — календарные даты заказа, день выдачи — в
++// поясе пользователя.
+ type orderRow struct {
+ 	ID          int64
+ 	Title       string
+ 	ClientName  string
+ 	ColumnName  string
+ 	ColumnColor string
+-	StartDate   string
+-	DueDate     *string
++	StartDate   string  // tasks.start_date — начало работ
++	DueDate     *string // tasks.due_date — плановое окончание (start_date + duration_days − 1)
+ 	FinishedOn  *string // день выдачи; nil — не выдан
+ }
+ 
+-// Orders — действующие заказы, принятые не позже to и не выданные раньше from.
++// Orders — действующие заказы, начатые не позже to и не выданные раньше from.
+ func (r *Repo) Orders(ctx context.Context, tz, from, to string) ([]orderRow, error) {
+ 	rows, err := r.pool.Query(ctx, `
+ 		SELECT t.id, t.title, cl.company_name, c.name, c.color,
+-		       (t.created_at AT TIME ZONE $1)::date::text,
++		       t.start_date::text,
+ 		       t.due_date::text,
+ 		       CASE WHEN c.is_final THEN (COALESCE(t.finished_at, t.updated_at) AT TIME ZONE $1)::date::text END
+ 		  FROM tasks t
+ 		  JOIN columns c  ON c.id = t.column_id
+ 		  JOIN clients cl ON cl.id = t.client_id
+ 		 WHERE t.deleted_at IS NULL
+-		   AND (t.created_at AT TIME ZONE $1)::date <= $3::date
++		   AND t.start_date <= $3::date
+ 		   AND (NOT c.is_final OR (COALESCE(t.finished_at, t.updated_at) AT TIME ZONE $1)::date >= $2::date)
+-		 ORDER BY t.created_at, t.id`, tz, from, to)
++		 ORDER BY t.start_date, t.id`, tz, from, to)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("calendar orders: %w", err)
+ 	}
+diff --git a/internal/features/calendar/service_test.go b/internal/features/calendar/service_test.go
+index f42e23b..f39cb9b 100644
+--- a/internal/features/calendar/service_test.go
++++ b/internal/features/calendar/service_test.go
+@@ -31,13 +31,13 @@ func occupied(resp *CalendarResponse) map[string]int {
+ func TestBuild_Spans(t *testing.T) {
+ 	today := day("2026-10-15")
+ 	rows := []orderRow{
+-		// выдан: 10..12
+-		{ID: 1, StartDate: "2026-10-10", FinishedOn: strp("2026-10-12")},
+-		// в работе со сроком в будущем: 14..16
++		// выдан: 10..12 (плановое окончание 11 — выдан позже, место до выдачи)
++		{ID: 1, StartDate: "2026-10-10", DueDate: strp("2026-10-11"), FinishedOn: strp("2026-10-12")},
++		// в работе, плановое окончание в будущем: 14..16
+ 		{ID: 2, StartDate: "2026-10-14", DueDate: strp("2026-10-16")},
+-		// в работе без срока: с 13 бессрочно
+-		{ID: 3, StartDate: "2026-10-13"},
+-		// в работе, срок прошёл: с 11 бессрочно
++		// начало в будущем: только 17..18 (3 дня, хвост за окном)
++		{ID: 3, StartDate: "2026-10-17", DueDate: strp("2026-10-19")},
++		// в работе, плановое окончание прошло: с 11 бессрочно
+ 		{ID: 4, StartDate: "2026-10-11", DueDate: strp("2026-10-12")},
+ 	}
+ 	resp := build(rows, 5, today, day("2026-10-09"), day("2026-10-18"))
+@@ -47,10 +47,10 @@ func TestBuild_Spans(t *testing.T) {
+ 	assert.Equal(t, 1, occ["2026-10-10"])
+ 	assert.Equal(t, 2, occ["2026-10-11"]) // 1, 4
+ 	assert.Equal(t, 2, occ["2026-10-12"]) // 1, 4
+-	assert.Equal(t, 2, occ["2026-10-13"]) // 3, 4
+-	assert.Equal(t, 3, occ["2026-10-14"]) // 2, 3, 4
+-	assert.Equal(t, 3, occ["2026-10-16"])
+-	assert.Equal(t, 2, occ["2026-10-17"]) // 3, 4 бессрочные
++	assert.Equal(t, 1, occ["2026-10-13"]) // 4
++	assert.Equal(t, 2, occ["2026-10-14"]) // 2, 4
++	assert.Equal(t, 2, occ["2026-10-16"]) // 2, 4
++	assert.Equal(t, 2, occ["2026-10-17"]) // 3, 4 — 3 занимает место только с начала
+ 	assert.Equal(t, 2, occ["2026-10-18"])
+ 	assert.Len(t, resp.Days, 10)
+ 	assert.Equal(t, "2026-10-15", resp.Today)
+@@ -62,15 +62,56 @@ func TestBuild_Spans(t *testing.T) {
+ 	assert.True(t, byID[1].IsFinished)
+ 	assert.Equal(t, "2026-10-12", *byID[1].EndDate)
+ 	assert.Equal(t, "2026-10-16", *byID[2].EndDate)
+-	assert.True(t, byID[3].OpenEnded)
+-	assert.Nil(t, byID[3].EndDate)
++	assert.False(t, byID[3].OpenEnded)
++	assert.Equal(t, "2026-10-19", *byID[3].EndDate, "конец — плановое окончание, даже за окном")
+ 	assert.True(t, byID[4].OpenEnded)
++	assert.Nil(t, byID[4].EndDate)
++}
++
++// TestBuild_PlanRules — order-start-duration: интервал start_date..плановое окончание; выданный —
++// по день выдачи (раньше плана — короче, позже — дольше); выданный раньше даты начала — один
++// день начала; не выданный с прошедшим планом — бессрочно; однодневный заказ сегодня — сегодня.
++func TestBuild_PlanRules(t *testing.T) {
++	today := day("2026-10-15")
++	rows := []orderRow{
++		{ID: 1, StartDate: "2026-10-15", DueDate: strp("2026-10-15")},                                 // 1 день, сегодня
++		{ID: 2, StartDate: "2026-10-14", DueDate: strp("2026-10-20"), FinishedOn: strp("2026-10-15")}, // выдан раньше плана
++		{ID: 3, StartDate: "2026-10-20", DueDate: strp("2026-10-21"), FinishedOn: strp("2026-10-16")}, // выдан до начала
++		{ID: 4, StartDate: "2026-10-13", DueDate: strp("2026-10-14")},                                 // план прошёл вчера
++		{ID: 5, StartDate: "2026-10-16", DueDate: strp("2026-10-18")},                                 // будущее начало, 3 дня
++		{ID: 6, StartDate: "2026-10-10", DueDate: strp("2026-10-12"), FinishedOn: strp("2026-10-13")}, // выдан до окна
++	}
++	resp := build(rows, 5, today, day("2026-10-14"), day("2026-10-22"))
++
++	ids := map[string][]int64{}
++	for _, d := range resp.Days {
++		ids[d.Date] = d.TaskIDs
++	}
++	assert.Equal(t, []int64{2, 4}, ids["2026-10-14"])
++	assert.Equal(t, []int64{1, 2, 4}, ids["2026-10-15"])
++	assert.Equal(t, []int64{4, 5}, ids["2026-10-16"])
++	assert.Equal(t, []int64{4, 5}, ids["2026-10-18"])
++	assert.Equal(t, []int64{3, 4}, ids["2026-10-20"], "выдан до начала — занят только день начала")
++	assert.Equal(t, []int64{4}, ids["2026-10-21"])
++	assert.Equal(t, []int64{4}, ids["2026-10-22"], "просроченный — бессрочно")
++
++	byID := map[int64]Order{}
++	for _, o := range resp.Orders {
++		byID[o.ID] = o
++	}
++	assert.NotContains(t, byID, int64(6), "выдан до окна — не в orders")
++	assert.Equal(t, "2026-10-15", *byID[1].EndDate)
++	assert.Equal(t, "2026-10-15", *byID[2].EndDate)
++	assert.Equal(t, "2026-10-20", *byID[3].EndDate, "конец не раньше начала")
++	assert.True(t, byID[4].OpenEnded)
++	assert.Equal(t, "2026-10-18", *byID[5].EndDate)
++	assert.Equal(t, "2026-10-14", *byID[4].DueDate, "due_date в ответе — плановое окончание")
+ }
+ 
+ func TestBuild_FreeAndOverload(t *testing.T) {
+ 	var rows []orderRow
+ 	for i := int64(1); i <= 7; i++ {
+-		rows = append(rows, orderRow{ID: i, StartDate: "2026-10-01"})
++		rows = append(rows, orderRow{ID: i, StartDate: "2026-10-01", DueDate: strp("2026-10-02")})
+ 	}
+ 	resp := build(rows, 5, day("2026-10-01"), day("2026-10-01"), day("2026-10-01"))
+ 	require.Len(t, resp.Days, 1)
+diff --git a/internal/features/calendar/ssr.go b/internal/features/calendar/ssr.go
+index 36a981d..43a9b2d 100644
+--- a/internal/features/calendar/ssr.go
++++ b/internal/features/calendar/ssr.go
+@@ -14,9 +14,9 @@ import (
+ const Root = "web/ssr/calendar/templates"
+ 
+ // SSR — экран «Календарь»: сетка месяца с загрузкой по дням и диаграмма Ганта выбранного дня
+-// (машины этого дня и их сроки — gantt.go).
++// (машины этого дня и их плановые сроки — gantt.go).
+ // Сетка рисуется на сервере; js/calendar.js — сохранение вместимости (admin) и новый заказ
+-// (карточка заказа js/task-card.js, срок по умолчанию — выбранный день).
++// (карточка заказа js/task-card.js, «Начать с» по умолчанию — выбранный день).
+ type SSR struct {
+ 	svc   *Service
+ 	r     *ssr.Renderer
+@@ -56,11 +56,11 @@ type Cell struct {
+ 	URL        string
+ }
+ 
+-// DayView — выбранный день (заголовок диаграммы Ганта и кнопка «+ Заказ со сроком»).
++// DayView — выбранный день (заголовок диаграммы Ганта и кнопка «+ Заказ с началом в этот день»).
+ type DayView struct {
+ 	Date   string
+ 	Title  string
+-	IsPast bool // прошедший день — заказ «со сроком на этот день» не предлагается
++	IsPast bool // прошедший день — заказ «с началом в этот день» не предлагается
+ }
+ 
+ // PageVM — view-model страницы.
+diff --git a/internal/features/clients/clients_soft_delete_http_live_test.go b/internal/features/clients/clients_soft_delete_http_live_test.go
+index f6ab1a2..9114895 100644
+--- a/internal/features/clients/clients_soft_delete_http_live_test.go
++++ b/internal/features/clients/clients_soft_delete_http_live_test.go
+@@ -22,6 +22,14 @@ import (
+ // «Удалённые», служебная уборка, SSR-формы удаления и гонки §3. Сьюта — ClientsLiveSuite
+ // (§TD-8: боевой бинарь, реальный логин); заказы создаются через API того же сервера.
+ 
++// taskPlan — тело POST /api/v1/tasks с планом работ (order-start-duration: start_date и
++// duration_days обязательны) — начало сегодня, 1 день.
++func taskPlan(m map[string]any) map[string]any {
++	m["start_date"] = time.Now().Format(time.DateOnly)
++	m["duration_days"] = 1
++	return m
++}
++
+ // ---- wire-типы (§TD-6.2) ----
+ 
+ type sdDetails struct {
+@@ -191,8 +199,8 @@ func (s *ClientsLiveSuite) apiTask(b *testutil.Browser, clientID, title string,
+ 	if len(unitID) > 0 {
+ 		st, raw = s.carTask(b, unitID[0], title)
+ 	} else {
+-		st, raw = b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": clientID, "title": title, "column_id": s.columnID(),
+-			"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
++		st, raw = b.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{"client_id": clientID, "title": title, "column_id": s.columnID(),
++			"plate_number": uniquePlate(), "new_equipment": map[string]any{}}))
+ 	}
+ 	s.Require().Equal(http.StatusCreated, st, string(raw))
+ 	var out struct {
+@@ -207,8 +215,8 @@ func (s *ClientsLiveSuite) apiTask(b *testutil.Browser, clientID, title string,
+ // госномер берётся из справочника (и у удалённого автомобиля). Ответ — как есть.
+ func (s *ClientsLiveSuite) carTask(b *testutil.Browser, unitID, title string) (int, []byte) {
+ 	plate := s.sdScalar(`SELECT plate_number FROM equipment WHERE id = $1::uuid`, unitID)
+-	return b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+-		"title": title, "column_id": s.columnID(), "plate_number": plate, "equipment_id": unitID})
++	return b.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{
++		"title": title, "column_id": s.columnID(), "plate_number": plate, "equipment_id": unitID}))
+ }
+ 
+ func (s *ClientsLiveSuite) taskCard(taskID int64) sdCardDTO {
+@@ -460,16 +468,16 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
+ 	s.mustDeleteUnit(dropped, "Списана")
+ 	s.mustDeleteClient(gone.ID, "Закрылся")
+ 
+-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": gone.ID, "title": "Заказ удалённого", "column_id": s.columnID(),
+-		"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{"client_id": gone.ID, "title": "Заказ удалённого", "column_id": s.columnID(),
++		"plate_number": uniquePlate(), "new_equipment": map[string]any{}}))
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal("not_found", s.fields(raw)["client_id"])
+ 	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE client_id = $1::uuid`, gone.ID), "заказ не создан")
+ 
+ 	// клиента заказа не сменить вовсе (one-car-order): client_id в PUT — неизвестное поле → 400.
+ 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", task.ID), map[string]any{
+-		"title": task.Title, "client_id": gone.ID, "column_id": task.ColumnID, "assignee_id": nil, "due_date": nil,
+-		"is_paid": false, "version": task.Version})
++		"title": task.Title, "client_id": gone.ID, "column_id": task.ColumnID, "assignee_id": nil,
++		"is_paid": false, "version": task.Version, "start_date": time.Now().Format(time.DateOnly), "duration_days": 1})
+ 	s.Equal(http.StatusBadRequest, st, string(raw))
+ 	s.Equal("BAD_REQUEST", s.sdErr(raw).Code)
+ 	s.Equal(live.ID, s.sdScalar(`SELECT client_id::text FROM tasks WHERE id = $1`, task.ID), "клиент заказа не сменился")
+@@ -563,8 +571,8 @@ func (s *ClientsLiveSuite) TestTS026_CardMarks() {
+ 	// §8.3 п.3: заказ удалённого клиента правится как обычно.
+ 	cur := s.taskCard(task.ID).Task
+ 	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", task.ID), map[string]any{
+-		"title": "SD-026 переименован " + m, "column_id": cur.ColumnID, "assignee_id": nil, "due_date": nil,
+-		"is_paid": false, "version": cur.Version})
++		"title": "SD-026 переименован " + m, "column_id": cur.ColumnID, "assignee_id": nil,
++		"is_paid": false, "version": cur.Version, "start_date": time.Now().Format(time.DateOnly), "duration_days": 1})
+ 	s.Require().Equal(http.StatusOK, st, string(raw))
+ 
+ 	// DS-016: заказ восстанавливается и с удалёнными клиентом и автомобилем — с предупреждениями.
+@@ -895,8 +903,8 @@ func (s *ClientsLiveSuite) TestRace_TaskCreateWaitsForClientDelete() {
+ 	column := s.columnID()
+ 
+ 	res := s.race(s.holdClientDelete(c.ID), func() (int, []byte) {
+-		return s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": c.ID, "title": "Заказ гонки " + m, "column_id": column,
+-			"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
++		return s.admin.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{"client_id": c.ID, "title": "Заказ гонки " + m, "column_id": column,
++			"plate_number": uniquePlate(), "new_equipment": map[string]any{}}))
+ 	})
+ 	s.Require().Equal(http.StatusBadRequest, res.status, string(res.raw))
+ 	s.Equal("not_found", s.fields(res.raw)["client_id"])
+diff --git a/internal/features/softdelete/softdelete_http_live_test.go b/internal/features/softdelete/softdelete_http_live_test.go
+index 7e3771f..0c15f51 100644
+--- a/internal/features/softdelete/softdelete_http_live_test.go
++++ b/internal/features/softdelete/softdelete_http_live_test.go
+@@ -146,7 +146,8 @@ func (s *SoftDeleteLiveSuite) columnID() string {
+ func (s *SoftDeleteLiveSuite) newTask(b *testutil.Browser, clientID, title string) int64 {
+ 	// one-car-order: заказ создаётся только с автомобилем — новый автомобиль клиента.
+ 	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": title, "client_id": clientID, "column_id": s.columnID(),
+-		"plate_number": "СД " + strings.ToUpper(uuid.NewString()[:8]), "new_equipment": map[string]any{}})
++		"plate_number": "СД " + strings.ToUpper(uuid.NewString()[:8]), "new_equipment": map[string]any{},
++		"start_date": time.Now().Format(time.DateOnly), "duration_days": 1})
+ 	s.Require().Equal(http.StatusCreated, st, string(raw))
+ 	var m struct {
+ 		Task struct {
+diff --git a/internal/seeddemo/data_tasks.go b/internal/seeddemo/data_tasks.go
+index 49a60fd..956c991 100644
+--- a/internal/seeddemo/data_tasks.go
++++ b/internal/seeddemo/data_tasks.go
+@@ -56,18 +56,21 @@ type demoMedia struct {
+ 	shake, steam bool
+ }
+ 
+-// demoTaskItem — заказ доски.
++// demoTaskItem — заказ доски. План работ (order-start-duration): startOffset — дни от сегодня
++// до начала (отрицательные — уже начат, положительные — машина приедет позже), days — дней на
++// работу (плановое окончание = начало + days − 1).
+ type demoTaskItem struct {
+-	column    string
+-	clientIdx int
+-	title     string
+-	assignee  int
+-	dueOffset *int
+-	paid      bool
+-	descHTML  string
+-	car       string // ключ автомобиля заказа (demoEquipment.key) — ровно один на заказ
+-	subtasks  []demoSubtaskItem
+-	media     []demoMedia
++	column      string
++	clientIdx   int
++	title       string
++	assignee    int
++	startOffset int
++	days        int
++	paid        bool
++	descHTML    string
++	car         string // ключ автомобиля заказа (demoEquipment.key) — ровно один на заказ
++	subtasks    []demoSubtaskItem
++	media       []demoMedia
+ }
+ 
+ func offset(n int) *int { return &n }
+@@ -86,7 +89,7 @@ func intakePhoto(hoursAgo int) demoMedia {
+ var demoTasks = []demoTaskItem{
+ 	// --- Приёмка ---
+ 	{
+-		column: "Приёмка", clientIdx: 9, title: "Mazda CX-5 Е019ТТ 178: ТО-120 000 (масло, фильтр, свечи, дроссель)", assignee: exMotor, dueOffset: offset(3),
++		column: "Приёмка", clientIdx: 9, title: "Mazda CX-5 Е019ТТ 178: ТО-120 000 (масло, фильтр, свечи, дроссель)", assignee: exMotor, startOffset: 1, days: 3,
+ 		car: "cx5",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W30-208", "4.2"), g("PE01-14-302A", "1")}, logs: []demoLog{
+@@ -98,7 +101,7 @@ var demoTasks = []demoTaskItem{
+ 		media: []demoMedia{intakePhoto(6)},
+ 	},
+ 	{
+-		column: "Приёмка", clientIdx: 6, title: "ГАЗель Next В734СА 750: тяжело заводится на холодную, белый дым", assignee: exNone, dueOffset: offset(2),
++		column: "Приёмка", clientIdx: 6, title: "ГАЗель Next В734СА 750: тяжело заводится на холодную, белый дым", assignee: exNone, startOffset: 0, days: 3,
+ 		descHTML: "<p>Пригнали на буксире. Заводится с 5–6 попытки, первые минуты белый дым и вибрация, тяга слабая.</p><p>Подозрение: свечи накала / форсунки / компрессия.</p>",
+ 		car:      "gazelle",
+ 		subtasks: []demoSubtaskItem{
+@@ -114,7 +117,7 @@ var demoTasks = []demoTaskItem{
+ 	},
+ 	// --- Диагностика ---
+ 	{
+-		column: "Диагностика", clientIdx: 1, title: "Hyundai Solaris О718МР 199: троит на холодную, Check Engine P0300", assignee: exDiag, dueOffset: offset(1),
++		column: "Диагностика", clientIdx: 1, title: "Hyundai Solaris О718МР 199: троит на холодную, Check Engine P0300", assignee: exDiag, startOffset: -1, days: 3,
+ 		descHTML: "<p>Со слов клиента: первые 3–5 минут после холодного пуска двигатель троит, на прогретом — ровно. Горит Check Engine.</p>" +
+ 			"<ul><li>Пробег 187 000 км, свечи меняли ~40 000 км назад</li><li>Ошибки (сканер на заправке): P0300, P0302</li><li>Проверить свечи, катушки, компрессию 2-го цилиндра</li></ul>",
+ 		car: "solaris",
+@@ -133,7 +136,7 @@ var demoTasks = []demoTaskItem{
+ 	},
+ 	// --- Согласование ---
+ 	{
+-		column: "Согласование", clientIdx: 2, title: "VW Polo К902ТН 750: стук в двигателе, расход масла 1 л на 1000 км", assignee: exMotor,
++		column: "Согласование", clientIdx: 2, title: "VW Polo К902ТН 750: стук в двигателе, расход масла 1 л на 1000 км", assignee: exMotor, startOffset: -2, days: 5,
+ 		descHTML: "<p>Стук на прогретом двигателе под нагрузкой, сизый дым при перегазовке, расход масла ~1 л/1000 км.</p>" +
+ 			"<p><strong>Дефектовка:</strong> компрессия 1–2–3–4: 12,5 / 12,0 / 8,5 / 12,0 бар; эндоскопия — задиры в 3-м цилиндре. Рекомендован капремонт.</p>",
+ 		car: "polo",
+@@ -159,7 +162,7 @@ var demoTasks = []demoTaskItem{
+ 		},
+ 	},
+ 	{
+-		column: "Согласование", clientIdx: 7, title: "Fiat Ducato У603МН 190: течь масла, замена ремня ГРМ по регламенту", assignee: exMotor,
++		column: "Согласование", clientIdx: 7, title: "Fiat Ducato У603МН 190: течь масла, замена ремня ГРМ по регламенту", assignee: exMotor, startOffset: 3, days: 2,
+ 		descHTML: "<p>Пробег 402 600 км, ремень ГРМ меняли 120 000 км назад — пора по регламенту. Течь масла из-под шкива коленвала, пятно на стоянке.</p>",
+ 		car:      "ducato",
+ 		subtasks: []demoSubtaskItem{
+@@ -178,7 +181,7 @@ var demoTasks = []demoTaskItem{
+ 	},
+ 	// --- В ремонте ---
+ 	{
+-		column: "В ремонте", clientIdx: 5, title: "Skoda Octavia Т389ХК 799 (такси): плавают обороты ХХ + ремень ГРМ по пробегу", assignee: exMotor, dueOffset: offset(0),
++		column: "В ремонте", clientIdx: 5, title: "Skoda Octavia Т389ХК 799 (такси): плавают обороты ХХ + ремень ГРМ по пробегу", assignee: exMotor, startOffset: -2, days: 3,
+ 		car: "taxi-octavia",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "diag", status: stDone, assignee: exDiag, payout: "700", payoutPaid: true, logs: []demoLog{
+@@ -197,7 +200,7 @@ var demoTasks = []demoTaskItem{
+ 		},
+ 	},
+ 	{
+-		column: "В ремонте", clientIdx: 0, title: "Lada Vesta Е245КХ 797: перегрев, уходит антифриз — пробита прокладка ГБЦ", assignee: exMotor, dueOffset: offset(-1),
++		column: "В ремонте", clientIdx: 0, title: "Lada Vesta Е245КХ 797: перегрев, уходит антифриз — пробита прокладка ГБЦ", assignee: exMotor, startOffset: -3, days: 3,
+ 		descHTML: "<p>Перегрев в пробке, стрелка в красной зоне, пар из-под капота. Антифриз уходит ~0,5 л в день, внешних течей нет.</p>" +
+ 			"<ul><li>Тест CO₂ — положительный, пузыри в расширительном бачке</li><li>ГБЦ — в мехцех на опрессовку и проверку плоскости</li></ul>",
+ 		car: "vesta",
+@@ -220,7 +223,7 @@ var demoTasks = []demoTaskItem{
+ 		},
+ 	},
+ 	{
+-		column: "В ремонте", clientIdx: 8, title: "Toyota LC Prado С808ВО 77: ТО-165 000, топливный фильтр, рывки на разгоне", assignee: exMotor, dueOffset: offset(1),
++		column: "В ремонте", clientIdx: 8, title: "Toyota LC Prado С808ВО 77: ТО-165 000, топливный фильтр, рывки на разгоне", assignee: exMotor, startOffset: -1, days: 3,
+ 		car: "prado",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "oil", status: stDone, assignee: exMotor, payout: "900", goodsOverride: []protoGood{g("OIL-5W30-208", "7.5"), g("04152-YZZA6", "1")}, logs: []demoLog{
+@@ -234,7 +237,7 @@ var demoTasks = []demoTaskItem{
+ 		media: []demoMedia{intakePhoto(26)},
+ 	},
+ 	{
+-		column: "В ремонте", clientIdx: 2, title: "Двигатель ВАЗ-21126 (снятый): капремонт с заменой колец и вкладышей", assignee: exMotor, dueOffset: offset(7),
++		column: "В ремонте", clientIdx: 2, title: "Двигатель ВАЗ-21126 (снятый): капремонт с заменой колец и вкладышей", assignee: exMotor, startOffset: -3, days: 11,
+ 		descHTML: "<p>Привезён снятым с Lada Priora. Со слов клиента: «масложор», стук, после обрыва ремня год назад меняли клапаны.</p>" +
+ 			"<p>Дефектовка: кольца закоксованы, на 1-м цилиндре лёгкие задиры — хон, кольца STD, вкладыши, колпачки, полный комплект прокладок.</p>",
+ 		car: "vaz21126",
+@@ -252,7 +255,7 @@ var demoTasks = []demoTaskItem{
+ 	},
+ 	// --- Ждёт запчасти ---
+ 	{
+-		column: "Ждёт запчасти", clientIdx: 3, title: "Toyota Camry М555АУ 177: эмульсия в масле, белый выхлоп — замена прокладки ГБЦ", assignee: exMotor, dueOffset: offset(5),
++		column: "Ждёт запчасти", clientIdx: 3, title: "Toyota Camry М555АУ 177: эмульсия в масле, белый выхлоп — замена прокладки ГБЦ", assignee: exMotor, startOffset: -2, days: 8,
+ 		descHTML: "<p>После перегрева на трассе — белый густой выхлоп, антифриз уходит, на щупе эмульсия.</p><p>Прокладка ГБЦ 11115-36020 под заказ, поставка через 3 дня. Автомобиль на стоянке сервиса.</p>",
+ 		car:      "camry",
+ 		subtasks: []demoSubtaskItem{
+@@ -272,7 +275,7 @@ var demoTasks = []demoTaskItem{
+ 		},
+ 	},
+ 	{
+-		column: "Ждёт запчасти", clientIdx: 5, title: "Hyundai Solaris Т110ХК 799 (такси): гремит цепь ГРМ при пуске, P0016", assignee: exMotor, dueOffset: offset(3),
++		column: "Ждёт запчасти", clientIdx: 5, title: "Hyundai Solaris Т110ХК 799 (такси): гремит цепь ГРМ при пуске, P0016", assignee: exMotor, startOffset: -1, days: 5,
+ 		car: "taxi-solaris",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "diag", status: stDone, assignee: exDiag, payout: "700", payoutPaid: true, logs: []demoLog{
+@@ -290,7 +293,7 @@ var demoTasks = []demoTaskItem{
+ 	},
+ 	// --- Готов к выдаче ---
+ 	{
+-		column: "Готов к выдаче", clientIdx: 4, title: "Nissan Qashqai Н481ОР 50: плавают обороты, ошибка P0101 (ДМРВ)", assignee: exElectric, dueOffset: offset(0),
++		column: "Готов к выдаче", clientIdx: 4, title: "Nissan Qashqai Н481ОР 50: плавают обороты, ошибка P0101 (ДМРВ)", assignee: exElectric, startOffset: -2, days: 3,
+ 		car: "qashqai",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "diag", status: stDone, assignee: exElectric, payout: "800", payoutPaid: true, logs: []demoLog{
+@@ -308,7 +311,7 @@ var demoTasks = []demoTaskItem{
+ 		},
+ 	},
+ 	{
+-		column: "Готов к выдаче", clientIdx: 8, title: "Mitsubishi Outlander Х350ЕМ 97: неровный ХХ — промывка форсунок, свечи", assignee: exElectric, dueOffset: offset(-1),
++		column: "Готов к выдаче", clientIdx: 8, title: "Mitsubishi Outlander Х350ЕМ 97: неровный ХХ — промывка форсунок, свечи", assignee: exElectric, startOffset: -3, days: 3,
+ 		car: "outlander",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "diag", status: stDone, assignee: exElectric, logs: []demoLog{
+@@ -323,7 +326,7 @@ var demoTasks = []demoTaskItem{
+ 	},
+ 	// --- Выдан ---
+ 	{
+-		column: "Выдан", clientIdx: 5, title: "Kia Rio Т245ХК 799 (такси): ТО-285 000, пропуски зажигания 3-го цилиндра", assignee: exElectric, dueOffset: offset(-2), paid: true,
++		column: "Выдан", clientIdx: 5, title: "Kia Rio Т245ХК 799 (такси): ТО-285 000, пропуски зажигания 3-го цилиндра", assignee: exElectric, startOffset: -4, days: 3, paid: true,
+ 		car: "taxi-rio",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "oil", status: stDone, assignee: exMotor, payout: "700", payoutPaid: true, goodsOverride: []protoGood{g("OIL-5W30-208", "3.6"), g("26300-35505", "1")}},
+@@ -336,7 +339,7 @@ var demoTasks = []demoTaskItem{
+ 		media: []demoMedia{intakePhoto(60)},
+ 	},
+ 	{
+-		column: "Выдан", clientIdx: 6, title: "Lada Largus В946СА 750: замена ремня ГРМ с помпой, антифриз", assignee: exMotor, dueOffset: offset(-4), paid: true,
++		column: "Выдан", clientIdx: 6, title: "Lada Largus В946СА 750: замена ремня ГРМ с помпой, антифриз", assignee: exMotor, startOffset: -6, days: 3, paid: true,
+ 		car: "largus",
+ 		subtasks: []demoSubtaskItem{
+ 			{service: "timingpump", status: stDone, assignee: exMotor, payout: "3500", payoutPaid: true, logs: []demoLog{
+diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
+index a31980d..526d895 100644
+--- a/internal/seeddemo/seeddemo.go
++++ b/internal/seeddemo/seeddemo.go
+@@ -488,10 +488,13 @@ func dueDate(n *int) *string {
+ 	if n == nil {
+ 		return nil
+ 	}
+-	d := time.Now().AddDate(0, 0, *n).Format("2006-01-02")
++	d := dayFromToday(*n)
+ 	return &d
+ }
+ 
++// dayFromToday — YYYY-MM-DD через n дней от сегодня (начало работ заказа, срок услуги).
++func dayFromToday(n int) string { return time.Now().AddDate(0, 0, n).Format("2006-01-02") }
++
+ func userID(executors []executorRow, idx int, adminID string) string {
+ 	if idx >= 0 {
+ 		return executors[idx].ID
+@@ -514,10 +517,10 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
+ 		// Заказ = ровно один автомобиль клиента (tasks.car_id, one-car-order).
+ 		var taskID int64
+ 		if err := s.tx.QueryRow(s.ctx,
+-			`INSERT INTO tasks (column_id, client_id, car_id, title, description_html, assignee_id, due_date, is_paid, paid_at, position, created_by)
+-			 VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, CASE WHEN $8 THEN now() END, $9::numeric, $10) RETURNING id`,
+-			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dueDate(t.dueOffset), t.paid,
+-			fmt.Sprintf("%d", (i+1)*1024), s.adminID).
++			`INSERT INTO tasks (column_id, client_id, car_id, title, description_html, assignee_id, start_date, duration_days, is_paid, paid_at, position, created_by)
++			 VALUES ($1, $2, $3, $4, $5, $6, $7::date, $11, $8, CASE WHEN $8 THEN now() END, $9::numeric, $10) RETURNING id`,
++			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dayFromToday(t.startOffset), t.paid,
++			fmt.Sprintf("%d", (i+1)*1024), s.adminID, t.days).
+ 			Scan(&taskID); err != nil {
+ 			return err
+ 		}
+diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
+index 78bfa85..6b25b76 100644
+--- a/internal/seeddemo/seeddemo_integration_test.go
++++ b/internal/seeddemo/seeddemo_integration_test.go
+@@ -177,6 +177,22 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
+ 		WHERE t.deleted_at IS NULL`).Scan(&tasksWithEquipment))
+ 	s.Equal(15, tasksWithEquipment, "у каждого заказа есть автомобиль клиента")
+ 
++	// order-start-duration: у демо-заказов реалистичный план — 1..11 дней, часть начинается в
++	// будущем, часть уже просрочена (не выдана, плановое окончание прошло), есть однодневные с
++	// окончанием сегодня; due_date — плановое окончание.
++	var futureStart, overdueOpen, endsToday, badPlan int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT count(*) FILTER (WHERE t.start_date > current_date),
++		       count(*) FILTER (WHERE NOT c.is_final AND t.due_date < current_date),
++		       count(*) FILTER (WHERE t.due_date = current_date),
++		       count(*) FILTER (WHERE t.duration_days NOT BETWEEN 1 AND 11 OR t.due_date <> t.start_date + t.duration_days - 1)
++		FROM tasks t JOIN columns c ON c.id = t.column_id
++		WHERE t.deleted_at IS NULL`).Scan(&futureStart, &overdueOpen, &endsToday, &badPlan))
++	s.Equal(2, futureStart, "заказы с началом в будущем (Приёмка, Согласование)")
++	s.Equal(2, overdueOpen, "просроченные невыданные")
++	s.Equal(2, endsToday, "плановое окончание сегодня")
++	s.Zero(badPlan)
++
+ 	var movementsTotal int
+ 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM stock_movements`).Scan(&movementsTotal))
+ 	s.Positive(movementsTotal, "должны быть проведённые списания/начальные остатки")
