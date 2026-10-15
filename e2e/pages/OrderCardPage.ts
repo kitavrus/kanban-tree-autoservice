@@ -26,7 +26,7 @@ export class OrderCardPage {
   readonly deleteBtn: Locator;
 
   readonly printIntake: Locator;
-  readonly printHandover: Locator;
+  readonly printHandoverPdf: Locator;
 
   /** Блок «Автомобиль» существующего заказа (у нового заказа скрыт). */
   readonly carSection: Locator;
@@ -81,7 +81,7 @@ export class OrderCardPage {
     this.deleteBtn = page.getByTestId('task-delete');
 
     this.printIntake = page.getByTestId('card-print-intake');
-    this.printHandover = page.getByTestId('card-print-handover');
+    this.printHandoverPdf = page.getByTestId('card-print-handover-pdf');
 
     this.carSection = page.getByTestId('card-car-section');
     this.carRow = page.getByTestId('card-car-row');

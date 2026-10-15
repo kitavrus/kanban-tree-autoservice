@@ -402,7 +402,6 @@
   function renderPrintActions(id) {
     $('#card-print-actions').innerHTML =
       '<a class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener" href="/tasks/' + id + '/print/intake" data-testid="card-print-intake">Акт приёма</a>' +
-      '<a class="btn btn-outline-secondary btn-sm" target="_blank" rel="noopener" href="/tasks/' + id + '/print/handover" data-testid="card-print-handover">Акт выдачи</a>' +
       '<a class="btn btn-outline-secondary btn-sm" href="/tasks/' + id + '/print/handover/pdf" data-testid="card-print-handover-pdf">Акт выдачи PDF</a>';
   }
 

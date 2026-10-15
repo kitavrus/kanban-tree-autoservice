@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test, expect, columnByName } from '../fixtures/board';
 import { BoardPage } from '../pages/BoardPage';
 import { OrderCardPage } from '../pages/OrderCardPage';
@@ -46,7 +47,7 @@ test.describe('OC: печать актов из карточки', () => {
     await popup.close();
   });
 
-  test('OC-018: «Акт выдачи» открывает /tasks/N/print/handover в новой вкладке', async ({ adminPage: page, adminApi, uniq }) => {
+  test('OC-018: в карточке только «Акт выдачи PDF» — скачивается PDF-файл акта', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-018');
     const task = await adminApi.createTask({ title: uniq('OC-018 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
 
@@ -56,13 +57,14 @@ test.describe('OC: печать актов из карточки', () => {
     await board.openTaskEdit(task.id);
     await card.waitOpen();
 
-    await expect(card.printHandover).toHaveAttribute('target', '_blank');
-    await expect(card.printHandover).toHaveAttribute('href', `/tasks/${task.id}/print/handover`);
+    // HTML-ссылки «Акт выдачи» в карточке больше нет — только PDF.
+    await expect(page.getByTestId('card-print-handover')).toHaveCount(0);
+    await expect(card.printHandoverPdf).toHaveText('Акт выдачи PDF');
+    await expect(card.printHandoverPdf).toHaveAttribute('href', `/tasks/${task.id}/print/handover/pdf`);
 
-    const [popup] = await Promise.all([page.context().waitForEvent('page'), card.printHandover.click()]);
-    await popup.waitForLoadState();
-    expect(popup.url()).toContain(`/tasks/${task.id}/print/handover`);
-    await expect(popup.locator('body')).toContainText(`Акт выдачи №${task.id}`);
-    await popup.close();
+    const [download] = await Promise.all([page.waitForEvent('download'), card.printHandoverPdf.click()]);
+    expect(download.suggestedFilename()).toBe(`akt-vydachi-${task.id}.pdf`);
+    const path = await download.path();
+    expect(readFileSync(path!).subarray(0, 5).toString()).toBe('%PDF-');
   });
 });
