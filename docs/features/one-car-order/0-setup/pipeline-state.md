@@ -1,8 +1,8 @@
 # pipeline-state — one-car-order
 
 - track: light
-- status: in-progress
-- stage: light-review
+- status: done
+- stage: done
 - feature-base: cd5ab2947ecf51c7e8fb61763d441a818e18ebee
 - branch: feat/one-car-order
 - input: текст задачи (спеки нет), Tier: S/M-граница — light по явному выбору пользователя
