@@ -1,5 +1,5 @@
-# Review Bundle: order-start-duration — READY
-**Base:** 999e1f069f0429fe0436bc2ab590bf90546e8c8d | **HEAD:** fb10d6b | **Generated:** 2026-10-15 16:29 | diff: 50 files changed, 1591 insertions(+), 338 deletions(-)
+# Review Bundle: order-start-duration — CHECKS-FAILED
+**Base:** 999e1f069f0429fe0436bc2ab590bf90546e8c8d | **HEAD:** efa4881 | **Generated:** 2026-10-15 16:36 | diff: 65 files changed, 4937 insertions(+), 338 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -14,7 +14,7 @@
 | fuzz_verdict | ✅ | 0 | — |
 | live_suite | ✅ | 0 | — |
 | fixture_sync | ✅ | 0 | — |
-| e2e_mode | ✅ | 0 | — |
+| e2e_mode | ❌ | 1 | E2E-MODE FAIL HEADLESS-RUN: прогон [2026-10-15 16:36:12] без `--headed` — §TD-3 запрещает headless (команда: npx playwright test --project=chromium --workers=1 --retries=1 --reporter=list  # full suite, headless by user request (E2E_HEADLESS=1 make e2e-isolated-full, clean tmpfs stand)) |
 | rule_usage | ✅ | 0 | — |
 
 ## Diff по линзам
@@ -23,7 +23,7 @@
 | backend | 27 | 8-code-review/diff-backend.patch |
 | migrations | 2 | 8-code-review/diff-migrations.patch |
 | other | 17 | 8-code-review/diff-other.patch |
-| docs | 4 | — (артефакты, не ревьюятся построчно) |
+| docs | 19 | — (артефакты, не ревьюятся построчно) |
 
 ### backend
 - `M` internal/features/board/board_fuzz_test.go
@@ -82,6 +82,21 @@
 - `A` docs/features/order-start-duration/0-setup/light-progress.md
 - `A` docs/features/order-start-duration/0-setup/pipeline-state.md
 - `A` docs/features/order-start-duration/0-setup/timeline.jsonl
+- `A` docs/features/order-start-duration/8-code-review/checks/api_conventions.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/contract.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/date_bound.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/e2e_mode.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/fixture_sync.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/fuzz_verdict.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/go_naming.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/live_suite.txt
+- `A` docs/features/order-start-duration/8-code-review/checks/rule_usage.txt
+- `A` docs/features/order-start-duration/8-code-review/diff-backend.patch
+- `A` docs/features/order-start-duration/8-code-review/diff-migrations.patch
+- `A` docs/features/order-start-duration/8-code-review/diff-other.patch
+- `A` docs/features/order-start-duration/8-code-review/input-bundle.md
+- `A` docs/features/order-start-duration/9-validation/evidence/e2e-run.txt
+- `A` docs/features/order-start-duration/9-validation/evidence/last-run.json
 
 ## Экстракты документов (вместо полного чтения)
 ### draft-spec.md
@@ -92,5 +107,7 @@ MISSING
 
 ## Инвентарь доков (точечный grep разрешён, полное чтение — нет)
 - 0-setup/idioms.md — 6KB
+- 8-code-review/input-bundle.md — 4KB
 - 0-setup/light-progress.md — 3KB
 - 0-setup/pipeline-state.md — 1KB
+- 9-validation/evidence/last-run.json — 0KB

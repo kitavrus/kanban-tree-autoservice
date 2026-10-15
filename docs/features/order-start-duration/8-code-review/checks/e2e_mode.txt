@@ -1,4 +1,4 @@
 $ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature order-start-duration --repo /Users/igorpotema/mycode/kanban-tree-autoservice
-(exit 0)
+(exit 1)
 
-E2E-MODE SKIP-NO-EVIDENCE: нет docs/features/order-start-duration/9-validation/evidence/e2e-run.txt — прогонов E2E не зафиксировано (фича без фронта либо улика не сохранялась)
+E2E-MODE FAIL HEADLESS-RUN: прогон [2026-10-15 16:36:12] без `--headed` — §TD-3 запрещает headless (команда: npx playwright test --project=chromium --workers=1 --retries=1 --reporter=list  # full suite, headless by user request (E2E_HEADLESS=1 make e2e-isolated-full, clean tmpfs stand))
