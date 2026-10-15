@@ -160,7 +160,7 @@ func (s *PrintLiveSuite) TestTS041_CardAndMutations_SubtasksLate_TodayInViewerTi
 	// Срок услуге ставит настоящая мутация PUT /subtasks/:id — её ответ (карточка) тоже проверяем.
 	putSubtask := func(b *testutil.Browser, status string) int {
 		st, raw := b.Do(http.MethodPut, "/api/v1/subtasks/"+sub, map[string]any{
-			"status": status, "assignee_id": nil, "due_date": due, "price": 100, "equipment_id": nil,
+			"status": status, "assignee_id": nil, "due_date": due, "price": 100,
 		})
 		s.Require().Equal(http.StatusOK, st, string(raw))
 		var m struct {
@@ -200,7 +200,7 @@ func (s *PrintLiveSuite) TestTS041_CardAndMutations_SubtasksLate_TodayInViewerTi
 	// PUT /tasks/:id — ответ мутации заказа (Re-fetch-after-write).
 	putTask := func(b *testutil.Browser, title string) int {
 		st, raw := b.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
-			"title": title, "client_id": c, "column_id": col,
+			"title": title, "column_id": col,
 			"assignee_id": nil, "due_date": nil, "is_paid": false, "version": getTask(b).Version,
 		})
 		s.Require().Equal(http.StatusOK, st, string(raw))

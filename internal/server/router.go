@@ -116,7 +116,6 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 		}
 		return err
 	})
-	boardEquipmentRepo := board.NewTaskEquipmentRepo()
 	boardCardRepo := board.NewCardRepo(pool)
 	boardSubtaskRepo := board.NewSubtaskRepo()
 	boardSubtaskProductRepo := board.NewSubtaskProductRepo()
@@ -213,12 +212,12 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	if err != nil {
 		return nil, err
 	}
-	boardCardSvc := board.NewCardService(pool, boardTaskRepo, boardCardRepo, boardEquipmentRepo, boardEngine,
+	boardCardSvc := board.NewCardService(pool, boardTaskRepo, boardCardRepo, boardEngine,
 		boardSubtaskRepo, boardSubtaskProductRepo, boardSubtaskLogRepo).WithFiles(files)
 	boardColumns := board.NewColumnsHandler(board.NewColumnService(pool, boardColRepo, boardEngine))
 	board.Register(app, api, guard, &board.Handlers{
 		Columns: boardColumns,
-		Tasks: board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine, boardEquipmentRepo).WithFiles(files)).
+		Tasks: board.NewTasksHandler(board.NewTaskService(pool, boardTaskRepo, boardEngine).WithFiles(files)).
 			// Служебная уборка вида columns (soft-delete-board-columns DS-027).
 			WithPurger(string(softdelete.KindColumns), boardColumns.Purge).
 			// Служебная уборка видов clients и equipment (soft-delete-clients DS-027).

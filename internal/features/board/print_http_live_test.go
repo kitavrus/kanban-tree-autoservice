@@ -69,8 +69,14 @@ type printTaskCreated struct {
 }
 
 func (s *PrintLiveSuite) newTask(clientID, columnID, description string) (int64, int64) {
+	return s.newTaskWithPlate(clientID, columnID, description, testPlate())
+}
+
+// newTaskWithPlate — заказ с новым автомобилем клиента с госномером plate (one-car-order).
+func (s *PrintLiveSuite) newTaskWithPlate(clientID, columnID, description, plate string) (int64, int64) {
 	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
 		"title": "Заказ печати", "client_id": clientID, "column_id": columnID, "description": description,
+		"plate_number": plate, "new_equipment": map[string]any{},
 	})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m printTaskCreated
@@ -80,25 +86,10 @@ func (s *PrintLiveSuite) newTask(clientID, columnID, description string) (int64,
 
 func (s *PrintLiveSuite) markPaid(taskID, clientID, columnID string, version int64) {
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/tasks/"+taskID, map[string]any{
-		"title": "Заказ печати", "client_id": clientID, "column_id": columnID,
+		"title": "Заказ печати", "column_id": columnID,
 		"assignee_id": nil, "due_date": nil, "is_paid": true, "version": version,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
-}
-
-func (s *PrintLiveSuite) newEquipment(clientID, plate string) string {
-	var id string
-	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, $2) RETURNING id`,
-		clientID, plate).Scan(&id))
-	return id
-}
-
-func (s *PrintLiveSuite) addEquipment(taskID int64, equipmentID string) {
-	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": equipmentID, "completeness": "Полный комплект", "condition": "Хорошее",
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
 }
 
 func (s *PrintLiveSuite) newServiceCategory() string {
@@ -160,7 +151,7 @@ func (s *PrintLiveSuite) addSubtask(taskID int64, serviceID string) string {
 // незаметно обнулил бы цену услуги (price=nil = «по факту»).
 func (s *PrintLiveSuite) setSubtaskStatus(subtaskID, status string, price any) {
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subtaskID, map[string]any{
-		"status": status, "assignee_id": nil, "due_date": nil, "price": price, "equipment_id": nil,
+		"status": status, "assignee_id": nil, "due_date": nil, "price": price,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 }
@@ -173,15 +164,14 @@ func (s *PrintLiveSuite) addProduct(subtaskID, productID string, qty float64) {
 }
 
 // ---- LV-180/AC-015: акт приёма — реквизиты (пустые FIRM_* — блок опущен), #N, дата,
-// клиент+телефоны, оборудование, описание (экранировано), подписи «Сдал»/«Принял». Доступно
+// клиент+телефоны, автомобиль (только госномер — one-car-order), описание (экранировано),
+// подписи «Сдал»/«Принял». Доступно
 // и executor (D19), не только admin. ----
 
 func (s *PrintLiveSuite) TestPrintLiveSuite_Intake_FullContent() {
 	c := s.newClient("Клиент-Печать-Приём", "8 900 000-00-01")
 	col := s.columnID("Приёмка")
-	taskID, _ := s.newTask(c, col, "<b>Не включается</b>\n\nВторой абзац")
-	eqID := s.newEquipment(c, "П123РН 777")
-	s.addEquipment(taskID, eqID)
+	taskID, _ := s.newTaskWithPlate(c, col, "<b>Не включается</b>\n\nВторой абзац", "П123РН 777")
 
 	resp := s.admin.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/intake", taskID), nil, nil)
 	defer resp.Body.Close()
@@ -192,9 +182,9 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Intake_FullContent() {
 	s.Contains(body, fmt.Sprintf("Акт приёма №%d", taskID))
 	s.Contains(body, "Клиент-Печать-Приём")
 	s.Contains(body, "8 900 000-00-01")
-	s.Contains(body, "П123РН 777", "госномер автомобиля в акте")
-	s.Contains(body, "Полный комплект")
-	s.Contains(body, "Хорошее")
+	s.Contains(body, `data-testid="print-plate-number">П123РН 777<`, "госномер автомобиля в акте")
+	s.NotContains(body, "Комплектность", "комплектность/состояние в актах не печатаются")
+	s.NotContains(body, "Состояние")
 	s.Contains(body, "&lt;b&gt;Не включается&lt;/b&gt;", "описание — серверно-экранированный HTML (ADR-006)")
 	s.NotContains(body, "<b>Не включается</b>")
 	s.Contains(body, "Сдал:")

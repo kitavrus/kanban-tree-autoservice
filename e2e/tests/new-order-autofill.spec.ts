@@ -53,9 +53,8 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     const client = await adminApi.getClient(task.client_id);
     expect(client.company_name).toBe(clientName);
     expect(client.phones.map((p) => p.phone)).toEqual(['+7 913 111-22-33']);
-    const eq = (await adminApi.getCard(id)).equipment;
-    expect(eq).toHaveLength(1);
-    expect(eq[0]).toMatchObject({ plate_number: plate });
+    // one-car-order: у заказа ровно один автомобиль — новый, с введённым госномером.
+    expect((await adminApi.getCard(id)).car).toMatchObject({ plate_number: plate, is_deleted: false });
     await adminApi.purgeClient(task.client_id, [id]);
   });
 
@@ -87,7 +86,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     const id = await createdTaskId(card);
     _boardCleanup(id);
     expect((await adminApi.getTask(id)).client_id).toBe(client.id);
-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car.id]);
+    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car.id);
   });
 
   test('NO-006: у клиента несколько автомобилей — выбор из списка заполняет госномер', async ({
@@ -122,7 +121,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     const id = await createdTaskId(card);
     _boardCleanup(id);
     expect((await adminApi.getTask(id)).client_id).toBe(client.id);
-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car2.id]);
+    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car2.id);
   });
 
   test('NO-007: смена госномера переключает владельца, стирание — снимает блокировку; «+ Новый клиент» из списка', async ({
@@ -217,7 +216,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
     const id = await createdTaskId(card);
     _boardCleanup(id);
     expect((await adminApi.getTask(id)).client_id).toBe(client.id);
-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car.id]);
+    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car.id);
   });
 
   test('NO-009: подсказки госномера с клавиатуры — ↓ и Enter, Esc закрывает только список', async ({

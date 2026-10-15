@@ -51,8 +51,9 @@ func (s *PositionSuite) SetupTest() {
 func (s *PositionSuite) createTask(position string) int64 {
 	ctx := context.Background()
 	var id int64
-	err := s.Pool.QueryRow(ctx, `INSERT INTO tasks (column_id, client_id, title, position, created_by)
-		VALUES ($1, $2, 'T', $3::numeric, $4) RETURNING id`, posColumnID, posClientID, position, posAdminID).Scan(&id)
+	err := s.Pool.QueryRow(ctx, `WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'П 001') RETURNING id)
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		VALUES ($1, $2, (SELECT id FROM car), 'T', $3::numeric, $4) RETURNING id`, posColumnID, posClientID, position, posAdminID).Scan(&id)
 	s.Require().NoError(err)
 	return id
 }

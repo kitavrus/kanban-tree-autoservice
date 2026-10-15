@@ -63,9 +63,9 @@ export type Task = TaskCard & {
   description_html: string;
 };
 
-export type NewTask = {
+/** Шапка заказа — общая часть POST и PUT /api/v1/tasks (board.TaskHeader). */
+export type TaskHeader = {
   title: string;
-  client_id: string;
   column_id: string;
   assignee_id?: string | null;
   due_date?: string | null;
@@ -73,7 +73,21 @@ export type NewTask = {
   description?: string | null;
 };
 
-export type UpdateTask = NewTask & { version: number };
+/** Тело POST /api/v1/tasks (board.TaskCreateRequest). one-car-order: заказ = ровно один
+ *  автомобиль — plate_number и одно из equipment_id (найденный автомобиль, клиент — его
+ *  владелец) / new_equipment (новый автомобиль клиента client_id либо new_client).
+ *  adminApi.createTask без plate_number/equipment_id сам дописывает новый автомобиль клиента. */
+export type NewTask = TaskHeader & {
+  client_id?: string;
+  plate_number?: string;
+  equipment_id?: string;
+  new_equipment?: Record<string, never>;
+  new_client?: { company_name: string; phones: Array<{ phone: string; note?: string }> };
+};
+
+/** Тело PUT /api/v1/tasks/:id (board.TaskUpdateRequest): клиента и автомобиля нет — они не
+ *  меняются после создания (client_id/equipment_id в теле → 400 BAD_REQUEST). */
+export type UpdateTask = TaskHeader & { version: number };
 
 export type MoveTask = { column_id: string; prev_id?: number | null; next_id?: number | null };
 
@@ -201,17 +215,13 @@ export type StockSummaryResponse = {
 
 export type CardColumn = { id: string; name: string; is_final: boolean; consumes_stock: boolean };
 
-export type EquipmentHistory = { task_id: number; title: string; created_at: string };
-
-export type CardEquipment = {
+/** Автомобиль заказа (board.CardCar, one-car-order): ровно один, задан при создании. */
+export type CardCar = {
   equipment_id: string;
-  /** Единица мягко удалена — бейдж «удалён» в блоке «Оборудование» (soft-delete-clients §6.5). */
-  is_deleted: boolean;
   /** Госномер автомобиля. */
   plate_number: string;
-  completeness: string;
-  condition: string;
-  history: EquipmentHistory[];
+  /** Автомобиль мягко удалён — бейдж «удалён» в блоке «Автомобиль» (soft-delete-clients §6.5). */
+  is_deleted: boolean;
 };
 
 export type CardSubtaskProduct = {
@@ -249,7 +259,6 @@ export type CardSubtask = {
   assignee_is_active: boolean | null;
   due_date: string | null;
   price: number | string | null;
-  equipment_id: string | null;
   position: number;
   total: number | string;
   // executor-payouts D62–D65: выплата исполнителю (сумма — отдельная от price).
@@ -297,15 +306,12 @@ export type CardStock = {
 export type OrderCardResponse = {
   task: Task;
   column: CardColumn;
-  equipment: CardEquipment[];
+  car: CardCar;
   subtasks: CardSubtask[];
   stock: CardStock[];
   /** Фаза 7 (D21): вложения заказа, порядок загрузки. */
   attachments: CardAttachment[];
 };
-
-/** Тело POST /api/v1/tasks/:id/equipment (board.TaskEquipmentCreateRequest). */
-export type NewTaskEquipment = { equipment_id: string; completeness?: string; condition?: string };
 
 /** 1:1 с internal/features/board/card_dto.go CardAttachment (фаза 7). */
 export type AttachmentKind = 'photo' | 'video' | 'pdf';

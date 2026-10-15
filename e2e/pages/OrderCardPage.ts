@@ -4,7 +4,8 @@ import { NewOrderDialog } from './NewOrderDialog';
 // POM карточки заказа (фаза 6, testid-контракт js/task-card.js — KT.taskCard). Разделяет
 // шапку (переиспользует testid простой формы фазы 5 — task-title/task-client/task-column/
 // task-assignee/task-due/task-paid/task-save/task-delete/task-error) и новые разделы
-// оборудования/услуг/товаров/журнала/итогов/печати (префикс card-*). Комбобоксы —
+// автомобиля/услуг/товаров/журнала/итогов/печати (префикс card-*). Автомобиль заказа
+// (one-car-order) — ровно один, в карточке только читается: «госномер · владелец · История». Комбобоксы —
 // js/combobox.js переносит testid на видимую кнопку, выбор — клик по кнопке и затем по
 // `.cb-opt` в `combobox-dropdown` (эталон — BoardPage.chooseCombobox).
 export class OrderCardPage {
@@ -25,15 +26,16 @@ export class OrderCardPage {
   readonly printIntake: Locator;
   readonly printHandover: Locator;
 
-  readonly equipment: Locator;
-  readonly equipmentLocked: Locator;
-  readonly equipmentRows: Locator;
-  readonly equipmentAdd: Locator;
-  readonly equipmentNewBtn: Locator;
-  readonly equipmentNewPlate: Locator;
-  readonly equipmentNewSave: Locator;
-  readonly equipmentNewCancel: Locator;
-  readonly equipmentNewError: Locator;
+  /** Блок «Автомобиль» существующего заказа (у нового заказа скрыт). */
+  readonly carSection: Locator;
+  readonly carRow: Locator;
+  readonly carPlate: Locator;
+  readonly carOwner: Locator;
+  readonly carDeleted: Locator;
+  readonly carHistoryToggle: Locator;
+  readonly carHistoryPanel: Locator;
+  /** Подсказка «Владелец автомобиля» под полем «Клиент» (поле только для чтения). */
+  readonly clientLockedHint: Locator;
 
   readonly subtasks: Locator;
   readonly subtasksLocked: Locator;
@@ -76,15 +78,14 @@ export class OrderCardPage {
     this.printIntake = page.getByTestId('card-print-intake');
     this.printHandover = page.getByTestId('card-print-handover');
 
-    this.equipment = page.getByTestId('card-equipment');
-    this.equipmentLocked = page.getByTestId('card-equipment-locked');
-    this.equipmentRows = page.getByTestId('card-equipment-row');
-    this.equipmentAdd = page.getByTestId('card-equipment-add');
-    this.equipmentNewBtn = page.getByTestId('card-equipment-new');
-    this.equipmentNewPlate = page.getByTestId('card-equipment-new-plate');
-    this.equipmentNewSave = page.getByTestId('card-equipment-new-save');
-    this.equipmentNewCancel = page.getByTestId('card-equipment-new-cancel');
-    this.equipmentNewError = page.getByTestId('card-equipment-new-error');
+    this.carSection = page.getByTestId('card-car-section');
+    this.carRow = page.getByTestId('card-car-row');
+    this.carPlate = this.carRow.getByTestId('card-car-plate');
+    this.carOwner = this.carRow.getByTestId('card-car-owner');
+    this.carDeleted = this.carRow.getByTestId('card-car-deleted');
+    this.carHistoryToggle = this.carRow.getByTestId('card-car-history-toggle');
+    this.carHistoryPanel = this.carRow.getByTestId('card-car-history-panel');
+    this.clientLockedHint = page.getByTestId('task-client-locked');
 
     this.subtasks = page.getByTestId('card-subtasks');
     this.subtasksLocked = page.getByTestId('card-subtasks-locked');
@@ -111,7 +112,7 @@ export class OrderCardPage {
     await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
   }
 
-  /** Выбор в remote-search комбобоксе (услуги/товары/оборудование клиента) — печатает
+  /** Выбор в remote-search комбобоксе (услуги/товары) — печатает
    *  запрос в поле поиска дропдауна, ждёт результат по тексту. */
   async chooseRemote(button: Locator, query: string, optionText: string) {
     await button.click();
@@ -174,6 +175,7 @@ export class OrderCardPage {
     return this.subtaskRow(subtaskId).getByTestId('card-subtask-payout-warning');
   }
 
+  /** Выбора автомобиля в услуге нет (one-car-order) — локатор для проверки отсутствия. */
   subtaskEquipment(subtaskId: string): Locator {
     return this.subtaskRow(subtaskId).getByTestId('card-subtask-equipment');
   }
@@ -238,24 +240,21 @@ export class OrderCardPage {
     return this.page.locator(`[data-testid="card-log-add"][data-subtask-id="${subtaskId}"]`);
   }
 
-  equipmentRow(equipmentId: string): Locator {
-    return this.page.locator(`[data-testid="card-equipment-row"][data-equipment-id="${equipmentId}"]`);
+  /** Строка автомобиля заказа с этим equipment_id (видна — значит это автомобиль заказа). */
+  carRowOf(equipmentId: string): Locator {
+    return this.page.locator(`[data-testid="card-car-row"][data-equipment-id="${equipmentId}"]`);
   }
 
-  equipmentCompleteness(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-completeness');
+  /** Заказ в раскрытой «Истории работ» автомобиля по номеру. */
+  carHistoryOrder(taskId: number): Locator {
+    return this.carHistoryPanel.getByTestId('card-car-history-order').filter({ hasText: `#${taskId}` });
   }
 
-  equipmentCondition(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-condition');
-  }
-
-  equipmentDelete(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-remove');
-  }
-
-  equipmentHistory(equipmentId: string): Locator {
-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-history');
+  /** Раскрыть «Историю работ» автомобиля и дождаться загрузки. */
+  async openCarHistory() {
+    await this.carHistoryToggle.click();
+    await expect(this.carHistoryToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(this.carHistoryPanel).not.toContainText('Загрузка…');
   }
 
   /** Модалка карточки заказа — без горизонтальной прокрутки (TS-045). */

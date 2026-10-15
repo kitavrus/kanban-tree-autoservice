@@ -38,16 +38,15 @@ async function seedPaidOrder({ adminApi, uniq, insertSubtask }: Seed, label: str
   const cat = await adminApi.createCategory({ kind: 'service', name: uniq(`TZ услуги ${label}`) });
   const service = await adminApi.createService({ category_id: cat.id, name: uniq(`TZ услуга ${label}`), price: 1000 });
   const equipment = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
-  const task = await adminApi.createTask({
+  // one-car-order: автомобиль заказа задаётся при создании (найден по госномеру).
+  const task = await adminApi.createCarTask(equipment, {
     title: uniq(`TZ заказ ${label}`),
-    client_id: client.id,
     column_id: columnByName(columns, 'Приёмка').id,
     assignee_id: executorId,
     is_paid: true,
   });
-  await adminApi.addTaskEquipment(task.id, equipment.id);
   const subId = await insertSubtask({ taskId: task.id, serviceId: service.id });
-  await adminApi.updateSubtask(subId, { status: 'done', price: 1000, assignee_id: executorId, equipment_id: equipment.id, executor_payout: 500 });
+  await adminApi.updateSubtask(subId, { status: 'done', price: 1000, assignee_id: executorId, executor_payout: 500 });
   await adminApi.markExecutorPayouts([subId], true);
   return { client, columns, equipment, task, subId };
 }

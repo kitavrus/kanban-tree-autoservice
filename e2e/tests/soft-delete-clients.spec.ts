@@ -31,9 +31,8 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
     const first = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
     const second = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
     const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
-    const task = await adminApi.createTask({ title: uniq('SDCL-001 заказ'), client_id: client.id, column_id: column.id });
-    await adminApi.addTaskEquipment(task.id, first.id);
-    await adminApi.addTaskEquipment(task.id, second.id);
+    // one-car-order: автомобиль заказа — first (задан при создании); second — второй автомобиль клиента.
+    const task = await adminApi.createCarTask(first, { title: uniq('SDCL-001 заказ'), column_id: column.id });
     allowHttpErrors((url, status) => url.endsWith(`/api/v1/equipment/${first.id}/restore`) && status === 409);
 
     try {
@@ -62,24 +61,20 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await expect(board.card(task.id)).toBeVisible();
       await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveText('удалён');
 
-      // карточка заказа: бейдж у клиента и у обеих единиц блока «Оборудование».
+      // карточка заказа: бейдж у клиента (шапка и владелец в строке автомобиля) и у автомобиля.
       await board.openTaskEdit(task.id);
       const card = new OrderCardPage(page);
       await card.waitOpen();
       await expect(page.getByTestId('task-client-deleted')).toBeVisible();
       await expect(page.getByTestId('task-client-deleted')).toHaveText('удалён');
-      for (const unit of [first, second]) {
-        await expect(card.equipmentRow(unit.id).getByTestId('card-equipment-deleted')).toHaveText('удалён');
-      }
-      // удалённому клиенту оборудование не добавить, истории удалённых единиц нет (DS-026):
-      // вместо выбора — пояснение, кнопок «История работ» у удалённых единиц нет.
-      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveText('Клиент заказа удалён — добавить автомобиль нельзя');
-      await expect(page.getByTestId('card-equipment-add')).toHaveCount(0);
-      await expect(page.getByTestId('card-equipment-new')).toHaveCount(0);
-      await expect(page.getByTestId('card-equipment-history-toggle')).toHaveCount(0);
+      await expect(card.carRowOf(first.id)).toBeVisible();
+      await expect(card.carDeleted).toHaveText('удалён');
+      await expect(card.carRow.getByTestId('card-car-owner-deleted')).toHaveText('удалён');
+      // истории удалённого автомобиля нет (DS-026) — кнопки «История работ» нет.
+      await expect(card.carHistoryToggle).toHaveCount(0);
       const apiCard = await adminApi.getCard(task.id);
       expect(apiCard.task.client_is_deleted).toBe(true);
-      expect(apiCard.equipment.map((e) => e.is_deleted)).toEqual([true, true]);
+      expect(apiCard.car).toMatchObject({ equipment_id: first.id, is_deleted: true });
 
       // §8.2: «Удалённые» → вкладка «Клиенты».
       const del = new DeletedPage(page);
@@ -135,11 +130,10 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveCount(0);
       await board.openTaskEdit(task.id);
       await card.waitOpen();
-      await expect(card.equipmentRow(first.id)).toBeVisible();
+      await expect(card.carRowOf(first.id)).toBeVisible();
       await expect(page.getByTestId('task-client-deleted')).toBeHidden();
-      await expect(page.getByTestId('card-equipment-deleted')).toHaveCount(0);
-      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveCount(0);
-      await expect(page.getByTestId('card-equipment-new')).toBeVisible();
+      await expect(card.carDeleted).toHaveCount(0);
+      await expect(card.carHistoryToggle).toBeVisible();
     } finally {
       await adminApi.purgeClient(client.id, [task.id]);
     }
@@ -155,9 +149,8 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
     const gone = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
     const kept = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
     const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
-    const task = await adminApi.createTask({ title: uniq('SDCL-002 заказ'), client_id: client.id, column_id: column.id });
-    await adminApi.addTaskEquipment(task.id, gone.id);
-    await adminApi.addTaskEquipment(task.id, kept.id);
+    // one-car-order: автомобиль заказа — gone; kept — второй автомобиль клиента, вне заказа.
+    const task = await adminApi.createCarTask(gone, { title: uniq('SDCL-002 заказ'), column_id: column.id });
 
     try {
       // §8.1: форма единицы → окно «Удаление»; единица в заказе удалению не мешает (DS-014).
@@ -170,16 +163,16 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await expect(page.getByTestId('equipment-table')).toContainText(kept.plate_number);
       await expect(page.getByTestId('equipment-table')).not.toContainText(gone.plate_number);
 
-      // §8.3: в карточке заказа бейдж только у удалённой единицы; клиент — без бейджа.
+      // §8.3: в карточке заказа бейдж у удалённого автомобиля заказа; клиент — без бейджа.
       const board = new BoardPage(page);
       await board.goto(`?client_id=${client.id}`);
       await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveCount(0);
       await board.openTaskEdit(task.id);
       const card = new OrderCardPage(page);
       await card.waitOpen();
-      await expect(card.equipmentRow(gone.id).getByTestId('card-equipment-deleted')).toHaveText('удалён');
-      await expect(card.equipmentRow(kept.id)).toBeVisible();
-      await expect(card.equipmentRow(kept.id).getByTestId('card-equipment-deleted')).toHaveCount(0);
+      await expect(card.carRowOf(gone.id)).toBeVisible();
+      await expect(card.carDeleted).toHaveText('удалён');
+      await expect(card.carRow.getByTestId('card-car-owner-deleted')).toHaveCount(0);
       await expect(page.getByTestId('task-client-deleted')).toBeHidden();
 
       // §8.2: вкладка «Оборудование» — без бейджа «вместе с клиентом».

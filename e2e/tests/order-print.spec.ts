@@ -33,6 +33,10 @@ test.describe('OC: печать актов из карточки', () => {
     await popup.waitForLoadState();
     expect(popup.url()).toContain(`/tasks/${task.id}/print/intake`);
     await expect(popup.locator('body')).toContainText(`Акт приёма №${task.id}`);
+    // one-car-order: в акте один автомобиль заказа — только госномер.
+    const car = (await adminApi.getCard(task.id)).car;
+    await expect(popup.getByTestId('print-plate-number')).toHaveText(car.plate_number);
+    await expect(popup.locator('body')).not.toContainText('Комплектность');
     const bg = await popup.evaluate(() => getComputedStyle(document.body).backgroundColor);
     // светлая тема — фон НЕ тёмный (RGB-компоненты не все < 60, эталон печати print.css).
     const m = bg.match(/\d+/g);

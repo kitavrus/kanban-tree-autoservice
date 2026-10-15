@@ -187,8 +187,9 @@ func (s *CatalogLiveSuite) sdSubtask(serviceID, productID string) string {
 	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO clients (company_name) VALUES ('SD-каталог клиент ' || $1) RETURNING id`, sdMark()).Scan(&clientID))
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id FROM columns WHERE deleted_at IS NULL ORDER BY position LIMIT 1`).Scan(&columnID))
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
-		INSERT INTO tasks (column_id, client_id, title, position, created_by)
-		VALUES ($1::uuid, $2::uuid, 'SD-каталог заказ', 1024, $3::uuid) RETURNING id`, columnID, clientID, s.sdAdminID()).Scan(&taskID))
+		WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2::uuid, 'КТ 001') RETURNING id)
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		VALUES ($1::uuid, $2::uuid, (SELECT id FROM car), 'SD-каталог заказ', 1024, $3::uuid) RETURNING id`, columnID, clientID, s.sdAdminID()).Scan(&taskID))
 	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO subtasks (task_id, service_id) VALUES ($1, $2::uuid) RETURNING id`, taskID, serviceID).Scan(&subtaskID))
 	if productID != "" {
 		s.sdExec(`INSERT INTO subtask_products (subtask_id, product_id, qty, price, position) VALUES ($1::uuid, $2::uuid, 2, 100, 1)`,

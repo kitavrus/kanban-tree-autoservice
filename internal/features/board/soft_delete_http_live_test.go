@@ -132,24 +132,6 @@ func (s *OrderCardLiveSuite) sdScalar(q string, args ...any) string {
 	return v
 }
 
-// attachEq — единица клиента принимается в заказ через API карточки.
-func (s *OrderCardLiveSuite) attachEq(taskID int64, equipmentID string) {
-	st, _, raw := s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID),
-		map[string]any{"equipment_id": equipmentID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-}
-
-// cardEquipment — единица equipmentID в карточке (тест падает, если её нет).
-func (s *OrderCardLiveSuite) cardEquipment(card orderCardDTO, equipmentID string) cardEquipmentDTO {
-	for _, e := range card.Equipment {
-		if e.EquipmentID == equipmentID {
-			return e
-		}
-	}
-	s.FailNow("единицы нет в карточке", equipmentID)
-	return cardEquipmentDTO{}
-}
-
 // defaultStock — остаток товара.
 func (s *OrderCardLiveSuite) defaultStock(productID string) string {
 	return s.sdScalar(`SELECT stock::text FROM products WHERE id = $1`, productID)
@@ -520,9 +502,9 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 	_, execID := s.sdExecutor()
 	title := "SD-Заказ-" + uuid.NewString()[:8]
 
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": title, "client_id": c, "column_id": col, "assignee_id": execID,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var created struct {
 		Task struct {
@@ -545,11 +527,10 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 		WHERE id = $1`, subtaskID, execID)
 	s.Require().NoError(err)
 
-	// единица в заказе и в другом (действующем) заказе — блок истории в его карточке.
-	eq := s.newEquipment(c)
-	s.attachEq(taskID, eq)
-	otherID, _ := s.newTask(c, s.columnID("Приёмка"))
-	s.attachEq(otherID, eq)
+	// автомобиль заказа (one-car-order) и другой (действующий) заказ того же автомобиля — «История
+	// работ» в его карточке (GET /equipment/:id/history без текущего заказа).
+	eq := s.taskCar(taskID)
+	otherID := s.newTaskWithCar(eq, s.sdScalar(`SELECT plate_number FROM equipment WHERE id = $1`, eq), s.columnID("Приёмка"))
 
 	read := func() sdReaders {
 		var r sdReaders
@@ -597,8 +578,11 @@ func (s *OrderCardLiveSuite) TestTS006_Readers() {
 			}
 		}
 
-		_, card, _ := s.getCard(s.admin, otherID)
-		r.otherCardHistory = len(s.cardEquipment(card, eq).History)
+		for _, it := range hist.Items {
+			if it.TaskID != otherID {
+				r.otherCardHistory++
+			}
+		}
 		return r
 	}
 
@@ -647,8 +631,6 @@ func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
 	_, err := s.Pool.Exec(ctx, `UPDATE subtasks SET assignee_id = $2, status = 'done' WHERE id = $1`, subtaskID, execID)
 	s.Require().NoError(err)
 	s.addLog(subtaskID, "Запись до удаления")
-	eq, spare := s.newEquipment(c), s.newEquipment(c)
-	s.attachEq(taskID, eq)
 	productRowID := s.sdScalar(`SELECT id::text FROM subtask_products WHERE subtask_id = $1`, subtaskID)
 	logID := s.sdScalar(`SELECT id::text FROM subtask_logs WHERE subtask_id = $1`, subtaskID)
 	svc := s.newService("300")
@@ -660,7 +642,7 @@ func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
 			       (SELECT string_agg(status || ':' || is_executor_paid::text || ':' || coalesce(executor_payout::text, '-'), ',') FROM subtasks WHERE task_id = t.id) || '|' ||
 			       (SELECT string_agg(qty::text, ',') FROM subtask_products sp JOIN subtasks s ON s.id = sp.subtask_id WHERE s.task_id = t.id) || '|' ||
 			       (SELECT string_agg(l.text, ',') FROM subtask_logs l JOIN subtasks s ON s.id = l.subtask_id WHERE s.task_id = t.id) || '|' ||
-			       (SELECT count(*) FROM task_equipment WHERE task_id = t.id)::text
+			       t.car_id::text
 			FROM tasks t WHERE t.id = $1`, taskID)
 	}
 	before := snapshot()
@@ -672,12 +654,9 @@ func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
 		body               map[string]any
 		code               string
 	}{
-		{"правка заказа", http.MethodPut, taskPath(taskID, ""), map[string]any{"title": "Новое название", "client_id": c, "column_id": newCol, "version": json.Number(version)}, "TASK_NOT_FOUND"},
+		{"правка заказа", http.MethodPut, taskPath(taskID, ""), map[string]any{"title": "Новое название", "column_id": newCol, "version": json.Number(version)}, "TASK_NOT_FOUND"},
 		{"перенос заказа", http.MethodPost, taskPath(taskID, "/move"), map[string]any{"column_id": wip}, "TASK_NOT_FOUND"},
 		{"добавление услуги", http.MethodPost, taskPath(taskID, "/subtasks"), map[string]any{"service_id": svc}, "TASK_NOT_FOUND"},
-		{"добавление оборудования", http.MethodPost, taskPath(taskID, "/equipment"), map[string]any{"equipment_id": spare}, "TASK_NOT_FOUND"},
-		{"правка оборудования", http.MethodPut, taskPath(taskID, "/equipment/"+eq), map[string]any{"completeness": "кабель", "condition": "б/у"}, "TASK_NOT_FOUND"},
-		{"снятие оборудования", http.MethodDelete, taskPath(taskID, "/equipment/"+eq), nil, "TASK_NOT_FOUND"},
 		{"правка услуги", http.MethodPut, "/api/v1/subtasks/" + subtaskID, map[string]any{"status": "in_progress"}, "SUBTASK_NOT_FOUND"},
 		{"удаление услуги", http.MethodDelete, "/api/v1/subtasks/" + subtaskID, nil, "SUBTASK_NOT_FOUND"},
 		{"добавление товара", http.MethodPost, "/api/v1/subtasks/" + subtaskID + "/products", map[string]any{"product_id": productID, "qty": 1}, "SUBTASK_NOT_FOUND"},
@@ -759,8 +738,7 @@ func (s *OrderCardLiveSuite) TestTS013_Purge() {
 	taskID, subtaskID, productID := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
 	s.sdMove(taskID, s.columnID("В ремонте"))
 	s.addLog(subtaskID, "Запись")
-	eq := s.newEquipment(c)
-	s.attachEq(taskID, eq)
+	eq := s.taskCar(taskID)
 	id := fmt.Sprint(taskID)
 
 	exec, _ := s.sdExecutor()
@@ -786,10 +764,9 @@ func (s *OrderCardLiveSuite) TestTS013_Purge() {
 	}
 	s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
 	s.Equal(id, out.ID)
-	s.Equal("0|0|0|0", s.sdScalar(`
+	s.Equal("0|0|0", s.sdScalar(`
 		SELECT (SELECT count(*) FROM tasks WHERE id = $1)::text || '|' ||
 		       (SELECT count(*) FROM subtasks WHERE task_id = $1)::text || '|' ||
-		       (SELECT count(*) FROM task_equipment WHERE task_id = $1)::text || '|' ||
 		       (SELECT count(*) FROM task_stock WHERE task_id = $1)::text`, taskID),
 		"заказ и его части удалены физически")
 	s.Equal("10.000", s.defaultStock(productID), "товар возвращён на склад")
@@ -802,8 +779,6 @@ func (s *OrderCardLiveSuite) TestTS013_Purge() {
 	// мягко удалённый заказ убирается так же.
 	softID, _, softProduct := s.sdTaskWithProduct(c, s.columnID("Приёмка"), "10", 4)
 	s.sdMove(softID, s.columnID("В ремонте"))
-	eq2 := s.newEquipment(c)
-	s.attachEq(softID, eq2)
 	s.mustSoftDelete(softID)
 	st, raw = s.purge(s.admin, "tasks", fmt.Sprint(softID))
 	s.Require().Equal(http.StatusOK, st, string(raw))
@@ -868,8 +843,7 @@ func (s *OrderCardLiveSuite) TestTS049_DeletedTaskNoLongerHoldsClientEquipment()
 	c := s.newClient("Клиент-Только-Удалённый-Заказ")
 	col := s.sdColumn("SD-Держит-" + uuid.NewString()[:8])
 	taskID, _ := s.newTask(c, col)
-	eq := s.newEquipment(c)
-	s.attachEq(taskID, eq)
+	eq := s.taskCar(taskID)
 	s.mustSoftDelete(taskID)
 
 	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/test/purge/columns/"+col, nil)

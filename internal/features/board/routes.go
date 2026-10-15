@@ -54,12 +54,10 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handlers,
 		api.Delete("/test/purge/:kind/:id", a.RequireAPI(), sdAdmin, h.Tasks.Purge)
 	}
 
-	// Карточка заказа + оборудование (фаза 6, AC-001/AC-004/AC-005) — D19: доступно и
-	// executor, admin-гардов нет.
+	// Карточка заказа (фаза 6, AC-001) — D19: доступно и executor, admin-гардов нет.
+	// Автомобиль заказа задаётся при создании и не меняется (one-car-order): отдельных
+	// адресов оборудования заказа нет.
 	t.Get("/:id/card", h.Card.Card)
-	t.Post("/:id/equipment", h.Card.AddEquipment)
-	t.Put("/:id/equipment/:equipment_id", h.Card.UpdateEquipment)
-	t.Delete("/:id/equipment/:equipment_id", h.Card.RemoveEquipment)
 	t.Post("/:id/subtasks", h.Card.CreateSubtask)
 
 	// Услуги/товары/журнал заказа (фаза 6, AC-007/AC-008/AC-012) — §API-1 kebab-сегменты,

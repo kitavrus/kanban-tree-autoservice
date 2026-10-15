@@ -183,7 +183,7 @@ func (s *OrderCardLiveSuite) TestTS026_CardMarks_ServiceAndProduct() {
 
 	// услуга заказа, удалённая из каталога, правится как обычно.
 	st, _, raw := s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+gone, map[string]any{
-		"status": "in_progress", "assignee_id": nil, "due_date": nil, "price": 150, "equipment_id": nil,
+		"status": "in_progress", "assignee_id": nil, "due_date": nil, "price": 150,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	st, _, raw = s.doCard(s.admin, http.MethodPut, "/api/v1/subtask-products/"+goneRow, map[string]any{"qty": 3, "price": 10})

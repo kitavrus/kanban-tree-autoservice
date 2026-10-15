@@ -79,6 +79,7 @@ func (s *SubtaskProductsPositionSuite) TestSubtaskProductsPosition_BackfillOnMig
 
 	var taskID int64
 	s.Require().NoError(s.Pool.QueryRow(ctx,
+		// схема 0005 — tasks.car_id ещё нет (появится в 0017, бэкфилл заведёт автомобиль).
 		`INSERT INTO tasks (column_id, client_id, title, position, created_by)
 		 VALUES ($1, $2, 'SPP Task', 1024, $3) RETURNING id`, sppColumnID, sppClientID, sppAdminID,
 	).Scan(&taskID))

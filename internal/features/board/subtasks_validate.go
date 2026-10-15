@@ -10,11 +10,10 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/numeric"
 )
 
-// msgArchived/msgNotInOrder/msgNotPositive — коды полей фазы 6 (design-errors.md
-// §Validation Fields: «в архиве» / «нет в оборудовании заказа» / «должно быть больше 0»).
+// msgArchived/msgNotPositive — коды полей фазы 6 (design-errors.md §Validation Fields:
+// «в архиве» / «должно быть больше 0»).
 const (
 	msgArchived    = "archived"
-	msgNotInOrder  = "not_in_order"
 	msgNotPositive = "not_positive"
 	// msgNoAssignee — is_executor_paid=true у услуги без исполнителя (D65).
 	msgNoAssignee = "no_assignee"
@@ -59,15 +58,11 @@ func (in SubtaskUpdateRequest) normalize() SubtaskUpdateRequest {
 		v := strings.TrimSpace(*in.DueDate)
 		in.DueDate = &v
 	}
-	if in.EquipmentID != nil {
-		v := strings.TrimSpace(*in.EquipmentID)
-		in.EquipmentID = &v
-	}
 	return in
 }
 
-// validate — формат полей после normalize(); существование assignee_id/принадлежность
-// equipment_id заказу — сервис (design-errors.md §Validation Fields).
+// validate — формат полей после normalize(); существование assignee_id — сервис
+// (design-errors.md §Validation Fields).
 func (in SubtaskUpdateRequest) validate() []errorspkg.Field {
 	var f []errorspkg.Field
 	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
@@ -93,10 +88,6 @@ func (in SubtaskUpdateRequest) validate() []errorspkg.Field {
 		if code := in.Price.Validate(priceScale, false); code != "" {
 			add("price", code)
 		}
-	}
-
-	if in.EquipmentID != nil && *in.EquipmentID != "" && uuid.Validate(*in.EquipmentID) != nil {
-		add("equipment_id", msgInvalid)
 	}
 
 	// executor_payout — NUMERIC(12,2) ≥ 0, как price (D63).

@@ -175,8 +175,9 @@ func (s *UsersLiveSuite) TestList_ActiveTasks() {
 	task := func(column string, assignee *string) int64 {
 		var id int64
 		s.Require().NoError(s.Pool.QueryRow(ctx,
-			`INSERT INTO tasks (column_id, client_id, title, assignee_id, position, created_by)
-			 VALUES ($1, $2, 'Активные', $3, 1, $4) RETURNING id`, column, clientID, assignee, u.ID).Scan(&id))
+			`WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'ПЛ 001') RETURNING id)
+			 INSERT INTO tasks (column_id, client_id, car_id, title, assignee_id, position, created_by)
+			 VALUES ($1, $2, (SELECT id FROM car), 'Активные', $3, 1, $4) RETURNING id`, column, clientID, assignee, u.ID).Scan(&id))
 		return id
 	}
 	subtask := func(taskID int64, status string) {

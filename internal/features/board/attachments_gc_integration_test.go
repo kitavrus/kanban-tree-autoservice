@@ -49,7 +49,9 @@ func (s *OrphanSweepSuite) SetupSuite() {
 func (s *OrphanSweepSuite) newTask() int64 {
 	var id int64
 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
-		INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, 'Заказ сборщика', 1024, $3)
+		WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'ГК 001') RETURNING id)
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		VALUES ($1, $2, (SELECT id FROM car), 'Заказ сборщика', 1024, $3)
 		RETURNING id`, s.colID, s.clientID, s.userID).Scan(&id))
 	return id
 }

@@ -93,8 +93,9 @@ type errDTO struct {
 func (s *CalendarLiveSuite) insertTask(title, columnID, createdAt string, due, finishedAt *string) int64 {
 	var id int64
 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
-		INSERT INTO tasks (column_id, client_id, title, position, created_by, created_at, due_date, finished_at)
-		VALUES ($1, $2, $3, 1, $4, $5::timestamptz, $6::date, $7::timestamptz) RETURNING id`,
+		WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'К 001') RETURNING id)
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by, created_at, due_date, finished_at)
+		VALUES ($1, $2, (SELECT id FROM car), $3, 1, $4, $5::timestamptz, $6::date, $7::timestamptz) RETURNING id`,
 		columnID, s.clientID, title, s.adminID, createdAt, due, finishedAt).Scan(&id))
 	return id
 }

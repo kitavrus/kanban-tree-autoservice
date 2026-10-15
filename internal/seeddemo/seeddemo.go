@@ -210,7 +210,7 @@ func (s *seeder) run() (Result, error) {
 		return Result{}, fmt.Errorf("seeddemo: tasks: %w", err)
 	}
 
-	if err := s.seedDeletedTask(clients); err != nil {
+	if err := s.seedDeletedTask(clients, equip["vesta"]); err != nil {
 		return Result{}, fmt.Errorf("seeddemo: deleted task: %w", err)
 	}
 	if err := s.seedDeletedColumn(); err != nil {
@@ -265,11 +265,8 @@ func validateDemoData() error {
 		}
 	}
 	for _, t := range demoTasks {
-		for _, te := range t.equipment {
-			e, ok := keys[te.key]
-			if !ok || e.clientIdx != t.clientIdx {
-				return fmt.Errorf("заказ %q: авто %q не найдено у клиента", t.title, te.key)
-			}
+		if e, ok := keys[t.car]; !ok || e.clientIdx != t.clientIdx {
+			return fmt.Errorf("заказ %q: авто %q не найдено у клиента", t.title, t.car)
 		}
 		for _, st := range t.subtasks {
 			if !svc[st.service] {
@@ -514,31 +511,19 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
 		if t.assignee >= 0 {
 			assigneeID = &executors[t.assignee].ID
 		}
+		// Заказ = ровно один автомобиль клиента (tasks.car_id, one-car-order).
 		var taskID int64
 		if err := s.tx.QueryRow(s.ctx,
-			`INSERT INTO tasks (column_id, client_id, title, description_html, assignee_id, due_date, is_paid, paid_at, position, created_by)
-			 VALUES ($1, $2, $3, $4, $5, $6::date, $7, CASE WHEN $7 THEN now() END, $8::numeric, $9) RETURNING id`,
-			col.ID, clients[t.clientIdx].ID, t.title, t.descHTML, assigneeID, dueDate(t.dueOffset), t.paid, fmt.Sprintf("%d", (i+1)*1024), s.adminID).
+			`INSERT INTO tasks (column_id, client_id, car_id, title, description_html, assignee_id, due_date, is_paid, paid_at, position, created_by)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, CASE WHEN $8 THEN now() END, $9::numeric, $10) RETURNING id`,
+			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dueDate(t.dueOffset), t.paid,
+			fmt.Sprintf("%d", (i+1)*1024), s.adminID).
 			Scan(&taskID); err != nil {
 			return err
 		}
 
-		// Авто заказа; первое — опора услуг (subtasks.equipment_id).
-		var mainEquipID *string
-		for _, te := range t.equipment {
-			id := equip[te.key]
-			if _, err := s.tx.Exec(s.ctx,
-				`INSERT INTO task_equipment (task_id, equipment_id, completeness, condition) VALUES ($1, $2, $3, $4)`,
-				taskID, id, te.completeness, te.condition); err != nil {
-				return err
-			}
-			if mainEquipID == nil {
-				mainEquipID = &id
-			}
-		}
-
 		for pos, st := range t.subtasks {
-			if err := s.seedSubtask(taskID, pos, st, mainEquipID, executors, services, products); err != nil {
+			if err := s.seedSubtask(taskID, pos, st, executors, services, products); err != nil {
 				return fmt.Errorf("заказ %q, услуга %s: %w", t.title, st.service, err)
 			}
 		}
@@ -550,7 +535,7 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
 		}
 
 		if s.files != nil {
-			car := equipByKey[t.equipment[0].key]
+			car := equipByKey[t.car]
 			for _, m := range t.media {
 				if err := s.seedAttachment(taskID, car, m, executors); err != nil {
 					return fmt.Errorf("заказ %q, вложение %q: %w", t.title, m.name, err)
@@ -566,7 +551,7 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
 	return nil
 }
 
-func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, equipID *string, executors []executorRow,
+func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, executors []executorRow,
 	services map[string]serviceRow, products map[string]productRow) error {
 	svc := services[st.service]
 	var assigneeID *string
@@ -587,11 +572,11 @@ func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, equipID 
 
 	var subtaskID string
 	if err := s.tx.QueryRow(s.ctx,
-		`INSERT INTO subtasks (task_id, service_id, status, assignee_id, due_date, price, equipment_id, position,
+		`INSERT INTO subtasks (task_id, service_id, status, assignee_id, due_date, price, position,
 		                       executor_payout, is_executor_paid, executor_paid_at)
-		 VALUES ($1, $2, $3, $4, $5::date, $6::numeric, $7, $8,
-		         $9::numeric, $10, CASE WHEN $10 THEN now() - interval '1 day' END) RETURNING id`,
-		taskID, svc.ID, st.status, assigneeID, dueDate(st.dueOffset), price, equipID, pos,
+		 VALUES ($1, $2, $3, $4, $5::date, $6::numeric, $7,
+		         $8::numeric, $9, CASE WHEN $9 THEN now() - interval '1 day' END) RETURNING id`,
+		taskID, svc.ID, st.status, assigneeID, dueDate(st.dueOffset), price, pos,
 		payout, payoutPaid).Scan(&subtaskID); err != nil {
 		return err
 	}
@@ -694,15 +679,16 @@ func (s *seeder) seedAttachment(taskID int64, car demoEquipmentItem, m demoMedia
 // ---------------------------------------------------------------------------------------
 
 // seedDeletedTask — один мягко удалённый заказ с причиной (soft-delete-core TS-F5, DS-011);
-// без услуг и товаров — возвращать на склад нечего; в Result.Tasks не входит.
-func (s *seeder) seedDeletedTask(clients []clientRow) error {
+// без услуг и товаров — возвращать на склад нечего; в Result.Tasks не входит. Автомобиль —
+// та же Lada Vesta клиента (carID).
+func (s *seeder) seedDeletedTask(clients []clientRow, carID string) error {
 	_, err := s.tx.Exec(s.ctx, `
-		INSERT INTO tasks (column_id, client_id, title, description_html, position, created_by,
+		INSERT INTO tasks (column_id, client_id, car_id, title, description_html, position, created_by,
 		                   deleted_at, deleted_by, delete_reason)
-		SELECT c.id, $1::uuid, 'Lada Vesta Е245КХ 797: диагностика (дубль)', '', 999424, $2::uuid,
+		SELECT c.id, $1::uuid, $3::uuid, 'Lada Vesta Е245КХ 797: диагностика (дубль)', '', 999424, $2::uuid,
 		       now() - interval '2 days', $2::uuid, 'Создан по ошибке — дубль заказа'
 		FROM columns c WHERE NOT c.is_final AND c.deleted_at IS NULL ORDER BY c.position, c.id LIMIT 1`,
-		clients[0].ID, s.adminID)
+		clients[0].ID, s.adminID, carID)
 	return err
 }
 

@@ -339,13 +339,12 @@ body { background: var(--bs-body-bg); }
    Шапка модалки — заголовок + кнопки актов + закрыть в одну строку (flex без wrap) на
    360px шире вьюпорта: переносим кнопки актов на свою строку. Длинные слова без пробелов
    (серийник, название файла, комментарий) — переносятся, а не раздвигают тело модалки;
-   поле ввода журнала и заголовок оборудования в d-flex-строках сжимаются (min-width:0 —
-   урок CT-008); селектор узкий, чтобы не сжимать другие обёртки внутри d-flex (ревью LOW-1). */
+   поле ввода журнала в d-flex-строках сжимается (min-width:0 — урок CT-008); селектор узкий,
+   чтобы не сжимать другие обёртки внутри d-flex (ревью LOW-1). */
 #task-modal .modal-header { flex-wrap: wrap; row-gap: var(--space-2); }
 #task-modal .modal-title { min-width: 0; overflow-wrap: anywhere; }
 #task-modal .modal-body { overflow-wrap: anywhere; }
-#task-modal .modal-body .d-flex > .form-control,
-#task-modal .modal-body .card-eq-title { min-width: 0; }
+#task-modal .modal-body .d-flex > .form-control { min-width: 0; }
 @media (max-width: 576px) {
   #card-print-actions { order: 3; flex: 1 1 100%; margin-left: 0 !important; flex-wrap: wrap; }
   #card-print-actions:empty { display: none !important; }

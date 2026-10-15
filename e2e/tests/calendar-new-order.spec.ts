@@ -46,7 +46,7 @@ test.describe('CALNO: новый заказ из календаря', () => {
     const task = await adminApi.getTask(id);
     expect(task.due_date).toBe(day);
     expect(task.client_id).toBe(client.id);
-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car.id]);
+    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car.id);
 
     // закрытие карточки → перерисовка страницы: заказ на диаграмме выбранного дня.
     await card.close();

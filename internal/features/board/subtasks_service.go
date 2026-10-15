@@ -80,8 +80,8 @@ func (s *CardService) CreateSubtask(ctx context.Context, a Actor, taskID string,
 
 // UpdateSubtask — PUT /api/v1/subtasks/:id (LWW, AC-007/AC-011): done→не-done в финальной
 // колонке — 409 SUBTASK_FINAL_COLUMN; assignee_id — активный пользователь, ТОЛЬКО при
-// смене значения (SD-007); equipment_id — единица из оборудования ЭТОГО заказа. БЕЗ
-// Reconcile (состав товаров не меняется) — под тем же lockRowsScope (ADR-100).
+// смене значения (SD-007). Автомобиль у услуги не выбирается — он один на заказ
+// (tasks.car_id, one-car-order). БЕЗ Reconcile (состав товаров не меняется) — под тем же lockRowsScope (ADR-100).
 func (s *CardService) UpdateSubtask(ctx context.Context, a Actor, subtaskID string, in SubtaskUpdateRequest) (*OrderCardMutationResponse, error) {
 	if uuid.Validate(subtaskID) != nil {
 		return nil, ErrSubtaskNotFound
@@ -152,28 +152,6 @@ func (s *CardService) UpdateSubtask(ctx context.Context, a Actor, subtaskID stri
 			return errorspkg.Validation(errorspkg.Field{Name: "is_executor_paid", Message: msgNoAssignee})
 		}
 
-		equipmentID := nilIfEmpty(in.EquipmentID)
-		if equipmentID != nil {
-			attached, err := s.equipment.Attached(spanCtx, tx, tid, *equipmentID)
-			if err != nil {
-				return err
-			}
-			if !attached {
-				return errorspkg.Validation(errorspkg.Field{Name: "equipment_id", Message: msgNotInOrder})
-			}
-			// soft-delete-clients DS-014: мягко удалённую единицу услуге назначить нельзя; уже
-			// назначенная остаётся (проверка — только при смене значения).
-			if !samePtr(cur.EquipmentID, equipmentID) {
-				deleted, err := s.equipment.Deleted(spanCtx, tx, *equipmentID)
-				if err != nil {
-					return err
-				}
-				if deleted {
-					return errorspkg.Validation(errorspkg.Field{Name: "equipment_id", Message: msgNotFound})
-				}
-			}
-		}
-
 		var priceStr, payoutStr *string
 		if in.Price != nil {
 			v := in.Price.String()
@@ -186,7 +164,7 @@ func (s *CardService) UpdateSubtask(ctx context.Context, a Actor, subtaskID stri
 
 		if err := s.subtasks.Update(spanCtx, tx, subtaskID, subtaskUpdateRow{
 			Status: in.Status, AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
-			Price: priceStr, EquipmentID: equipmentID,
+			Price:          priceStr,
 			IsExecutorPaid: executorPaid, SetExecutorPayout: in.ExecutorPayout.Set, ExecutorPayout: payoutStr,
 		}); err != nil {
 			if errors.Is(err, errNotFound) {

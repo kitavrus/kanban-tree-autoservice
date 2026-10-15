@@ -15,26 +15,24 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/filestore"
 )
 
-// CardService — карточка заказа (GET) + мутации строк (услуги/товары/журнал/оборудование).
-// В этой фазе реализованы Card() и оборудование (task_equipment_service.go); мутации
-// услуг/товаров/журнала — фаза 03 (design-go-layers.md §Service Interface).
+// CardService — карточка заказа (GET) + мутации строк (услуги/товары/журнал). Автомобиль
+// заказа в карточке только читается (one-car-order: задаётся при создании заказа).
 type CardService struct {
-	pool      *pgxpool.Pool
-	tasks     *TaskRepo
-	card      *CardRepo
-	equipment *TaskEquipmentRepo
-	engine    *StockEngine
-	subtasks  *SubtaskRepo
-	products  *SubtaskProductRepo
-	logs      *SubtaskLogRepo
+	pool     *pgxpool.Pool
+	tasks    *TaskRepo
+	card     *CardRepo
+	engine   *StockEngine
+	subtasks *SubtaskRepo
+	products *SubtaskProductRepo
+	logs     *SubtaskLogRepo
 	// Вложения (фаза 7): метаданные — attachments, файлы — files (WithFiles; nil —
 	// загрузка/отдача недоступны, карточка читается как раньше).
 	attachments *AttachmentRepo
 	files       filestore.FileStore
 }
 
-func NewCardService(pool *pgxpool.Pool, tasks *TaskRepo, card *CardRepo, equipment *TaskEquipmentRepo, engine *StockEngine, subtasks *SubtaskRepo, products *SubtaskProductRepo, logs *SubtaskLogRepo) *CardService {
-	return &CardService{pool: pool, tasks: tasks, card: card, equipment: equipment, engine: engine, subtasks: subtasks, products: products, logs: logs,
+func NewCardService(pool *pgxpool.Pool, tasks *TaskRepo, card *CardRepo, engine *StockEngine, subtasks *SubtaskRepo, products *SubtaskProductRepo, logs *SubtaskLogRepo) *CardService {
+	return &CardService{pool: pool, tasks: tasks, card: card, engine: engine, subtasks: subtasks, products: products, logs: logs,
 		attachments: NewAttachmentRepo(pool)}
 }
 
@@ -46,8 +44,7 @@ func (s *CardService) WithFiles(fs filestore.FileStore) *CardService {
 }
 
 // Card — GET /api/v1/tasks/:id/card (AC-001): 7 запросов на пуле, без tx (read committed),
-// собранные в один ответ. Equipment/Subtasks/Stock и вложенные Products/Logs — всегда
-// массивы, не null.
+// собранные в один ответ. Subtasks/Stock и вложенные Products/Logs — всегда массивы, не null.
 func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderCardResponse, error) {
 	id, ok := parseTaskID(taskID)
 	if !ok {
@@ -74,7 +71,10 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
 		return nil, err
 	}
 
-	equipment, err := s.card.Equipment(ctx, id)
+	car, err := s.card.Car(ctx, id)
+	if errors.Is(err, errNotFound) {
+		return nil, ErrTaskNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
 	return &OrderCardResponse{
 		Task:        toTaskResponse(*task),
 		Column:      *col,
-		Equipment:   equipment,
+		Car:         *car,
 		Subtasks:    subtasks,
 		Stock:       stock,
 		Attachments: toCardAttachments(a, attachments),
@@ -126,9 +126,8 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
 
 // lockRowsScope — Lock Order (design-sql.md §Lock Order): TaskColumnID → LockTargetColumn
 // (FOR SHARE) → LockTask (FOR UPDATE) → колонка сменилась между чтением column_id и
-// LockTask → errTaskMovedRetry (ADR-100, withTx повторяет попытку). Мутации оборудования
-// колонку не блокируют (design-sql.md §Lock Order: «Оборудование: Lock Task без колонки»)
-// — lockRowsScope используют row-мутации услуг/товаров/журнала (фаза 03).
+// LockTask → errTaskMovedRetry (ADR-100, withTx повторяет попытку). lockRowsScope
+// используют row-мутации услуг/товаров/журнала (фаза 03).
 func (s *CardService) lockRowsScope(ctx context.Context, tx pgx.Tx, taskID int64) (*Task, *columnFlags, error) {
 	colID, err := s.tasks.TaskColumnID(ctx, tx, taskID)
 	if errors.Is(err, errNotFound) {

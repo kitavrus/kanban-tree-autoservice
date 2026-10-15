@@ -46,18 +46,11 @@ type cardColumnDTO struct {
 	ConsumesStock bool   `json:"consumes_stock"`
 }
 
-type equipmentHistoryDTO struct {
-	TaskID    int64  `json:"task_id"`
-	Title     string `json:"title"`
-	CreatedAt string `json:"created_at"`
-}
-
-type cardEquipmentDTO struct {
-	EquipmentID  string                `json:"equipment_id"`
-	PlateNumber  string                `json:"plate_number"`
-	Completeness string                `json:"completeness"`
-	Condition    string                `json:"condition"`
-	History      []equipmentHistoryDTO `json:"history"`
+// cardCarDTO — автомобиль заказа (one-car-order: ровно один, задан при создании).
+type cardCarDTO struct {
+	EquipmentID string `json:"equipment_id"`
+	PlateNumber string `json:"plate_number"`
+	IsDeleted   bool   `json:"is_deleted"`
 }
 
 type cardSubtaskProductDTO struct {
@@ -91,7 +84,6 @@ type cardSubtaskDTO struct {
 	AssigneeIsActive *bool        `json:"assignee_is_active"`
 	DueDate          *string      `json:"due_date"`
 	Price            *json.Number `json:"price"`
-	EquipmentID      *string      `json:"equipment_id"`
 	Position         int          `json:"position"`
 	Total            json.Number  `json:"total"`
 	// executor-payouts (D62–D65): выплата исполнителю.
@@ -123,20 +115,16 @@ type cardTaskDTO struct {
 }
 
 type orderCardDTO struct {
-	Task      cardTaskDTO        `json:"task"`
-	Column    cardColumnDTO      `json:"column"`
-	Equipment []cardEquipmentDTO `json:"equipment"`
-	Subtasks  []cardSubtaskDTO   `json:"subtasks"`
-	Stock     []cardStockDTO     `json:"stock"`
+	Task     cardTaskDTO      `json:"task"`
+	Column   cardColumnDTO    `json:"column"`
+	Car      cardCarDTO       `json:"car"`
+	Subtasks []cardSubtaskDTO `json:"subtasks"`
+	Stock    []cardStockDTO   `json:"stock"`
 }
 
 type orderCardMutationDTO struct {
 	Card     orderCardDTO      `json:"card"`
 	Warnings []stockWarningDTO `json:"warnings"`
-}
-
-type equipmentCreateDTO struct {
-	ID string `json:"id"`
 }
 
 func (s *OrderCardLiveSuite) errOf(body []byte) apiErrDTO {
@@ -172,9 +160,9 @@ func (s *OrderCardLiveSuite) columnID(name string) string {
 }
 
 func (s *OrderCardLiveSuite) newTask(clientID, columnID string) (int64, int64) {
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "Заказ карточки", "client_id": clientID, "column_id": columnID,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m struct {
 		Task struct {
@@ -184,6 +172,30 @@ func (s *OrderCardLiveSuite) newTask(clientID, columnID string) (int64, int64) {
 	}
 	s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
 	return m.Task.ID, m.Task.Version
+}
+
+// newTaskWithCar — заказ на уже существующий автомобиль equipmentID (найден по госномеру,
+// клиент заказа — владелец автомобиля).
+func (s *OrderCardLiveSuite) newTaskWithCar(equipmentID, plate, columnID string) int64 {
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"title": "Заказ карточки", "column_id": columnID, "plate_number": plate, "equipment_id": equipmentID,
+	})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	var m struct {
+		Task struct {
+			ID int64 `json:"id"`
+		} `json:"task"`
+	}
+	s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
+	return m.Task.ID
+}
+
+// taskCar — автомобиль заказа (tasks.car_id).
+func (s *OrderCardLiveSuite) taskCar(taskID int64) string {
+	var id string
+	s.Require().NoError(s.Pool.QueryRow(context.Background(),
+		`SELECT car_id::text FROM tasks WHERE id = $1`, taskID).Scan(&id))
+	return id
 }
 
 func (s *OrderCardLiveSuite) newServiceCategory() string {
@@ -219,12 +231,6 @@ func (s *OrderCardLiveSuite) addSubtask(taskID int64, serviceID, price string) s
 	return id
 }
 
-func (s *OrderCardLiveSuite) attachSubtaskEquipment(subtaskID, equipmentID string) {
-	_, err := s.Pool.Exec(context.Background(),
-		`UPDATE subtasks SET equipment_id = $2 WHERE id = $1`, subtaskID, equipmentID)
-	s.Require().NoError(err)
-}
-
 func (s *OrderCardLiveSuite) addLog(subtaskID, text string) {
 	var userID string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
@@ -252,19 +258,14 @@ func (s *OrderCardLiveSuite) getCard(b *testutil.Browser, id int64) (int, orderC
 	return st, c, raw
 }
 
-func (s *OrderCardLiveSuite) doEquipment(b *testutil.Browser, method, path string, body map[string]any) (int, orderCardMutationDTO, []byte) {
+// doCard — конверт card-мутации (услуги/товары/журнал).
+func (s *OrderCardLiveSuite) doCard(b *testutil.Browser, method, path string, body map[string]any) (int, orderCardMutationDTO, []byte) {
 	st, raw := b.Do(method, path, body)
 	var m orderCardMutationDTO
 	if st == http.StatusOK || st == http.StatusCreated {
 		s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
 	}
 	return st, m, raw
-}
-
-// doCard — тот же конверт card-мутации (услуги/товары/журнал этой фазы, не только
-// оборудование) — doEquipment реализует ровно тот же паттерн, алиас для читаемости тестов.
-func (s *OrderCardLiveSuite) doCard(b *testutil.Browser, method, path string, body map[string]any) (int, orderCardMutationDTO, []byte) {
-	return s.doEquipment(b, method, path, body)
 }
 
 // ---- фикстуры фазы 03: товары/комплекты услуг ----
@@ -319,9 +320,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GetCard_FullTree() {
 	s.Equal("Проверили заказ", card.Subtasks[0].Logs[0].Text)
 	s.True(card.Subtasks[0].Logs[0].CanEdit)
 	s.Equal("500.00", string(card.Task.TotalAmount))
+	// one-car-order: автомобиль заказа — один объект car, владелец — клиент заказа.
+	s.Equal(s.taskCar(taskID), card.Car.EquipmentID)
+	s.NotEmpty(card.Car.PlateNumber)
+	s.False(card.Car.IsDeleted)
+	s.Equal(c, card.Task.ClientID)
 }
 
-// LV-106/AC-001: заказ без услуг/оборудования — массивы пустые ([]), не null.
+// LV-106/AC-001: заказ без услуг — массивы пустые ([]), не null; автомобиль — объект.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GetCard_EmptyArraysNotNull() {
 	c := s.newClient("Клиент-Карточка-Пусто")
 	col := s.columnID("Приёмка")
@@ -329,7 +335,8 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_GetCard_EmptyArraysNotNull()
 
 	st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", taskID), nil)
 	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Contains(string(raw), `"equipment":[]`)
+	s.Contains(string(raw), `"car":{"equipment_id":`)
+	s.NotContains(string(raw), `"equipment":`, "списка оборудования заказа больше нет")
 	s.Contains(string(raw), `"subtasks":[]`)
 	s.Contains(string(raw), `"stock":[]`)
 }
@@ -340,10 +347,10 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
 	c := s.newClient("Клиент-Описание")
 	col := s.columnID("Приёмка")
 
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "Заказ с описанием", "client_id": c, "column_id": col,
 		"description": "<b>bold</b>\n\nВторой абзац",
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m struct {
 		Task struct {
@@ -359,7 +366,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
 
 	// PUT description=null — не меняет сохранённый HTML.
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", m.Task.ID), map[string]any{
-		"title": "Заказ с описанием", "client_id": c, "column_id": col,
+		"title": "Заказ с описанием", "column_id": col,
 		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": m.Task.Version, "description": nil,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
@@ -369,7 +376,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
 
 	// PUT с новым description — переписывает.
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", m.Task.ID), map[string]any{
-		"title": "Заказ с описанием", "client_id": c, "column_id": col,
+		"title": "Заказ с описанием", "column_id": col,
 		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": int64(2), "description": "Новый текст",
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
@@ -390,189 +397,147 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_DeepLink_SSR() {
 	s.Equal(http.StatusOK, resp.StatusCode)
 }
 
-// LV-108/AC-004: добавить/поправить/удалить оборудование заказа.
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_AddUpdateRemove() {
-	c := s.newClient("Клиент-Оборудование-CRUD")
+// ---- one-car-order: автомобиль заказа задаётся при создании и не меняется ----
+
+// Автомобиль заказа в карточке: новый автомобиль, созданный вместе с заказом, — объект car
+// (госномер из plate_number), клиент заказа — его владелец.
+func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_NewCarInCard() {
+	c := s.newClient("Клиент-Автомобиль-Новый")
 	col := s.columnID("Приёмка")
-	taskID, _ := s.newTask(c, col)
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"client_id": c, "column_id": col, "plate_number": "н002нн 77", "new_equipment": map[string]any{},
+	})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	var m struct {
+		Task struct {
+			ID    int64  `json:"id"`
+			Title string `json:"title"`
+		} `json:"task"`
+	}
+	s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
+	s.Equal("Н002НН 77", m.Task.Title, "пустой title — госномер")
+
+	st, card, raw := s.getCard(s.admin, m.Task.ID)
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	s.Equal("Н002НН 77", card.Car.PlateNumber)
+	s.Equal(s.taskCar(m.Task.ID), card.Car.EquipmentID)
+	s.Equal(c, card.Task.ClientID, "клиент заказа — владелец автомобиля")
+	var owner string
+	s.Require().NoError(s.Pool.QueryRow(context.Background(),
+		`SELECT client_id::text FROM equipment WHERE id = $1`, card.Car.EquipmentID).Scan(&owner))
+	s.Equal(c, owner)
+}
+
+// Найденный автомобиль: несколько заказов одного автомобиля — у каждого свой заказ, автомобиль
+// общий (несколько машин клиента = несколько отдельных заказов).
+func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_SameCarSeveralOrders() {
+	c := s.newClient("Клиент-Автомобиль-Повтор")
+	col := s.columnID("Приёмка")
 	eqID := s.newEquipment(c)
-
-	st, m, raw := s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": eqID, "completeness": "Полный комплект", "condition": "Хорошее",
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	s.Require().Len(m.Card.Equipment, 1)
-	s.Equal(eqID, m.Card.Equipment[0].EquipmentID)
-	s.Equal("Полный комплект", m.Card.Equipment[0].Completeness)
-
-	st, m, raw = s.doEquipment(s.admin, http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, eqID), map[string]any{
-		"completeness": "Без шнура", "condition": "Царапина на корпусе",
-	})
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Equal("Без шнура", m.Card.Equipment[0].Completeness)
-	s.Equal("Царапина на корпусе", m.Card.Equipment[0].Condition)
-
-	st, m, raw = s.doEquipment(s.admin, http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, eqID), nil)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Empty(m.Card.Equipment)
-
-	// повторный POST той же единицы — идемпотентно, 201 без ошибки (design-errors.md).
-	st, _, raw = s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": eqID,
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	st, _, raw = s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": eqID,
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
+	taskA := s.newTaskWithCar(eqID, "М001ММ 77", col)
+	taskB := s.newTaskWithCar(eqID, "м001мм77", col)
+	s.NotEqual(taskA, taskB)
+	for _, id := range []int64{taskA, taskB} {
+		st, card, raw := s.getCard(s.admin, id)
+		s.Require().Equal(http.StatusOK, st, string(raw))
+		s.Equal(eqID, card.Car.EquipmentID)
+		s.Equal("М001ММ 77", card.Car.PlateNumber)
+		s.Equal(c, card.Task.ClientID)
+	}
 }
 
-// LV-109/AC-005: новое оборудование прямо из карточки — ADR-004, два запроса
-// (POST /clients/:id/equipment, затем POST /tasks/:id/equipment).
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_NewFromCard() {
-	c := s.newClient("Клиент-Оборудование-Новое")
-	col := s.columnID("Приёмка")
-	taskID, _ := s.newTask(c, col)
-
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/clients/"+c+"/equipment", map[string]any{
-		"plate_number": "н002нн 77",
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	var eq equipmentCreateDTO
-	s.Require().NoError(json.Unmarshal(raw, &eq))
-
-	st, m, raw := s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": eq.ID,
-	})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	s.Require().Len(m.Card.Equipment, 1)
-	s.Equal("Н002НН 77", m.Card.Equipment[0].PlateNumber)
-}
-
-// LV-110/AC-006: история других заказов с той же единицей оборудования.
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_History() {
-	c := s.newClient("Клиент-Оборудование-История")
-	col := s.columnID("Приёмка")
-	taskA, _ := s.newTask(c, col)
-	taskB, _ := s.newTask(c, col)
-	eqID := s.newEquipment(c)
-
-	st, _, raw := s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskA), map[string]any{"equipment_id": eqID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-
-	st, card, raw := s.getCard(s.admin, taskA)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Require().Len(card.Equipment, 1)
-	s.Empty(card.Equipment[0].History, "единственный заказ с единицей — история пуста")
-
-	st, _, raw = s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskB), map[string]any{"equipment_id": eqID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-
-	st, card, raw = s.getCard(s.admin, taskA)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Require().Len(card.Equipment[0].History, 1)
-	s.Equal(taskB, card.Equipment[0].History[0].TaskID)
-
-	st, card, raw = s.getCard(s.admin, taskB)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Require().Len(card.Equipment[0].History, 1)
-	s.Equal(taskA, card.Equipment[0].History[0].TaskID)
-}
-
-// ---- Business Rules / Conflicts ----
-
-// LV-142/AC-004: единица выбрана в открытой услуге заказа — DELETE → 409
-// TASK_EQUIPMENT_IN_USE + details.subtasks.
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_InUseConflict() {
-	c := s.newClient("Клиент-Оборудование-Занято")
-	col := s.columnID("Приёмка")
-	taskID, _ := s.newTask(c, col)
-	eqID := s.newEquipment(c)
-
-	st, _, raw := s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{"equipment_id": eqID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-
-	svcID := s.newService("300")
-	subtaskID := s.addSubtask(taskID, svcID, "300")
-	s.attachSubtaskEquipment(subtaskID, eqID)
-
-	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, eqID), nil)
-	s.Require().Equal(http.StatusConflict, st, string(raw))
-	e := s.errOf(raw)
-	s.Equal("TASK_EQUIPMENT_IN_USE", e.Code)
-	s.Require().NotNil(e.Details)
-	s.Require().Len(e.Details.Subtasks, 1)
-	s.Equal(subtaskID, e.Details.Subtasks[0].ID)
-
-	// единица осталась в заказе.
-	st, card, raw := s.getCard(s.admin, taskID)
-	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Require().Len(card.Equipment, 1)
-}
-
-// LV-143/AC-004: смена клиента заказа — оборудование ПРЕЖНЕГО клиента, выбранное в
-// открытой услуге, блокирует смену; свободное (не выбранное) — тихо убирается.
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_ClientChange() {
-	c1 := s.newClient("Клиент-Смена-Раз")
-	c2 := s.newClient("Клиент-Смена-Два")
+// PUT /tasks/:id не меняет ни клиента, ни автомобиль: в теле шапки этих полей нет, строгий
+// разбор тела (неизвестное поле) → 400 BAD_REQUEST; заказ не изменился. Комплектность и
+// состояние автомобиля в заказе не хранятся — их поля тоже неизвестны.
+func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_PutCannotChangeClientOrCar() {
+	c1 := s.newClient("Клиент-Неизменный-Раз")
+	c2 := s.newClient("Клиент-Неизменный-Два")
 	col := s.columnID("Приёмка")
 	taskID, version := s.newTask(c1, col)
-	eqID := s.newEquipment(c1)
+	carID := s.taskCar(taskID)
+	otherCar := s.newEquipment(c2)
 
-	st, _, raw := s.doEquipment(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{"equipment_id": eqID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-
-	svcID := s.newService("100")
-	subtaskID := s.addSubtask(taskID, svcID, "100")
-	s.attachSubtaskEquipment(subtaskID, eqID)
-
-	// занято в открытой услуге — смена клиента отбивается 409.
-	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
-		"title": "Заказ", "client_id": c2, "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
-	})
-	s.Equal(http.StatusConflict, st, string(raw))
-	s.Equal("TASK_EQUIPMENT_IN_USE", s.errOf(raw).Code)
-
-	// освобождаем услугу от оборудования — теперь смена клиента проходит, чужое
-	// оборудование тихо убирается из task_equipment.
-	_, err := s.Pool.Exec(context.Background(), `UPDATE subtasks SET equipment_id = NULL WHERE id = $1`, subtaskID)
-	s.Require().NoError(err)
-
-	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
-		"title": "Заказ", "client_id": c2, "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
-	})
-	s.Require().Equal(http.StatusOK, st, string(raw))
+	base := func(extra map[string]any) map[string]any {
+		m := map[string]any{"title": "Заказ", "column_id": col, "assignee_id": nil, "due_date": nil, "is_paid": false, "version": version}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	for name, extra := range map[string]map[string]any{
+		"client_id":        {"client_id": c2},
+		"equipment_id":     {"equipment_id": otherCar},
+		"car_id":           {"car_id": otherCar},
+		"car_completeness": {"car_completeness": "Ключ"},
+		"car_condition":    {"car_condition": "Скол"},
+	} {
+		st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), base(extra))
+		s.Equal(http.StatusBadRequest, st, "%s: %s", name, raw)
+		s.Equal("BAD_REQUEST", s.errOf(raw).Code, name)
+	}
 
 	st, card, raw := s.getCard(s.admin, taskID)
 	s.Require().Equal(http.StatusOK, st, string(raw))
-	s.Empty(card.Equipment, "оборудование прежнего клиента убрано из заказа")
+	s.Equal(c1, card.Task.ClientID, "клиент не сменился")
+	s.Equal(carID, card.Car.EquipmentID, "автомобиль не сменился")
+	s.Equal(version, card.Task.Version, "отклонённые правки версию не меняют")
+
+	// та же шапка без этих полей — сохраняется, клиент и автомобиль прежние.
+	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), base(map[string]any{"title": "Новое имя"}))
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	st, card, raw = s.getCard(s.admin, taskID)
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	s.Equal("Новое имя", card.Task.Title)
+	s.Equal(c1, card.Task.ClientID)
+	s.Equal(carID, card.Car.EquipmentID)
 }
 
-// LV-144/AC-004: оборудование другого клиента — 400 VALIDATION field equipment_id.
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_ForeignClient400() {
+// Прежние адреса оборудования заказа (POST/PUT/DELETE /tasks/:id/equipment) убраны — 404/405;
+// автомобиль заказа на месте.
+func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_EquipmentRoutesGone() {
+	c := s.newClient("Клиент-Без-Адресов-Оборудования")
+	col := s.columnID("Приёмка")
+	taskID, _ := s.newTask(c, col)
+	carID := s.taskCar(taskID)
+	spare := s.newEquipment(c)
+
+	for _, tc := range []struct {
+		method, path string
+		body         map[string]any
+	}{
+		{http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{"equipment_id": spare}},
+		{http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, carID), map[string]any{"completeness": "x", "condition": "y"}},
+		{http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, carID), nil},
+	} {
+		st, raw := s.admin.Do(tc.method, tc.path, tc.body)
+		s.True(st == http.StatusNotFound || st == http.StatusMethodNotAllowed, "%s %s → %d %s", tc.method, tc.path, st, raw)
+	}
+	s.Equal(carID, s.taskCar(taskID))
+}
+
+// Найденный автомобиль другого клиента при создании: client_id не владелец → 400
+// foreign_client; несуществующий/пустой equipment_id → not_found/required.
+func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_ForeignOrUnknownCar400() {
 	c1 := s.newClient("Клиент-Чужое-Раз")
 	c2 := s.newClient("Клиент-Чужое-Два")
 	col := s.columnID("Приёмка")
-	taskID, _ := s.newTask(c1, col)
 	foreignEqID := s.newEquipment(c2)
 
-	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": foreignEqID,
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"client_id": c1, "column_id": col, "plate_number": "М001ММ 77", "equipment_id": foreignEqID,
 	})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("foreign_client", s.fields(raw)["equipment_id"])
 
 	unknown := "00000000-0000-0000-0000-000000000000"
-	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": unknown,
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"column_id": col, "plate_number": "М001ММ 77", "equipment_id": unknown,
 	})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["equipment_id"])
 
-	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": "",
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"client_id": c1, "column_id": col, "plate_number": "М001ММ 77", "equipment_id": "",
 	})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("required", s.fields(raw)["equipment_id"])
@@ -580,7 +545,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Equipment_ForeignClient400()
 
 // ---- Invalid Path IDs (TD-4) ----
 
-// LV-170 (часть — card/equipment пути): невалидные/несуществующие id в пути → 404.
+// LV-170 (часть — card пути): невалидные/несуществующие id в пути → 404.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidPathIDs404() {
 	for _, id := range []string{"abc", "-1", "0", "99999999999999999999"} {
 		st, raw := s.admin.Do(http.MethodGet, "/api/v1/tasks/"+id+"/card", nil)
@@ -596,30 +561,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidPathIDs404() {
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("TASK_NOT_FOUND", s.errOf(raw).Code)
 
-	for _, eqID := range []string{"not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
-		st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, eqID), map[string]any{
-			"completeness": "x", "condition": "y",
-		})
-		s.Equal(http.StatusNotFound, st, "%s → %s", eqID, raw)
-		s.Equal("TASK_EQUIPMENT_NOT_FOUND", s.errOf(raw).Code, eqID)
-
-		st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d/equipment/%s", taskID, eqID), nil)
-		s.Equal(http.StatusNotFound, st, "%s → %s", eqID, raw)
-		s.Equal("TASK_EQUIPMENT_NOT_FOUND", s.errOf(raw).Code, eqID)
-	}
-
-	// equipment/:id несуществующего заказа — 404 TASK_NOT_FOUND (LockTask раньше).
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks/999999999/equipment", map[string]any{
-		"equipment_id": "11111111-1111-1111-1111-111111111111",
-	})
-	s.Equal(http.StatusNotFound, st, string(raw))
-	s.Equal("TASK_NOT_FOUND", s.errOf(raw).Code)
+	_ = taskID
 
 	// LV-170 (дополнение фазы 03) — subtasks/subtask-products/subtask-logs.
 	unknownUUID := "00000000-0000-0000-0000-000000000000"
 	for _, id := range []string{"not-a-uuid", unknownUUID} {
 		st, raw := s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+id, map[string]any{
-			"status": "new", "assignee_id": nil, "due_date": nil, "price": nil, "equipment_id": nil,
+			"status": "new", "assignee_id": nil, "due_date": nil, "price": nil,
 		})
 		s.Equal(http.StatusNotFound, st, "%s → %s", id, raw)
 		s.Equal("SUBTASK_NOT_FOUND", s.errOf(raw).Code, id)
@@ -690,14 +638,12 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_CreateWithKit() {
 	s.Equal(version, m.Card.Task.Version, "row-мутация не трогает tasks.version")
 }
 
-// LV-104/AC-007/AC-011: PUT /subtasks/:id — status/assignee/due/price(null)/equipment_id.
+// LV-104/AC-007/AC-011: PUT /subtasks/:id — status/assignee/due/price(null). Автомобиль у
+// услуги не выбирается (one-car-order): equipment_id в теле — неизвестное поле → 400.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
 	c := s.newClient("Клиент-Услуга-Правка")
 	col := s.columnID("Приёмка")
 	taskID, _ := s.newTask(c, col)
-	eqID := s.newEquipment(c)
-	st, _, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{"equipment_id": eqID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
 
 	svcID := s.newService("300")
 	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
@@ -708,7 +654,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT id FROM users WHERE login = 'card-admin'`).Scan(&adminID))
 
 	st, m, raw = s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "in_progress", "assignee_id": adminID, "due_date": "2026-05-01", "price": nil, "equipment_id": eqID,
+		"status": "in_progress", "assignee_id": adminID, "due_date": "2026-05-01", "price": nil,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	sub := m.Card.Subtasks[0]
@@ -718,10 +664,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
 	s.Require().NotNil(sub.DueDate)
 	s.Equal("2026-05-01", *sub.DueDate)
 	s.Nil(sub.Price, "price=null — «по факту»")
-	s.Require().NotNil(sub.EquipmentID)
-	s.Equal(eqID, *sub.EquipmentID)
 	s.Equal(json.Number("0.00"), sub.Total, "«по факту» без товаров — 0")
 	s.Equal(json.Number("0.00"), m.Card.Task.TotalAmount)
+
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
+		"status": "in_progress", "assignee_id": adminID, "due_date": nil, "price": nil, "equipment_id": s.taskCar(taskID),
+	})
+	s.Equal(http.StatusBadRequest, st, string(raw))
+	s.Equal("BAD_REQUEST", s.errOf(raw).Code)
 }
 
 // LV-105/AC-008: POST/PUT/DELETE /subtask-products — line_total корректен на каждом шаге.
@@ -909,13 +859,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_UnaffectedByRowMutat
 	s.Equal(version, m.Card.Task.Version)
 
 	st, m, raw = s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "in_progress", "assignee_id": nil, "due_date": nil, "price": nil, "equipment_id": nil,
+		"status": "in_progress", "assignee_id": nil, "due_date": nil, "price": nil,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.Equal(version, m.Card.Task.Version)
 
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
-		"title": "Заказ карточки", "client_id": c, "column_id": col,
+		"title": "Заказ карточки", "column_id": col,
 		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw), "version, захваченный ДО row-мутаций, всё ещё актуален")
@@ -928,13 +878,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_ConflictOnHeader() {
 	taskID, version := s.newTask(c, col)
 
 	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
-		"title": "Первая правка", "client_id": c, "column_id": col,
+		"title": "Первая правка", "column_id": col,
 		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
-		"title": "Вторая правка", "client_id": c, "column_id": col,
+		"title": "Вторая правка", "column_id": col,
 		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
 	})
 	s.Equal(http.StatusConflict, st, string(raw))
@@ -976,36 +926,17 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_FinalColumn_BlocksUndone() {
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subtaskID, map[string]any{
-		"status": "in_progress", "assignee_id": nil, "due_date": nil, "price": nil, "equipment_id": nil,
+		"status": "in_progress", "assignee_id": nil, "due_date": nil, "price": nil,
 	})
 	s.Equal(http.StatusConflict, st, string(raw))
 	s.Equal("SUBTASK_FINAL_COLUMN", s.errOf(raw).Code)
 
 	st, m, raw := s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+subtaskID, map[string]any{
-		"status": "done", "assignee_id": nil, "due_date": nil, "price": 150, "equipment_id": nil,
+		"status": "done", "assignee_id": nil, "due_date": nil, "price": 150,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	s.Require().NotNil(m.Card.Subtasks[0].Price)
 	s.Equal(json.Number("150.00"), *m.Card.Subtasks[0].Price)
-}
-
-// LV-145/AC-007: equipment_id не из оборудования ЭТОГО заказа — 400.
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_EquipmentNotInOrder400() {
-	c := s.newClient("Клиент-Оборудование-НеЗаказа")
-	col := s.columnID("Приёмка")
-	taskID, _ := s.newTask(c, col)
-	eqID := s.newEquipment(c) // НЕ добавлена в task_equipment
-
-	svcID := s.newService("0")
-	st, m, raw := s.doCard(s.admin, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", taskID), map[string]any{"service_id": svcID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	subID := m.Card.Subtasks[0].ID
-
-	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "new", "assignee_id": nil, "due_date": nil, "price": nil, "equipment_id": eqID,
-	})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("not_in_order", s.fields(raw)["equipment_id"])
 }
 
 // LV-146/AC-007: assignee_id заблокированного — 400 только при СМЕНЕ значения (SD-007).
@@ -1020,14 +951,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400(
 
 	inactiveID := s.SeedUser("card-inactive-"+subID[:8], "password1", "Неактивный", "executor", false)
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "new", "assignee_id": inactiveID, "due_date": nil, "price": nil, "equipment_id": nil,
+		"status": "new", "assignee_id": inactiveID, "due_date": nil, "price": nil,
 	})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["assignee_id"])
 
 	activeID := s.SeedUser("card-active-"+subID[:8], "password1", "Активный", "executor", true)
 	st, _, raw = s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "new", "assignee_id": activeID, "due_date": nil, "price": nil, "equipment_id": nil,
+		"status": "new", "assignee_id": activeID, "due_date": nil, "price": nil,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
@@ -1035,7 +966,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400(
 	s.Require().NoError(err)
 
 	st, m, raw = s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "new", "assignee_id": activeID, "due_date": nil, "price": 200, "equipment_id": nil,
+		"status": "new", "assignee_id": activeID, "due_date": nil, "price": 200,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw), "тот же assignee_id — SD-007 без повторной проверки active")
 	s.Require().NotNil(m.Card.Subtasks[0].AssigneeIsActive)
@@ -1113,15 +1044,11 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Access_ExecutorRowEndpoints(
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	s.Require().NotNil(m.Card.Subtasks[0].Products[0].Price, "executor видит цену товара")
 
-	eqID := s.newEquipment(c)
-	st, _, raw = s.doCard(exec, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{"equipment_id": eqID})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-
 	st, _, raw = s.doCard(exec, http.MethodPost, "/api/v1/subtasks/"+subID+"/logs", map[string]any{"text": "Заметка исполнителя"})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 
 	st, raw = exec.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
-		"title": "Заказ карточки", "client_id": c, "column_id": col,
+		"title": "Заказ карточки", "column_id": col,
 		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
 	})
 	s.Equal(http.StatusOK, st, string(raw), "правка без смены is_paid — доступна executor")
@@ -1193,7 +1120,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_NoSession401() {
 	}
 }
 
-// LV-171/AC-008/AC-012: границы qty/price/text/completeness/description/status/due_date.
+// LV-171/AC-008/AC-012: границы qty/price/text/description/status/due_date.
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidInput400() {
 	c := s.newClient("Клиент-Невалидный-Ввод")
 	col := s.columnID("Приёмка")
@@ -1232,21 +1159,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidInput400() {
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("too_long", s.fields(raw)["text"])
 
-	eqID := s.newEquipment(c)
-	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": eqID, "completeness": strings.Repeat("a", 1001),
-	})
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("too_long", s.fields(raw)["completeness"])
-
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "x", "client_id": c, "column_id": col, "description": strings.Repeat("d", 10001),
-	})
+	}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("too_long", s.fields(raw)["description"])
 
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "closed", "assignee_id": nil, "due_date": "2026-02-30", "price": nil, "equipment_id": nil,
+		"status": "closed", "assignee_id": nil, "due_date": "2026-02-30", "price": nil,
 	})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	fields := s.fields(raw)
@@ -1315,23 +1235,30 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_LogOnDeletedSubtask404() {
 
 // ---- Access Control ----
 
-// D19: оборудование заказа доступно и executor (не только admin).
-func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Executor_EquipmentAllowed() {
+// D19: карточка заказа с автомобилем доступна и executor; executor создаёт заказ на найденный
+// автомобиль (не только admin).
+func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Executor_CarOrderAllowed() {
 	s.SeedUser("card-exec", "password1", "Карточка Исп", "executor", true)
 	exec := s.NewBrowser()
 	exec.Login("card-exec", "password1")
 
 	c := s.newClient("Клиент-Исполнитель-Оборудование")
 	col := s.columnID("Приёмка")
-	taskID, _ := s.newTask(c, col)
 	eqID := s.newEquipment(c)
 
-	st, _, raw := s.doEquipment(exec, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID), map[string]any{
-		"equipment_id": eqID,
+	st, raw := exec.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"column_id": col, "plate_number": "М001ММ 77", "equipment_id": eqID,
 	})
-	s.Equal(http.StatusCreated, st, string(raw))
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	var m struct {
+		Task struct {
+			ID int64 `json:"id"`
+		} `json:"task"`
+	}
+	s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
 
-	st, card, raw := s.getCard(exec, taskID)
+	st, card, raw := s.getCard(exec, m.Task.ID)
 	s.Equal(http.StatusOK, st, string(raw))
-	s.Require().Len(card.Equipment, 1)
+	s.Equal(eqID, card.Car.EquipmentID)
+	s.Equal(c, card.Task.ClientID)
 }

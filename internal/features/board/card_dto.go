@@ -10,14 +10,14 @@ import (
 // и card в ответах row-мутаций (ADR-001, design-go-layers.md §DTO OrderCard).
 
 // OrderCardResponse — итог заказа только в task.total_amount (одно имя в GET /tasks и в
-// карточке; отдельного поля total нет). Equipment/Subtasks/Stock — всегда массивы, не null
-// (AC-001).
+// карточке; отдельного поля total нет). Subtasks/Stock — всегда массивы, не null (AC-001).
+// Car — автомобиль заказа (one-car-order: ровно один, задан при создании, не меняется).
 type OrderCardResponse struct {
-	Task      TaskResponse    `json:"task"`
-	Column    CardColumn      `json:"column"`
-	Equipment []CardEquipment `json:"equipment"`
-	Subtasks  []CardSubtask   `json:"subtasks"`
-	Stock     []CardStock     `json:"stock"`
+	Task     TaskResponse  `json:"task"`
+	Column   CardColumn    `json:"column"`
+	Car      CardCar       `json:"car"`
+	Subtasks []CardSubtask `json:"subtasks"`
+	Stock    []CardStock   `json:"stock"`
 	// Attachments — вложения заказа (фаза 7, D21), всегда массив, порядок загрузки.
 	Attachments []CardAttachment `json:"attachments"`
 }
@@ -44,23 +44,14 @@ type CardColumn struct {
 	ConsumesStock bool   `json:"consumes_stock"`
 }
 
-// CardEquipment — единица оборудования клиента, принятая в заказ (AC-004).
-type CardEquipment struct {
+// CardCar — автомобиль заказа (tasks.car_id → equipment). Владелец — клиент заказа
+// (task.client_id/client_name). История работ по автомобилю — GET /api/v1/equipment/:id/history.
+type CardCar struct {
 	EquipmentID string `json:"equipment_id"`
-	// IsDeleted — единица мягко удалена (soft-delete-clients DS-014): в заказе остаётся с
+	PlateNumber string `json:"plate_number"` // госномер автомобиля
+	// IsDeleted — автомобиль мягко удалён (soft-delete-clients DS-014): в заказе остаётся с
 	// бейджем «удалён».
-	IsDeleted    bool               `json:"is_deleted"`
-	PlateNumber  string             `json:"plate_number"` // госномер автомобиля
-	Completeness string             `json:"completeness"`
-	Condition    string             `json:"condition"`
-	History      []EquipmentHistory `json:"history"`
-}
-
-// EquipmentHistory — другие заказы с этой же единицей оборудования (AC-006).
-type EquipmentHistory struct {
-	TaskID    int64     `json:"task_id"`
-	Title     string    `json:"title"`
-	CreatedAt time.Time `json:"created_at"`
+	IsDeleted bool `json:"is_deleted"`
 }
 
 // CardSubtask — услуга заказа + её товары/журнал.
@@ -76,7 +67,6 @@ type CardSubtask struct {
 	AssigneeIsActive *bool           `json:"assignee_is_active"` // null без исполнителя (SD-007)
 	DueDate          *string         `json:"due_date"`           // YYYY-MM-DD
 	Price            *numeric.Amount `json:"price"`              // null = «по факту»
-	EquipmentID      *string         `json:"equipment_id"`
 	Position         int             `json:"position"`
 	Total            numeric.Amount  `json:"total"` // subtask_total
 	// Выплата исполнителю (D62–D64): флаг, дата отметки (null, пока не выплачено) и сумма
@@ -132,9 +122,7 @@ type OrderCardMutationResponse struct {
 // --- DTO Row Requests (design-go-layers.md §DTO Row Requests) ---
 // Все — strictJSON (лишнее поле → 400 BAD_REQUEST), normalize()/validate() на типе
 // запроса (эталон tasks_validate.go). Правила — design-errors.md §Validation Fields.
-// Поля объявлены здесь одним файлом (Package Layout); normalize/validate услуг/товаров/
-// журнала реализуются по мере готовности сервисов (фаза 03) — в этой фазе реализованы
-// только TaskEquipmentCreateRequest/TaskEquipmentUpdateRequest (task_equipment_validate.go).
+// Поля объявлены здесь одним файлом (Package Layout).
 
 type SubtaskCreateRequest struct {
 	ServiceID string `json:"service_id"`
@@ -154,7 +142,6 @@ type SubtaskUpdateRequest struct {
 	AssigneeID     *string         `json:"assignee_id"`
 	DueDate        *string         `json:"due_date"`
 	Price          *numeric.Amount `json:"price"`
-	EquipmentID    *string         `json:"equipment_id"`
 	IsExecutorPaid *bool           `json:"is_executor_paid"`
 	ExecutorPayout OptionalAmount  `json:"executor_payout"`
 }
@@ -167,19 +154,6 @@ type SubtaskProductCreateRequest struct {
 type SubtaskProductUpdateRequest struct {
 	Qty   *numeric.Amount `json:"qty"`
 	Price *numeric.Amount `json:"price"` // null = без цены (в итог 0)
-}
-
-// TaskEquipmentCreateRequest — POST /tasks/:id/equipment (AC-004/AC-005).
-type TaskEquipmentCreateRequest struct {
-	EquipmentID  string `json:"equipment_id"`
-	Completeness string `json:"completeness"`
-	Condition    string `json:"condition"`
-}
-
-// TaskEquipmentUpdateRequest — PUT /tasks/:id/equipment/:equipment_id.
-type TaskEquipmentUpdateRequest struct {
-	Completeness string `json:"completeness"`
-	Condition    string `json:"condition"`
 }
 
 type SubtaskLogRequest struct {

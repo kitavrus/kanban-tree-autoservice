@@ -12,28 +12,23 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/numeric"
 )
 
-// История единицы оборудования: заказы, куда она принималась (task_equipment) или где по
-// ней выполнялись услуги (subtasks.equipment_id), + услуги, товары комплекта услуг и
-// журнал работ. Привязка «услуга → оборудование» уже хранится в subtasks.equipment_id,
-// товары и журнал — через услугу; таблицы доски читаются напрямую SQL (как TypeOptions,
-// ADR-102), без Go-импорта пакета board.
+// История автомобиля: его заказы (заказ = ровно один автомобиль, tasks.car_id — one-car-order)
+// + все услуги этих заказов, товары услуг и журнал работ. Таблицы доски читаются напрямую
+// SQL (как TypeOptions, ADR-102), без Go-импорта пакета board.
 
-// HistoryOrder — заказ, в котором участвовала единица.
+// HistoryOrder — заказ автомобиля.
 type HistoryOrder struct {
-	TaskID       int64
-	Title        string
-	ColumnName   string
-	ColumnColor  string
-	IsFinal      bool
-	IsPaid       bool
-	CreatedAt    time.Time
-	Accepted     bool // единица принята в заказ (есть строка task_equipment)
-	Completeness string
-	Condition    string
-	Services     []HistoryService
+	TaskID      int64
+	Title       string
+	ColumnName  string
+	ColumnColor string
+	IsFinal     bool
+	IsPaid      bool
+	CreatedAt   time.Time
+	Services    []HistoryService
 }
 
-// HistoryService — услуга заказа, выполнявшаяся по этой единице.
+// HistoryService — услуга заказа автомобиля.
 type HistoryService struct {
 	ID       string
 	Name     string
@@ -79,19 +74,15 @@ type HistoryLog struct {
 	CreatedAt time.Time
 }
 
-// EquipmentHistory — заказы по единице, новые сверху; услуги внутри заказа — по позиции.
+// EquipmentHistory — заказы автомобиля, новые сверху; услуги внутри заказа — по позиции.
 // Мягко удалённые заказы в истории не показываются (soft-delete-core DS-010): услуги, товары
 // и записи ниже привязываются к заказам первого запроса.
 func (r *Repo) EquipmentHistory(ctx context.Context, equipmentID string) ([]HistoryOrder, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT t.id, t.title, c.name, c.color, c.is_final, t.is_paid, t.created_at,
-		       te.task_id IS NOT NULL, coalesce(te.completeness, ''), coalesce(te.condition, '')
+		SELECT t.id, t.title, c.name, c.color, c.is_final, t.is_paid, t.created_at
 		FROM tasks t
 		JOIN columns c ON c.id = t.column_id
-		LEFT JOIN task_equipment te ON te.task_id = t.id AND te.equipment_id = $1::uuid
-		WHERE t.id IN (SELECT task_id FROM task_equipment WHERE equipment_id = $1::uuid
-		               UNION SELECT task_id FROM subtasks WHERE equipment_id = $1::uuid)
-		  AND t.deleted_at IS NULL
+		WHERE t.car_id = $1::uuid AND t.deleted_at IS NULL
 		ORDER BY t.created_at DESC, t.id DESC`, equipmentID)
 	if err != nil {
 		return nil, err
@@ -101,7 +92,7 @@ func (r *Repo) EquipmentHistory(ctx context.Context, equipmentID string) ([]Hist
 	for rows.Next() {
 		var o HistoryOrder
 		if err := rows.Scan(&o.TaskID, &o.Title, &o.ColumnName, &o.ColumnColor, &o.IsFinal, &o.IsPaid,
-			&o.CreatedAt, &o.Accepted, &o.Completeness, &o.Condition); err != nil {
+			&o.CreatedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -122,9 +113,10 @@ func (r *Repo) EquipmentHistory(ctx context.Context, equipmentID string) ([]Hist
 		SELECT s.id, s.task_id, sv.name, s.status, coalesce(nullif(u.name, ''), u.login, ''),
 		       coalesce(s.price::text, ''), s.due_date
 		FROM subtasks s
+		JOIN tasks t ON t.id = s.task_id
 		JOIN services sv ON sv.id = s.service_id
 		LEFT JOIN users u ON u.id = s.assignee_id
-		WHERE s.equipment_id = $1::uuid
+		WHERE t.car_id = $1::uuid
 		ORDER BY s.task_id, s.position, s.id`, equipmentID)
 	if err != nil {
 		return nil, err
@@ -156,8 +148,9 @@ func (r *Repo) EquipmentHistory(ctx context.Context, equipmentID string) ([]Hist
 		SELECT sp.subtask_id, p.name, p.unit, sp.qty::text, coalesce(sp.price::text, '')
 		FROM subtask_products sp
 		JOIN subtasks s ON s.id = sp.subtask_id
+		JOIN tasks t ON t.id = s.task_id
 		JOIN products p ON p.id = sp.product_id
-		WHERE s.equipment_id = $1::uuid
+		WHERE t.car_id = $1::uuid
 		ORDER BY sp.subtask_id, sp.position, sp.id`, equipmentID)
 	if err != nil {
 		return nil, err
@@ -184,8 +177,9 @@ func (r *Repo) EquipmentHistory(ctx context.Context, equipmentID string) ([]Hist
 		SELECT l.subtask_id, coalesce(nullif(u.name, ''), u.login), l.text, l.created_at
 		FROM subtask_logs l
 		JOIN subtasks s ON s.id = l.subtask_id
+		JOIN tasks t ON t.id = s.task_id
 		JOIN users u ON u.id = l.user_id
-		WHERE s.equipment_id = $1::uuid
+		WHERE t.car_id = $1::uuid
 		ORDER BY l.created_at, l.id`, equipmentID)
 	if err != nil {
 		return nil, err
@@ -267,17 +261,14 @@ func (h *SSR) eqHistory(c fiber.Ctx) error {
 // невелика). Карточка заказа раскрывает по нему «Историю работ» (доступно и executor). ---
 
 type HistoryOrderDTO struct {
-	TaskID       int64               `json:"task_id"`
-	Title        string              `json:"title"`
-	ColumnName   string              `json:"column_name"`
-	ColumnColor  string              `json:"column_color"`
-	IsFinal      bool                `json:"is_final"`
-	IsPaid       bool                `json:"is_paid"`
-	CreatedAt    time.Time           `json:"created_at"`
-	Accepted     bool                `json:"accepted"`
-	Completeness string              `json:"completeness"`
-	Condition    string              `json:"condition"`
-	Services     []HistoryServiceDTO `json:"services"`
+	TaskID      int64               `json:"task_id"`
+	Title       string              `json:"title"`
+	ColumnName  string              `json:"column_name"`
+	ColumnColor string              `json:"column_color"`
+	IsFinal     bool                `json:"is_final"`
+	IsPaid      bool                `json:"is_paid"`
+	CreatedAt   time.Time           `json:"created_at"`
+	Services    []HistoryServiceDTO `json:"services"`
 }
 
 type HistoryServiceDTO struct {
@@ -343,7 +334,7 @@ func historyDTO(d *EquipmentHistoryData) EquipmentHistoryListResponse {
 		}
 		items[i] = HistoryOrderDTO{TaskID: o.TaskID, Title: o.Title, ColumnName: o.ColumnName,
 			ColumnColor: o.ColumnColor, IsFinal: o.IsFinal, IsPaid: o.IsPaid, CreatedAt: o.CreatedAt,
-			Accepted: o.Accepted, Completeness: o.Completeness, Condition: o.Condition, Services: svcs}
+			Services: svcs}
 	}
 	return EquipmentHistoryListResponse{Items: items, Total: len(items), Limit: len(items), Offset: 0}
 }

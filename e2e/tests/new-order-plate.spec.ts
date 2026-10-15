@@ -55,11 +55,14 @@ test.describe('NO: новый заказ по госномеру', () => {
     const id = await createdTaskId(card);
     _boardCleanup(id);
 
-    // карточка созданного заказа: название — редактируемое поле, автомобиль уже в заказе.
+    // карточка созданного заказа: название — редактируемое поле, автомобиль заказа — строка
+    // «госномер · владелец» только для чтения, клиент — владелец, поле не редактируется.
     await expect(dlg.plate).toBeHidden();
     await expect(dlg.titleField).toHaveValue(plate);
-    await expect(card.equipmentRows).toHaveCount(1);
-    await expect(card.equipmentRow(car.id)).toBeVisible();
+    await expect(card.carRowOf(car.id)).toBeVisible();
+    await expect(card.carPlate).toHaveText(plate);
+    await expect(card.carOwner).toHaveText(client.company_name);
+    await expect(card.taskClient).toBeDisabled();
 
     const task = await adminApi.getTask(id);
     expect(task.client_id).toBe(client.id);
@@ -97,7 +100,7 @@ test.describe('NO: новый заказ по госномеру', () => {
     _boardCleanup(id);
     const task = await adminApi.getTask(id);
     expect(task.client_id).toBe(second.id);
-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([resold.id]);
+    expect((await adminApi.getCard(id)).car.equipment_id).toBe(resold.id);
   });
 
   test('NO-003: не найден — новый автомобиль и новый клиент одним сохранением', async ({
@@ -132,15 +135,14 @@ test.describe('NO: новый заказ по госномеру', () => {
     const id = await createdTaskId(card);
     _boardCleanup(id);
     await expect(dlg.titleField).toHaveValue(plate);
-    await expect(card.equipmentRows).toHaveCount(1);
+    await expect(card.carPlate).toHaveText(plate);
 
     const task = await adminApi.getTask(id);
     const client = await adminApi.getClient(task.client_id);
     expect(client.company_name).toBe(clientName);
     expect(client.phones.map((p) => p.phone)).toEqual(['+7 912 000-11-22']);
-    const eq = (await adminApi.getCard(id)).equipment;
-    expect(eq).toHaveLength(1);
-    expect(eq[0]).toMatchObject({ plate_number: plate });
+    // one-car-order: у заказа ровно один автомобиль — новый, с введённым госномером.
+    expect((await adminApi.getCard(id)).car).toMatchObject({ plate_number: plate, is_deleted: false });
 
     // клиент заведён диалогом (мимо adminApi) — уборка вручную: заказ, затем клиент с автомобилем.
     await adminApi.purgeClient(task.client_id, [id]);

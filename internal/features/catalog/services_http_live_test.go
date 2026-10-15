@@ -527,8 +527,9 @@ func (s *ServicesLiveSuite) TestDelete_InUseBySubtask_Deletes200() {
 		`SELECT id FROM users WHERE login = 'catalog4b-admin'`).Scan(&adminID))
 	var taskID int64
 	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
-		`INSERT INTO tasks (column_id, client_id, title, position, created_by)
-		 VALUES ($1::uuid, $2::uuid, 'Guard task', 1024, $3::uuid) RETURNING id`,
+		`WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2::uuid, 'УС 001') RETURNING id)
+		 INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		 VALUES ($1::uuid, $2::uuid, (SELECT id FROM car), 'Guard task', 1024, $3::uuid) RETURNING id`,
 		columnID, clientID, adminID).Scan(&taskID))
 	_, err := s.Pool.Exec(s.T().Context(),
 		`INSERT INTO subtasks (task_id, service_id) VALUES ($1, $2::uuid)`, taskID, sv.ID)

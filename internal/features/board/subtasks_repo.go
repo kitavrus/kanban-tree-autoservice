@@ -19,9 +19,6 @@ type SubtaskState struct {
 	ID         string
 	Status     string
 	AssigneeID *string
-	// EquipmentID — единица, уже назначенная услуге (soft-delete-clients DS-014: удалённая
-	// единица остаётся назначенной, но заново её не выбрать).
-	EquipmentID *string
 	// IsExecutorPaid — текущая отметка выплаты исполнителю (D66: защита смены исполнителя).
 	IsExecutorPaid bool
 }
@@ -41,8 +38,8 @@ func (r *SubtaskRepo) TaskIDOf(ctx context.Context, tx pgx.Tx, id string) (int64
 // (Lock Order). 0 строк (удалена/перенесена параллельно) → errNotFound.
 func (r *SubtaskRepo) Lock(ctx context.Context, tx pgx.Tx, id string, taskID int64) (*SubtaskState, error) {
 	var st SubtaskState
-	err := tx.QueryRow(ctx, `SELECT id, status, assignee_id::text, equipment_id::text, is_executor_paid FROM subtasks WHERE id = $1 AND task_id = $2 FOR UPDATE`,
-		id, taskID).Scan(&st.ID, &st.Status, &st.AssigneeID, &st.EquipmentID, &st.IsExecutorPaid)
+	err := tx.QueryRow(ctx, `SELECT id, status, assignee_id::text, is_executor_paid FROM subtasks WHERE id = $1 AND task_id = $2 FOR UPDATE`,
+		id, taskID).Scan(&st.ID, &st.Status, &st.AssigneeID, &st.IsExecutorPaid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errNotFound
 	}
@@ -99,11 +96,10 @@ func (r *SubtaskRepo) CopyKit(ctx context.Context, tx pgx.Tx, subtaskID, service
 
 // subtaskUpdateRow — параметры Update (design-go-layers.md §Repository Interface).
 type subtaskUpdateRow struct {
-	Status      string
-	AssigneeID  *string
-	DueDate     *string
-	Price       *string
-	EquipmentID *string
+	Status     string
+	AssigneeID *string
+	DueDate    *string
+	Price      *string
 	// IsExecutorPaid — итоговое значение флага (сервис подставляет текущее, если клиент
 	// поле не прислал). SetExecutorPayout=false — сумму не трогать (поля в запросе нет);
 	// true — записать ExecutorPayout (nil → NULL).
@@ -118,12 +114,12 @@ type subtaskUpdateRow struct {
 func (r *SubtaskRepo) Update(ctx context.Context, tx pgx.Tx, id string, in subtaskUpdateRow) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE subtasks SET status = $2, assignee_id = $3::uuid, due_date = $4::date,
-		       price = $5::numeric, equipment_id = $6::uuid,
-		       executor_paid_at = CASE WHEN $7 AND NOT is_executor_paid THEN now() WHEN NOT $7 THEN NULL ELSE executor_paid_at END,
-		       is_executor_paid = $7,
-		       executor_payout = CASE WHEN $9::boolean THEN $8::numeric ELSE executor_payout END,
+		       price = $5::numeric,
+		       executor_paid_at = CASE WHEN $6 AND NOT is_executor_paid THEN now() WHEN NOT $6 THEN NULL ELSE executor_paid_at END,
+		       is_executor_paid = $6,
+		       executor_payout = CASE WHEN $8::boolean THEN $7::numeric ELSE executor_payout END,
 		       updated_at = now()
-		WHERE id = $1`, id, in.Status, in.AssigneeID, in.DueDate, in.Price, in.EquipmentID,
+		WHERE id = $1`, id, in.Status, in.AssigneeID, in.DueDate, in.Price,
 		in.IsExecutorPaid, in.ExecutorPayout, in.SetExecutorPayout)
 	if err != nil {
 		return err

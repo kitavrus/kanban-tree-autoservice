@@ -26,6 +26,7 @@ type CardSuite struct {
 	colSvc   *ColumnService
 	userID   string
 	clientID string
+	carID    string // автомобиль заказов клиента (one-car-order: tasks.car_id NOT NULL)
 	colID    string
 }
 
@@ -37,11 +38,10 @@ func (s *CardSuite) SetupSuite() {
 	s.BaseSuite.SetupSuite()
 	tasks := NewTaskRepo(s.Pool)
 	card := NewCardRepo(s.Pool)
-	equipment := NewTaskEquipmentRepo()
 	engine := NewStockEngine()
-	s.svc = NewCardService(s.Pool, tasks, card, equipment, engine,
+	s.svc = NewCardService(s.Pool, tasks, card, engine,
 		NewSubtaskRepo(), NewSubtaskProductRepo(), NewSubtaskLogRepo(s.Pool))
-	s.taskSvc = NewTaskService(s.Pool, tasks, engine, equipment)
+	s.taskSvc = NewTaskService(s.Pool, tasks, engine)
 	s.colSvc = NewColumnService(s.Pool, NewColumnRepo(s.Pool), engine)
 }
 
@@ -50,6 +50,8 @@ func (s *CardSuite) SetupTest() {
 	s.userID = s.SeedUser("card-suite-user", "password1", "Картотека", "admin", true)
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`INSERT INTO clients (company_name) VALUES ('Клиент карточки') RETURNING id`).Scan(&s.clientID))
+	s.Require().NoError(s.Pool.QueryRow(ctx,
+		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'А001АА 77') RETURNING id`, s.clientID).Scan(&s.carID))
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`SELECT id FROM columns WHERE name = 'Приёмка'`).Scan(&s.colID))
 }
@@ -70,13 +72,13 @@ func (s *CardSuite) newTask(title string) int64 {
 	ctx := context.Background()
 	var id int64
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
-		INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, $3, 1024, $4)
-		RETURNING id`, s.colID, s.clientID, title, s.userID).Scan(&id))
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by) VALUES ($1, $2, $5, $3, 1024, $4)
+		RETURNING id`, s.colID, s.clientID, title, s.userID, s.carID).Scan(&id))
 	return id
 }
 
 // TestCardSuite_Card_ReturnsFullTree — LV-101/AC-001: карточка одним GET, дерево
-// услуга→товары/журнал + оборудование с историей + остатки.
+// услуга→товары/журнал + автомобиль заказа + остатки.
 func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 	ctx := context.Background()
 	taskID := s.newTask("Заказ с деревом")
@@ -102,15 +104,6 @@ func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 		`INSERT INTO subtask_logs (subtask_id, user_id, text) VALUES ($1, $2, 'Осмотрели')`, subtaskID, s.userID)
 	s.Require().NoError(err)
 
-	var equipmentID string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'А001АА 77') RETURNING id`,
-		s.clientID).Scan(&equipmentID))
-	_, err = s.Pool.Exec(ctx,
-		`INSERT INTO task_equipment (task_id, equipment_id, completeness, condition) VALUES ($1, $2, 'Полный', 'Хорошее')`,
-		taskID, equipmentID)
-	s.Require().NoError(err)
-
 	card, err := s.svc.Card(ctx, Actor{ID: s.userID, IsAdmin: true}, strconv.FormatInt(taskID, 10))
 	s.Require().NoError(err)
 
@@ -126,9 +119,10 @@ func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 	s.Equal("Осмотрели", sub.Logs[0].Text)
 	s.True(sub.Logs[0].CanEdit, "автор == актор")
 
-	s.Require().Len(card.Equipment, 1)
-	s.Equal("А001АА 77", card.Equipment[0].PlateNumber)
-	s.Empty(card.Equipment[0].History, "нет других заказов с этой единицей")
+	// one-car-order: автомобиль заказа — один объект car.
+	s.Equal(s.carID, card.Car.EquipmentID)
+	s.Equal("А001АА 77", card.Car.PlateNumber)
+	s.False(card.Car.IsDeleted)
 
 	s.Require().Len(card.Stock, 1)
 	s.Equal(productID, card.Stock[0].ProductID)
@@ -138,8 +132,8 @@ func (s *CardSuite) TestCardSuite_Card_ReturnsFullTree() {
 	s.Equal("Осмотрели", card.Task.LastLog.Text)
 }
 
-// TestCardSuite_Card_EmptyArraysNotNull — LV-106/AC-001: заказ без услуг/оборудования —
-// Equipment/Subtasks/Stock — пустые массивы, не nil (JSON — [], не null).
+// TestCardSuite_Card_EmptyArraysNotNull — LV-106/AC-001: заказ без услуг — Subtasks/Stock —
+// пустые массивы, не nil (JSON — [], не null).
 func (s *CardSuite) TestCardSuite_Card_EmptyArraysNotNull() {
 	ctx := context.Background()
 	taskID := s.newTask("Пустой заказ")
@@ -147,8 +141,7 @@ func (s *CardSuite) TestCardSuite_Card_EmptyArraysNotNull() {
 	card, err := s.svc.Card(ctx, Actor{ID: s.userID}, strconv.FormatInt(taskID, 10))
 	s.Require().NoError(err)
 
-	s.NotNil(card.Equipment)
-	s.Empty(card.Equipment)
+	s.Equal(s.carID, card.Car.EquipmentID, "автомобиль у заказа есть всегда")
 	s.NotNil(card.Subtasks)
 	s.Empty(card.Subtasks)
 	s.NotNil(card.Stock)
@@ -216,8 +209,8 @@ func (s *CardSuite) newTaskIn(title, columnID string) int64 {
 	ctx := context.Background()
 	var id int64
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
-		INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, $3, 1024, $4)
-		RETURNING id`, columnID, s.clientID, title, s.userID).Scan(&id))
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by) VALUES ($1, $2, $5, $3, 1024, $4)
+		RETURNING id`, columnID, s.clientID, title, s.userID, s.carID).Scan(&id))
 	return id
 }
 

@@ -15,7 +15,8 @@ import (
 
 func carReq(mut func(*TaskCreateRequest)) TaskCreateRequest {
 	in := TaskCreateRequest{
-		TaskHeader:   TaskHeader{ColumnID: validUUID, ClientID: validUUID},
+		TaskHeader:   TaskHeader{ColumnID: validUUID},
+		ClientID:     validUUID,
 		PlateNumber:  " о718мр  199 ",
 		NewEquipment: &TaskNewEquipment{},
 	}
@@ -105,10 +106,21 @@ func TestTaskCreateCar_Conflicts(t *testing.T) {
 	assert.Equal(t, msgInvalid, got["equipment_id"])
 }
 
-func TestTaskCreate_WithoutCar_TitleRequired(t *testing.T) {
-	car, got := fieldMap(t, TaskCreateRequest{TaskHeader: TaskHeader{ClientID: validUUID, ColumnID: validUUID}}.normalize())
-	assert.Nil(t, car)
-	assert.Equal(t, msgRequired, got["title"])
+// TestTaskCreate_WithoutCar_Rejected — one-car-order: заказа без автомобиля нет. Прежний режим
+// «title + client_id» больше не принимается: госномер и автомобиль (найденный/новый) обязательны.
+func TestTaskCreate_WithoutCar_Rejected(t *testing.T) {
+	_, got := fieldMap(t, TaskCreateRequest{
+		TaskHeader: TaskHeader{Title: "Заказ без машины", ColumnID: validUUID},
+		ClientID:   validUUID,
+	}.normalize())
+	assert.Equal(t, msgRequired, got["plate_number"])
+	assert.Equal(t, msgRequired, got["equipment_id"])
+	assert.NotContains(t, got, "title")
+}
+
+func TestTaskCreate_InvalidClientID(t *testing.T) {
+	_, got := fieldMap(t, carReq(func(in *TaskCreateRequest) { in.ClientID = "not-a-uuid" }))
+	assert.Equal(t, msgInvalid, got["client_id"])
 }
 
 func TestCarTitle(t *testing.T) {

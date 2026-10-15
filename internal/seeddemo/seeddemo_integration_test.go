@@ -171,7 +171,10 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 	var logsTotal, tasksWithEquipment int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM subtask_logs`).Scan(&logsTotal))
 	s.Positive(logsTotal, "журнал работ по услугам должен быть заполнен")
-	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(DISTINCT task_id) FROM task_equipment`).Scan(&tasksWithEquipment))
+	// one-car-order: у каждого заказа ровно один автомобиль, и это автомобиль клиента заказа.
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT count(*) FROM tasks t JOIN equipment e ON e.id = t.car_id AND e.client_id = t.client_id
+		WHERE t.deleted_at IS NULL`).Scan(&tasksWithEquipment))
 	s.Equal(15, tasksWithEquipment, "у каждого заказа есть автомобиль клиента")
 
 	var movementsTotal int
@@ -349,7 +352,9 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_TasksExist_NoOpWithMessage() {
 	var columnID string
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id FROM columns ORDER BY position LIMIT 1`).Scan(&columnID))
 	_, err := s.Pool.Exec(ctx,
-		`INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, 'Существующий заказ', 1024, $3)`,
+		`WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'СУЩ 001') RETURNING id)
+		 INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		 VALUES ($1, $2, (SELECT id FROM car), 'Существующий заказ', 1024, $3)`,
 		columnID, clientID, adminID)
 	s.Require().NoError(err)
 

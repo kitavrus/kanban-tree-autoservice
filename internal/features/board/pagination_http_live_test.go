@@ -40,9 +40,9 @@ func (s *BoardLiveSuite) pgList(query url.Values) pgListDTO {
 func (s *BoardLiveSuite) pgTasks(clientID, columnID, prefix string, n int) []int64 {
 	ids := make([]int64, 0, n)
 	for i := 0; i < n; i++ {
-		st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
+		st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 			"title": fmt.Sprintf("%s %d", prefix, i+1), "client_id": clientID, "column_id": columnID,
-		})
+		}))
 		s.Require().Equal(http.StatusCreated, st, string(raw))
 		ids = append(ids, m.Task.ID)
 	}

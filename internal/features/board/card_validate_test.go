@@ -9,55 +9,6 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/numeric"
 )
 
-// TestTaskEquipmentCreateRequestValidate_MissingEquipmentID — UT-002/AC-004.
-func TestTaskEquipmentCreateRequestValidate_MissingEquipmentID(t *testing.T) {
-	in := TaskEquipmentCreateRequest{}.normalize()
-	fields := in.validate()
-	assert.Len(t, fields, 1)
-	assert.Equal(t, "equipment_id", fields[0].Name)
-	assert.Equal(t, msgRequired, fields[0].Message)
-
-	in = TaskEquipmentCreateRequest{EquipmentID: "not-a-uuid"}.normalize()
-	fields = in.validate()
-	assert.Len(t, fields, 1)
-	assert.Equal(t, "equipment_id", fields[0].Name)
-	assert.Equal(t, msgInvalid, fields[0].Message)
-}
-
-// TestTaskEquipmentCreateRequestValidate_TooLongFields — UT-002/AC-004: completeness/
-// condition >1000 символов → too_long; ровно 1000 — валидно (граница).
-func TestTaskEquipmentCreateRequestValidate_TooLongFields(t *testing.T) {
-	in := TaskEquipmentCreateRequest{
-		EquipmentID: validUUID, Completeness: strings.Repeat("a", equipmentFieldMax+1),
-		Condition: strings.Repeat("b", equipmentFieldMax+1),
-	}.normalize()
-	got := map[string]string{}
-	for _, f := range in.validate() {
-		got[f.Name] = f.Message
-	}
-	assert.Equal(t, msgTooLong, got["completeness"])
-	assert.Equal(t, msgTooLong, got["condition"])
-
-	atLimit := TaskEquipmentCreateRequest{
-		EquipmentID: validUUID, Completeness: strings.Repeat("a", equipmentFieldMax),
-		Condition: strings.Repeat("b", equipmentFieldMax),
-	}.normalize()
-	assert.Empty(t, atLimit.validate())
-}
-
-func TestTaskEquipmentUpdateRequestValidate_TooLongFields(t *testing.T) {
-	in := TaskEquipmentUpdateRequest{
-		Completeness: strings.Repeat("a", equipmentFieldMax+1),
-		Condition:    strings.Repeat("b", equipmentFieldMax+1),
-	}.normalize()
-	got := map[string]string{}
-	for _, f := range in.validate() {
-		got[f.Name] = f.Message
-	}
-	assert.Equal(t, msgTooLong, got["completeness"])
-	assert.Equal(t, msgTooLong, got["condition"])
-}
-
 // ---- UT-002: SubtaskCreateRequest ----
 
 func TestSubtaskCreateRequestValidate(t *testing.T) {
@@ -97,7 +48,7 @@ func TestSubtaskUpdateRequestValidate_StatusEnum(t *testing.T) {
 	}
 }
 
-func TestSubtaskUpdateRequestValidate_AssigneeDueEquipment(t *testing.T) {
+func TestSubtaskUpdateRequestValidate_AssigneeDue(t *testing.T) {
 	base := SubtaskUpdateRequest{Status: SubtaskStatusNew}
 
 	f := func(in SubtaskUpdateRequest) map[string]string {
@@ -108,7 +59,7 @@ func TestSubtaskUpdateRequestValidate_AssigneeDueEquipment(t *testing.T) {
 		return got
 	}
 
-	// nil — допустимо (нет ни ответственного, ни срока, ни оборудования).
+	// nil — допустимо (нет ни ответственного, ни срока).
 	assert.Empty(t, f(base))
 
 	bad := base
@@ -123,13 +74,9 @@ func TestSubtaskUpdateRequestValidate_AssigneeDueEquipment(t *testing.T) {
 	ok.DueDate = str("2026-02-15")
 	assert.Empty(t, f(ok))
 
-	bad = base
-	bad.EquipmentID = str("not-a-uuid")
-	assert.Equal(t, msgInvalid, f(bad)["equipment_id"])
-
 	// пустая строка внутри указателя — «нет значения», не ошибка формата.
 	empty := base
-	empty.AssigneeID, empty.DueDate, empty.EquipmentID = str(""), str(""), str("")
+	empty.AssigneeID, empty.DueDate = str(""), str("")
 	assert.Empty(t, f(empty))
 }
 

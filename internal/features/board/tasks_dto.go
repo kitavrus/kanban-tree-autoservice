@@ -77,10 +77,11 @@ type TaskResponse struct {
 }
 
 // TaskHeader — поля шапки заказа, общие для POST и PUT. IsPaid: executor — nil|false, иначе
-// 403 PAID_ADMIN_ONLY (AC-011).
+// 403 PAID_ADMIN_ONLY (AC-011). Клиента и автомобиля здесь нет (one-car-order): они задаются
+// только при создании (TaskCreateRequest) и потом не меняются — PUT с client_id/equipment_id
+// отклоняется как тело с неизвестным полем (strictJSON → 400 BAD_REQUEST).
 type TaskHeader struct {
 	Title      string  `json:"title"`
-	ClientID   string  `json:"client_id"`
 	ColumnID   string  `json:"column_id"`
 	AssigneeID *string `json:"assignee_id"`
 	DueDate    *string `json:"due_date"`
@@ -90,18 +91,16 @@ type TaskHeader struct {
 	Description *string `json:"description"`
 }
 
-// TaskCreateRequest — POST /api/v1/tasks. Два режима (одна транзакция в обоих):
-//
-//   - «по автомобилю» (диалог «Новый заказ»): plate_number обязателен и ровно одно из
-//     equipment_id (найденный автомобиль — клиент берётся его владелец, client_id можно не
-//     передавать) либо new_equipment (новый автомобиль клиента client_id либо нового клиента
-//     new_client — только admin). title пуст → госномер. Автомобиль
-//     сразу добавляется в заказ (task_equipment).
-//   - без автомобиля (служебные сценарии, фикстуры): title и client_id обязательны, как раньше.
+// TaskCreateRequest — POST /api/v1/tasks (одна транзакция). Заказ = ровно один автомобиль
+// (one-car-order): plate_number обязателен и ровно одно из equipment_id (найденный
+// автомобиль — клиент заказа его владелец, client_id можно не передавать) либо new_equipment
+// (новый автомобиль клиента client_id либо нового клиента new_client). title пуст →
+// госномер. Автомобиль пишется в tasks.car_id; заказа без автомобиля не бывает.
 //
 // Ошибки полей — details.fields[] с путями new_client.phones[0].phone и т.п.
 type TaskCreateRequest struct {
 	TaskHeader
+	ClientID     string            `json:"client_id"`
 	PlateNumber  string            `json:"plate_number"`
 	EquipmentID  string            `json:"equipment_id"`
 	NewEquipment *TaskNewEquipment `json:"new_equipment"`

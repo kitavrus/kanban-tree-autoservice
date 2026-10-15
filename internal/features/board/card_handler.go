@@ -9,13 +9,9 @@ import (
 )
 
 // cardService — узкий интерфейс зависимости CardHandler (эталон taskService,
-// tasks_handler.go). В этой фазе реализованы Card + оборудование; прочие row-методы
-// (услуги/товары/журнал) добавляются в фазе 03.
+// tasks_handler.go): карточка + row-методы услуг/товаров/журнала.
 type cardService interface {
 	Card(ctx context.Context, a Actor, taskID string) (*OrderCardResponse, error)
-	AddEquipment(ctx context.Context, a Actor, taskID string, in TaskEquipmentCreateRequest) (*OrderCardMutationResponse, error)
-	UpdateEquipment(ctx context.Context, a Actor, taskID, equipmentID string, in TaskEquipmentUpdateRequest) (*OrderCardMutationResponse, error)
-	RemoveEquipment(ctx context.Context, a Actor, taskID, equipmentID string) (*OrderCardMutationResponse, error)
 	CreateSubtask(ctx context.Context, a Actor, taskID string, in SubtaskCreateRequest) (*OrderCardMutationResponse, error)
 	UpdateSubtask(ctx context.Context, a Actor, subtaskID string, in SubtaskUpdateRequest) (*OrderCardMutationResponse, error)
 	DeleteSubtask(ctx context.Context, a Actor, subtaskID string) (*OrderCardMutationResponse, error)
@@ -27,7 +23,7 @@ type cardService interface {
 	DeleteLog(ctx context.Context, a Actor, id string) (*OrderCardMutationResponse, error)
 }
 
-// CardHandler — карточка заказа + оборудование (D19 — доступно и executor, admin-гардов нет).
+// CardHandler — карточка заказа и её строки (D19 — доступно и executor, admin-гардов нет).
 type CardHandler struct {
 	svc cardService
 }
@@ -37,41 +33,6 @@ func NewCardHandler(svc cardService) *CardHandler { return &CardHandler{svc: svc
 // Card — GET /api/v1/tasks/:id/card.
 func (h *CardHandler) Card(c fiber.Ctx) error {
 	resp, err := h.svc.Card(c.Context(), currentActor(c), c.Params("id"))
-	if err != nil {
-		return err
-	}
-	return c.JSON(resp)
-}
-
-// AddEquipment — POST /api/v1/tasks/:id/equipment.
-func (h *CardHandler) AddEquipment(c fiber.Ctx) error {
-	var req TaskEquipmentCreateRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return errorspkg.BadRequest("Некорректное тело запроса")
-	}
-	resp, err := h.svc.AddEquipment(c.Context(), currentActor(c), c.Params("id"), req)
-	if err != nil {
-		return err
-	}
-	return c.Status(fiber.StatusCreated).JSON(resp)
-}
-
-// UpdateEquipment — PUT /api/v1/tasks/:id/equipment/:equipment_id.
-func (h *CardHandler) UpdateEquipment(c fiber.Ctx) error {
-	var req TaskEquipmentUpdateRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return errorspkg.BadRequest("Некорректное тело запроса")
-	}
-	resp, err := h.svc.UpdateEquipment(c.Context(), currentActor(c), c.Params("id"), c.Params("equipment_id"), req)
-	if err != nil {
-		return err
-	}
-	return c.JSON(resp)
-}
-
-// RemoveEquipment — DELETE /api/v1/tasks/:id/equipment/:equipment_id.
-func (h *CardHandler) RemoveEquipment(c fiber.Ctx) error {
-	resp, err := h.svc.RemoveEquipment(c.Context(), currentActor(c), c.Params("id"), c.Params("equipment_id"))
 	if err != nil {
 		return err
 	}

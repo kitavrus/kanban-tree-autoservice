@@ -14,7 +14,7 @@ const validUUID = "11111111-1111-1111-1111-111111111111"
 
 // TestTaskCreateRequestValidate_EmptyTitle — UT-002.
 func TestTaskCreateRequestValidate_EmptyTitle(t *testing.T) {
-	in := TaskHeader{Title: "   ", ClientID: validUUID, ColumnID: validUUID}.normalize()
+	in := TaskHeader{Title: "   ", ColumnID: validUUID}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
 	assert.Equal(t, "title", fields[0].Name)
@@ -24,7 +24,7 @@ func TestTaskCreateRequestValidate_EmptyTitle(t *testing.T) {
 // TestTaskCreateRequestValidate_TitleTooLong — UT-002.
 func TestTaskCreateRequestValidate_TitleTooLong(t *testing.T) {
 	in := TaskHeader{
-		Title: strings.Repeat("я", taskTitleMax+1), ClientID: validUUID, ColumnID: validUUID,
+		Title: strings.Repeat("я", taskTitleMax+1), ColumnID: validUUID,
 	}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
@@ -32,29 +32,27 @@ func TestTaskCreateRequestValidate_TitleTooLong(t *testing.T) {
 	assert.Equal(t, msgTooLong, fields[0].Message)
 }
 
-// TestTaskCreateRequestValidate_MissingClientID — UT-002.
-func TestTaskCreateRequestValidate_MissingClientID(t *testing.T) {
-	in := TaskHeader{Title: "Заказ", ColumnID: validUUID}.normalize()
+// TestTaskHeaderValidate_MissingColumnID — UT-002. Клиента в шапке нет (one-car-order):
+// клиент и автомобиль задаются только при создании (TaskCreateRequest.prepare).
+func TestTaskHeaderValidate_MissingColumnID(t *testing.T) {
+	in := TaskHeader{Title: "Заказ"}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
-	assert.Equal(t, "client_id", fields[0].Name)
+	assert.Equal(t, "column_id", fields[0].Name)
 	assert.Equal(t, msgRequired, fields[0].Message)
 }
 
-func TestTaskCreateRequestValidate_InvalidClientAndColumnID(t *testing.T) {
-	in := TaskHeader{Title: "Заказ", ClientID: "not-a-uuid", ColumnID: "also-not-a-uuid"}.normalize()
+func TestTaskHeaderValidate_InvalidColumnID(t *testing.T) {
+	in := TaskHeader{Title: "Заказ", ColumnID: "also-not-a-uuid"}.normalize()
 	fields := in.validate()
-	got := map[string]string{}
-	for _, f := range fields {
-		got[f.Name] = f.Message
-	}
-	assert.Equal(t, msgInvalid, got["client_id"])
-	assert.Equal(t, msgInvalid, got["column_id"])
+	assert.Len(t, fields, 1)
+	assert.Equal(t, "column_id", fields[0].Name)
+	assert.Equal(t, msgInvalid, fields[0].Message)
 }
 
 func TestTaskCreateRequestValidate_InvalidAssigneeID(t *testing.T) {
 	in := TaskHeader{
-		Title: "Заказ", ClientID: validUUID, ColumnID: validUUID, AssigneeID: ptrStr("bad"),
+		Title: "Заказ", ColumnID: validUUID, AssigneeID: ptrStr("bad"),
 	}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
@@ -64,7 +62,7 @@ func TestTaskCreateRequestValidate_InvalidAssigneeID(t *testing.T) {
 
 func TestTaskCreateRequestValidate_InvalidDueDate(t *testing.T) {
 	in := TaskHeader{
-		Title: "Заказ", ClientID: validUUID, ColumnID: validUUID, DueDate: ptrStr("2026-13-40"),
+		Title: "Заказ", ColumnID: validUUID, DueDate: ptrStr("2026-13-40"),
 	}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
@@ -74,7 +72,7 @@ func TestTaskCreateRequestValidate_InvalidDueDate(t *testing.T) {
 
 func TestTaskCreateRequestValidate_ValidInput(t *testing.T) {
 	in := TaskHeader{
-		Title: "  Заказ  ", ClientID: validUUID, ColumnID: validUUID,
+		Title: "  Заказ  ", ColumnID: validUUID,
 		AssigneeID: ptrStr(validUUID), DueDate: ptrStr("2026-05-01"),
 	}.normalize()
 	assert.Empty(t, in.validate())
@@ -84,7 +82,7 @@ func TestTaskCreateRequestValidate_ValidInput(t *testing.T) {
 // TestTaskUpdateRequestValidate_MissingVersion — UT-002.
 func TestTaskUpdateRequestValidate_MissingVersion(t *testing.T) {
 	in := TaskUpdateRequest{
-		TaskHeader: TaskHeader{Title: "Заказ", ClientID: validUUID, ColumnID: validUUID},
+		TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID},
 	}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
@@ -95,7 +93,7 @@ func TestTaskUpdateRequestValidate_MissingVersion(t *testing.T) {
 func TestTaskUpdateRequestValidate_VersionZeroOrNegative(t *testing.T) {
 	for _, v := range []int64{0, -1} {
 		in := TaskUpdateRequest{
-			TaskHeader: TaskHeader{Title: "Заказ", ClientID: validUUID, ColumnID: validUUID},
+			TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID},
 			Version:    ptrInt64(v),
 		}.normalize()
 		fields := in.validate()
@@ -106,7 +104,7 @@ func TestTaskUpdateRequestValidate_VersionZeroOrNegative(t *testing.T) {
 
 func TestTaskUpdateRequestValidate_ValidInput(t *testing.T) {
 	in := TaskUpdateRequest{
-		TaskHeader: TaskHeader{Title: "Заказ", ClientID: validUUID, ColumnID: validUUID},
+		TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID},
 		Version:    ptrInt64(1),
 	}.normalize()
 	assert.Empty(t, in.validate())
@@ -117,7 +115,7 @@ func TestTaskUpdateRequestValidate_ValidInput(t *testing.T) {
 func TestTaskCreateRequestValidate_DescriptionTooLong(t *testing.T) {
 	tooLong := ptrStr(strings.Repeat("я", taskDescriptionMax+1))
 	in := TaskHeader{
-		Title: "Заказ", ClientID: validUUID, ColumnID: validUUID, Description: tooLong,
+		Title: "Заказ", ColumnID: validUUID, Description: tooLong,
 	}.normalize()
 	fields := in.validate()
 	assert.Len(t, fields, 1)
@@ -125,7 +123,7 @@ func TestTaskCreateRequestValidate_DescriptionTooLong(t *testing.T) {
 	assert.Equal(t, msgTooLong, fields[0].Message)
 
 	atLimit := TaskHeader{
-		Title: "Заказ", ClientID: validUUID, ColumnID: validUUID,
+		Title: "Заказ", ColumnID: validUUID,
 		Description: ptrStr(strings.Repeat("я", taskDescriptionMax)),
 	}.normalize()
 	assert.Empty(t, atLimit.validate(), "ровно 10000 символов — валидно")
@@ -135,7 +133,7 @@ func TestTaskCreateRequestValidate_DescriptionTooLong(t *testing.T) {
 // не порождает ошибку валидации формата (сервис трактует nil как «не менять», не «пусто»).
 func TestTaskUpdateRequestValidate_DescriptionNilKeepsValue(t *testing.T) {
 	in := TaskUpdateRequest{
-		TaskHeader: TaskHeader{Title: "Заказ", ClientID: validUUID, ColumnID: validUUID, Description: nil},
+		TaskHeader: TaskHeader{Title: "Заказ", ColumnID: validUUID, Description: nil},
 		Version:    ptrInt64(1),
 	}.normalize()
 	assert.Empty(t, in.validate())

@@ -22,34 +22,6 @@
         {{ if .IsPaid }}<span class="badge text-bg-success">Оплачен</span>{{ end }}
         <span class="text-body-secondary small ms-auto" data-testid="history-order-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
       </div>
-      {{ if .Accepted }}
-      <div class="small mb-2" data-testid="history-intake" data-intake data-task-id="{{ .TaskID }}" data-equipment-id="{{ $.Equipment.ID }}">
-        <div class="d-flex align-items-start gap-2" data-intake-view>
-          <div>
-            <span class="text-body-secondary">Принято:</span>
-            <span data-intake-text>{{ if .Completeness }}комплектность — {{ .Completeness }}{{ end }}{{ if and .Completeness .Condition }}; {{ end }}{{ if .Condition }}состояние — {{ .Condition }}{{ end }}{{ if not (or .Completeness .Condition) }}без замечаний{{ end }}</span>
-          </div>
-          <button type="button" class="btn btn-link btn-sm p-0 ms-auto text-nowrap" data-intake-edit aria-label="Изменить комплектность и состояние" data-testid="history-intake-edit">✎ Изменить</button>
-        </div>
-        <form class="border rounded p-2 mt-1" data-intake-form hidden novalidate data-testid="history-intake-form">
-          <div class="mb-2">
-            <label class="form-label small mb-1" for="intake-c-{{ .TaskID }}">Комплектность</label>
-            <textarea id="intake-c-{{ .TaskID }}" name="completeness" class="form-control form-control-sm" rows="2" maxlength="1000" data-testid="history-intake-completeness">{{ .Completeness }}</textarea>
-            <div class="invalid-feedback" data-field-error="completeness"></div>
-          </div>
-          <div class="mb-2">
-            <label class="form-label small mb-1" for="intake-s-{{ .TaskID }}">Состояние</label>
-            <textarea id="intake-s-{{ .TaskID }}" name="condition" class="form-control form-control-sm" rows="2" maxlength="1000" data-testid="history-intake-condition">{{ .Condition }}</textarea>
-            <div class="invalid-feedback" data-field-error="condition"></div>
-          </div>
-          <div class="text-danger small mb-2" data-intake-error hidden data-testid="history-intake-error"></div>
-          <div class="d-flex gap-2">
-            <button type="submit" class="btn btn-primary btn-sm" data-testid="history-intake-save">Сохранить</button>
-            <button type="button" class="btn btn-outline-secondary btn-sm" data-intake-cancel>Отмена</button>
-          </div>
-        </form>
-      </div>
-      {{ end }}
       {{ if .Services }}
       <ul class="list-unstyled mb-0">
         {{ range .Services }}
@@ -87,7 +59,7 @@
         {{ end }}
       </ul>
       {{ else }}
-      <div class="text-body-secondary small">Услуг по этому автомобилю в заказе нет</div>
+      <div class="text-body-secondary small">Услуг в заказе нет</div>
       {{ end }}
     </div>
   </div>
@@ -95,7 +67,4 @@
   <div class="card"><div class="card-body empty-state" data-testid="history-empty">По этому автомобилю ещё ничего не делали</div></div>
   {{ end }}
 </div>
-{{ end }}
-{{ define "scripts" }}
-<script src="/assets/ssr-shared/js/equipment-history.js"></script>
 {{ end }}

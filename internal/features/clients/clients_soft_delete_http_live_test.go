@@ -54,15 +54,16 @@ type sdTaskDTO struct {
 	ColumnID        string `json:"column_id"`
 }
 
+// sdCardDTO — карточка заказа: автомобиль заказа (one-car-order — ровно один) и услуги.
 type sdCardDTO struct {
-	Task      sdTaskDTO `json:"task"`
-	Equipment []struct {
+	Task sdTaskDTO `json:"task"`
+	Car  struct {
 		EquipmentID string `json:"equipment_id"`
 		IsDeleted   bool   `json:"is_deleted"`
-	} `json:"equipment"`
+	} `json:"car"`
 	Subtasks []struct {
-		ID          string  `json:"id"`
-		EquipmentID *string `json:"equipment_id"`
+		ID     string `json:"id"`
+		Status string `json:"status"`
 	} `json:"subtasks"`
 }
 
@@ -181,24 +182,33 @@ func (s *ClientsLiveSuite) columnID() string {
 	return s.sdScalar(`SELECT id::text FROM columns WHERE NOT is_final AND deleted_at IS NULL ORDER BY position, id LIMIT 1`)
 }
 
-// apiTask — заказ клиента через API доски; unitIDs принимаются в заказ.
-func (s *ClientsLiveSuite) apiTask(b *testutil.Browser, clientID, title string, unitIDs ...string) sdTaskDTO {
-	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": clientID, "title": title, "column_id": s.columnID()})
+// apiTask — заказ клиента через API доски (one-car-order: заказ = ровно один автомобиль):
+// unitID — автомобиль клиента (найден по госномеру); без него — новый автомобиль клиента с
+// уникальным госномером.
+func (s *ClientsLiveSuite) apiTask(b *testutil.Browser, clientID, title string, unitID ...string) sdTaskDTO {
+	var st int
+	var raw []byte
+	if len(unitID) > 0 {
+		st, raw = s.carTask(b, unitID[0], title)
+	} else {
+		st, raw = b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": clientID, "title": title, "column_id": s.columnID(),
+			"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
+	}
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var out struct {
 		Task sdTaskDTO `json:"task"`
 	}
 	s.Require().NoError(json.Unmarshal(raw, &out), string(raw))
-	for _, u := range unitIDs {
-		st, raw = s.addUnit(b, out.Task.ID, u)
-		s.Require().Equal(http.StatusCreated, st, string(raw))
-	}
+	s.Require().Equal(clientID, out.Task.ClientID, "клиент заказа — владелец автомобиля")
 	return out.Task
 }
 
-func (s *ClientsLiveSuite) addUnit(b *testutil.Browser, taskID int64, unitID string) (int, []byte) {
-	return b.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/equipment", taskID),
-		map[string]any{"equipment_id": unitID, "completeness": "", "condition": ""})
+// carTask — POST /api/v1/tasks на существующий автомобиль unitID (клиент заказа — его владелец);
+// госномер берётся из справочника (и у удалённого автомобиля). Ответ — как есть.
+func (s *ClientsLiveSuite) carTask(b *testutil.Browser, unitID, title string) (int, []byte) {
+	plate := s.sdScalar(`SELECT plate_number FROM equipment WHERE id = $1::uuid`, unitID)
+	return b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"title": title, "column_id": s.columnID(), "plate_number": plate, "equipment_id": unitID})
 }
 
 func (s *ClientsLiveSuite) taskCard(taskID int64) sdCardDTO {
@@ -241,7 +251,7 @@ func (s *ClientsLiveSuite) TestTS022_DeleteClientWithTasksAndDocuments() {
 	c := s.newClient("SD-022 Клиент " + m)
 	u1, u2 := s.unit(c.ID, "M-022-1"), s.unit(c.ID, "M-022-2")
 	early := s.unit(c.ID, "M-022-раньше")
-	task := s.apiTask(s.admin, c.ID, "SD-022 заказ "+m, u1, u2, early)
+	task := s.apiTask(s.admin, c.ID, "SD-022 заказ "+m, u1)
 	s.mustDeleteUnit(early, "Списана раньше клиента")
 
 	// причина обязательна (DS-020): клиент не удалён.
@@ -365,31 +375,23 @@ func (s *ClientsLiveSuite) TestTS023_RestoreClient() {
 
 // ---- TS-024 ----
 
-// TS-024 (DS-014): единица, бывшая в заказе и в услуге заказа, удаляется — 200 (отказа
-// EQUIPMENT_USED_IN_TASKS нет), deleted_with_client = false. Причина обязательна. Удалённая единица
-// для обычных адресов не существует. Негатив: добавление удалённой единицы в заказ и назначение
-// её услуге → 400 equipment_id: not_found; уже назначенная услуге остаётся.
+// TS-024 (DS-014): автомобиль заказа (tasks.car_id) удаляется — 200 (отказа
+// EQUIPMENT_USED_IN_TASKS нет), deleted_with_client = false. Причина обязательна. Удалённый
+// автомобиль для обычных адресов не существует. Негатив: новый заказ на удалённый автомобиль →
+// 400 equipment_id: not_found; заказ с ним остаётся и правится (услуги), автомобиль — с пометкой.
 func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 	m := mark()
 	c := s.newClient("SD-024 Клиент " + m)
 	used, spare := s.unit(c.ID, "M-024-в-заказе"), s.unit(c.ID, "M-024-свободна")
-	task := s.apiTask(s.admin, c.ID, "SD-024 заказ "+m, used, spare)
+	task := s.apiTask(s.admin, c.ID, "SD-024 заказ "+m, used)
 
-	// услуга заказа с этой единицей (subtasks.equipment_id).
 	svc := s.newServiceDirect("SD-024 услуга " + m)
 	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", task.ID), map[string]any{"service_id": svc})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
-	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", task.ID), map[string]any{"service_id": svc})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
 	card := s.taskCard(task.ID)
-	s.Require().Len(card.Subtasks, 2)
-	assigned, other := card.Subtasks[0].ID, card.Subtasks[1].ID
-	putSub := func(id string, unitID any) (int, []byte) {
-		return s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+id, map[string]any{
-			"status": "new", "assignee_id": nil, "due_date": nil, "price": nil, "equipment_id": unitID})
-	}
-	st, raw = putSub(assigned, used)
-	s.Require().Equal(http.StatusOK, st, string(raw))
+	s.Require().Len(card.Subtasks, 1)
+	s.Equal(used, card.Car.EquipmentID)
+	sub := card.Subtasks[0].ID
 
 	// причина обязательна.
 	st, _, raw = s.deleteUnit(s.admin, used, " ")
@@ -423,26 +425,29 @@ func (s *ClientsLiveSuite) TestTS024_DeleteEquipment() {
 		s.Equal(http.StatusNotFound, st, "SSR %s", page)
 	}
 
-	// негатив: удалённую единицу нельзя ни принять в заказ, ни назначить услуге заново.
-	second := s.apiTask(s.admin, c.ID, "SD-024 второй заказ "+m)
-	st, raw = s.addUnit(s.admin, second.ID, used)
+	// заказ с удалённым автомобилем остаётся: автомобиль с пометкой, услуга правится.
+	card = s.taskCard(task.ID)
+	s.Equal(used, card.Car.EquipmentID)
+	s.True(card.Car.IsDeleted, "автомобиль заказа в удалённых — пометка в карточке")
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+sub, map[string]any{
+		"status": "in_progress", "assignee_id": nil, "due_date": nil, "price": nil})
+	s.Equal(http.StatusOK, st, string(raw))
+
+	// негатив: новый заказ на удалённый автомобиль не создать.
+	before := s.sdScalar(`SELECT count(*)::text FROM tasks WHERE car_id = $1::uuid`, used)
+	st, raw = s.carTask(s.admin, used, "SD-024 второй заказ "+m)
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["equipment_id"])
-	st, raw = putSub(other, used)
-	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("not_found", s.fields(raw)["equipment_id"])
-	// уже назначенная услуге единица остаётся: услуга правится без смены единицы.
-	st, raw = putSub(assigned, used)
-	s.Equal(http.StatusOK, st, string(raw))
-	// действующую единицу услуге назначить по-прежнему можно.
-	st, raw = putSub(other, spare)
-	s.Equal(http.StatusOK, st, string(raw))
+	s.Equal(before, s.sdScalar(`SELECT count(*)::text FROM tasks WHERE car_id = $1::uuid`, used), "заказ не создан")
+	// действующий автомобиль клиента — по-прежнему можно.
+	st, raw = s.carTask(s.admin, spare, "SD-024 третий заказ "+m)
+	s.Equal(http.StatusCreated, st, string(raw))
 }
 
 // ---- TS-025 ----
 
-// TS-025 (DS-014, DS-026): удалённые не выбираются и не видны. Новый заказ и смена клиента
-// заказа на удалённого → 400 client_id: not_found; списки клиентов и единиц клиента
+// TS-025 (DS-014, DS-026): удалённые не выбираются и не видны. Новый заказ удалённого клиента →
+// 400 client_id: not_found; смены клиента заказа нет вовсе (400 BAD_REQUEST); списки клиентов и единиц клиента
 // удалённых не содержат; equipment_count — только действующие. Негатив: чтение и правка
 // удалённого клиента, список и создание его оборудования (доступно исполнителю) → 404.
 func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
@@ -451,20 +456,22 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 	live := s.newClient("SD-025 Действующий " + m)
 	s.unit(gone.ID, "M-025-ушла-"+m)
 	keep, dropped := s.unit(live.ID, "M-025-живая-"+m), s.unit(live.ID, "M-025-удалена-"+m)
-	task := s.apiTask(s.admin, live.ID, "SD-025 заказ "+m)
+	task := s.apiTask(s.admin, live.ID, "SD-025 заказ "+m, keep)
 	s.mustDeleteUnit(dropped, "Списана")
 	s.mustDeleteClient(gone.ID, "Закрылся")
 
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": gone.ID, "title": "Заказ удалённого", "column_id": s.columnID()})
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": gone.ID, "title": "Заказ удалённого", "column_id": s.columnID(),
+		"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["client_id"])
 	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE client_id = $1::uuid`, gone.ID), "заказ не создан")
 
+	// клиента заказа не сменить вовсе (one-car-order): client_id в PUT — неизвестное поле → 400.
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", task.ID), map[string]any{
 		"title": task.Title, "client_id": gone.ID, "column_id": task.ColumnID, "assignee_id": nil, "due_date": nil,
 		"is_paid": false, "version": task.Version})
 	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("not_found", s.fields(raw)["client_id"])
+	s.Equal("BAD_REQUEST", s.sdErr(raw).Code)
 	s.Equal(live.ID, s.sdScalar(`SELECT client_id::text FROM tasks WHERE id = $1`, task.ID), "клиент заказа не сменился")
 
 	// списки.
@@ -522,51 +529,45 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 
 // ---- TS-026 ----
 
-// TS-026 (DS-014, часть 4): карточка действующего заказа с удалёнными клиентом и единицей
-// отдаёт client_is_deleted и is_deleted = true; заказ удалённого клиента правится без смены
-// клиента. Восстановление такого заказа из удалённых даёт notices client_deleted и
-// equipment_deleted (DS-016). Негатив: у действующих записей оба признака = false.
+// TS-026 (DS-014, часть 4): карточка действующего заказа с удалёнными клиентом и автомобилем
+// отдаёт client_is_deleted и car.is_deleted = true; заказ удалённого клиента правится (клиент в
+// шапке не передаётся — он не меняется). Восстановление такого заказа из удалённых даёт notices
+// client_deleted и equipment_deleted (DS-016). Негатив: у действующих записей оба признака = false.
 func (s *ClientsLiveSuite) TestTS026_CardMarks() {
 	m := mark()
 	c := s.newClient("SD-026 Клиент " + m)
 	gone, live := s.unit(c.ID, "M-026-удалена"), s.unit(c.ID, "M-026-живая")
-	task := s.apiTask(s.admin, c.ID, "SD-026 заказ "+m, gone, live)
+	task := s.apiTask(s.admin, c.ID, "SD-026 заказ "+m, gone)
 
-	flags := func() (bool, map[string]bool) {
+	flags := func() (bool, bool) {
 		card := s.taskCard(task.ID)
-		units := map[string]bool{}
-		for _, e := range card.Equipment {
-			units[e.EquipmentID] = e.IsDeleted
-		}
-		s.Require().Len(units, 2, "обе единицы остаются в заказе")
-		return card.Task.ClientIsDeleted, units
+		s.Require().Equal(gone, card.Car.EquipmentID, "автомобиль остаётся в заказе")
+		return card.Task.ClientIsDeleted, card.Car.IsDeleted
 	}
 
-	clientDeleted, units := flags()
+	clientDeleted, carDeleted := flags()
 	s.False(clientDeleted, "негатив: клиент действует")
-	s.False(units[gone])
-	s.False(units[live])
+	s.False(carDeleted)
 
 	s.mustDeleteUnit(gone, "Списана")
-	clientDeleted, units = flags()
+	clientDeleted, carDeleted = flags()
 	s.False(clientDeleted)
-	s.True(units[gone], "единица удалена — пометка в карточке")
-	s.False(units[live], "соседняя единица не помечена")
+	s.True(carDeleted, "автомобиль удалён — пометка в карточке")
 
 	s.mustDeleteClient(c.ID, "Закрылся")
-	clientDeleted, units = flags()
+	clientDeleted, carDeleted = flags()
 	s.True(clientDeleted)
-	s.True(units[gone])
-	s.True(units[live], "ушла вместе с клиентом")
+	s.True(carDeleted)
+	s.Equal("true|clients-admin|Закрылся|true", s.unitState(live), "другой автомобиль ушёл вместе с клиентом")
 
-	// §8.3 п.3: заказ удалённого клиента правится как обычно, без смены клиента.
+	// §8.3 п.3: заказ удалённого клиента правится как обычно.
 	cur := s.taskCard(task.ID).Task
 	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", task.ID), map[string]any{
-		"title": "SD-026 переименован " + m, "client_id": c.ID, "column_id": cur.ColumnID, "assignee_id": nil, "due_date": nil,
+		"title": "SD-026 переименован " + m, "column_id": cur.ColumnID, "assignee_id": nil, "due_date": nil,
 		"is_paid": false, "version": cur.Version})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
-	// DS-016: заказ восстанавливается и с удалёнными клиентом и оборудованием — с предупреждениями.
+	// DS-016: заказ восстанавливается и с удалёнными клиентом и автомобилем — с предупреждениями.
 	st, raw = s.admin.Do(http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%d", task.ID), reasonBody("Дубль"))
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	st, raw = s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/restore", task.ID), nil)
@@ -582,12 +583,11 @@ func (s *ClientsLiveSuite) TestTS026_CardMarks() {
 	s.Equal("Клиент заказа в удалённых", notices["client_deleted"])
 	s.Equal("Автомобиль заказа в удалённых", notices["equipment_deleted"])
 
-	// клиента восстановили — пометки ушли; единица, удалённая отдельно, остаётся помеченной.
+	// клиента восстановили — пометка клиента ушла; автомобиль, удалённый отдельно, остаётся помеченным.
 	_, _, raw = s.restoreClient(s.admin, c.ID)
-	clientDeleted, units = flags()
+	clientDeleted, carDeleted = flags()
 	s.False(clientDeleted, string(raw))
-	s.True(units[gone])
-	s.False(units[live])
+	s.True(carDeleted)
 }
 
 // ---- TS-033 ----
@@ -895,7 +895,8 @@ func (s *ClientsLiveSuite) TestRace_TaskCreateWaitsForClientDelete() {
 	column := s.columnID()
 
 	res := s.race(s.holdClientDelete(c.ID), func() (int, []byte) {
-		return s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": c.ID, "title": "Заказ гонки " + m, "column_id": column})
+		return s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": c.ID, "title": "Заказ гонки " + m, "column_id": column,
+			"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
 	})
 	s.Require().Equal(http.StatusBadRequest, res.status, string(res.raw))
 	s.Equal("not_found", s.fields(res.raw)["client_id"])
@@ -954,42 +955,42 @@ func (s *ClientsLiveSuite) holdUnitDelete(unitID string) func(ctx context.Contex
 	}
 }
 
-// §3 (DS-014, ревью): удаление единицы идёт — в это окно её принимают в заказ
-// (POST /tasks/:id/equipment). Добавление читает единицу FOR SHARE с условием «не удалена»:
-// обязано дождаться удаления и получить 400 equipment_id: not_found — строки заказа с
-// только что удалённой единицей не появляется.
-func (s *ClientsLiveSuite) TestRace_TaskEquipmentAddWaitsForUnitDelete() {
+// §3 (DS-014, ревью): удаление автомобиля идёт — в это окно на него создают заказ
+// (POST /tasks с equipment_id). Создание читает автомобиль FOR SHARE с условием «не удалён»:
+// обязано дождаться удаления и получить 400 equipment_id: not_found — заказа с только что
+// удалённым автомобилем не появляется.
+func (s *ClientsLiveSuite) TestRace_CarOrderCreateWaitsForUnitDelete() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-в-заказ " + m)
 	u := s.unit(c.ID, "M-race-в-заказ")
-	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m)
 
-	res := s.race(s.holdUnitDelete(u), func() (int, []byte) { return s.addUnit(s.admin, task.ID, u) })
+	res := s.race(s.holdUnitDelete(u), func() (int, []byte) { return s.carTask(s.admin, u, "SD-race заказ "+m) })
 	s.Require().Equal(http.StatusBadRequest, res.status, string(res.raw))
 	s.Equal("not_found", s.fields(res.raw)["equipment_id"])
-	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM task_equipment WHERE task_id = $1`, task.ID), "единица в заказ не принята")
+	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE car_id = $1::uuid`, u), "заказ не создан")
 }
 
-// Обратный порядок той же гонки: единицу принимают в заказ (заказ под FOR UPDATE, единица под
-// FOR SHARE, строка task_equipment не зафиксирована) — в это окно приходит удаление единицы.
-// Удаление обязано дождаться добавления; заказ единицу не удерживает (DS-014) — удаление
-// проходит, единица остаётся в заказе уже удалённой (с бейджем). Ровно один порядок, без 500.
-func (s *ClientsLiveSuite) TestRace_UnitDeleteWaitsForTaskEquipmentAdd() {
+// Обратный порядок той же гонки: заказ на автомобиль создаётся (автомобиль под FOR SHARE, строка
+// заказа не зафиксирована) — в это окно приходит удаление автомобиля. Удаление обязано дождаться
+// создания; заказ автомобиль не удерживает (DS-014) — удаление проходит, автомобиль остаётся в
+// заказе уже удалённым (с бейджем). Ровно один порядок, без 500.
+func (s *ClientsLiveSuite) TestRace_UnitDeleteWaitsForCarOrderCreate() {
 	m := mark()
 	c := s.newClient("SD-race Клиент-из-заказа " + m)
 	u := s.unit(c.ID, "M-race-из-заказа")
-	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m)
+	adminID := s.sdScalar(`SELECT id::text FROM users WHERE login = 'clients-admin'`)
+	var taskID int64
 
 	res := s.race(func(ctx context.Context) func() {
-		// «добавление в заказ в полёте»: те же блокировки и INSERT, что в CardService.AddEquipment.
+		// «создание заказа в полёте»: те же блокировки и INSERT, что в TaskService.Create (CarForOrder).
 		tx, err := s.Pool.Begin(ctx)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT 1 FROM tasks WHERE id = $1 FOR UPDATE`, task.ID)
+		_, err = tx.Exec(ctx, `SELECT 1 FROM equipment WHERE id = $1::uuid AND deleted_at IS NULL FOR SHARE`, u)
 		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `SELECT client_id FROM equipment WHERE id = $1::uuid AND deleted_at IS NULL FOR SHARE`, u)
-		s.Require().NoError(err)
-		_, err = tx.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2::uuid)`, task.ID, u)
-		s.Require().NoError(err)
+		s.Require().NoError(tx.QueryRow(ctx, `
+			INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, 'SD-race заказ', 999999, $4::uuid) RETURNING id`,
+			s.columnID(), c.ID, u, adminID).Scan(&taskID))
 		return func() { s.Require().NoError(tx.Commit(ctx)) }
 	}, func() (int, []byte) {
 		st, _, raw := s.deleteUnit(s.admin, u, "Гонка")
@@ -997,38 +998,14 @@ func (s *ClientsLiveSuite) TestRace_UnitDeleteWaitsForTaskEquipmentAdd() {
 	})
 	s.Require().Equal(http.StatusOK, res.status, string(res.raw))
 	s.Equal("true|clients-admin|Гонка|false", s.unitState(u))
-	card := s.taskCard(task.ID)
-	s.Require().Len(card.Equipment, 1, "единица осталась в заказе")
-	s.True(card.Equipment[0].IsDeleted, "с пометкой «удалён»")
-}
-
-// §3 (DS-014, ревью): удаление единицы идёт — в это окно её назначают услуге заказа
-// (PUT /subtasks/:id с equipment_id). Назначение читает единицу FOR SHARE: обязано дождаться
-// удаления и получить 400 equipment_id: not_found — услуга остаётся без единицы.
-func (s *ClientsLiveSuite) TestRace_SubtaskAssignWaitsForUnitDelete() {
-	m := mark()
-	c := s.newClient("SD-race Клиент-услуга " + m)
-	u := s.unit(c.ID, "M-race-услуга")
-	task := s.apiTask(s.admin, c.ID, "SD-race заказ "+m, u)
-	st, raw := s.admin.Do(http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/subtasks", task.ID),
-		map[string]any{"service_id": s.newServiceDirect("SD-race услуга " + m)})
-	s.Require().Equal(http.StatusCreated, st, string(raw))
-	card := s.taskCard(task.ID)
-	s.Require().Len(card.Subtasks, 1)
-	sub := card.Subtasks[0].ID
-
-	res := s.race(s.holdUnitDelete(u), func() (int, []byte) {
-		return s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+sub, map[string]any{
-			"status": "new", "assignee_id": nil, "due_date": nil, "price": nil, "equipment_id": u})
-	})
-	s.Require().Equal(http.StatusBadRequest, res.status, string(res.raw))
-	s.Equal("not_found", s.fields(res.raw)["equipment_id"])
-	s.Equal("", s.sdScalar(`SELECT coalesce(equipment_id::text, '') FROM subtasks WHERE id = $1::uuid`, sub), "единица услуге не назначена")
+	card := s.taskCard(taskID)
+	s.Equal(u, card.Car.EquipmentID, "автомобиль остался в заказе")
+	s.True(card.Car.IsDeleted, "с пометкой «удалён»")
 }
 
 // §3 п. 2, 4 (DS-015, ревью): восстановление клиента идёт (клиент под FOR UPDATE, отметки
 // клиента и его единиц сняты, транзакция не зафиксирована).
-//   - Операция с его единицей, ушедшей вместе с ним, — принять в заказ — блокировку не ждёт:
+//   - Операция с его единицей, ушедшей вместе с ним, — создать на неё заказ — блокировку не ждёт:
 //     до фиксации единица для всех остаётся удалённой, запрос сразу получает 400 not_found (частично восстановленного состояния никто не видит).
 //   - Восстановление его единицы, удалённой раньше отдельно, читает клиента FOR KEY SHARE:
 //     обязано дождаться восстановления клиента и пройти (200) — без ожидания получило бы 409
@@ -1040,7 +1017,6 @@ func (s *ClientsLiveSuite) TestRace_ClientRestoreVsUnitOperations() {
 	c := s.newClient("SD-race Клиент-возврат " + m)
 	with, alone := s.unit(c.ID, "M-race-с-клиентом"), s.unit(c.ID, "M-race-отдельно")
 	s.apiTask(s.admin, c.ID, "SD-race заказ "+m, with)
-	second := s.apiTask(s.admin, c.ID, "SD-race второй заказ "+m)
 	s.mustDeleteUnit(alone, "Списана раньше")
 	s.mustDeleteClient(c.ID, "Удалён по ошибке")
 
@@ -1068,7 +1044,7 @@ func (s *ClientsLiveSuite) TestRace_ClientRestoreVsUnitOperations() {
 			raw    []byte
 		}
 		for name, req := range map[string]func() (int, []byte){
-			"в заказ": func() (int, []byte) { return s.addUnit(s.admin, second.ID, with) },
+			"в заказ": func() (int, []byte) { return s.carTask(s.admin, with, "SD-race второй заказ "+m) },
 		} {
 			done := make(chan quick, 1)
 			go func() {
@@ -1092,6 +1068,6 @@ func (s *ClientsLiveSuite) TestRace_ClientRestoreVsUnitOperations() {
 	s.Equal("false||", s.clientState(c.ID))
 
 	// после фиксации единица действует — операции проходят.
-	st, raw := s.addUnit(s.admin, second.ID, with)
+	st, raw := s.carTask(s.admin, with, "SD-race второй заказ "+m)
 	s.Equal(http.StatusCreated, st, string(raw))
 }

@@ -3,7 +3,6 @@ package board
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -50,40 +49,22 @@ func (r *CardRepo) Column(ctx context.Context, id string) (*CardColumn, error) {
 	return &c, err
 }
 
-// Equipment — запрос 3, история других заказов с той же единицей — json_agg (AC-006).
-// Условие «единица не удалена» в соединении НЕ ставится (soft-delete-clients DS-014): мягко
-// удалённая единица остаётся в заказе и отдаётся с is_deleted = true.
-func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT te.equipment_id, e.deleted_at IS NOT NULL, e.plate_number, te.completeness, te.condition,
-		       coalesce((SELECT json_agg(json_build_object('task_id', o.id, 'title', o.title, 'created_at', o.created_at) ORDER BY o.id DESC)
-		                 FROM task_equipment x JOIN tasks o ON o.id = x.task_id
-		                 WHERE x.equipment_id = te.equipment_id AND x.task_id <> te.task_id
-		                   AND o.deleted_at IS NULL), '[]'::json)
-		FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-		WHERE te.task_id = $1 ORDER BY e.plate_number, e.id`, taskID)
+// Car — запрос 3: автомобиль заказа (tasks.car_id). Условие «автомобиль не удалён» НЕ
+// ставится (soft-delete-clients DS-014): мягко удалённый автомобиль остаётся в заказе и
+// отдаётся с is_deleted = true. 0 строк (заказ удалён параллельно) → errNotFound.
+func (r *CardRepo) Car(ctx context.Context, taskID int64) (*CardCar, error) {
+	var c CardCar
+	err := r.pool.QueryRow(ctx, `
+		SELECT e.id, e.plate_number, e.deleted_at IS NOT NULL
+		FROM tasks t JOIN equipment e ON e.id = t.car_id
+		WHERE t.id = $1 AND t.deleted_at IS NULL`, taskID).Scan(&c.EquipmentID, &c.PlateNumber, &c.IsDeleted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := []CardEquipment{}
-	for rows.Next() {
-		var eq CardEquipment
-		var historyJSON []byte
-		if err := rows.Scan(&eq.EquipmentID, &eq.IsDeleted, &eq.PlateNumber,
-			&eq.Completeness, &eq.Condition, &historyJSON); err != nil {
-			return nil, err
-		}
-		eq.History = []EquipmentHistory{}
-		if len(historyJSON) > 0 {
-			if err := json.Unmarshal(historyJSON, &eq.History); err != nil {
-				return nil, err
-			}
-		}
-		out = append(out, eq)
-	}
-	return out, rows.Err()
+	return &c, nil
 }
 
 // Subtasks — запрос 4 + subtask_total (design-go-layers.md §Card Queries: Go десятичной
@@ -91,7 +72,7 @@ func (r *CardRepo) Equipment(ctx context.Context, taskID int64) ([]CardEquipment
 func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT s.id, s.service_id, sv.name, s.status, s.assignee_id::text, u.name, u.is_active,
-		       s.due_date::text, s.price::text, s.equipment_id::text, s.position,
+		       s.due_date::text, s.price::text, s.position,
 		       round(coalesce(s.price, 0) + coalesce((SELECT sum(round(sp.qty * coalesce(sp.price, 0), 2))
 		                FROM subtask_products sp WHERE sp.subtask_id = s.id), 0), 2)::text AS subtask_total,
 		       s.is_executor_paid, s.executor_paid_at, s.executor_payout::text, sv.deleted_at IS NOT NULL
@@ -105,11 +86,11 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
 	out := []CardSubtask{}
 	for rows.Next() {
 		var c CardSubtask
-		var assigneeID, assigneeName, dueDate, equipmentID, price, payout sql.NullString
+		var assigneeID, assigneeName, dueDate, price, payout sql.NullString
 		var assigneeActive sql.NullBool
 		var total string
 		if err := rows.Scan(&c.ID, &c.ServiceID, &c.ServiceName, &c.Status, &assigneeID, &assigneeName,
-			&assigneeActive, &dueDate, &price, &equipmentID, &c.Position, &total,
+			&assigneeActive, &dueDate, &price, &c.Position, &total,
 			&c.IsExecutorPaid, &c.ExecutorPaidAt, &payout, &c.ServiceIsDeleted); err != nil {
 			return nil, err
 		}
@@ -136,10 +117,6 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
 		if price.Valid {
 			v := numeric.Amount(price.String)
 			c.Price = &v
-		}
-		if equipmentID.Valid {
-			v := equipmentID.String
-			c.EquipmentID = &v
 		}
 		c.Total = numeric.Amount(total)
 		c.Products = []CardSubtaskProduct{}

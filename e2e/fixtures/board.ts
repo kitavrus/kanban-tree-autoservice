@@ -1,11 +1,11 @@
 import { test as base } from './test';
 import type { Column } from './board-types';
 
-// ADR-101: подзадачи (услуги в заказе) и принятое оборудование заказа заводятся через
-// боевое API карточки заказа фазы 6 (internal/features/board/card_*), не прямой SQL-
-// вставкой (pg удалён из зависимостей e2e) — те же гарантии, что и у настоящего клиента
-// (AdminApi.createSubtask/updateSubtask/createSubtaskProduct/deleteSubtaskProduct/
-// addTaskEquipment, e2e/fixtures/auth.ts).
+// ADR-101: подзадачи (услуги в заказе) заводятся через боевое API карточки заказа фазы 6
+// (internal/features/board/card_*), не прямой SQL-вставкой (pg удалён из зависимостей e2e) —
+// те же гарантии, что и у настоящего клиента (AdminApi.createSubtask/updateSubtask/
+// createSubtaskProduct/deleteSubtaskProduct, e2e/fixtures/auth.ts). Автомобиль заказа
+// (one-car-order) задаётся при создании заказа — adminApi.createTask/createCarTask.
 
 export type SubtaskStatus = 'new' | 'in_progress' | 'done';
 
@@ -24,8 +24,6 @@ type BoardFixtures = {
   /** Меняет статус услуги через PUT /subtasks/:id (полная замена строки — LWW; остальные
    *  поля сохраняются как в текущей карточке). */
   setSubtaskStatus: (subtaskId: string, status: SubtaskStatus) => Promise<void>;
-  /** Отмечает оборудование клиента как принятое в заказе (POST /tasks/:id/equipment). */
-  insertTaskEquipment: (taskId: number, equipmentId: string) => Promise<void>;
   /** Внутренний кэш subtaskId → taskId (для setSubtaskStatus — у PUT /subtasks/:id нет
    *  обратной ссылки на заказ в URL). */
   _subtaskTaskMap: Map<string, number>;
@@ -75,15 +73,8 @@ export const test = base.extend<BoardFixtures>({
         assignee_id: sub.assignee_id,
         due_date: sub.due_date,
         price: sub.price,
-        equipment_id: sub.equipment_id,
         // is_executor_paid / executor_payout не шлём: нет поля → сервер их не меняет (D65).
       });
-    });
-  },
-
-  insertTaskEquipment: async ({ adminApi }, use) => {
-    await use(async (taskId, equipmentId) => {
-      await adminApi.addTaskEquipment(taskId, equipmentId);
     });
   },
 });

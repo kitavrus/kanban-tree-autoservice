@@ -134,17 +134,12 @@ func (s *CarOrderLiveSuite) count(sql string, args ...any) int {
 	return n
 }
 
+// taskEquipment — автомобиль заказа (one-car-order: tasks.car_id, ровно один) срезом из одного
+// элемента — формат прежних проверок «автомобиль в заказе».
 func (s *CarOrderLiveSuite) taskEquipment(taskID int64) []string {
-	rows, err := s.Pool.Query(context.Background(), `SELECT equipment_id::text FROM task_equipment WHERE task_id = $1`, taskID)
-	s.Require().NoError(err)
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		s.Require().NoError(rows.Scan(&id))
-		out = append(out, id)
-	}
-	return out
+	var id string
+	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT car_id::text FROM tasks WHERE id = $1`, taskID).Scan(&id))
+	return []string{id}
 }
 
 // rowCounts — снимок числа строк, которые может создать POST /tasks по автомобилю.
@@ -154,7 +149,7 @@ func (s *CarOrderLiveSuite) rowCounts() [5]int {
 		s.count(`SELECT count(*) FROM client_phones`),
 		s.count(`SELECT count(*) FROM equipment`),
 		s.count(`SELECT count(*) FROM tasks`),
-		s.count(`SELECT count(*) FROM task_equipment`),
+		s.count(`SELECT count(DISTINCT car_id) FROM tasks`),
 	}
 }
 

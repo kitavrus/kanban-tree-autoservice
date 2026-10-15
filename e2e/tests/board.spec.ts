@@ -379,7 +379,6 @@ test.describe('BD: конфликт версии', () => {
     // «второй пользователь» правит заказ через API, пока форма первого открыта — версия в форме устаревает.
     await adminApi.updateTask(task.id, {
       title: task.title,
-      client_id: task.client_id,
       column_id: task.column_id,
       assignee_id: task.assignee_id,
       due_date: task.due_date,
@@ -524,7 +523,6 @@ test.describe('BD: поиск по услуге, товару и оборудо�
     adminApi,
     uniq,
     insertSubtask,
-    insertTaskEquipment,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'BD-022');
     const col = columnByName(columns, 'Приёмка');
@@ -534,10 +532,10 @@ test.describe('BD: поиск по услуге, товару и оборудо�
     const plate = uniqPlate();
     const equipment = await adminApi.createEquipment(client.id, { plate_number: plate });
 
-    const target = await adminApi.createTask({ title: uniq('BD-022 искомый'), client_id: client.id, column_id: col.id });
+    // one-car-order: автомобиль заказа задаётся при создании (найден по госномеру).
+    const target = await adminApi.createCarTask(equipment, { title: uniq('BD-022 искомый'), column_id: col.id });
     const other = await adminApi.createTask({ title: uniq('BD-022 другой'), client_id: client.id, column_id: col.id });
     await insertSubtask({ taskId: target.id, serviceId: svc.id, products: [{ productId: product.id, qty: 1 }] });
-    await insertTaskEquipment(target.id, equipment.id);
 
     const board = new BoardPage(page);
     await board.goto(`?client_id=${client.id}`);

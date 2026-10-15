@@ -79,19 +79,25 @@ func FuzzParseTaskFilter(f *testing.F) {
 // паниковать; поля ошибок — подмножество {title, client_id, column_id, assignee_id,
 // due_date} (version — только у TaskUpdateRequest, здесь не участвует).
 func FuzzTaskInputValidate(f *testing.F) {
-	f.Add("Заказ", validUUID, validUUID, "", "", false)
-	f.Add("", "", "", "\x00", "2026-02-30", true)
-	f.Add(strings.Repeat("я", 250), "not-a-uuid", "not-a-uuid", "bad", "bad-date", false)
-	f.Add(strings.Repeat("a", 201), validUUID, validUUID, validUUID, "2026-01-15", true)
+	f.Add("Заказ", validUUID, validUUID, "", "", "А123ВС 77", validUUID, false)
+	f.Add("", "", "", "\x00", "2026-02-30", "", "", true)
+	f.Add(strings.Repeat("я", 250), "not-a-uuid", "not-a-uuid", "bad", "bad-date", "А*1", "nope", false)
+	f.Add(strings.Repeat("a", 201), validUUID, validUUID, validUUID, "2026-01-15", strings.Repeat("Б", 30), "\x00", true)
 
-	allowed := map[string]bool{"title": true, "client_id": true, "column_id": true, "assignee_id": true, "due_date": true}
+	allowed := map[string]bool{"title": true, "client_id": true, "column_id": true, "assignee_id": true, "due_date": true,
+		"plate_number": true, "equipment_id": true}
 
-	f.Fuzz(func(t *testing.T, title, clientID, columnID, assigneeID, dueDate string, isPaid bool) {
-		in := TaskHeader{
-			Title: title, ClientID: clientID, ColumnID: columnID,
-			AssigneeID: &assigneeID, DueDate: &dueDate, IsPaid: &isPaid,
+	// one-car-order: клиент и автомобиль — только в TaskCreateRequest (prepare), не в шапке.
+	f.Fuzz(func(t *testing.T, title, clientID, columnID, assigneeID, dueDate, plate, equipmentID string, isPaid bool) {
+		in := TaskCreateRequest{
+			TaskHeader: TaskHeader{
+				Title: title, ColumnID: columnID,
+				AssigneeID: &assigneeID, DueDate: &dueDate, IsPaid: &isPaid,
+			},
+			ClientID: clientID, PlateNumber: plate, EquipmentID: equipmentID,
 		}
-		for _, fld := range in.normalize().validate() {
+		_, fields := in.normalize().prepare()
+		for _, fld := range fields {
 			if !allowed[fld.Name] {
 				t.Fatalf("неожиданное поле в ошибках валидации: %s", fld.Name)
 			}
@@ -179,21 +185,6 @@ func FuzzMoveBody(f *testing.F) {
 type fakeCardService struct{}
 
 func (fakeCardService) Card(context.Context, Actor, string) (*OrderCardResponse, error) {
-	return nil, nil
-}
-
-func (fakeCardService) AddEquipment(_ context.Context, _ Actor, _ string, in TaskEquipmentCreateRequest) (*OrderCardMutationResponse, error) {
-	if f := in.normalize().validate(); len(f) > 0 {
-		return nil, errorspkg.Validation(f...)
-	}
-	return &OrderCardMutationResponse{Warnings: []StockWarning{}}, nil
-}
-
-func (fakeCardService) UpdateEquipment(context.Context, Actor, string, string, TaskEquipmentUpdateRequest) (*OrderCardMutationResponse, error) {
-	return nil, nil
-}
-
-func (fakeCardService) RemoveEquipment(context.Context, Actor, string, string) (*OrderCardMutationResponse, error) {
 	return nil, nil
 }
 
@@ -311,8 +302,9 @@ func FuzzSubtaskProductBody(f *testing.F) {
 	})
 }
 
-// FuzzSubtaskLogAndEquipmentBody — FZ-003: POST /subtasks/:id/logs, POST /tasks/:id/equipment.
-func FuzzSubtaskLogAndEquipmentBody(f *testing.F) {
+// FuzzSubtaskLogBody — FZ-003: POST /subtasks/:id/logs (оборудования заказа больше нет —
+// автомобиль задаётся при создании заказа, one-car-order).
+func FuzzSubtaskLogBody(f *testing.F) {
 	for _, s := range []string{
 		`{}`, `null`, `[]`, `{"text":""}`, `{"text":"` + strings.Repeat("я", 4001) + `"}`,
 		`{"equipment_id":"` + validUUID + `"}`, `{"equipment_id":"\u0000"}`, `{"text":{"nested":true}}`,
@@ -323,10 +315,8 @@ func FuzzSubtaskLogAndEquipmentBody(f *testing.F) {
 	app := newFakeCardApp()
 	h := NewCardHandler(fakeCardService{})
 	app.Post("/subtasks/:id/logs", h.CreateLog)
-	app.Post("/tasks/:id/equipment", h.AddEquipment)
 
 	f.Fuzz(func(t *testing.T, body string) {
 		assertNo5xx(t, app, fiber.MethodPost, "/subtasks/"+validUUID+"/logs", body)
-		assertNo5xx(t, app, fiber.MethodPost, "/tasks/1/equipment", body)
 	})
 }

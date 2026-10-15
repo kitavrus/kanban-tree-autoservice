@@ -27,7 +27,8 @@ test.describe('OC: новый заказ — карточка вместо пр�
     await board.goto(`?client_id=${client.id}`);
 
     await board.openTaskAdd();
-    await expect(card.equipmentLocked).toBeVisible();
+    // one-car-order: у нового заказа блока «Автомобиль» нет — автомобиль задаётся госномером.
+    await expect(card.carSection).toBeHidden();
     await expect(card.subtasksLocked).toBeVisible();
 
     const plate = uniqPlate();
@@ -42,7 +43,8 @@ test.describe('OC: новый заказ — карточка вместо пр�
     const created = /#(\d+)/.exec((await card.title.textContent()) ?? '');
     expect(created, 'номер заказа в заголовке карточки').toBeTruthy();
     _boardCleanup(Number(created![1]));
-    await expect(card.equipmentLocked).toHaveCount(0);
+    await expect(card.carSection).toBeVisible();
+    await expect(card.carPlate).toHaveText(plate);
     await expect(card.subtasksLocked).toHaveCount(0);
   });
 });
@@ -64,7 +66,7 @@ test.describe('OC: deep-link /?task=N', () => {
     // stripTaskFromUrl).
     await board.goto(`?client_id=${client.id}&task=${task.id}`);
     await card.waitOpen();
-    await expect(card.equipment).toBeVisible();
+    await expect(card.carRow).toBeVisible();
     await expect(card.subtasks).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`[?&]task=${task.id}\\b`));
 
@@ -181,17 +183,19 @@ test.describe('OC: оплата — только администратор', ()
   });
 });
 
-test.describe('OC: оборудование заказа', () => {
-  test('OC-006: добавление, комплектность/состояние переживают reload, удаление, смена клиента — confirm', async ({
+test.describe('OC: автомобиль заказа (one-car-order)', () => {
+  test('OC-006: строка «госномер · владелец», клиент и автомобиль не редактируются, шапка сохраняется без них', async ({
     adminPage: page,
     adminApi,
     uniq,
   }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-006');
-    const client2 = await adminApi.createClient({ company_name: uniq('OC-006 клиент2'), phones: [{ phone: '9990000101', note: '' }] });
     const plate = uniqPlate();
     const eq = await adminApi.createEquipment(client.id, { plate_number: plate });
-    const task = await adminApi.createTask({ title: uniq('OC-006 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
+    const task = await adminApi.createCarTask(eq, { title: uniq('OC-006 заказ'), column_id: columnByName(columns, 'Приёмка').id });
+    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('OC-006 категория') });
+    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-006 Диагностика'), price: 500 });
+    const sub = (await adminApi.createSubtask(task.id, svc.id)).card.subtasks[0];
 
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
@@ -199,85 +203,62 @@ test.describe('OC: оборудование заказа', () => {
     await board.openTaskEdit(task.id);
     await card.waitOpen();
 
-    await card.chooseCombobox(card.equipmentAdd, plate);
-    await expect(card.equipmentRows).toHaveCount(1);
+    // строка автомобиля: госномер и владелец (клиент заказа), без полей ввода и кнопок смены.
+    await expect(card.carRowOf(eq.id)).toBeVisible();
+    await expect(card.carPlate).toHaveText(plate);
+    await expect(card.carOwner).toHaveText(client.company_name);
+    await expect(card.carDeleted).toHaveCount(0);
+    await expect(card.carSection.locator('input, select, textarea')).toHaveCount(0);
+    await expect(card.carHistoryToggle).toBeVisible();
+    // клиент — только для чтения: «Владелец автомобиля».
+    await expect(card.taskClient).toBeDisabled();
+    await expect(card.taskClient).toContainText(client.company_name);
+    await expect(card.clientLockedHint).toBeVisible();
+    // выбора автомобиля в услуге нет.
+    await expect(card.subtaskRow(sub.id)).toBeVisible();
+    await expect(card.subtaskEquipment(sub.id)).toHaveCount(0);
 
-    await card.equipmentCompleteness(eq.id).fill('Полный комплект');
-    await card.equipmentCompleteness(eq.id).blur();
-    await card.equipmentCondition(eq.id).fill('Хорошее');
-    await card.equipmentCondition(eq.id).blur();
-    await expect(card.equipmentCondition(eq.id)).toHaveAttribute('aria-busy', 'false');
-
-    await board.goto(`?client_id=${client.id}`);
-    await board.openTaskEdit(task.id);
-    await card.waitOpen();
-    await expect(card.equipmentCompleteness(eq.id)).toHaveValue('Полный комплект');
-    await expect(card.equipmentCondition(eq.id)).toHaveValue('Хорошее');
-
-    await card.equipmentDelete(eq.id).click();
-    await card.confirmUiDialog();
-    await expect(card.equipmentRows).toHaveCount(0);
-
-    await card.chooseCombobox(card.equipmentAdd, plate);
-    await expect(card.equipmentRows).toHaveCount(1);
-    await card.chooseRemote(card.taskClient, client2.company_name, client2.company_name);
-    await card.confirmUiDialog();
+    // правка шапки сохраняется; клиент и автомобиль заказа прежние.
+    const newTitle = uniq('OC-006 переименован');
+    await card.fillHeader({ title: newTitle });
     await card.save();
     await expect(card.error).toBeHidden();
-
-    await board.goto(`?client_id=${client2.id}`);
-    await board.openTaskEdit(task.id);
-    await card.waitOpen();
-    await expect(card.equipmentRows).toHaveCount(0);
-  });
-
-  test('OC-007: новое оборудование прямо из карточки', async ({ adminPage: page, adminApi, uniq }) => {
-    const { client, columns } = await setup(adminApi, uniq, 'OC-007');
-    const task = await adminApi.createTask({ title: uniq('OC-007 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
-
-    const board = new BoardPage(page);
-    const card = new OrderCardPage(page);
-    await board.goto(`?client_id=${client.id}`);
-    await board.openTaskEdit(task.id);
-    await card.waitOpen();
-
-    await card.equipmentNewBtn.click();
-    // форма «новый автомобиль» — только госномер; пусто → «Укажите госномер».
-    await expect(page.getByTestId('card-equipment-new-form').locator('input')).toHaveCount(1);
-    await card.equipmentNewSave.click();
-    await expect(card.equipmentNewError).toHaveText('Укажите госномер');
-    await expect(card.equipmentRows).toHaveCount(0);
-    const plate = uniqPlate();
-    await card.equipmentNewPlate.fill(plate.toLowerCase());
-    await card.equipmentNewSave.click();
-
-    await expect(card.equipmentRows).toHaveCount(1);
-    await expect(card.equipmentRows.first()).toContainText(plate);
-    const equipment = await adminApi.getClient(client.id);
-    expect(equipment.equipment_count).toBe(1);
+    await expect.poll(async () => (await adminApi.getTask(task.id)).title).toBe(newTitle);
+    const after = await adminApi.getCard(task.id);
+    expect(after.task.client_id).toBe(client.id);
+    expect(after.car).toMatchObject({ equipment_id: eq.id, plate_number: plate, is_deleted: false });
+    await expect(card.carPlate).toHaveText(plate);
+    await expect(card.taskClient).toBeDisabled();
   });
 });
 
-test.describe('OC: история оборудования', () => {
-  test('OC-008: единица из закрытого заказа — «Уже был в ремонте»', async ({ adminPage: page, adminApi, uniq }) => {
+test.describe('OC: история автомобиля', () => {
+  test('OC-008: «История работ» — другие заказы этого автомобиля, текущий не показывается', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-008');
     const eq = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+    const col = columnByName(columns, 'Приёмка').id;
 
+    // первый заказ автомобиля — истории других заказов нет.
     const oldTitle = uniq('OC-008 старый заказ');
-    const oldTask = await adminApi.createTask({ title: oldTitle, client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
-    await adminApi.addTaskEquipment(oldTask.id, eq.id);
-
-    const task = await adminApi.createTask({ title: uniq('OC-008 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
-    await adminApi.addTaskEquipment(task.id, eq.id);
-
+    const oldTask = await adminApi.createCarTask(eq, { title: oldTitle, column_id: col });
     const board = new BoardPage(page);
     const card = new OrderCardPage(page);
     await board.goto(`?client_id=${client.id}`);
+    await board.openTaskEdit(oldTask.id);
+    await card.waitOpen();
+    await card.openCarHistory();
+    await expect(card.carHistoryPanel.getByTestId('card-car-history-empty')).toBeVisible();
+    await card.close();
+
+    // второй заказ того же автомобиля — в истории первый (номер и название), не сам.
+    const task = await adminApi.createCarTask(eq, { title: uniq('OC-008 заказ'), column_id: col });
+    await board.goto(`?client_id=${client.id}`);
     await board.openTaskEdit(task.id);
     await card.waitOpen();
-
-    await expect(card.equipmentHistory(eq.id)).toContainText(`#${oldTask.id}`);
-    await expect(card.equipmentHistory(eq.id)).toContainText(oldTitle);
+    await card.openCarHistory();
+    await expect(card.carHistoryOrder(oldTask.id)).toContainText(oldTitle);
+    await expect(card.carHistoryOrder(task.id)).toHaveCount(0);
+    await expect(card.carHistoryPanel.getByTestId('card-car-history-page')).toHaveAttribute('href', `/equipment/${eq.id}/history`);
   });
 });
 

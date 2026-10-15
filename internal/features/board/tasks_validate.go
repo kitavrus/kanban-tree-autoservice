@@ -34,7 +34,6 @@ const dateLayout = "2006-01-02"
 // nilIfEmpty() в сервисном слое перед записью в БД.
 func (in TaskHeader) normalize() TaskHeader {
 	in.Title = strings.TrimSpace(in.Title)
-	in.ClientID = strings.TrimSpace(in.ClientID)
 	in.ColumnID = strings.TrimSpace(in.ColumnID)
 	if in.AssigneeID != nil {
 		v := strings.TrimSpace(*in.AssigneeID)
@@ -47,16 +46,14 @@ func (in TaskHeader) normalize() TaskHeader {
 	return in
 }
 
-// validate — формат полей после normalize(); существование client_id/column_id/
-// assignee_id проверяет сервис (design-errors.md: «404 клиент/ответственный — в форме
-// ошибка поля»).
+// validate — формат полей после normalize(); существование column_id/assignee_id
+// проверяет сервис (design-errors.md: «404 ответственный — в форме ошибка поля»).
 func (in TaskHeader) validate() []errorspkg.Field {
-	return in.validateWith(true, true)
+	return in.validateWith(true)
 }
 
-// validateWith — titleRequired=false: заказ по автомобилю, пустой title генерируется;
-// clientRequired=false: клиент — владелец найденного автомобиля либо новый клиент.
-func (in TaskHeader) validateWith(titleRequired, clientRequired bool) []errorspkg.Field {
+// validateWith — titleRequired=false: новый заказ, пустой title генерируется из госномера.
+func (in TaskHeader) validateWith(titleRequired bool) []errorspkg.Field {
 	var f []errorspkg.Field
 	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
 
@@ -68,15 +65,6 @@ func (in TaskHeader) validateWith(titleRequired, clientRequired bool) []errorspk
 	}
 	if sqlutil.HasInvalidText(in.Title) {
 		add("title", msgInvalidText)
-	}
-
-	switch {
-	case in.ClientID == "":
-		if clientRequired {
-			add("client_id", msgRequired)
-		}
-	case uuid.Validate(in.ClientID) != nil:
-		add("client_id", msgInvalid)
 	}
 
 	switch {
@@ -106,8 +94,15 @@ func (in TaskHeader) validateWith(titleRequired, clientRequired bool) []errorspk
 // new_client вместе с client_id либо с найденным автомобилем).
 const msgConflict = "conflict"
 
-// carOrder — разобранный POST /tasks в режиме «по автомобилю» (prepare()). Ровно одно из
-// equipmentID / newEquipment; newClient — только при newEquipment.
+// msgForeignClient — найденный автомобиль (equipment_id) принадлежит не клиенту client_id.
+const msgForeignClient = "foreign_client"
+
+// msgPlateMismatch — найденный автомобиль (equipment_id) с другим госномером, чем plate_number
+// нового заказа.
+const msgPlateMismatch = "plate_mismatch"
+
+// carOrder — разобранный POST /tasks (prepare()). Ровно одно из equipmentID / newEquipment;
+// newClient — только при newEquipment.
 type carOrder struct {
 	plate        string // NormalizePlateNumber
 	equipmentID  string
@@ -119,30 +114,32 @@ type carOrder struct {
 // new_equipment/new_client нормализует prepare() правилами пакета clients.
 func (in TaskCreateRequest) normalize() TaskCreateRequest {
 	in.TaskHeader = in.TaskHeader.normalize()
+	in.ClientID = strings.TrimSpace(in.ClientID)
 	in.PlateNumber = clients.NormalizePlateNumber(in.PlateNumber)
 	in.EquipmentID = strings.ToLower(strings.TrimSpace(in.EquipmentID))
 	return in
 }
 
-// byCar — запрос в режиме «по автомобилю».
-func (in TaskCreateRequest) byCar() bool {
-	return in.PlateNumber != "" || in.EquipmentID != "" || in.NewEquipment != nil || in.NewClient != nil
-}
-
-// prepare — валидация формы после normalize(). car == nil — заказ без автомобиля. Поля
-// нового автомобиля/клиента валидируются правилами пакета clients (те же коды, что у
+// prepare — валидация формы после normalize(). Заказа без автомобиля нет (one-car-order):
+// plate_number и одно из equipment_id/new_equipment обязательны всегда. Поля нового
+// автомобиля/клиента валидируются правилами пакета clients (те же коды, что у
 // POST /clients/:id/equipment и POST /clients) с префиксом new_equipment./new_client.
 func (in TaskCreateRequest) prepare() (*carOrder, []errorspkg.Field) {
-	if !in.byCar() {
-		return nil, in.validate()
-	}
 	var f []errorspkg.Field
 	add := func(name, msg string) { f = append(f, errorspkg.Field{Name: name, Message: msg}) }
 	car := &carOrder{plate: in.PlateNumber, equipmentID: in.EquipmentID}
 
+	f = append(f, in.validateWith(false)...)
+
 	// клиент: найденный автомобиль — его владелец; новый автомобиль — client_id либо new_client.
-	clientRequired := in.EquipmentID == "" && in.NewClient == nil
-	f = append(f, in.validateWith(false, clientRequired)...)
+	switch {
+	case in.ClientID == "":
+		if in.EquipmentID == "" && in.NewClient == nil {
+			add("client_id", msgRequired)
+		}
+	case uuid.Validate(in.ClientID) != nil:
+		add("client_id", msgInvalid)
+	}
 
 	if in.PlateNumber == "" {
 		add("plate_number", msgRequired)

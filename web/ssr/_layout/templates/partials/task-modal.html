@@ -24,7 +24,8 @@
             <div class="small text-body-secondary mt-1" id="task-plate-status" data-testid="task-plate-status" aria-live="polite"></div>
             <div class="text-danger small d-none" data-error-for="plate_number" data-testid="task-plate-error"></div>
           </div>
-          <!-- В карточке существующего заказа название по-прежнему правится вручную. -->
+          <!-- В карточке существующего заказа название по-прежнему правится вручную; клиент —
+               владелец автомобиля заказа, только чтение (one-car-order). -->
           <div class="col-md-6 d-none" id="task-title-wrap">
             <label class="form-label" for="task-title">Название *</label>
             <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
@@ -97,9 +98,14 @@
           </div>
         </div>
 
-        <hr>
-        <h3 class="fs-6">Автомобиль</h3>
-        <div id="card-equipment" data-testid="card-equipment"></div>
+        <!-- Автомобиль заказа (one-car-order): ровно один, задан при создании, в карточке —
+             только чтение «госномер · владелец · История работ» (js/task-card.js
+             renderOrderCar). Новый заказ — блок скрыт: автомобиль — поле «Госномер» выше. -->
+        <div class="d-none" id="card-car-section" data-testid="card-car-section">
+          <hr>
+          <h3 class="fs-6">Автомобиль</h3>
+          <div id="card-car" data-testid="card-car"></div>
+        </div>
 
         <hr>
         <h3 class="fs-6">Услуги</h3>

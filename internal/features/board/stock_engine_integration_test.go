@@ -88,8 +88,9 @@ func (s *StockEngineSuite) createTaskWithDemand(columnID string, productQty map[
 
 	var taskID int64
 	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO tasks (column_id, client_id, title, position, created_by)
-		 VALUES ($1, $2, 'Task', 1024, $3) RETURNING id`, columnID, seClientID, seAdminID,
+		`WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'СЕ 001') RETURNING id)
+		 INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		 VALUES ($1, $2, (SELECT id FROM car), 'Task', 1024, $3) RETURNING id`, columnID, seClientID, seAdminID,
 	).Scan(&taskID))
 
 	var subtaskID string
@@ -224,7 +225,7 @@ func (s *StockEngineSuite) TestStockEngine_Reconcile_Idempotent_NoDoubleConsume(
 func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService() {
 	ctx := context.Background()
 	taskRepo := board.NewTaskRepo(s.Pool)
-	taskSvc := board.NewTaskService(s.Pool, taskRepo, s.engine, board.NewTaskEquipmentRepo())
+	taskSvc := board.NewTaskService(s.Pool, taskRepo, s.engine)
 	colRepo := board.NewColumnRepo(s.Pool)
 	colSvc := board.NewColumnService(s.Pool, colRepo, s.engine)
 	actor := board.Actor{ID: seAdminID, IsAdmin: true}
@@ -233,9 +234,13 @@ func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService
 
 	// подзадача-услуга с потребностью в товаре — напрямую SQL (subtask_products не входит
 	// в DTO заказа фазы 03, появится в фазе 6), заказ и его перенос — через сервис.
-	create, err := taskSvc.Create(ctx, actor, board.TaskCreateRequest{TaskHeader: board.TaskHeader{
-		Title: "IT-010 заказ", ClientID: seClientID, ColumnID: seColTodo,
-	}})
+	// one-car-order: заказ создаётся только с автомобилем (новый автомобиль клиента).
+	create, err := taskSvc.Create(ctx, actor, board.TaskCreateRequest{
+		TaskHeader:   board.TaskHeader{Title: "IT-010 заказ", ColumnID: seColTodo},
+		ClientID:     seClientID,
+		PlateNumber:  "ИТ010 77",
+		NewEquipment: &board.TaskNewEquipment{},
+	})
 	s.Require().NoError(err)
 	taskID := create.Task.ID
 

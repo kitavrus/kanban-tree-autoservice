@@ -112,7 +112,7 @@ func (s *AttachmentsLiveSuite) newTask() int64 {
 	ctx := context.Background()
 	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO clients (company_name) VALUES ('Вложения ' || gen_random_uuid()) RETURNING id`).Scan(&clientID))
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT id FROM columns WHERE name = 'Приёмка'`).Scan(&colID))
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": "Заказ с вложениями", "client_id": clientID, "column_id": colID})
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{"title": "Заказ с вложениями", "client_id": clientID, "column_id": colID}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m struct {
 		Task struct {
@@ -381,9 +381,9 @@ func (s *AttachmentsLiveSuite) TestAttachmentsLiveSuite_BodyLimits() {
 	var clientID, colID string
 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `INSERT INTO clients (company_name) VALUES ('Длинное описание') RETURNING id`).Scan(&clientID))
 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `SELECT id FROM columns WHERE name = 'Приёмка'`).Scan(&colID))
-	st2, raw2 := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st2, raw2 := s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "Длинный", "client_id": clientID, "column_id": colID, "description": strings.Repeat("я", 9000),
-	})
+	}))
 	s.Equal(http.StatusCreated, st2, string(raw2))
 }
 

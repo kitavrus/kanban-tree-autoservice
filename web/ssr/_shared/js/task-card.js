@@ -34,7 +34,6 @@
   var defaultColumnId = null;
   var defaultDueDate = '';      // срок нового заказа по умолчанию (календарь: выбранный день)
   var saving = false;        // защита от двойного submit шапки
-  var newEquipmentOpen = false;
   var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
   // upload (фаза 7) — идущая загрузка вложения {gen, name, percent} либо null; переживает
   // renderAll (секция перерисовывается после любой row-мутации), кнопка заблокирована.
@@ -71,7 +70,6 @@
 
   function reqKeySubtask(id) { return 'subtask:' + id; }
   function reqKeyProduct(id) { return 'product:' + id; }
-  function reqKeyEquipment(id) { return 'equipment:' + id; }
   function reqKeyLog(id) { return 'log:' + id; }
 
   function enqueueRow(key, patch, baseGetter, requestFn) {
@@ -147,7 +145,7 @@
 
   function onRowError(key, err) {
     var code = err && err.code;
-    if (code === 'SUBTASK_NOT_FOUND' || code === 'SUBTASK_PRODUCT_NOT_FOUND' || code === 'SUBTASK_LOG_NOT_FOUND' || code === 'TASK_EQUIPMENT_NOT_FOUND') {
+    if (code === 'SUBTASK_NOT_FOUND' || code === 'SUBTASK_PRODUCT_NOT_FOUND' || code === 'SUBTASK_LOG_NOT_FOUND') {
       KT.uiAlert('Строка уже удалена', 'Не удалось сохранить').then(function () { loadCard(taskId); });
       return;
     }
@@ -180,7 +178,6 @@
     defaultDueDate = (!id && opts && opts.dueDate) || '';
     card = null;
     rowQueue = {};
-    newEquipmentOpen = false;
     eqHistory = {};
     headerDirty = false;
     upload = null;
@@ -331,7 +328,9 @@
   }
 
   function renderLockedSections() {
-    $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить автомобиль</p>';
+    // новый заказ: автомобиль выбирается полем «Госномер» в шапке — блок «Автомобиль» скрыт.
+    $('#card-car-section').classList.add('d-none');
+    $('#card-car').innerHTML = '';
     $('#card-subtasks').innerHTML = '<p class="text-body-secondary small" data-testid="card-subtasks-locked">Сохраните заказ, чтобы добавить услуги</p>';
     $('#card-attachments').innerHTML = '<p class="text-body-secondary small" data-testid="card-attachments-locked">Сохраните заказ, чтобы добавить фото, видео или PDF</p>';
   }
@@ -365,6 +364,10 @@
       paid.disabled = !data.isAdmin;
       ['#task-client', '#task-column', '#task-assignee'].forEach(function (sel) { var el = $(sel); if (el && el._cbSync) el._cbSync(); });
     }
+    // one-car-order: клиент заказа — владелец автомобиля; оба заданы при создании и в карточке
+    // только читаются (смены клиента/автомобиля нет).
+    setClientLocked(true);
+    $('#task-client-locked').classList.remove('d-none');
 
     var canDelete = !!data.isAdmin;
     var delBtn = $('#task-delete-btn');
@@ -375,7 +378,7 @@
     saving = false;
 
     renderPrintActions(t.id);
-    renderEquipment();
+    renderOrderCar();
     renderSubtasks();
     renderAttachments();
     renderTotal();
@@ -424,83 +427,42 @@
   }
 
   // ==================================================================
-  // Оборудование заказа (AC-004/AC-005/AC-006)
+  // Автомобиль заказа (one-car-order): ровно один, задаётся при создании и не меняется.
+  // Карточка показывает строку «госномер · владелец · История работ» — только чтение.
   // ==================================================================
 
-  var clientEquipmentCache = null; // {clientId, items} — эталон опций «Добавить оборудование клиента»
   // eqHistory[equipmentId] = {open, loading, items, error} — раскрытая «История работ»
-  // единицы (GET /api/v1/equipment/:id/history); переживает перерисовки блока, сбрасывается
+  // автомобиля (GET /api/v1/equipment/:id/history); переживает перерисовки блока, сбрасывается
   // при открытии другой карточки.
   var eqHistory = {};
 
-  // renderEquipment — доступный клиенту список оборудования нужен ДО рендера <select>
-  // (не после, отдельным запросом внутри wireEquipment): иначе окно между вставкой пустого
-  // select в DOM и приходом ответа даёт combobox.js открыть список без опций (гонка,
-  // combobox.js не перерисовывает уже открытый список при появлении новых <option>).
-  //
-  // Клиент заказа мягко удалён (soft-delete-clients §8.3, DS-026): его справочник оборудования
-  // для обычных адресов не существует (404), а действующих единиц у него нет — запрос не
-  // выполняется, блок рисуется только по данным карточки.
-  function renderEquipment() {
-    var clientId = card.task.client_id;
-    if (card.task.client_is_deleted) {
-      renderEquipmentWith([]);
-      return;
-    }
-    if (clientEquipmentCache && clientEquipmentCache.clientId === clientId) {
-      renderEquipmentWith(clientEquipmentCache.items);
-      return;
-    }
-    KT.api.get('/api/v1/clients/' + clientId + '/equipment?limit=200').then(function (r) {
-      clientEquipmentCache = { clientId: clientId, items: r.items };
-      renderEquipmentWith(r.items);
-    }).catch(function () { renderEquipmentWith([]); });
-  }
-
-  function renderEquipmentWith(clientEquipment) {
-    var container = $('#card-equipment');
-    if (!container) return; // модалка уже закрыта раньше ответа сети
-    var already = {}; card.equipment.forEach(function (e) { already[e.equipment_id] = true; });
-    var addOptions = clientEquipment.filter(function (e) { return !already[e.id]; });
-    // клиент заказа удалён — добавлять ему оборудование нельзя (POST /clients/:id/equipment → 404,
-    // DS-026): вместо выбора и формы новой единицы — пояснение.
-    var adding = card.task.client_is_deleted
-      ? '<p class="text-body-secondary small mb-0" data-testid="card-equipment-client-deleted">Клиент заказа удалён — добавить автомобиль нельзя</p>'
-      : equipmentAddHtml(addOptions) +
-        (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новый автомобиль</button>');
-    var html = '<div>' +
-      card.equipment.map(equipmentRowHtml).join('') +
-      adding +
-      '</div>';
-    rerenderPreserveFocus(container, html);
-    wireEquipment(container);
-  }
-
-  function equipmentRowHtml(eq) {
-    var key = reqKeyEquipment(eq.equipment_id);
-    var history = (eq.history || []).map(function (h) {
-      return '<div class="small text-body-secondary" data-testid="card-equipment-history">Уже был в ремонте: #' + h.task_id + ' «' + esc(h.title) + '» от ' + fmtDate(h.created_at) + '</div>';
-    }).join('');
-    return '' +
-      '<div class="card mb-2" data-testid="card-equipment-row" data-row-key="' + key + '" data-equipment-id="' + esc(eq.equipment_id) + '">' +
-      '  <div class="card-body py-2">' +
-      '    <div class="d-flex justify-content-between align-items-start gap-2">' +
-      '      <div class="card-eq-title">' + plateBadge(eq.plate_number) +
-      // единица мягко удалена (soft-delete-clients §8.3 п.3) — в заказе остаётся с бейджем
-      (eq.is_deleted ? deletedBadge('card-equipment-deleted') : '') + '</div>' +
-      '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>' +
-      '    </div>' +
-      '    <div class="row g-2 mt-1">' +
-      '      <div class="col-6"><label class="form-label small mb-0">Комплектность</label>' +
-      '        <input class="form-control form-control-sm" data-field="completeness" data-row-key="' + key + '" data-testid="card-equipment-completeness" maxlength="1000" value="' + esc(eq.completeness) + '"></div>' +
-      '      <div class="col-6"><label class="form-label small mb-0">Состояние</label>' +
-      '        <input class="form-control form-control-sm" data-field="condition" data-row-key="' + key + '" data-testid="card-equipment-condition" maxlength="1000" value="' + esc(eq.condition) + '"></div>' +
-      '    </div>' +
-      (history ? '<div class="mt-1">' + history + '</div>' : '') +
-      // история удалённой единицы для обычных адресов не существует (404, DS-026) — без кнопки
-      (eq.is_deleted ? '' : equipmentHistoryHtml(eq.equipment_id)) +
+  // renderOrderCar — блок «Автомобиль» существующего заказа: госномер (бейдж «удалён», если
+  // автомобиль в удалённых), владелец — клиент заказа, «История работ». Новый заказ — блок
+  // скрыт (автомобиль выбирается полем «Госномер» в шапке).
+  function renderOrderCar() {
+    var section = $('#card-car-section');
+    var container = $('#card-car');
+    if (!section || !container) return; // модалка уже закрыта раньше ответа сети
+    section.classList.remove('d-none');
+    var c = card.car || {};
+    var t = card.task;
+    var html = '' +
+      '<div data-testid="card-car-row" data-equipment-id="' + esc(c.equipment_id || '') + '">' +
+      '  <div class="d-flex flex-wrap align-items-center gap-1">' +
+           plateBadge(c.plate_number, 'card-car-plate') +
+           // автомобиль мягко удалён (soft-delete-clients §8.3 п.3) — в заказе остаётся с бейджем
+           (c.is_deleted ? deletedBadge('card-car-deleted') : '') +
+      '    <span class="text-body-secondary">·</span>' +
+      '    <span data-testid="card-car-owner">' + esc(t.client_name) + '</span>' +
+           (t.client_is_deleted ? deletedBadge('card-car-owner-deleted') : '') +
       '  </div>' +
+         // история удалённого автомобиля для обычных адресов не существует (404, DS-026) — без кнопки
+         (c.is_deleted || !c.equipment_id ? '' : equipmentHistoryHtml(c.equipment_id)) +
       '</div>';
+    container.innerHTML = html;
+    $$('[data-testid="card-car-history-toggle"]', container).forEach(function (btn) {
+      btn.addEventListener('click', function () { toggleEquipmentHistory(btn.dataset.equipmentId); });
+    });
   }
 
   var SERVICE_STATUS = { 'new': ['Новая', 'text-bg-secondary'], in_progress: ['В работе', 'text-bg-primary'], done: ['Выполнена', 'text-bg-success'] };
@@ -508,12 +470,12 @@
   // Дата и время — только через KT.time (пояс пользователя, не браузера; DS-032).
   function fmtDateTime(iso) { return KT.time.fmtDateTime(iso); }
 
-  // equipmentHistoryHtml — кнопка «История работ» + раскрытая панель: другие заказы с этой
-  // единицей (текущий исключён — его работы и так в карточке) с услугами по ней, товарами
-  // и журналом. Для admin — ссылка на полную страницу /equipment/:id/history.
+  // equipmentHistoryHtml — кнопка «История работ» + раскрытая панель: другие заказы этого
+  // автомобиля (текущий исключён — его работы и так в карточке) с услугами, товарами и
+  // журналом. Для admin — ссылка на полную страницу /equipment/:id/history.
   function equipmentHistoryHtml(eqId) {
     var st = eqHistory[eqId] || {};
-    var btn = '<button type="button" class="btn btn-link btn-sm p-0 mt-1" data-testid="card-equipment-history-toggle" data-equipment-id="' + esc(eqId) + '" aria-expanded="' + (st.open ? 'true' : 'false') + '">' +
+    var btn = '<button type="button" class="btn btn-link btn-sm p-0 mt-1" data-testid="card-car-history-toggle" data-equipment-id="' + esc(eqId) + '" aria-expanded="' + (st.open ? 'true' : 'false') + '">' +
       (st.open ? '▾' : '▸') + ' История работ</button>';
     if (!st.open) return '<div>' + btn + '</div>';
     var body;
@@ -522,17 +484,15 @@
     else {
       var others = (st.items || []).filter(function (o) { return String(o.task_id) !== String(taskId); });
       body = others.length ? others.map(historyOrderHtml).join('')
-        : '<div class="small text-body-secondary" data-testid="card-equipment-history-empty">Других работ по этому автомобилю не было</div>';
+        : '<div class="small text-body-secondary" data-testid="card-car-history-empty">Других работ по этому автомобилю не было</div>';
       if (host.getData().isAdmin) {
-        body += '<a class="small" href="/equipment/' + esc(eqId) + '/history" target="_blank" rel="noopener" data-testid="card-equipment-history-page">Открыть полную историю ↗</a>';
+        body += '<a class="small" href="/equipment/' + esc(eqId) + '/history" target="_blank" rel="noopener" data-testid="card-car-history-page">Открыть полную историю ↗</a>';
       }
     }
-    return '<div>' + btn + '<div class="border-start ps-2 mt-1" data-testid="card-equipment-history-panel">' + body + '</div></div>';
+    return '<div>' + btn + '<div class="border-start ps-2 mt-1" data-testid="card-car-history-panel">' + body + '</div></div>';
   }
 
   function historyOrderHtml(o) {
-    var intake = o.accepted && (o.completeness || o.condition)
-      ? '<div class="text-body-secondary">Принято: ' + esc([o.completeness && ('комплектность — ' + o.completeness), o.condition && ('состояние — ' + o.condition)].filter(Boolean).join('; ')) + '</div>' : '';
     var services = (o.services || []).map(function (s) {
       var stl = SERVICE_STATUS[s.status] || SERVICE_STATUS['new'];
       var products = (s.products || []).map(function (p) {
@@ -541,16 +501,16 @@
       var logs = (s.logs || []).map(function (l) {
         return '<div class="ps-2 text-body-secondary">' + fmtDateTime(l.created_at) + ' · ' + esc(l.author_name) + ': <span class="text-body" style="white-space:pre-wrap">' + esc(l.text) + '</span></div>';
       }).join('');
-      return '<div class="mt-1" data-testid="card-equipment-history-service">' +
+      return '<div class="mt-1" data-testid="card-car-history-service">' +
         '<span class="fw-semibold">' + esc(s.name) + '</span> <span class="badge ' + stl[1] + '">' + stl[0] + '</span>' +
         (s.assignee_name ? ' <span class="text-body-secondary">' + esc(s.assignee_name) + '</span>' : '') +
         (s.price != null ? ' · ' + esc(String(s.price)) + ' ₽' : '') + products + logs + '</div>';
     }).join('');
-    return '<div class="small mb-2" data-testid="card-equipment-history-order">' +
-      '<a href="/?task=' + o.task_id + '" data-testid="card-equipment-history-link">#' + o.task_id + ' ' + esc(o.title) + '</a>' +
+    return '<div class="small mb-2" data-testid="card-car-history-order">' +
+      '<a href="/?task=' + o.task_id + '" data-testid="card-car-history-link">#' + o.task_id + ' ' + esc(o.title) + '</a>' +
       ' <span class="badge" style="background-color:' + esc(o.column_color) + '">' + esc(o.column_name) + '</span>' +
       ' <span class="text-body-secondary">от ' + fmtDate(o.created_at) + '</span>' +
-      intake + (services || '<div class="text-body-secondary">Услуг по этому автомобилю не было</div>') + '</div>';
+      (services || '<div class="text-body-secondary">Услуг в заказе не было</div>') + '</div>';
   }
 
   function toggleEquipmentHistory(eqId) {
@@ -565,15 +525,15 @@
         st.error = (err && err.message) || 'Не удалось загрузить историю';
       }).then(function () {
         st.loading = false;
-        if (gen === openGeneration) renderEquipment();
+        if (gen === openGeneration && card) renderOrderCar();
       });
     }
-    renderEquipment();
+    renderOrderCar();
   }
 
-  // plateBadge — госномер автомобиля бейджем перед названием единицы ('' — госномера нет).
-  function plateBadge(plate) {
-    return plate ? '<span class="badge text-bg-light border me-1 text-nowrap" data-testid="card-equipment-plate">' + esc(plate) + '</span> ' : '';
+  // plateBadge — госномер автомобиля бейджем ('' — госномера нет); testid — по месту показа.
+  function plateBadge(plate, testid) {
+    return plate ? '<span class="badge text-bg-light border me-1 text-nowrap" data-testid="' + (testid || 'task-car-plate') + '">' + esc(plate) + '</span> ' : '';
   }
 
   // PLATE_ERROR_TEXT — коды ошибок поля plate_number (details.fields[].message) → текст.
@@ -583,124 +543,7 @@
     invalid_text: 'Госномер: недопустимые символы'
   };
 
-  function equipmentAddHtml(options) {
-    return '<select class="form-select form-select-sm" data-testid="card-equipment-add"><option value="">+ Добавить автомобиль клиента…</option>' +
-      (options || []).map(function (e) {
-        return '<option value="' + esc(e.id) + '">' + esc(e.plate_number) + '</option>';
-      }).join('') + '</select>';
-  }
-
-  function newEquipmentFormHtml() {
-    return '' +
-      '<div class="card mt-2" data-testid="card-equipment-new-form">' +
-      '  <div class="card-body py-2">' +
-      '    <div class="row g-2">' +
-      '      <div class="col-6"><label class="form-label small mb-0">Госномер *</label><input class="form-control form-control-sm text-uppercase" maxlength="20" placeholder="А123ВС 777" data-testid="card-equipment-new-plate"></div>' +
-      '    </div>' +
-      '    <div class="alert alert-danger d-none mt-2 py-1 px-2 small" data-testid="card-equipment-new-error"></div>' +
-      '    <div class="d-flex gap-2 mt-2">' +
-      '      <button type="button" class="btn btn-primary btn-sm" data-testid="card-equipment-new-save">Добавить</button>' +
-      '      <button type="button" class="btn btn-outline-secondary btn-sm" data-testid="card-equipment-new-cancel">Отмена</button>' +
-      '    </div>' +
-      '  </div>' +
-      '</div>';
-  }
-
   function fmtDate(iso) { return KT.time.fmtDate(iso); }
-
-  function wireEquipment(container) {
-    $$('[data-field="completeness"], [data-field="condition"]', container).forEach(function (input) {
-      input.addEventListener('change', function () {
-        var eqId = input.closest('[data-testid="card-equipment-row"]').dataset.equipmentId;
-        var eq = card.equipment.filter(function (e) { return e.equipment_id === eqId; })[0];
-        var field = input.dataset.field;
-        var patch = {}; patch[field] = input.value;
-        enqueueRow(reqKeyEquipment(eqId), patch, function (source) {
-          var cur = (source || card).equipment.filter(function (e) { return e.equipment_id === eqId; })[0] || eq;
-          return { completeness: cur.completeness, condition: cur.condition };
-        }, function (body) {
-          return KT.api.put('/api/v1/tasks/' + taskId + '/equipment/' + eqId, body);
-        });
-      });
-    });
-
-    $$('[data-testid="card-equipment-history-toggle"]', container).forEach(function (btn) {
-      btn.addEventListener('click', function () { toggleEquipmentHistory(btn.dataset.equipmentId); });
-    });
-
-    $$('[data-testid="card-equipment-remove"]', container).forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        var eqId = btn.dataset.equipmentId;
-        KT.uiConfirm('Убрать автомобиль из заказа?').then(function (ok) {
-          if (!ok) return;
-          var ticket = beginRequest();
-          KT.api.del('/api/v1/tasks/' + taskId + '/equipment/' + eqId).then(function (resp) {
-            if (!applyCard(resp.card, ticket)) return;
-            if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
-            host.onChanged();
-          }).catch(function (err) {
-            KT.uiAlert((err && err.message) || 'Не удалось убрать автомобиль', 'Ошибка');
-            // 409: единица занята услугой — карточка устарела; перечитываем, чтобы показать
-            // актуальное состояние.
-            if (err && err.status === 409) refetchCard();
-          });
-        });
-      });
-    });
-
-    var addSel = $('[data-testid="card-equipment-add"]', container);
-    if (addSel) {
-      addSel.addEventListener('change', function () {
-        var eqId = addSel.value;
-        if (!eqId) return;
-        var ticket = beginRequest();
-        KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: eqId, completeness: '', condition: '' }).then(function (resp) {
-          if (!applyCard(resp.card, ticket)) return;
-          host.onChanged();
-        }).catch(function (err) {
-          // единицу удалили, пока карточка открыта (soft-delete-clients §8.3): ошибка в шапке
-          var gone = err && err.status === 400 && (err.fields || []).some(function (f) { return f.name === 'equipment_id' && f.message === 'not_found'; });
-          if (gone) {
-            clientEquipmentCache = null;
-            showHeaderError('Автомобиль не найден');
-            renderEquipment();
-            return;
-          }
-          KT.uiAlert((err && err.message) || 'Не удалось добавить автомобиль', 'Ошибка');
-        });
-      });
-    }
-
-    var newBtn = $('[data-testid="card-equipment-new"]', container);
-    if (newBtn) newBtn.addEventListener('click', function () { newEquipmentOpen = true; renderEquipment(); });
-    var cancelBtn = $('[data-testid="card-equipment-new-cancel"]', container);
-    if (cancelBtn) cancelBtn.addEventListener('click', function () { newEquipmentOpen = false; renderEquipment(); });
-
-    var saveBtn = $('[data-testid="card-equipment-new-save"]', container);
-    if (saveBtn) saveBtn.addEventListener('click', function () {
-      var plate = $('[data-testid="card-equipment-new-plate"]', container).value.trim();
-      var errEl = $('[data-testid="card-equipment-new-error"]', container);
-      if (!plate) {
-        errEl.textContent = 'Укажите госномер';
-        errEl.classList.remove('d-none');
-        return;
-      }
-      errEl.classList.add('d-none');
-      var ticket = beginRequest();
-      KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { plate_number: plate })
-        .then(function (equipment) {
-          return KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: equipment.id, completeness: '', condition: '' });
-        }).then(function (resp) {
-          newEquipmentOpen = false;
-          clientEquipmentCache = null; // новая единица появилась у клиента — перечитать список
-          if (!applyCard(resp.card, ticket)) return;
-          host.onChanged();
-        }).catch(function (err) {
-          errEl.textContent = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return (f.name === 'plate_number' && PLATE_ERROR_TEXT[f.message]) || f.message; }).join('; ') : ((err && err.message) || 'Не удалось создать автомобиль');
-          errEl.classList.remove('d-none');
-        });
-    });
-  }
 
   function toastWarningsHost(w) { host.toastWarnings(w); }
 
@@ -745,15 +588,6 @@
   function subtaskRowHtml(sub) {
     var key = reqKeySubtask(sub.id);
     var payoutId = 'card-subtask-executor-paid-' + sub.id;
-    // мягко удалённую единицу услуге заново не назначить (soft-delete-clients §8.3 п.5): в
-    // списке она остаётся, только если уже назначена этой услуге, — с бейджем у подписи поля.
-    var subEquipment = card.equipment.filter(function (e) { return e.equipment_id === sub.equipment_id; })[0];
-    var subEquipmentDeleted = !!(subEquipment && subEquipment.is_deleted);
-    var equipmentOptions = '<option value="">Без автомобиля</option>' + card.equipment.filter(function (e) {
-      return !e.is_deleted || e.equipment_id === sub.equipment_id;
-    }).map(function (e) {
-      return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.plate_number) + '</option>';
-    }).join('');
     var assigneeOptions = '<option value="">Не назначен</option>' + host.getData().assignees.map(function (a) {
       return '<option value="' + esc(a.id) + '"' + (sub.assignee_id === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.is_active === false ? ' (неактивен)' : '') + '</option>';
     }).join('');
@@ -778,8 +612,6 @@
       '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Цена (пусто — по факту)</label>' +
       '        <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + key + '" data-testid="card-subtask-price" value="' + (sub.price == null ? '' : esc(sub.price)) + '">' +
       '        <div class="invalid-feedback d-block d-none small" data-testid="card-subtask-warning"></div></div>' +
-      '      <div class="col-12"><label class="form-label small mb-0">Автомобиль' + (subEquipmentDeleted ? deletedBadge('card-subtask-equipment-deleted') : '') + '</label>' +
-      '        <select class="form-select form-select-sm" data-field="equipment_id" data-row-key="' + key + '" data-testid="card-subtask-equipment">' + equipmentOptions + '</select></div>' +
       // executor-payouts D62–D66: выплата исполнителю — отметка, сумма (отдельная от цены) и
       // дата отметки. Отметить можно только при назначенном исполнителе; уже стоящую
       // отметку снять можно всегда (в т.ч. если сотрудника удалили).
@@ -859,7 +691,7 @@
   }
 
   function wireSubtasks(container) {
-    // ---- статус/исполнитель/срок/цена/оборудование (LWW — PUT /subtasks/:id) ----
+    // ---- статус/исполнитель/срок/цена (LWW — PUT /subtasks/:id) ----
     $$('[data-testid="card-subtask-row"]', container).forEach(function (row) {
       var subId = row.dataset.subtaskId;
       var priceWarn = row.querySelector('[data-testid="card-subtask-warning"]');
@@ -868,7 +700,7 @@
         input.addEventListener('change', function () {
           var field = input.dataset.field;
           var value = input.value;
-          if (field === 'assignee_id' || field === 'equipment_id') value = value || null;
+          if (field === 'assignee_id') value = value || null;
           if (field === 'due_date') value = value || null;
           if (field === 'price') {
             // LOW code review: num() молча превращал «abc»/отрицательное в 0 и сохранял —
@@ -921,7 +753,7 @@
             // снимок, отправленный вместе с правкой срока/статуса/цены, молча снял бы чужую
             // отметку (или вернул снятую). Эти поля уходят только через patch — когда
             // пользователь правит именно их; сервер поле, которого нет в теле, не трогает.
-            return { status: s.status, assignee_id: s.assignee_id, due_date: s.due_date, price: s.price == null ? null : num(s.price), equipment_id: s.equipment_id };
+            return { status: s.status, assignee_id: s.assignee_id, due_date: s.due_date, price: s.price == null ? null : num(s.price) };
           }, function (body) {
             return KT.api.put('/api/v1/subtasks/' + subId, body);
           });
@@ -1770,7 +1602,6 @@
     var assignee = $('#task-assignee').value;
     return {
       title: $('#task-title').value.trim(),
-      client_id: $('#task-client').value,
       column_id: $('#task-column').value,
       assignee_id: assignee || null,
       due_date: due || null,
@@ -1798,17 +1629,6 @@
       var el = $(sel); if (el) el.addEventListener('change', function () { headerDirty = true; });
     });
     $('#task-due').addEventListener('change', checkDueCapacity);
-
-    $('#task-client').addEventListener('change', function () {
-      if (!taskId || !card) return;
-      var newClientId = $('#task-client').value;
-      if (newClientId === card.task.client_id) return;
-      if (card.equipment.length > 0) {
-        KT.uiConfirm('Автомобиль другого клиента будет убран из заказа.').then(function (ok) {
-          if (!ok) { $('#task-client').value = card.task.client_id; if ($('#task-client')._cbSync) $('#task-client')._cbSync(); }
-        });
-      }
-    });
 
     $('#task-save-btn').addEventListener('click', function () {
       if (saving) return;
@@ -1898,7 +1718,7 @@
     });
 
     $('#task-modal').addEventListener('hidden.bs.modal', function () {
-      card = null; taskId = null; rowQueue = {}; newEquipmentOpen = false; headerDirty = false; upload = null;
+      card = null; taskId = null; rowQueue = {}; headerDirty = false; upload = null;
       clearTimeout(lookupTimer); lookupSeq++;
       openGeneration++; // закрыли без переоткрытия — ответы запросов в полёте больше не применяем
     });

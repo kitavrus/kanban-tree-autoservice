@@ -131,7 +131,9 @@ func (s *ExecutorPayoutsLiveSuite) newTask(title string) int64 {
 	s.seq++
 	var id int64
 	s.Require().NoError(s.Pool.QueryRow(context.Background(),
-		`INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		`WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'ВП 001') RETURNING id)
+		 INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		 VALUES ($1, $2, (SELECT id FROM car), $3, $4, $5) RETURNING id`,
 		s.columnID, s.clientID, title, s.seq*1024, s.adminID).Scan(&id))
 	return id
 }

@@ -144,7 +144,9 @@ func (s *SoftDeleteLiveSuite) columnID() string {
 }
 
 func (s *SoftDeleteLiveSuite) newTask(b *testutil.Browser, clientID, title string) int64 {
-	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": title, "client_id": clientID, "column_id": s.columnID()})
+	// one-car-order: заказ создаётся только с автомобилем — новый автомобиль клиента.
+	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": title, "client_id": clientID, "column_id": s.columnID(),
+		"plate_number": "СД " + strings.ToUpper(uuid.NewString()[:8]), "new_equipment": map[string]any{}})
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m struct {
 		Task struct {

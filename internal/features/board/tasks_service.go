@@ -34,15 +34,14 @@ type Actor struct {
 // TaskService — концентрирует Lock Order (columns→tasks→products, ADR-104) операций
 // над заказами: список/чтение без транзакции, мутации — withTx + StockEngine.Reconcile.
 type TaskService struct {
-	pool      *pgxpool.Pool
-	repo      *TaskRepo
-	engine    *StockEngine
-	equipment *TaskEquipmentRepo
-	files     filestore.FileStore // фаза 7: файлы вложений удаляются после Delete заказа
+	pool   *pgxpool.Pool
+	repo   *TaskRepo
+	engine *StockEngine
+	files  filestore.FileStore // фаза 7: файлы вложений удаляются после Delete заказа
 }
 
-func NewTaskService(pool *pgxpool.Pool, repo *TaskRepo, engine *StockEngine, equipment *TaskEquipmentRepo) *TaskService {
-	return &TaskService{pool: pool, repo: repo, engine: engine, equipment: equipment}
+func NewTaskService(pool *pgxpool.Pool, repo *TaskRepo, engine *StockEngine) *TaskService {
+	return &TaskService{pool: pool, repo: repo, engine: engine}
 }
 
 // WithFiles — хранилище вложений (фаза 7): Delete заказа удаляет их файлы после commit.
@@ -75,8 +74,9 @@ func (s *TaskService) Get(ctx context.Context, a Actor, idStr string) (*TaskResp
 	return &resp, nil
 }
 
-// Create — design-go-layers.md §Service Interface: Lock Target Column → проверка
-// client/assignee → Insert (позиция в конец) → Reconcile (no-op без услуг; единообразие).
+// Create — design-go-layers.md §Service Interface: Lock Target Column → автомобиль (найден
+// либо создан; клиент заказа — его владелец) → проверка assignee → Insert (позиция в конец,
+// tasks.car_id) → Reconcile (no-op без услуг; единообразие).
 func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest) (*TaskMutationResponse, error) {
 	in = in.normalize()
 	car, f := in.prepare()
@@ -95,22 +95,11 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 			return columnRefError(err)
 		}
 
-		// Заказ по автомобилю: клиент/автомобиль резолвятся (либо создаются) в этой же tx —
-		// любой отказ ниже откатывает и нового клиента, и новый автомобиль.
-		clientID, title, equipmentID := in.ClientID, in.Title, ""
-		if car != nil {
-			clientID, title, equipmentID, err = s.resolveCar(ctx, tx, in, car)
-			if err != nil {
-				return err
-			}
-		} else {
-			exists, err := s.repo.ClientExists(ctx, tx, clientID)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return errorspkg.Validation(errorspkg.Field{Name: "client_id", Message: msgNotFound})
-			}
+		// Клиент/автомобиль резолвятся (либо создаются) в этой же tx — любой отказ ниже
+		// откатывает и нового клиента, и новый автомобиль.
+		clientID, title, carID, err := s.resolveCar(ctx, tx, in, car)
+		if err != nil {
+			return err
 		}
 
 		assigneeID := nilIfEmpty(in.AssigneeID)
@@ -136,7 +125,7 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 		}
 
 		created, err := s.repo.Insert(ctx, tx, taskRow{
-			Title: title, ClientID: clientID, ColumnID: in.ColumnID,
+			Title: title, ClientID: clientID, CarID: carID, ColumnID: in.ColumnID,
 			AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
 			IsPaid: in.IsPaid != nil && *in.IsPaid, Position: pos, DescriptionHTML: descHTML,
 		}, a.ID)
@@ -144,12 +133,6 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 			return mapTaskFKError(err)
 		}
 		taskID = created.ID
-
-		if equipmentID != "" {
-			if _, err := s.equipment.Insert(ctx, tx, taskID, TaskEquipmentCreateRequest{EquipmentID: equipmentID}); err != nil {
-				return err
-			}
-		}
 
 		res, err := s.engine.Reconcile(ctx, tx, taskID, target.ConsumesStock, a.ID)
 		if err != nil {
@@ -164,10 +147,10 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 	return s.mutationResponse(ctx, a, taskID, reconcile)
 }
 
-// resolveCar — заказ по автомобилю (tx вызывающего): найденный автомобиль → его владелец
+// resolveCar — автомобиль нового заказа (tx вызывающего): найденный автомобиль → его владелец
 // (сверка госномера и client_id), иначе новый автомобиль у client_id либо у нового клиента.
-// Возвращает клиента заказа, название (пустой title → «{Марка} {Модель} {ГОСНОМЕР}») и
-// автомобиль для task_equipment. Ошибки — Validation с путями полей формы.
+// Возвращает клиента заказа, название (пустой title → госномер) и автомобиль заказа
+// (tasks.car_id). Ошибки — Validation с путями полей формы.
 func (s *TaskService) resolveCar(ctx context.Context, tx pgx.Tx, in TaskCreateRequest, car *carOrder) (clientID, title, equipmentID string, err error) {
 	clientID, title = in.ClientID, in.Title
 	field := func(name, msg string) error {
@@ -175,7 +158,7 @@ func (s *TaskService) resolveCar(ctx context.Context, tx pgx.Tx, in TaskCreateRe
 	}
 
 	if car.equipmentID != "" {
-		found, err := s.equipment.CarForOrder(ctx, tx, car.equipmentID)
+		found, err := s.repo.CarForOrder(ctx, tx, car.equipmentID)
 		if errors.Is(err, errNotFound) {
 			return "", "", "", field("equipment_id", msgNotFound)
 		}
@@ -253,18 +236,8 @@ func (s *TaskService) Update(ctx context.Context, a Actor, idStr string, in Task
 			}
 		}
 
-		// Клиент проверяется только при СМЕНЕ (soft-delete-clients DS-014): заказ удалённого
-		// клиента правится как обычно, а сменить клиента можно только на действующего.
-		if current.ClientID != in.ClientID {
-			exists, err := s.repo.ClientExists(ctx, tx, in.ClientID)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return errorspkg.Validation(errorspkg.Field{Name: "client_id", Message: msgNotFound})
-			}
-		}
-
+		// Клиент и автомобиль заказа не меняются (one-car-order): в теле PUT их нет, заказ
+		// удалённого клиента/автомобиля правится как обычно.
 		assigneeID := nilIfEmpty(in.AssigneeID)
 		if !samePtr(current.AssigneeID, assigneeID) && assigneeID != nil {
 			ok, err := s.repo.ActiveAssigneeExists(ctx, tx, *assigneeID)
@@ -273,22 +246,6 @@ func (s *TaskService) Update(ctx context.Context, a Actor, idStr string, in Task
 			}
 			if !ok {
 				return errorspkg.Validation(errorspkg.Field{Name: "assignee_id", Message: msgNotFound})
-			}
-		}
-
-		// смена клиента — оборудование ПРЕЖНЕГО клиента, выбранное в открытых услугах,
-		// блокирует смену (409); иначе чужие task_equipment тихо убираются из заказа в той
-		// же tx (design-sql.md §Foreign Equipment Query, AC-004).
-		if current.ClientID != in.ClientID {
-			open, err := s.equipment.ForeignInUse(ctx, tx, id, in.ClientID)
-			if err != nil {
-				return err
-			}
-			if len(open) > 0 {
-				return ErrTaskEquipmentInUse.WithDetail("subtasks", open)
-			}
-			if err := s.equipment.DeleteForeign(ctx, tx, id, in.ClientID); err != nil {
-				return err
 			}
 		}
 
@@ -318,7 +275,7 @@ func (s *TaskService) Update(ctx context.Context, a Actor, idStr string, in Task
 		}
 
 		if _, err := s.repo.Update(ctx, tx, id, *in.Version, taskRow{
-			Title: in.Title, ClientID: in.ClientID, ColumnID: in.ColumnID,
+			Title: in.Title, ColumnID: in.ColumnID,
 			AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
 			IsPaid: in.IsPaid != nil && *in.IsPaid, Position: pos, DescriptionHTML: descHTML,
 		}); err != nil {
@@ -731,6 +688,8 @@ func mapTaskFKError(err error) error {
 		switch pgErr.ConstraintName {
 		case "tasks_client_id_fkey":
 			return errorspkg.Validation(errorspkg.Field{Name: "client_id", Message: msgNotFound})
+		case "tasks_car_id_fkey":
+			return errorspkg.Validation(errorspkg.Field{Name: "equipment_id", Message: msgNotFound})
 		case "tasks_assignee_id_fkey":
 			return errorspkg.Validation(errorspkg.Field{Name: "assignee_id", Message: msgNotFound})
 		}

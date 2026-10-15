@@ -61,9 +61,13 @@ type columnFlags struct {
 
 // taskRow — параметры записи Insert/Update (design-go-layers.md §Repository Interface:
 // `in taskRow`).
+//
+// ClientID/CarID пишет только Insert (one-car-order: автомобиль и клиент — его владелец —
+// задаются при создании и потом не меняются); Update их не трогает.
 type taskRow struct {
 	Title           string
 	ClientID        string
+	CarID           string
 	ColumnID        string
 	AssigneeID      *string
 	DueDate         *string
@@ -311,13 +315,13 @@ func (r *TaskRepo) Move(ctx context.Context, tx pgx.Tx, id int64, columnID, pos 
 func (r *TaskRepo) Update(ctx context.Context, tx pgx.Tx, id, version int64, in taskRow) (*Task, error) {
 	var t Task
 	err := scanTaskRow(tx.QueryRow(ctx, `
-		UPDATE tasks SET title = $3, client_id = $4::uuid, column_id = $5::uuid, assignee_id = $6::uuid,
-		       due_date = $7::date, is_paid = $8,
-		       paid_at = CASE WHEN $8 AND NOT is_paid THEN now() WHEN NOT $8 THEN NULL ELSE paid_at END,
-		       position = $9::numeric, description_html = $10, version = version + 1, updated_at = now()
+		UPDATE tasks SET title = $3, column_id = $4::uuid, assignee_id = $5::uuid,
+		       due_date = $6::date, is_paid = $7,
+		       paid_at = CASE WHEN $7 AND NOT is_paid THEN now() WHEN NOT $7 THEN NULL ELSE paid_at END,
+		       position = $8::numeric, description_html = $9, version = version + 1, updated_at = now()
 		WHERE id = $1 AND version = $2
 		RETURNING `+taskWriteReturning,
-		id, version, in.Title, in.ClientID, in.ColumnID, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, in.DescriptionHTML), &t)
+		id, version, in.Title, in.ColumnID, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, in.DescriptionHTML), &t)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errVersionConflict
 	}
@@ -328,11 +332,37 @@ func (r *TaskRepo) Update(ctx context.Context, tx pgx.Tx, id, version int64, in 
 func (r *TaskRepo) Insert(ctx context.Context, tx pgx.Tx, in taskRow, createdBy string) (*Task, error) {
 	var t Task
 	err := scanTaskRow(tx.QueryRow(ctx, `
-		INSERT INTO tasks (column_id, client_id, title, assignee_id, due_date, is_paid, paid_at, position, created_by, description_html)
-		VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5::date, $6, CASE WHEN $6 THEN now() END, $7::numeric, $8::uuid, $9)
+		INSERT INTO tasks (column_id, client_id, car_id, title, assignee_id, due_date, is_paid, paid_at, position, created_by, description_html)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6::date, $7, CASE WHEN $7 THEN now() END, $8::numeric, $9::uuid, $10)
 		RETURNING `+taskWriteReturning,
-		in.ColumnID, in.ClientID, in.Title, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, createdBy, in.DescriptionHTML), &t)
+		in.ColumnID, in.ClientID, in.CarID, in.Title, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, createdBy, in.DescriptionHTML), &t)
 	return &t, err
+}
+
+// OrderCar — автомобиль для нового заказа по госномеру (CarForOrder).
+type OrderCar struct {
+	ClientID    string
+	PlateNumber string
+}
+
+// CarForOrder — действующий автомобиль действующего клиента под FOR SHARE: удаление единицы
+// либо клиента пишет строку equipment (блокировка NO KEY UPDATE) — оно либо уже видно
+// (errNotFound), либо ждёт создание заказа, и автомобиль уходит в удалённые уже в составе
+// заказа с бейджем. Порядок блокировок: колонка → equipment.
+func (r *TaskRepo) CarForOrder(ctx context.Context, tx pgx.Tx, equipmentID string) (*OrderCar, error) {
+	var c OrderCar
+	err := tx.QueryRow(ctx, `
+		SELECT e.client_id, e.plate_number
+		FROM equipment e JOIN clients cl ON cl.id = e.client_id AND cl.deleted_at IS NULL
+		WHERE e.id = $1 AND e.deleted_at IS NULL
+		FOR SHARE OF e`, equipmentID).Scan(&c.ClientID, &c.PlateNumber)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // Delete — design-sql.md §Delete Task Query: ФИЗИЧЕСКОЕ удаление строки — только служебная
@@ -350,31 +380,13 @@ func (r *TaskRepo) Delete(ctx context.Context, tx pgx.Tx, id int64) error {
 	return nil
 }
 
-// ClientExists — проверка client_id (design-go-layers.md §Service Interface: «проверка
-// client/assignee» перед Insert/Update). Запрос — в переданной tx (тот же снапшот
-// READ COMMITTED, что и остальные шаги Create/Update).
-//
-// soft-delete-clients DS-014, DS-024: мягко удалённый клиент для новых заказов и смены клиента
-// не существует. Строка клиента блокируется FOR KEY SHARE до конца транзакции: удаление клиента
-// (clients.Repo.SoftDeleteClient, FOR UPDATE) либо уже видно — false, либо ждёт заказ, и тогда
-// заказ остаётся у удалённого клиента с бейджем (допустимо).
-func (r *TaskRepo) ClientExists(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
-	var one int
-	err := tx.QueryRow(ctx, `SELECT 1 FROM clients WHERE id = $1 AND deleted_at IS NULL FOR KEY SHARE`, id).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
 // DeletedRefs — восстановление заказа (soft-delete-clients DS-016): клиент заказа в удалённых;
-// хотя бы одна единица оборудования заказа в удалённых. Заказ уже под FOR UPDATE.
+// автомобиль заказа (tasks.car_id) в удалённых. Заказ уже под FOR UPDATE.
 func (r *TaskRepo) DeletedRefs(ctx context.Context, tx pgx.Tx, id int64) (clientDeleted, equipmentDeleted bool, err error) {
 	err = tx.QueryRow(ctx, `
-		SELECT cl.deleted_at IS NOT NULL,
-		       EXISTS (SELECT 1 FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-		               WHERE te.task_id = t.id AND e.deleted_at IS NOT NULL)
-		FROM tasks t JOIN clients cl ON cl.id = t.client_id WHERE t.id = $1`, id).Scan(&clientDeleted, &equipmentDeleted)
+		SELECT cl.deleted_at IS NOT NULL, e.deleted_at IS NOT NULL
+		FROM tasks t JOIN clients cl ON cl.id = t.client_id JOIN equipment e ON e.id = t.car_id
+		WHERE t.id = $1`, id).Scan(&clientDeleted, &equipmentDeleted)
 	return clientDeleted, equipmentDeleted, err
 }
 
@@ -457,9 +469,9 @@ WITH base AS (
          OR EXISTS (SELECT 1 FROM subtasks s JOIN subtask_products sp ON sp.subtask_id = s.id
                     JOIN products pr ON pr.id = sp.product_id
                     WHERE s.task_id = t.id AND pr.name ILIKE '%' || $2 || '%' ESCAPE '\')
-         OR EXISTS (SELECT 1 FROM task_equipment te JOIN equipment e ON e.id = te.equipment_id
-                    WHERE te.task_id = t.id AND replace(replace(e.plate_number, ' ', ''), '-', '')
-                                                 ILIKE '%' || replace(replace($2, ' ', ''), '-', '') || '%' ESCAPE '\'))
+         OR EXISTS (SELECT 1 FROM equipment e
+                    WHERE e.id = t.car_id AND replace(replace(e.plate_number, ' ', ''), '-', '')
+                                              ILIKE '%' || replace(replace($2, ' ', ''), '-', '') || '%' ESCAPE '\'))
     AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM subtasks s JOIN services sv ON sv.id = s.service_id
                                      WHERE s.task_id = t.id AND sv.category_id = $4))
     AND ($5::boolean IS NULL OR t.is_paid = $5)

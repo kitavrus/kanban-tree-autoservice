@@ -507,14 +507,14 @@ func (s *ClientsLiveSuite) TestDelete_Soft_And_RepeatDelete404() {
 	s.Equal("CLIENT_NOT_FOUND", s.errOf(raw).Code)
 }
 
-// ---- Фикстуры заказов (минимальные строки `tasks`/`task_equipment`/`subtasks` напрямую SQL:
+// ---- Фикстуры заказов (минимальные строки `tasks`/`subtasks` напрямую SQL:
 // заказ не предмет тестов пакета clients). Отказы удаления по ссылкам (CLIENT_HAS_TASKS,
 // EQUIPMENT_USED_IN_TASKS) сняты soft-delete-clients DS-014 — см.
 // clients_soft_delete_http_live_test.go (TS-022, TS-024). ----
 
-// insertTaskDirect — минимальная строка `tasks`, ссылающаяся на clientID (design-sql.md
-// §Client/Equipment Delete Guard Query, миграция 0005 board уже создала columns/tasks).
-func (s *ClientsLiveSuite) insertTaskDirect(clientID string) int64 {
+// insertTaskDirect — минимальная строка `tasks` клиента clientID с автомобилем carID
+// (one-car-order: tasks.car_id NOT NULL; миграция 0005 board уже создала columns/tasks).
+func (s *ClientsLiveSuite) insertTaskDirect(clientID, carID string) int64 {
 	var columnID string
 	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
 		`SELECT id FROM columns ORDER BY position LIMIT 1`).Scan(&columnID))
@@ -523,9 +523,9 @@ func (s *ClientsLiveSuite) insertTaskDirect(clientID string) int64 {
 		`SELECT id FROM users WHERE login = 'clients-admin'`).Scan(&createdBy))
 	var taskID int64
 	s.Require().NoError(s.Pool.QueryRow(s.T().Context(),
-		`INSERT INTO tasks (column_id, client_id, title, position, created_by)
-		 VALUES ($1::uuid, $2::uuid, 'Guard task', 1024, $3::uuid) RETURNING id`,
-		columnID, clientID, createdBy).Scan(&taskID))
+		`INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		 VALUES ($1::uuid, $2::uuid, $4::uuid, 'Guard task', 1024, $3::uuid) RETURNING id`,
+		columnID, clientID, createdBy, carID).Scan(&taskID))
 	return taskID
 }
 
@@ -1035,8 +1035,8 @@ func (s *ClientsLiveSuite) TestSSR_ClientCard_ShowsEquipmentBlock() {
 	s.Contains(body, `href="/equipment/`+e.ID+`"`)
 }
 
-// ---- История единицы оборудования: заказы (task_equipment / subtasks.equipment_id),
-// услуги по единице, их товары и журнал; услуги по другой единице не попадают.
+// ---- История автомобиля: его заказы (tasks.car_id — one-car-order), все услуги заказа, их
+// товары и журнал; заказ другого автомобиля не попадает. Комплектности/состояния и их правки нет.
 func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 	ctx := s.T().Context()
 	c := s.newClient("Клиент История Оборудования")
@@ -1056,17 +1056,15 @@ func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 	s.NotContains(string(page), `data-testid="history-location"`, "местоположения единицы больше нет")
 	s.NotContains(string(page), `data-testid="history-transfers"`, "блока перемещений больше нет")
 
-	taskID := s.insertTaskDirect(c.ID)
-	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id, completeness, condition)
-		VALUES ($1, $2::uuid, 'с кабелем', 'царапины')`, taskID, e.ID)
-	s.Require().NoError(err)
+	taskID := s.insertTaskDirect(c.ID, e.ID)
+	otherTaskID := s.insertTaskDirect(c.ID, other.ID)
 	svcID := s.newServiceDirect("История Ремонт платы")
 	otherSvcID := s.newServiceDirect("История Чужая услуга")
 	var subID string
-	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO subtasks (task_id, service_id, equipment_id, status, price)
-		VALUES ($1, $2::uuid, $3::uuid, 'done', 1500) RETURNING id`, taskID, svcID, e.ID).Scan(&subID))
-	_, err = s.Pool.Exec(ctx, `INSERT INTO subtasks (task_id, service_id, equipment_id) VALUES ($1, $2::uuid, $3::uuid)`,
-		taskID, otherSvcID, other.ID)
+	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO subtasks (task_id, service_id, status, price)
+		VALUES ($1, $2::uuid, 'done', 1500) RETURNING id`, taskID, svcID).Scan(&subID))
+	_, err := s.Pool.Exec(ctx, `INSERT INTO subtasks (task_id, service_id) VALUES ($1, $2::uuid)`,
+		otherTaskID, otherSvcID)
 	s.Require().NoError(err)
 	var prodID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
@@ -1081,10 +1079,9 @@ func (s *ClientsLiveSuite) TestSSR_EquipmentHistory() {
 	s.Require().Equal(http.StatusOK, st)
 	body := string(page)
 	s.Contains(body, `href="/?task=`+strconv.FormatInt(taskID, 10)+`"`)
-	s.Contains(body, "с кабелем")
-	s.Contains(body, `data-testid="history-intake-edit"`)
-	s.Contains(body, `data-task-id="`+strconv.FormatInt(taskID, 10)+`" data-equipment-id="`+e.ID+`"`)
-	s.Contains(body, "/assets/ssr-shared/js/equipment-history.js")
+	s.NotContains(body, `href="/?task=`+strconv.FormatInt(otherTaskID, 10)+`"`, "заказ другого автомобиля не попадает")
+	s.NotContains(body, `data-testid="history-intake`, "комплектности/состояния и их правки в истории нет")
+	s.NotContains(body, "equipment-history.js")
 	s.Contains(body, "История Ремонт платы")
 	s.Contains(body, "Выполнена")
 	s.Contains(body, "1500 ₽")
@@ -1130,26 +1127,22 @@ func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 	s.JSONEq(`{"items":[],"total":0,"limit":0,"offset":0}`, string(raw),
 		"новая единица — история пуста; полей location/transfers нет (модуль перемещений удалён)")
 
-	taskID := s.insertTaskDirect(c.ID)
-	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id, condition) VALUES ($1, $2::uuid, 'вмятина')`, taskID, e.ID)
-	s.Require().NoError(err)
+	taskID := s.insertTaskDirect(c.ID, e.ID)
 	var subID string
-	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO subtasks (task_id, service_id, equipment_id, status)
-		VALUES ($1, $2::uuid, $3::uuid, 'in_progress') RETURNING id`, taskID, s.newServiceDirect("API История Чистка"), e.ID).Scan(&subID))
+	s.Require().NoError(s.Pool.QueryRow(ctx, `INSERT INTO subtasks (task_id, service_id, status)
+		VALUES ($1, $2::uuid, 'in_progress') RETURNING id`, taskID, s.newServiceDirect("API История Чистка")).Scan(&subID))
 	var prodID string
 	s.Require().NoError(s.Pool.QueryRow(ctx,
 		`INSERT INTO products (name, unit) VALUES ('Линза', 'шт') RETURNING id`).Scan(&prodID))
-	_, err = s.Pool.Exec(ctx, `INSERT INTO subtask_products (subtask_id, product_id, qty, price) VALUES ($1::uuid, $2::uuid, 1.5, 300)`, subID, prodID)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO subtask_products (subtask_id, product_id, qty, price) VALUES ($1::uuid, $2::uuid, 1.5, 300)`, subID, prodID)
 	s.Require().NoError(err)
 
 	st, raw = s.admin.Do(http.MethodGet, "/api/v1/equipment/"+e.ID+"/history", nil)
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var resp struct {
 		Items []struct {
-			TaskID    int64  `json:"task_id"`
-			Accepted  bool   `json:"accepted"`
-			Condition string `json:"condition"`
-			Services  []struct {
+			TaskID   int64 `json:"task_id"`
+			Services []struct {
 				Name     string   `json:"name"`
 				Status   string   `json:"status"`
 				Price    *float64 `json:"price"`
@@ -1167,8 +1160,9 @@ func (s *ClientsLiveSuite) TestAPI_EquipmentHistory() {
 	s.Require().Equal(1, resp.Total)
 	o := resp.Items[0]
 	s.Equal(taskID, o.TaskID)
-	s.True(o.Accepted)
-	s.Equal("вмятина", o.Condition)
+	s.NotContains(string(raw), `"accepted"`, "комплектность/состояние автомобиля в заказе не хранятся")
+	s.NotContains(string(raw), `"completeness"`)
+	s.NotContains(string(raw), `"condition"`)
 	s.NotContains(string(raw), `"equipment_status"`, "склад единицы «в каждом заказе» убран (DS-046)")
 	s.Require().Len(o.Services, 1)
 	s.Equal("API История Чистка", o.Services[0].Name)

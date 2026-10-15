@@ -213,16 +213,16 @@ func (s *BoardLiveSuite) getTask(b *testutil.Browser, id int64) (int, taskDTO, [
 }
 
 func (s *BoardLiveSuite) newTask(clientID, columnID string) taskDTO {
-	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "Заказ", "client_id": clientID, "column_id": columnID,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	return m.Task
 }
 
 func taskCard(t taskDTO, patch map[string]any) map[string]any {
 	m := map[string]any{
-		"title": t.Title, "client_id": t.ClientID, "column_id": t.ColumnID,
+		"title": t.Title, "column_id": t.ColumnID,
 		"assignee_id": t.AssigneeID, "due_date": t.DueDate, "is_paid": t.IsPaid, "version": t.Version,
 	}
 	for k, v := range patch {
@@ -282,9 +282,9 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_CreateTask() {
 	c := s.newClient("Клиент-Создание-Заказа")
 	col := s.columnID("Приёмка")
 
-	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "Первый заказ", "client_id": c, "column_id": col,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	s.Greater(m.Task.ID, int64(0))
 	s.Equal("Первый заказ", m.Task.Title)
@@ -298,9 +298,9 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_CreateTask() {
 	s.Equal(m.Task.ID, got.ID)
 
 	// второй заказ в ту же колонку — id растёт (bigserial, D37).
-	st2, m2, raw2 := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
+	st2, m2, raw2 := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "Второй заказ", "client_id": c, "column_id": col,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st2, string(raw2))
 	s.Greater(m2.Task.ID, m.Task.ID)
 	s.Greater(m2.Task.Position, m.Task.Position, "в конец колонки")
@@ -649,11 +649,9 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 	s.Require().NoError(err)
 	s.addSubtaskProduct(subID, productID, "1")
 
-	var equipmentID string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'Р900ХК 177') RETURNING id`,
-		client).Scan(&equipmentID))
-	_, err = s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2)`, target.ID, equipmentID)
+	// автомобиль заказа (one-car-order: tasks.car_id) — госномер для поиска.
+	_, err = s.Pool.Exec(ctx,
+		`UPDATE equipment SET plate_number = 'Р900ХК 177' WHERE id = (SELECT car_id FROM tasks WHERE id = $1)`, target.ID)
 	s.Require().NoError(err)
 
 	search := func(q string) []int64 {
@@ -678,19 +676,16 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchAllFields() {
 	s.NotContains(search("<p>"), target.ID)
 }
 
-// Госномер: поиск доски находит заказ по госномеру оборудования без учёта регистра,
-// пробелов и дефисов («а123вс777» → «А123ВС 777»); карточка заказа отдаёт plate_number.
+// Госномер: поиск доски находит заказ по госномеру его автомобиля (tasks.car_id) без учёта
+// регистра, пробелов и дефисов («а123вс777» → «А123ВС 777»); карточка заказа отдаёт car.plate_number.
 func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchByPlateNumber() {
 	ctx := context.Background()
 	client := s.newClient("Госномер-Поиск-Клиент")
 	target := s.newTask(client, s.columnID("Приёмка"))
 	other := s.newTask(client, s.columnID("Приёмка"))
 
-	var equipmentID string
-	s.Require().NoError(s.Pool.QueryRow(ctx,
-		`INSERT INTO equipment (client_id, plate_number) VALUES ($1, 'Х987КМ 199') RETURNING id`,
-		client).Scan(&equipmentID))
-	_, err := s.Pool.Exec(ctx, `INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1, $2)`, target.ID, equipmentID)
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE equipment SET plate_number = 'Х987КМ 199' WHERE id = (SELECT car_id FROM tasks WHERE id = $1)`, target.ID)
 	s.Require().NoError(err)
 
 	search := func(q string) []int64 {
@@ -714,13 +709,12 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_SearchByPlateNumber() {
 	st, raw := s.admin.Do(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/card", target.ID), nil)
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	var card struct {
-		Equipment []struct {
+		Car struct {
 			PlateNumber string `json:"plate_number"`
-		} `json:"equipment"`
+		} `json:"car"`
 	}
 	s.Require().NoError(json.Unmarshal(raw, &card), string(raw))
-	s.Require().Len(card.Equipment, 1)
-	s.Equal("Х987КМ 199", card.Equipment[0].PlateNumber)
+	s.Equal("Х987КМ 199", card.Car.PlateNumber)
 }
 
 // LV-021/AC-014.
@@ -735,9 +729,9 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Filters_AssigneeDefaultByRole() {
 
 	c := s.newClient("Клиент-Ответственный")
 	col := s.columnID("Приёмка")
-	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, m, raw := s.mutate(s.admin, http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{
 		"title": "Мой заказ", "client_id": c, "column_id": col, "assignee_id": execID,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	other := s.newTask(c, col) // без ответственного — чужой для executor
 	_ = other
@@ -826,7 +820,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Auth_NoCSRF403() {
 	c := s.newClient("Клиент-Без-CSRF")
 	col := s.columnID("Приёмка")
 	resp := s.admin.Request(http.MethodPost, "/api/v1/tasks",
-		map[string]any{"title": "x", "client_id": c, "column_id": col}, map[string]string{"X-Csrf-Token": ""})
+		withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": col}), map[string]string{"X-Csrf-Token": ""})
 	defer resp.Body.Close()
 	s.Equal(http.StatusForbidden, resp.StatusCode)
 }
@@ -851,34 +845,43 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_TaskValidation400() {
 	c := s.newClient("Клиент-Валидация-Заказа")
 	col := s.columnID("Приёмка")
 
-	st, _, raw := s.createTask(s.admin, map[string]any{"client_id": c, "column_id": col})
+	// one-car-order: заказа без автомобиля нет — прежний режим «title + client_id» → 400.
+	st, _, raw := s.createTask(s.admin, map[string]any{"title": "Без машины", "client_id": c, "column_id": col})
 	s.Equal(http.StatusBadRequest, st, string(raw))
-	s.Equal("required", s.fields(raw)["title"])
+	s.Equal("required", s.fields(raw)["plate_number"])
+	s.Equal("required", s.fields(raw)["equipment_id"])
 
-	st, _, raw = s.createTask(s.admin, map[string]any{
-		"title": stringsRepeat("а", 201), "client_id": c, "column_id": col,
+	// title не обязателен — генерируется из госномера.
+	st, created, raw := s.createTask(s.admin, map[string]any{
+		"client_id": c, "column_id": col, "plate_number": "ЮТЕСТ", "new_equipment": map[string]any{},
 	})
+	s.Require().Equal(http.StatusCreated, st, string(raw))
+	s.Equal("ЮТЕСТ", created.Title)
+
+	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{
+		"title": stringsRepeat("а", 201), "client_id": c, "column_id": col,
+	}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("too_long", s.fields(raw)["title"])
 
-	st, _, raw = s.createTask(s.admin, map[string]any{"title": "x", "column_id": col})
+	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{"title": "x", "column_id": col}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("required", s.fields(raw)["client_id"])
 
 	unknown := "00000000-0000-0000-0000-000000000000"
-	st, _, raw = s.createTask(s.admin, map[string]any{"title": "x", "client_id": unknown, "column_id": col})
+	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{"title": "x", "client_id": unknown, "column_id": col}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["client_id"])
 
-	st, _, raw = s.createTask(s.admin, map[string]any{"title": "x", "client_id": c, "column_id": unknown})
+	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": unknown}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["column_id"])
 
-	st, _, raw = s.createTask(s.admin, map[string]any{"title": "x", "client_id": c, "column_id": col, "assignee_id": unknown})
+	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": col, "assignee_id": unknown}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["assignee_id"])
 
-	st, _, raw = s.createTask(s.admin, map[string]any{"title": "x", "client_id": c, "column_id": col, "due_date": "2026-13-40"})
+	st, _, raw = s.createTask(s.admin, withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": col, "due_date": "2026-13-40"}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("invalid_date", s.fields(raw)["due_date"])
 }
@@ -996,7 +999,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_PaidAdminOnly() {
 	c := s.newClient("Клиент-Исполнитель-Оплата")
 	col := s.columnID("Приёмка")
 
-	st, _, raw := s.createTask(exec, map[string]any{"title": "x", "client_id": c, "column_id": col, "is_paid": true})
+	st, _, raw := s.createTask(exec, withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": col, "is_paid": true}))
 	s.Equal(http.StatusForbidden, st, string(raw))
 	s.Equal("PAID_ADMIN_ONLY", s.errOf(raw).Code)
 
@@ -1016,7 +1019,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Executor_TaskWriteAllowed() {
 	c := s.newClient("Клиент-Исполнитель-Пишет")
 	col1, col2 := s.columnID("Приёмка"), s.columnID("Согласование")
 
-	st, m, raw := s.mutate(exec, http.MethodPost, "/api/v1/tasks", map[string]any{"title": "x", "client_id": c, "column_id": col1})
+	st, m, raw := s.mutate(exec, http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{"title": "x", "client_id": c, "column_id": col1}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 
 	st, _, raw = s.mutate(exec, http.MethodPut, "/api/v1/tasks/"+itoa(m.Task.ID), taskCard(m.Task, map[string]any{"title": "y"}))
@@ -1460,7 +1463,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Race_DeleteClientVsCreateTask() {
 	}()
 	go func() {
 		defer wg.Done()
-		st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": "Race заказ", "client_id": c, "column_id": col})
+		st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{"title": "Race заказ", "client_id": c, "column_id": col}))
 		createStatus, createRaw = st, raw
 	}()
 	wg.Wait()
@@ -1522,7 +1525,7 @@ func (s *BoardLiveSuite) TestBoardLiveSuite_Move_ToFinal_WithAPISubtask() {
 	s.Equal("SUBTASKS_NOT_DONE", s.errOf(raw).Code)
 
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "done", "assignee_id": nil, "due_date": nil, "price": nil, "equipment_id": nil,
+		"status": "done", "assignee_id": nil, "due_date": nil, "price": nil,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 

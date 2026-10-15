@@ -12,6 +12,16 @@ export const SEED_ADMIN = { login: 'admin', password: 'admin1234' };
 // В ассертах используется сама переменная, не литерал (§TD-6.2).
 export const RUN = (process.env.E2E_RUN ?? Date.now().toString(36)).toLowerCase();
 
+// testPlate — уникальный в прогоне госномер автомобиля фикстуры заказа (one-car-order: заказ
+// без автомобиля не создаётся): «Ю» + случайные буквы, без цифр — цифры в госномере совпадали
+// бы с поиском доски по номеру заказа «#id».
+const PLATE_LETTERS = 'АБВГДЕЖЗИКЛМНПРСТУФХЦЧШЭЯ';
+export function testPlate(): string {
+  let p = 'Ю';
+  for (let i = 0; i < 8; i++) p += PLATE_LETTERS[Math.floor(Math.random() * PLATE_LETTERS.length)];
+  return p;
+}
+
 export type Role = 'admin' | 'executor';
 // timezone — часовой пояс IANA (user-timezone DS-031/DS-056): не передан при создании → Asia/Almaty,
 // не передан при правке → не меняется (internal/features/users/dto.go, §TD-6.2).
@@ -503,11 +513,20 @@ export class AdminApi {
     expect(res.status(), `вместимость ${maxCars}: ${await res.text()}`).toBe(200);
   }
 
+  /** POST /api/v1/tasks. one-car-order: заказ без автомобиля не создаётся — если в теле нет
+   *  ни plate_number, ни equipment_id, дописывается новый автомобиль клиента с уникальным
+   *  госномером из букв (цифры совпадали бы с поиском доски по номеру заказа). */
   async createTask(t: import('./board-types').NewTask): Promise<import('./board-types').Task> {
-    const res = await this.ctx.post('/api/v1/tasks', { data: t, headers: await this.headers() });
+    const data = t.plate_number || t.equipment_id ? t : { ...t, plate_number: testPlate(), new_equipment: {} };
+    const res = await this.ctx.post('/api/v1/tasks', { data, headers: await this.headers() });
     expect(res.status(), `создание заказа ${t.title}: ${await res.text()}`).toBe(201);
     const body: import('./board-types').TaskMutationResponse = await res.json();
     return body.task;
+  }
+
+  /** Заказ на существующий автомобиль (найден по госномеру; клиент заказа — его владелец). */
+  async createCarTask(car: { id: string; plate_number: string }, t: import('./board-types').TaskHeader): Promise<import('./board-types').Task> {
+    return this.createTask({ ...t, plate_number: car.plate_number, equipment_id: car.id });
   }
 
   /** Не проверяет статус — BD-010 (конфликт версии) ждёт 409, а не 200. */
@@ -538,7 +557,7 @@ export class AdminApi {
     return this.softDelete('tasks', id, reason);
   }
 
-  // ---- order card: услуги/товары/оборудование заказа (internal/features/board/card_dto.go,
+  // ---- order card: услуги/товары заказа (internal/features/board/card_dto.go,
   // фаза 6, ADR-101 — фикстуры e2e/fixtures/board.ts ходят сюда вместо pg-вставок) ----
 
   async getCard(taskId: number): Promise<import('./board-types').OrderCardResponse> {
@@ -573,7 +592,6 @@ export class AdminApi {
       assignee_id?: string | null;
       due_date?: string | null;
       price?: number | string | null;
-      equipment_id?: string | null;
       // executor-payouts (D65): нет поля → значение не меняется (и флаг, и сумма);
       // executor_payout: null — очистить сумму.
       is_executor_paid?: boolean;
@@ -581,7 +599,7 @@ export class AdminApi {
     },
   ): Promise<import('./board-types').OrderCardMutationResponse> {
     const res = await this.ctx.put(`/api/v1/subtasks/${id}`, {
-      data: { assignee_id: null, due_date: null, price: null, equipment_id: null, ...s },
+      data: { assignee_id: null, due_date: null, price: null, ...s },
       headers: await this.headers(),
     });
     expect(res.status(), `правка услуги ${id}: ${await res.text()}`).toBe(200);
@@ -642,24 +660,6 @@ export class AdminApi {
   async deleteSubtask(id: string): Promise<import('./board-types').OrderCardMutationResponse> {
     const res = await this.ctx.delete(`/api/v1/subtasks/${id}`, { headers: await this.headers() });
     expect(res.status(), `удаление услуги ${id}: ${await res.text()}`).toBe(200);
-    return res.json();
-  }
-
-  /** Единица в оборудование заказа. */
-  async addTaskEquipment(taskId: number, equipmentId: string): Promise<import('./board-types').OrderCardMutationResponse> {
-    const data: import('./board-types').NewTaskEquipment = { equipment_id: equipmentId };
-    const res = await this.ctx.post(`/api/v1/tasks/${taskId}/equipment`, {
-      data,
-      headers: await this.headers(),
-    });
-    expect(res.status(), `оборудование заказа ${taskId}: ${await res.text()}`).toBe(201);
-    return res.json();
-  }
-
-  /** Убрать единицу из оборудования заказа (DELETE /tasks/:id/equipment/:equipment_id). */
-  async removeTaskEquipment(taskId: number, equipmentId: string): Promise<import('./board-types').OrderCardMutationResponse> {
-    const res = await this.ctx.delete(`/api/v1/tasks/${taskId}/equipment/${equipmentId}`, { headers: await this.headers() });
-    expect(res.status(), `единица ${equipmentId} из заказа ${taskId}: ${await res.text()}`).toBe(200);
     return res.json();
   }
 

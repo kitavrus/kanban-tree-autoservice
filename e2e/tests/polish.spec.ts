@@ -88,13 +88,12 @@ async function richTask(adminApi: AdminApi, uniq: (s: string) => string, label: 
     products: [{ product_id: product.id, qty: 2 }],
   });
   const columns = (await adminApi.listColumns()).items;
-  const task = await adminApi.createTask({
+  // one-car-order: автомобиль заказа задаётся при создании (найден по госномеру).
+  const task = await adminApi.createCarTask(eq, {
     title: uniq(`PL заказ ${label} с длинным названием для проверки переноса в шапке карточки`),
-    client_id: client.id,
     column_id: columnByName(columns, 'Приёмка').id,
     description: 'Описание заказа',
   });
-  await adminApi.addTaskEquipment(task.id, eq.id);
   await adminApi.createSubtask(task.id, svc.id);
   return { client, eq, product, svcCat, svc, task };
 }
@@ -136,7 +135,7 @@ test.describe('PL: адаптив и темы по всем экранам', () 
         await board.openTaskEdit(task.id);
         await card.waitOpen();
         // дерево карточки грузится JS — ждём реального рендера секций.
-        await expect(page.getByTestId('card-equipment-row').first()).toBeVisible();
+        await expect(page.getByTestId('card-car-row').first()).toBeVisible();
         await expect(page.getByTestId('card-subtask-row').first()).toBeVisible();
         await expect(page.getByTestId('card-print-intake')).toBeVisible();
         await expect(page.getByTestId('task-save')).toBeVisible();
@@ -153,7 +152,7 @@ test.describe('PL: адаптив и темы по всем экранам', () 
   });
 
   test('PL-004: акты печати — светлые в любой теме, без overflow на 360/1280', async ({ adminPage: page, adminApi, uniq }) => {
-    const { task } = await richTask(adminApi, uniq, 'PL-004');
+    const { task, eq } = await richTask(adminApi, uniq, 'PL-004');
     for (const theme of THEMES) {
       await useTheme(page, theme);
       for (const vp of VIEWPORTS) {
@@ -162,7 +161,8 @@ test.describe('PL: адаптив и темы по всем экранам', () 
           const where = `/tasks/${task.id}/print/${kind} @${vp.width} ${theme}`;
           await page.goto(`/tasks/${task.id}/print/${kind}`);
           await expect(page.getByTestId('print-title')).toBeVisible();
-          await expect(page.getByTestId('print-equipment')).toBeVisible();
+          // one-car-order: в акте — автомобиль заказа (госномер), без комплектности/состояния.
+          await expect(page.getByTestId('print-plate-number')).toHaveText(eq.plate_number);
           await expect.poll(() => bodyIsDark(page), { message: `акт всегда светлый: ${where}` }).toBe(false);
           await expectNoPageOverflow(page, where);
         }

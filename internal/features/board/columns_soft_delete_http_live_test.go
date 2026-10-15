@@ -238,7 +238,7 @@ func (s *OrderCardLiveSuite) TestTS019_DeleteColumn() {
 	s.Equal("true|Лишний этап|"+adminID, s.colState(empty), "повтор и правка отметку не изменили")
 
 	// негатив: заказ в удалённую колонку не создать и не перенести.
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": "В удалённую", "client_id": c, "column_id": empty})
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{"title": "В удалённую", "client_id": c, "column_id": empty}))
 	s.Equal(http.StatusNotFound, st, string(raw))
 	s.Equal("COLUMN_NOT_FOUND", s.sdErr(raw).Code)
 	st, raw = s.admin.Do(http.MethodPost, taskPath(other, "/move"), map[string]any{"column_id": empty})
@@ -529,8 +529,9 @@ func (s *OrderCardLiveSuite) TestRace_ColumnDeleteWaitsForTaskCreate() {
 	_, err = tx.Exec(ctx, `SELECT id FROM columns WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, col)
 	s.Require().NoError(err)
 	s.Require().NoError(tx.QueryRow(ctx, `
-		INSERT INTO tasks (column_id, client_id, title, position, created_by)
-		SELECT $1::uuid, $2::uuid, 'Заказ гонки', 1, id FROM users WHERE login = 'card-admin' RETURNING id`, col, c).Scan(&taskID))
+		WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2::uuid, 'ГН 001') RETURNING id)
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by)
+		SELECT $1::uuid, $2::uuid, (SELECT id FROM car), 'Заказ гонки', 1, id FROM users WHERE login = 'card-admin' RETURNING id`, col, c).Scan(&taskID))
 
 	base := s.colLockWaiters()
 	done := make(chan colRaceResult, 1)
@@ -578,7 +579,7 @@ func (s *OrderCardLiveSuite) TestRace_TaskWritesWaitForColumnDelete() {
 	writer.Login("card-admin", "password1")
 	requests := []func() (int, []byte){
 		func() (int, []byte) {
-			return s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"title": "В удаляемую", "client_id": c, "column_id": col})
+			return s.admin.Do(http.MethodPost, "/api/v1/tasks", withNewCar(map[string]any{"title": "В удаляемую", "client_id": c, "column_id": col}))
 		},
 		func() (int, []byte) {
 			return writer.Do(http.MethodPost, taskPath(other, "/move"), map[string]any{"column_id": col})
