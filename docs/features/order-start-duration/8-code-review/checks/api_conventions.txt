@@ -1,4 +1,4 @@
-$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature order-start-duration --repo /Users/igorpotema/mycode/kanban-tree-autoservice --paths internal/features/board internal/features/calendar
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/api_conventions_check.py --feature order-start-duration --repo /Users/igorpotema/mycode/kanban-tree-autoservice --paths internal/features/board internal/features/calendar internal/seeddemo
 (exit 0)
 
-api-conventions internal/features/board,internal/features/calendar: PASS (проблем: 0)
+api-conventions internal/features/board,internal/features/calendar,internal/seeddemo: PASS (проблем: 0)

@@ -1,5 +1,5 @@
 # Review Bundle: order-start-duration — CHECKS-FAILED
-**Base:** 999e1f069f0429fe0436bc2ab590bf90546e8c8d | **HEAD:** efa4881 | **Generated:** 2026-10-15 16:36 | diff: 65 files changed, 4937 insertions(+), 338 deletions(-)
+**Base:** 999e1f069f0429fe0436bc2ab590bf90546e8c8d | **HEAD:** fab3064 | **Generated:** 2026-10-15 19:40 | diff: 72 files changed, 5573 insertions(+), 458 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -20,10 +20,10 @@
 ## Diff по линзам
 | Линза | Файлов | Patch |
 |---|---|---|
-| backend | 27 | 8-code-review/diff-backend.patch |
+| backend | 32 | 8-code-review/diff-backend.patch |
 | migrations | 2 | 8-code-review/diff-migrations.patch |
-| other | 17 | 8-code-review/diff-other.patch |
-| docs | 19 | — (артефакты, не ревьюятся построчно) |
+| other | 18 | 8-code-review/diff-other.patch |
+| docs | 20 | — (артефакты, не ревьюятся построчно) |
 
 ### backend
 - `M` internal/features/board/board_fuzz_test.go
@@ -44,13 +44,18 @@
 - `M` internal/features/board/timezone_http_live_test.go
 - `M` internal/features/calendar/calendar_http_live_test.go
 - `M` internal/features/calendar/dto.go
+- `M` internal/features/calendar/gantt.go
 - `M` internal/features/calendar/gantt_test.go
 - `M` internal/features/calendar/repo.go
+- `M` internal/features/calendar/service.go
 - `M` internal/features/calendar/service_test.go
 - `M` internal/features/calendar/ssr.go
 - `M` internal/features/clients/clients_soft_delete_http_live_test.go
 - `M` internal/features/softdelete/softdelete_http_live_test.go
+- `M` internal/seeddemo/data_catalog.go
+- `M` internal/seeddemo/data_people.go
 - `M` internal/seeddemo/data_tasks.go
+- `A` internal/seeddemo/plan_test.go
 - `M` internal/seeddemo/seeddemo.go
 - `M` internal/seeddemo/seeddemo_integration_test.go
 
@@ -72,6 +77,7 @@
 - `A` e2e/tests/order-plan.spec.ts
 - `M` e2e/tests/user-timezone.spec.ts
 - `M` web/ssr/_layout/templates/partials/task-modal.html
+- `M` web/ssr/_shared/app.css
 - `M` web/ssr/_shared/js/board.js
 - `M` web/ssr/_shared/js/calendar.js
 - `M` web/ssr/_shared/js/task-card.js
@@ -95,6 +101,7 @@
 - `A` docs/features/order-start-duration/8-code-review/diff-migrations.patch
 - `A` docs/features/order-start-duration/8-code-review/diff-other.patch
 - `A` docs/features/order-start-duration/8-code-review/input-bundle.md
+- `A` docs/features/order-start-duration/8-code-review/output.md
 - `A` docs/features/order-start-duration/9-validation/evidence/e2e-run.txt
 - `A` docs/features/order-start-duration/9-validation/evidence/last-run.json
 
@@ -106,8 +113,9 @@ MISSING
 MISSING
 
 ## Инвентарь доков (точечный grep разрешён, полное чтение — нет)
+- 8-code-review/output.md — 12KB
+- 0-setup/light-progress.md — 6KB
 - 0-setup/idioms.md — 6KB
-- 8-code-review/input-bundle.md — 4KB
-- 0-setup/light-progress.md — 3KB
+- 8-code-review/input-bundle.md — 5KB
 - 0-setup/pipeline-state.md — 1KB
 - 9-validation/evidence/last-run.json — 0KB
