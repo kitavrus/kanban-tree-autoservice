@@ -430,7 +430,7 @@ test.describe('BD: оплата — только администратор', ()
     // Актуальная версия: с устаревшей сервер сначала отвечает 409 TASK_VERSION_CONFLICT (AC-010).
     const current = await adminApi.getTask(task.id);
     const res = await page.request.put(`/api/v1/tasks/${task.id}`, {
-      data: { title: current.title, client_id: current.client_id, column_id: current.column_id, is_paid: false, version: current.version },
+      data: { title: current.title, column_id: current.column_id, is_paid: false, version: current.version },
       headers: { 'X-Csrf-Token': await csrfToken(page) },
       failOnStatusCode: false,
     });

@@ -1,0 +1,1582 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 8d0d666..2eb0834 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -12,6 +12,16 @@ export const SEED_ADMIN = { login: 'admin', password: 'admin1234' };
+ // В ассертах используется сама переменная, не литерал (§TD-6.2).
+ export const RUN = (process.env.E2E_RUN ?? Date.now().toString(36)).toLowerCase();
+ 
++// testPlate — уникальный в прогоне госномер автомобиля фикстуры заказа (one-car-order: заказ
++// без автомобиля не создаётся): «Ю» + случайные буквы, без цифр — цифры в госномере совпадали
++// бы с поиском доски по номеру заказа «#id».
++const PLATE_LETTERS = 'АБВГДЕЖЗИКЛМНПРСТУФХЦЧШЭЯ';
++export function testPlate(): string {
++  let p = 'Ю';
++  for (let i = 0; i < 8; i++) p += PLATE_LETTERS[Math.floor(Math.random() * PLATE_LETTERS.length)];
++  return p;
++}
++
+ export type Role = 'admin' | 'executor';
+ // timezone — часовой пояс IANA (user-timezone DS-031/DS-056): не передан при создании → Asia/Almaty,
+ // не передан при правке → не меняется (internal/features/users/dto.go, §TD-6.2).
+@@ -503,13 +513,22 @@ export class AdminApi {
+     expect(res.status(), `вместимость ${maxCars}: ${await res.text()}`).toBe(200);
+   }
+ 
++  /** POST /api/v1/tasks. one-car-order: заказ без автомобиля не создаётся — если в теле нет
++   *  ни plate_number, ни equipment_id, дописывается новый автомобиль клиента с уникальным
++   *  госномером из букв (цифры совпадали бы с поиском доски по номеру заказа). */
+   async createTask(t: import('./board-types').NewTask): Promise<import('./board-types').Task> {
+-    const res = await this.ctx.post('/api/v1/tasks', { data: t, headers: await this.headers() });
++    const data = t.plate_number || t.equipment_id ? t : { ...t, plate_number: testPlate(), new_equipment: {} };
++    const res = await this.ctx.post('/api/v1/tasks', { data, headers: await this.headers() });
+     expect(res.status(), `создание заказа ${t.title}: ${await res.text()}`).toBe(201);
+     const body: import('./board-types').TaskMutationResponse = await res.json();
+     return body.task;
+   }
+ 
++  /** Заказ на существующий автомобиль (найден по госномеру; клиент заказа — его владелец). */
++  async createCarTask(car: { id: string; plate_number: string }, t: import('./board-types').TaskHeader): Promise<import('./board-types').Task> {
++    return this.createTask({ ...t, plate_number: car.plate_number, equipment_id: car.id });
++  }
++
+   /** Не проверяет статус — BD-010 (конфликт версии) ждёт 409, а не 200. */
+   async updateTask(id: number, t: import('./board-types').UpdateTask): Promise<{ status: number; body: import('./board-types').TaskMutationResponse }> {
+     const res = await this.ctx.put(`/api/v1/tasks/${id}`, { data: t, headers: await this.headers() });
+@@ -538,7 +557,7 @@ export class AdminApi {
+     return this.softDelete('tasks', id, reason);
+   }
+ 
+-  // ---- order card: услуги/товары/оборудование заказа (internal/features/board/card_dto.go,
++  // ---- order card: услуги/товары заказа (internal/features/board/card_dto.go,
+   // фаза 6, ADR-101 — фикстуры e2e/fixtures/board.ts ходят сюда вместо pg-вставок) ----
+ 
+   async getCard(taskId: number): Promise<import('./board-types').OrderCardResponse> {
+@@ -573,7 +592,6 @@ export class AdminApi {
+       assignee_id?: string | null;
+       due_date?: string | null;
+       price?: number | string | null;
+-      equipment_id?: string | null;
+       // executor-payouts (D65): нет поля → значение не меняется (и флаг, и сумма);
+       // executor_payout: null — очистить сумму.
+       is_executor_paid?: boolean;
+@@ -581,7 +599,7 @@ export class AdminApi {
+     },
+   ): Promise<import('./board-types').OrderCardMutationResponse> {
+     const res = await this.ctx.put(`/api/v1/subtasks/${id}`, {
+-      data: { assignee_id: null, due_date: null, price: null, equipment_id: null, ...s },
++      data: { assignee_id: null, due_date: null, price: null, ...s },
+       headers: await this.headers(),
+     });
+     expect(res.status(), `правка услуги ${id}: ${await res.text()}`).toBe(200);
+@@ -645,24 +663,6 @@ export class AdminApi {
+     return res.json();
+   }
+ 
+-  /** Единица в оборудование заказа. */
+-  async addTaskEquipment(taskId: number, equipmentId: string): Promise<import('./board-types').OrderCardMutationResponse> {
+-    const data: import('./board-types').NewTaskEquipment = { equipment_id: equipmentId };
+-    const res = await this.ctx.post(`/api/v1/tasks/${taskId}/equipment`, {
+-      data,
+-      headers: await this.headers(),
+-    });
+-    expect(res.status(), `оборудование заказа ${taskId}: ${await res.text()}`).toBe(201);
+-    return res.json();
+-  }
+-
+-  /** Убрать единицу из оборудования заказа (DELETE /tasks/:id/equipment/:equipment_id). */
+-  async removeTaskEquipment(taskId: number, equipmentId: string): Promise<import('./board-types').OrderCardMutationResponse> {
+-    const res = await this.ctx.delete(`/api/v1/tasks/${taskId}/equipment/${equipmentId}`, { headers: await this.headers() });
+-    expect(res.status(), `единица ${equipmentId} из заказа ${taskId}: ${await res.text()}`).toBe(200);
+-    return res.json();
+-  }
+-
+   // ---- stock (internal/features/board/stock_dto.go, §TD-6.2 — типы в board-types.ts) ----
+ 
+   async getStockSummary(): Promise<import('./board-types').StockSummaryResponse> {
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 0c27a9f..d92d9a3 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -63,9 +63,9 @@ export type Task = TaskCard & {
+   description_html: string;
+ };
+ 
+-export type NewTask = {
++/** Шапка заказа — общая часть POST и PUT /api/v1/tasks (board.TaskHeader). */
++export type TaskHeader = {
+   title: string;
+-  client_id: string;
+   column_id: string;
+   assignee_id?: string | null;
+   due_date?: string | null;
+@@ -73,7 +73,21 @@ export type NewTask = {
+   description?: string | null;
+ };
+ 
+-export type UpdateTask = NewTask & { version: number };
++/** Тело POST /api/v1/tasks (board.TaskCreateRequest). one-car-order: заказ = ровно один
++ *  автомобиль — plate_number и одно из equipment_id (найденный автомобиль, клиент — его
++ *  владелец) / new_equipment (новый автомобиль клиента client_id либо new_client).
++ *  adminApi.createTask без plate_number/equipment_id сам дописывает новый автомобиль клиента. */
++export type NewTask = TaskHeader & {
++  client_id?: string;
++  plate_number?: string;
++  equipment_id?: string;
++  new_equipment?: Record<string, never>;
++  new_client?: { company_name: string; phones: Array<{ phone: string; note?: string }> };
++};
++
++/** Тело PUT /api/v1/tasks/:id (board.TaskUpdateRequest): клиента и автомобиля нет — они не
++ *  меняются после создания (client_id/equipment_id в теле → 400 BAD_REQUEST). */
++export type UpdateTask = TaskHeader & { version: number };
+ 
+ export type MoveTask = { column_id: string; prev_id?: number | null; next_id?: number | null };
+ 
+@@ -201,17 +215,13 @@ export type StockSummaryResponse = {
+ 
+ export type CardColumn = { id: string; name: string; is_final: boolean; consumes_stock: boolean };
+ 
+-export type EquipmentHistory = { task_id: number; title: string; created_at: string };
+-
+-export type CardEquipment = {
++/** Автомобиль заказа (board.CardCar, one-car-order): ровно один, задан при создании. */
++export type CardCar = {
+   equipment_id: string;
+-  /** Единица мягко удалена — бейдж «удалён» в блоке «Оборудование» (soft-delete-clients §6.5). */
+-  is_deleted: boolean;
+   /** Госномер автомобиля. */
+   plate_number: string;
+-  completeness: string;
+-  condition: string;
+-  history: EquipmentHistory[];
++  /** Автомобиль мягко удалён — бейдж «удалён» в блоке «Автомобиль» (soft-delete-clients §6.5). */
++  is_deleted: boolean;
+ };
+ 
+ export type CardSubtaskProduct = {
+@@ -249,7 +259,6 @@ export type CardSubtask = {
+   assignee_is_active: boolean | null;
+   due_date: string | null;
+   price: number | string | null;
+-  equipment_id: string | null;
+   position: number;
+   total: number | string;
+   // executor-payouts D62–D65: выплата исполнителю (сумма — отдельная от price).
+@@ -297,16 +306,13 @@ export type CardStock = {
+ export type OrderCardResponse = {
+   task: Task;
+   column: CardColumn;
+-  equipment: CardEquipment[];
++  car: CardCar;
+   subtasks: CardSubtask[];
+   stock: CardStock[];
+   /** Фаза 7 (D21): вложения заказа, порядок загрузки. */
+   attachments: CardAttachment[];
+ };
+ 
+-/** Тело POST /api/v1/tasks/:id/equipment (board.TaskEquipmentCreateRequest). */
+-export type NewTaskEquipment = { equipment_id: string; completeness?: string; condition?: string };
+-
+ /** 1:1 с internal/features/board/card_dto.go CardAttachment (фаза 7). */
+ export type AttachmentKind = 'photo' | 'video' | 'pdf';
+ export type CardAttachment = {
+diff --git a/e2e/fixtures/board.ts b/e2e/fixtures/board.ts
+index 5404de8..b8969ab 100644
+--- a/e2e/fixtures/board.ts
++++ b/e2e/fixtures/board.ts
+@@ -1,11 +1,11 @@
+ import { test as base } from './test';
+ import type { Column } from './board-types';
+ 
+-// ADR-101: подзадачи (услуги в заказе) и принятое оборудование заказа заводятся через
+-// боевое API карточки заказа фазы 6 (internal/features/board/card_*), не прямой SQL-
+-// вставкой (pg удалён из зависимостей e2e) — те же гарантии, что и у настоящего клиента
+-// (AdminApi.createSubtask/updateSubtask/createSubtaskProduct/deleteSubtaskProduct/
+-// addTaskEquipment, e2e/fixtures/auth.ts).
++// ADR-101: подзадачи (услуги в заказе) заводятся через боевое API карточки заказа фазы 6
++// (internal/features/board/card_*), не прямой SQL-вставкой (pg удалён из зависимостей e2e) —
++// те же гарантии, что и у настоящего клиента (AdminApi.createSubtask/updateSubtask/
++// createSubtaskProduct/deleteSubtaskProduct, e2e/fixtures/auth.ts). Автомобиль заказа
++// (one-car-order) задаётся при создании заказа — adminApi.createTask/createCarTask.
+ 
+ export type SubtaskStatus = 'new' | 'in_progress' | 'done';
+ 
+@@ -24,8 +24,6 @@ type BoardFixtures = {
+   /** Меняет статус услуги через PUT /subtasks/:id (полная замена строки — LWW; остальные
+    *  поля сохраняются как в текущей карточке). */
+   setSubtaskStatus: (subtaskId: string, status: SubtaskStatus) => Promise<void>;
+-  /** Отмечает оборудование клиента как принятое в заказе (POST /tasks/:id/equipment). */
+-  insertTaskEquipment: (taskId: number, equipmentId: string) => Promise<void>;
+   /** Внутренний кэш subtaskId → taskId (для setSubtaskStatus — у PUT /subtasks/:id нет
+    *  обратной ссылки на заказ в URL). */
+   _subtaskTaskMap: Map<string, number>;
+@@ -75,17 +73,10 @@ export const test = base.extend<BoardFixtures>({
+         assignee_id: sub.assignee_id,
+         due_date: sub.due_date,
+         price: sub.price,
+-        equipment_id: sub.equipment_id,
+         // is_executor_paid / executor_payout не шлём: нет поля → сервер их не меняет (D65).
+       });
+     });
+   },
+-
+-  insertTaskEquipment: async ({ adminApi }, use) => {
+-    await use(async (taskId, equipmentId) => {
+-      await adminApi.addTaskEquipment(taskId, equipmentId);
+-    });
+-  },
+ });
+ 
+ /** Колонка сида D32 по названию (AC-008) — колонки создаются миграцией, id непредсказуем. */
+diff --git a/e2e/pages/OrderCardPage.ts b/e2e/pages/OrderCardPage.ts
+index 28ab852..05782c9 100644
+--- a/e2e/pages/OrderCardPage.ts
++++ b/e2e/pages/OrderCardPage.ts
+@@ -4,7 +4,8 @@ import { NewOrderDialog } from './NewOrderDialog';
+ // POM карточки заказа (фаза 6, testid-контракт js/task-card.js — KT.taskCard). Разделяет
+ // шапку (переиспользует testid простой формы фазы 5 — task-title/task-client/task-column/
+ // task-assignee/task-due/task-paid/task-save/task-delete/task-error) и новые разделы
+-// оборудования/услуг/товаров/журнала/итогов/печати (префикс card-*). Комбобоксы —
++// автомобиля/услуг/товаров/журнала/итогов/печати (префикс card-*). Автомобиль заказа
++// (one-car-order) — ровно один, в карточке только читается: «госномер · владелец · История». Комбобоксы —
+ // js/combobox.js переносит testid на видимую кнопку, выбор — клик по кнопке и затем по
+ // `.cb-opt` в `combobox-dropdown` (эталон — BoardPage.chooseCombobox).
+ export class OrderCardPage {
+@@ -25,15 +26,16 @@ export class OrderCardPage {
+   readonly printIntake: Locator;
+   readonly printHandover: Locator;
+ 
+-  readonly equipment: Locator;
+-  readonly equipmentLocked: Locator;
+-  readonly equipmentRows: Locator;
+-  readonly equipmentAdd: Locator;
+-  readonly equipmentNewBtn: Locator;
+-  readonly equipmentNewPlate: Locator;
+-  readonly equipmentNewSave: Locator;
+-  readonly equipmentNewCancel: Locator;
+-  readonly equipmentNewError: Locator;
++  /** Блок «Автомобиль» существующего заказа (у нового заказа скрыт). */
++  readonly carSection: Locator;
++  readonly carRow: Locator;
++  readonly carPlate: Locator;
++  readonly carOwner: Locator;
++  readonly carDeleted: Locator;
++  readonly carHistoryToggle: Locator;
++  readonly carHistoryPanel: Locator;
++  /** Подсказка «Владелец автомобиля» под полем «Клиент» (поле только для чтения). */
++  readonly clientLockedHint: Locator;
+ 
+   readonly subtasks: Locator;
+   readonly subtasksLocked: Locator;
+@@ -76,15 +78,14 @@ export class OrderCardPage {
+     this.printIntake = page.getByTestId('card-print-intake');
+     this.printHandover = page.getByTestId('card-print-handover');
+ 
+-    this.equipment = page.getByTestId('card-equipment');
+-    this.equipmentLocked = page.getByTestId('card-equipment-locked');
+-    this.equipmentRows = page.getByTestId('card-equipment-row');
+-    this.equipmentAdd = page.getByTestId('card-equipment-add');
+-    this.equipmentNewBtn = page.getByTestId('card-equipment-new');
+-    this.equipmentNewPlate = page.getByTestId('card-equipment-new-plate');
+-    this.equipmentNewSave = page.getByTestId('card-equipment-new-save');
+-    this.equipmentNewCancel = page.getByTestId('card-equipment-new-cancel');
+-    this.equipmentNewError = page.getByTestId('card-equipment-new-error');
++    this.carSection = page.getByTestId('card-car-section');
++    this.carRow = page.getByTestId('card-car-row');
++    this.carPlate = this.carRow.getByTestId('card-car-plate');
++    this.carOwner = this.carRow.getByTestId('card-car-owner');
++    this.carDeleted = this.carRow.getByTestId('card-car-deleted');
++    this.carHistoryToggle = this.carRow.getByTestId('card-car-history-toggle');
++    this.carHistoryPanel = this.carRow.getByTestId('card-car-history-panel');
++    this.clientLockedHint = page.getByTestId('task-client-locked');
+ 
+     this.subtasks = page.getByTestId('card-subtasks');
+     this.subtasksLocked = page.getByTestId('card-subtasks-locked');
+@@ -111,7 +112,7 @@ export class OrderCardPage {
+     await this.dropdown.locator('.cb-opt', { hasText: optionText }).first().click();
+   }
+ 
+-  /** Выбор в remote-search комбобоксе (услуги/товары/оборудование клиента) — печатает
++  /** Выбор в remote-search комбобоксе (услуги/товары) — печатает
+    *  запрос в поле поиска дропдауна, ждёт результат по тексту. */
+   async chooseRemote(button: Locator, query: string, optionText: string) {
+     await button.click();
+@@ -174,6 +175,7 @@ export class OrderCardPage {
+     return this.subtaskRow(subtaskId).getByTestId('card-subtask-payout-warning');
+   }
+ 
++  /** Выбора автомобиля в услуге нет (one-car-order) — локатор для проверки отсутствия. */
+   subtaskEquipment(subtaskId: string): Locator {
+     return this.subtaskRow(subtaskId).getByTestId('card-subtask-equipment');
+   }
+@@ -238,24 +240,21 @@ export class OrderCardPage {
+     return this.page.locator(`[data-testid="card-log-add"][data-subtask-id="${subtaskId}"]`);
+   }
+ 
+-  equipmentRow(equipmentId: string): Locator {
+-    return this.page.locator(`[data-testid="card-equipment-row"][data-equipment-id="${equipmentId}"]`);
++  /** Строка автомобиля заказа с этим equipment_id (видна — значит это автомобиль заказа). */
++  carRowOf(equipmentId: string): Locator {
++    return this.page.locator(`[data-testid="card-car-row"][data-equipment-id="${equipmentId}"]`);
+   }
+ 
+-  equipmentCompleteness(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-completeness');
++  /** Заказ в раскрытой «Истории работ» автомобиля по номеру. */
++  carHistoryOrder(taskId: number): Locator {
++    return this.carHistoryPanel.getByTestId('card-car-history-order').filter({ hasText: `#${taskId}` });
+   }
+ 
+-  equipmentCondition(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-condition');
+-  }
+-
+-  equipmentDelete(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-remove');
+-  }
+-
+-  equipmentHistory(equipmentId: string): Locator {
+-    return this.equipmentRow(equipmentId).getByTestId('card-equipment-history');
++  /** Раскрыть «Историю работ» автомобиля и дождаться загрузки. */
++  async openCarHistory() {
++    await this.carHistoryToggle.click();
++    await expect(this.carHistoryToggle).toHaveAttribute('aria-expanded', 'true');
++    await expect(this.carHistoryPanel).not.toContainText('Загрузка…');
+   }
+ 
+   /** Модалка карточки заказа — без горизонтальной прокрутки (TS-045). */
+diff --git a/e2e/tests/board.spec.ts b/e2e/tests/board.spec.ts
+index 6ff5997..e17be98 100644
+--- a/e2e/tests/board.spec.ts
++++ b/e2e/tests/board.spec.ts
+@@ -379,7 +379,6 @@ test.describe('BD: конфликт версии', () => {
+     // «второй пользователь» правит заказ через API, пока форма первого открыта — версия в форме устаревает.
+     await adminApi.updateTask(task.id, {
+       title: task.title,
+-      client_id: task.client_id,
+       column_id: task.column_id,
+       assignee_id: task.assignee_id,
+       due_date: task.due_date,
+@@ -524,7 +523,6 @@ test.describe('BD: поиск по услуге, товару и оборудо
+     adminApi,
+     uniq,
+     insertSubtask,
+-    insertTaskEquipment,
+   }) => {
+     const { client, columns } = await setup(adminApi, uniq, 'BD-022');
+     const col = columnByName(columns, 'Приёмка');
+@@ -534,10 +532,10 @@ test.describe('BD: поиск по услуге, товару и оборудо
+     const plate = uniqPlate();
+     const equipment = await adminApi.createEquipment(client.id, { plate_number: plate });
+ 
+-    const target = await adminApi.createTask({ title: uniq('BD-022 искомый'), client_id: client.id, column_id: col.id });
++    // one-car-order: автомобиль заказа задаётся при создании (найден по госномеру).
++    const target = await adminApi.createCarTask(equipment, { title: uniq('BD-022 искомый'), column_id: col.id });
+     const other = await adminApi.createTask({ title: uniq('BD-022 другой'), client_id: client.id, column_id: col.id });
+     await insertSubtask({ taskId: target.id, serviceId: svc.id, products: [{ productId: product.id, qty: 1 }] });
+-    await insertTaskEquipment(target.id, equipment.id);
+ 
+     const board = new BoardPage(page);
+     await board.goto(`?client_id=${client.id}`);
+diff --git a/e2e/tests/calendar-new-order.spec.ts b/e2e/tests/calendar-new-order.spec.ts
+index a8a9b8c..07e02e0 100644
+--- a/e2e/tests/calendar-new-order.spec.ts
++++ b/e2e/tests/calendar-new-order.spec.ts
+@@ -46,7 +46,7 @@ test.describe('CALNO: новый заказ из календаря', () => {
+     const task = await adminApi.getTask(id);
+     expect(task.due_date).toBe(day);
+     expect(task.client_id).toBe(client.id);
+-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car.id]);
++    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car.id);
+ 
+     // закрытие карточки → перерисовка страницы: заказ на диаграмме выбранного дня.
+     await card.close();
+diff --git a/e2e/tests/new-order-autofill.spec.ts b/e2e/tests/new-order-autofill.spec.ts
+index ad2b2bc..ce03db1 100644
+--- a/e2e/tests/new-order-autofill.spec.ts
++++ b/e2e/tests/new-order-autofill.spec.ts
+@@ -53,9 +53,8 @@ test.describe('NO: госномер ↔ клиент, автодополнени
+     const client = await adminApi.getClient(task.client_id);
+     expect(client.company_name).toBe(clientName);
+     expect(client.phones.map((p) => p.phone)).toEqual(['+7 913 111-22-33']);
+-    const eq = (await adminApi.getCard(id)).equipment;
+-    expect(eq).toHaveLength(1);
+-    expect(eq[0]).toMatchObject({ plate_number: plate });
++    // one-car-order: у заказа ровно один автомобиль — новый, с введённым госномером.
++    expect((await adminApi.getCard(id)).car).toMatchObject({ plate_number: plate, is_deleted: false });
+     await adminApi.purgeClient(task.client_id, [id]);
+   });
+ 
+@@ -87,7 +86,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
+     const id = await createdTaskId(card);
+     _boardCleanup(id);
+     expect((await adminApi.getTask(id)).client_id).toBe(client.id);
+-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car.id]);
++    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car.id);
+   });
+ 
+   test('NO-006: у клиента несколько автомобилей — выбор из списка заполняет госномер', async ({
+@@ -122,7 +121,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
+     const id = await createdTaskId(card);
+     _boardCleanup(id);
+     expect((await adminApi.getTask(id)).client_id).toBe(client.id);
+-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car2.id]);
++    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car2.id);
+   });
+ 
+   test('NO-007: смена госномера переключает владельца, стирание — снимает блокировку; «+ Новый клиент» из списка', async ({
+@@ -217,7 +216,7 @@ test.describe('NO: госномер ↔ клиент, автодополнени
+     const id = await createdTaskId(card);
+     _boardCleanup(id);
+     expect((await adminApi.getTask(id)).client_id).toBe(client.id);
+-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([car.id]);
++    expect((await adminApi.getCard(id)).car.equipment_id).toBe(car.id);
+   });
+ 
+   test('NO-009: подсказки госномера с клавиатуры — ↓ и Enter, Esc закрывает только список', async ({
+diff --git a/e2e/tests/new-order-plate.spec.ts b/e2e/tests/new-order-plate.spec.ts
+index ffe926c..f5da75a 100644
+--- a/e2e/tests/new-order-plate.spec.ts
++++ b/e2e/tests/new-order-plate.spec.ts
+@@ -55,11 +55,14 @@ test.describe('NO: новый заказ по госномеру', () => {
+     const id = await createdTaskId(card);
+     _boardCleanup(id);
+ 
+-    // карточка созданного заказа: название — редактируемое поле, автомобиль уже в заказе.
++    // карточка созданного заказа: название — редактируемое поле, автомобиль заказа — строка
++    // «госномер · владелец» только для чтения, клиент — владелец, поле не редактируется.
+     await expect(dlg.plate).toBeHidden();
+     await expect(dlg.titleField).toHaveValue(plate);
+-    await expect(card.equipmentRows).toHaveCount(1);
+-    await expect(card.equipmentRow(car.id)).toBeVisible();
++    await expect(card.carRowOf(car.id)).toBeVisible();
++    await expect(card.carPlate).toHaveText(plate);
++    await expect(card.carOwner).toHaveText(client.company_name);
++    await expect(card.taskClient).toBeDisabled();
+ 
+     const task = await adminApi.getTask(id);
+     expect(task.client_id).toBe(client.id);
+@@ -97,7 +100,7 @@ test.describe('NO: новый заказ по госномеру', () => {
+     _boardCleanup(id);
+     const task = await adminApi.getTask(id);
+     expect(task.client_id).toBe(second.id);
+-    expect((await adminApi.getCard(id)).equipment.map((e) => e.equipment_id)).toEqual([resold.id]);
++    expect((await adminApi.getCard(id)).car.equipment_id).toBe(resold.id);
+   });
+ 
+   test('NO-003: не найден — новый автомобиль и новый клиент одним сохранением', async ({
+@@ -132,15 +135,14 @@ test.describe('NO: новый заказ по госномеру', () => {
+     const id = await createdTaskId(card);
+     _boardCleanup(id);
+     await expect(dlg.titleField).toHaveValue(plate);
+-    await expect(card.equipmentRows).toHaveCount(1);
++    await expect(card.carPlate).toHaveText(plate);
+ 
+     const task = await adminApi.getTask(id);
+     const client = await adminApi.getClient(task.client_id);
+     expect(client.company_name).toBe(clientName);
+     expect(client.phones.map((p) => p.phone)).toEqual(['+7 912 000-11-22']);
+-    const eq = (await adminApi.getCard(id)).equipment;
+-    expect(eq).toHaveLength(1);
+-    expect(eq[0]).toMatchObject({ plate_number: plate });
++    // one-car-order: у заказа ровно один автомобиль — новый, с введённым госномером.
++    expect((await adminApi.getCard(id)).car).toMatchObject({ plate_number: plate, is_deleted: false });
+ 
+     // клиент заведён диалогом (мимо adminApi) — уборка вручную: заказ, затем клиент с автомобилем.
+     await adminApi.purgeClient(task.client_id, [id]);
+diff --git a/e2e/tests/order-card.spec.ts b/e2e/tests/order-card.spec.ts
+index f1ab2a3..f232392 100644
+--- a/e2e/tests/order-card.spec.ts
++++ b/e2e/tests/order-card.spec.ts
+@@ -27,7 +27,8 @@ test.describe('OC: новый заказ — карточка вместо пр
+     await board.goto(`?client_id=${client.id}`);
+ 
+     await board.openTaskAdd();
+-    await expect(card.equipmentLocked).toBeVisible();
++    // one-car-order: у нового заказа блока «Автомобиль» нет — автомобиль задаётся госномером.
++    await expect(card.carSection).toBeHidden();
+     await expect(card.subtasksLocked).toBeVisible();
+ 
+     const plate = uniqPlate();
+@@ -42,7 +43,8 @@ test.describe('OC: новый заказ — карточка вместо пр
+     const created = /#(\d+)/.exec((await card.title.textContent()) ?? '');
+     expect(created, 'номер заказа в заголовке карточки').toBeTruthy();
+     _boardCleanup(Number(created![1]));
+-    await expect(card.equipmentLocked).toHaveCount(0);
++    await expect(card.carSection).toBeVisible();
++    await expect(card.carPlate).toHaveText(plate);
+     await expect(card.subtasksLocked).toHaveCount(0);
+   });
+ });
+@@ -64,7 +66,7 @@ test.describe('OC: deep-link /?task=N', () => {
+     // stripTaskFromUrl).
+     await board.goto(`?client_id=${client.id}&task=${task.id}`);
+     await card.waitOpen();
+-    await expect(card.equipment).toBeVisible();
++    await expect(card.carRow).toBeVisible();
+     await expect(card.subtasks).toBeVisible();
+     await expect(page).toHaveURL(new RegExp(`[?&]task=${task.id}\\b`));
+ 
+@@ -181,17 +183,19 @@ test.describe('OC: оплата — только администратор', ()
+   });
+ });
+ 
+-test.describe('OC: оборудование заказа', () => {
+-  test('OC-006: добавление, комплектность/состояние переживают reload, удаление, смена клиента — confirm', async ({
++test.describe('OC: автомобиль заказа (one-car-order)', () => {
++  test('OC-006: строка «госномер · владелец», клиент и автомобиль не редактируются, шапка сохраняется без них', async ({
+     adminPage: page,
+     adminApi,
+     uniq,
+   }) => {
+     const { client, columns } = await setup(adminApi, uniq, 'OC-006');
+-    const client2 = await adminApi.createClient({ company_name: uniq('OC-006 клиент2'), phones: [{ phone: '9990000101', note: '' }] });
+     const plate = uniqPlate();
+     const eq = await adminApi.createEquipment(client.id, { plate_number: plate });
+-    const task = await adminApi.createTask({ title: uniq('OC-006 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
++    const task = await adminApi.createCarTask(eq, { title: uniq('OC-006 заказ'), column_id: columnByName(columns, 'Приёмка').id });
++    const svcCat = await adminApi.createCategory({ kind: 'service', name: uniq('OC-006 категория') });
++    const svc = await adminApi.createService({ category_id: svcCat.id, name: uniq('OC-006 Диагностика'), price: 500 });
++    const sub = (await adminApi.createSubtask(task.id, svc.id)).card.subtasks[0];
+ 
+     const board = new BoardPage(page);
+     const card = new OrderCardPage(page);
+@@ -199,85 +203,62 @@ test.describe('OC: оборудование заказа', () => {
+     await board.openTaskEdit(task.id);
+     await card.waitOpen();
+ 
+-    await card.chooseCombobox(card.equipmentAdd, plate);
+-    await expect(card.equipmentRows).toHaveCount(1);
+-
+-    await card.equipmentCompleteness(eq.id).fill('Полный комплект');
+-    await card.equipmentCompleteness(eq.id).blur();
+-    await card.equipmentCondition(eq.id).fill('Хорошее');
+-    await card.equipmentCondition(eq.id).blur();
+-    await expect(card.equipmentCondition(eq.id)).toHaveAttribute('aria-busy', 'false');
+-
+-    await board.goto(`?client_id=${client.id}`);
+-    await board.openTaskEdit(task.id);
+-    await card.waitOpen();
+-    await expect(card.equipmentCompleteness(eq.id)).toHaveValue('Полный комплект');
+-    await expect(card.equipmentCondition(eq.id)).toHaveValue('Хорошее');
+-
+-    await card.equipmentDelete(eq.id).click();
+-    await card.confirmUiDialog();
+-    await expect(card.equipmentRows).toHaveCount(0);
+-
+-    await card.chooseCombobox(card.equipmentAdd, plate);
+-    await expect(card.equipmentRows).toHaveCount(1);
+-    await card.chooseRemote(card.taskClient, client2.company_name, client2.company_name);
+-    await card.confirmUiDialog();
++    // строка автомобиля: госномер и владелец (клиент заказа), без полей ввода и кнопок смены.
++    await expect(card.carRowOf(eq.id)).toBeVisible();
++    await expect(card.carPlate).toHaveText(plate);
++    await expect(card.carOwner).toHaveText(client.company_name);
++    await expect(card.carDeleted).toHaveCount(0);
++    await expect(card.carSection.locator('input, select, textarea')).toHaveCount(0);
++    await expect(card.carHistoryToggle).toBeVisible();
++    // клиент — только для чтения: «Владелец автомобиля».
++    await expect(card.taskClient).toBeDisabled();
++    await expect(card.taskClient).toContainText(client.company_name);
++    await expect(card.clientLockedHint).toBeVisible();
++    // выбора автомобиля в услуге нет.
++    await expect(card.subtaskRow(sub.id)).toBeVisible();
++    await expect(card.subtaskEquipment(sub.id)).toHaveCount(0);
++
++    // правка шапки сохраняется; клиент и автомобиль заказа прежние.
++    const newTitle = uniq('OC-006 переименован');
++    await card.fillHeader({ title: newTitle });
+     await card.save();
+     await expect(card.error).toBeHidden();
+-
+-    await board.goto(`?client_id=${client2.id}`);
+-    await board.openTaskEdit(task.id);
+-    await card.waitOpen();
+-    await expect(card.equipmentRows).toHaveCount(0);
+-  });
+-
+-  test('OC-007: новое оборудование прямо из карточки', async ({ adminPage: page, adminApi, uniq }) => {
+-    const { client, columns } = await setup(adminApi, uniq, 'OC-007');
+-    const task = await adminApi.createTask({ title: uniq('OC-007 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
+-
+-    const board = new BoardPage(page);
+-    const card = new OrderCardPage(page);
+-    await board.goto(`?client_id=${client.id}`);
+-    await board.openTaskEdit(task.id);
+-    await card.waitOpen();
+-
+-    await card.equipmentNewBtn.click();
+-    // форма «новый автомобиль» — только госномер; пусто → «Укажите госномер».
+-    await expect(page.getByTestId('card-equipment-new-form').locator('input')).toHaveCount(1);
+-    await card.equipmentNewSave.click();
+-    await expect(card.equipmentNewError).toHaveText('Укажите госномер');
+-    await expect(card.equipmentRows).toHaveCount(0);
+-    const plate = uniqPlate();
+-    await card.equipmentNewPlate.fill(plate.toLowerCase());
+-    await card.equipmentNewSave.click();
+-
+-    await expect(card.equipmentRows).toHaveCount(1);
+-    await expect(card.equipmentRows.first()).toContainText(plate);
+-    const equipment = await adminApi.getClient(client.id);
+-    expect(equipment.equipment_count).toBe(1);
++    await expect.poll(async () => (await adminApi.getTask(task.id)).title).toBe(newTitle);
++    const after = await adminApi.getCard(task.id);
++    expect(after.task.client_id).toBe(client.id);
++    expect(after.car).toMatchObject({ equipment_id: eq.id, plate_number: plate, is_deleted: false });
++    await expect(card.carPlate).toHaveText(plate);
++    await expect(card.taskClient).toBeDisabled();
+   });
+ });
+ 
+-test.describe('OC: история оборудования', () => {
+-  test('OC-008: единица из закрытого заказа — «Уже был в ремонте»', async ({ adminPage: page, adminApi, uniq }) => {
++test.describe('OC: история автомобиля', () => {
++  test('OC-008: «История работ» — другие заказы этого автомобиля, текущий не показывается', async ({ adminPage: page, adminApi, uniq }) => {
+     const { client, columns } = await setup(adminApi, uniq, 'OC-008');
+     const eq = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
++    const col = columnByName(columns, 'Приёмка').id;
+ 
++    // первый заказ автомобиля — истории других заказов нет.
+     const oldTitle = uniq('OC-008 старый заказ');
+-    const oldTask = await adminApi.createTask({ title: oldTitle, client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
+-    await adminApi.addTaskEquipment(oldTask.id, eq.id);
+-
+-    const task = await adminApi.createTask({ title: uniq('OC-008 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
+-    await adminApi.addTaskEquipment(task.id, eq.id);
+-
++    const oldTask = await adminApi.createCarTask(eq, { title: oldTitle, column_id: col });
+     const board = new BoardPage(page);
+     const card = new OrderCardPage(page);
+     await board.goto(`?client_id=${client.id}`);
+-    await board.openTaskEdit(task.id);
++    await board.openTaskEdit(oldTask.id);
+     await card.waitOpen();
++    await card.openCarHistory();
++    await expect(card.carHistoryPanel.getByTestId('card-car-history-empty')).toBeVisible();
++    await card.close();
+ 
+-    await expect(card.equipmentHistory(eq.id)).toContainText(`#${oldTask.id}`);
+-    await expect(card.equipmentHistory(eq.id)).toContainText(oldTitle);
++    // второй заказ того же автомобиля — в истории первый (номер и название), не сам.
++    const task = await adminApi.createCarTask(eq, { title: uniq('OC-008 заказ'), column_id: col });
++    await board.goto(`?client_id=${client.id}`);
++    await board.openTaskEdit(task.id);
++    await card.waitOpen();
++    await card.openCarHistory();
++    await expect(card.carHistoryOrder(oldTask.id)).toContainText(oldTitle);
++    await expect(card.carHistoryOrder(task.id)).toHaveCount(0);
++    await expect(card.carHistoryPanel.getByTestId('card-car-history-page')).toHaveAttribute('href', `/equipment/${eq.id}/history`);
+   });
+ });
+ 
+diff --git a/e2e/tests/order-print.spec.ts b/e2e/tests/order-print.spec.ts
+index 9caa7f1..1540810 100644
+--- a/e2e/tests/order-print.spec.ts
++++ b/e2e/tests/order-print.spec.ts
+@@ -33,6 +33,10 @@ test.describe('OC: печать актов из карточки', () => {
+     await popup.waitForLoadState();
+     expect(popup.url()).toContain(`/tasks/${task.id}/print/intake`);
+     await expect(popup.locator('body')).toContainText(`Акт приёма №${task.id}`);
++    // one-car-order: в акте один автомобиль заказа — только госномер.
++    const car = (await adminApi.getCard(task.id)).car;
++    await expect(popup.getByTestId('print-plate-number')).toHaveText(car.plate_number);
++    await expect(popup.locator('body')).not.toContainText('Комплектность');
+     const bg = await popup.evaluate(() => getComputedStyle(document.body).backgroundColor);
+     // светлая тема — фон НЕ тёмный (RGB-компоненты не все < 60, эталон печати print.css).
+     const m = bg.match(/\d+/g);
+diff --git a/e2e/tests/polish.spec.ts b/e2e/tests/polish.spec.ts
+index f7edbfb..c57ebbd 100644
+--- a/e2e/tests/polish.spec.ts
++++ b/e2e/tests/polish.spec.ts
+@@ -88,13 +88,12 @@ async function richTask(adminApi: AdminApi, uniq: (s: string) => string, label:
+     products: [{ product_id: product.id, qty: 2 }],
+   });
+   const columns = (await adminApi.listColumns()).items;
+-  const task = await adminApi.createTask({
++  // one-car-order: автомобиль заказа задаётся при создании (найден по госномеру).
++  const task = await adminApi.createCarTask(eq, {
+     title: uniq(`PL заказ ${label} с длинным названием для проверки переноса в шапке карточки`),
+-    client_id: client.id,
+     column_id: columnByName(columns, 'Приёмка').id,
+     description: 'Описание заказа',
+   });
+-  await adminApi.addTaskEquipment(task.id, eq.id);
+   await adminApi.createSubtask(task.id, svc.id);
+   return { client, eq, product, svcCat, svc, task };
+ }
+@@ -136,7 +135,7 @@ test.describe('PL: адаптив и темы по всем экранам', ()
+         await board.openTaskEdit(task.id);
+         await card.waitOpen();
+         // дерево карточки грузится JS — ждём реального рендера секций.
+-        await expect(page.getByTestId('card-equipment-row').first()).toBeVisible();
++        await expect(page.getByTestId('card-car-row').first()).toBeVisible();
+         await expect(page.getByTestId('card-subtask-row').first()).toBeVisible();
+         await expect(page.getByTestId('card-print-intake')).toBeVisible();
+         await expect(page.getByTestId('task-save')).toBeVisible();
+@@ -153,7 +152,7 @@ test.describe('PL: адаптив и темы по всем экранам', ()
+   });
+ 
+   test('PL-004: акты печати — светлые в любой теме, без overflow на 360/1280', async ({ adminPage: page, adminApi, uniq }) => {
+-    const { task } = await richTask(adminApi, uniq, 'PL-004');
++    const { task, eq } = await richTask(adminApi, uniq, 'PL-004');
+     for (const theme of THEMES) {
+       await useTheme(page, theme);
+       for (const vp of VIEWPORTS) {
+@@ -162,7 +161,8 @@ test.describe('PL: адаптив и темы по всем экранам', ()
+           const where = `/tasks/${task.id}/print/${kind} @${vp.width} ${theme}`;
+           await page.goto(`/tasks/${task.id}/print/${kind}`);
+           await expect(page.getByTestId('print-title')).toBeVisible();
+-          await expect(page.getByTestId('print-equipment')).toBeVisible();
++          // one-car-order: в акте — автомобиль заказа (госномер), без комплектности/состояния.
++          await expect(page.getByTestId('print-plate-number')).toHaveText(eq.plate_number);
+           await expect.poll(() => bodyIsDark(page), { message: `акт всегда светлый: ${where}` }).toBe(false);
+           await expectNoPageOverflow(page, where);
+         }
+diff --git a/e2e/tests/soft-delete-clients.spec.ts b/e2e/tests/soft-delete-clients.spec.ts
+index 346074e..8e1f209 100644
+--- a/e2e/tests/soft-delete-clients.spec.ts
++++ b/e2e/tests/soft-delete-clients.spec.ts
+@@ -31,9 +31,8 @@ test.describe('SDCL: мягкое удаление клиентов и обор
+     const first = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+     const second = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+     const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
+-    const task = await adminApi.createTask({ title: uniq('SDCL-001 заказ'), client_id: client.id, column_id: column.id });
+-    await adminApi.addTaskEquipment(task.id, first.id);
+-    await adminApi.addTaskEquipment(task.id, second.id);
++    // one-car-order: автомобиль заказа — first (задан при создании); second — второй автомобиль клиента.
++    const task = await adminApi.createCarTask(first, { title: uniq('SDCL-001 заказ'), column_id: column.id });
+     allowHttpErrors((url, status) => url.endsWith(`/api/v1/equipment/${first.id}/restore`) && status === 409);
+ 
+     try {
+@@ -62,24 +61,20 @@ test.describe('SDCL: мягкое удаление клиентов и обор
+       await expect(board.card(task.id)).toBeVisible();
+       await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveText('удалён');
+ 
+-      // карточка заказа: бейдж у клиента и у обеих единиц блока «Оборудование».
++      // карточка заказа: бейдж у клиента (шапка и владелец в строке автомобиля) и у автомобиля.
+       await board.openTaskEdit(task.id);
+       const card = new OrderCardPage(page);
+       await card.waitOpen();
+       await expect(page.getByTestId('task-client-deleted')).toBeVisible();
+       await expect(page.getByTestId('task-client-deleted')).toHaveText('удалён');
+-      for (const unit of [first, second]) {
+-        await expect(card.equipmentRow(unit.id).getByTestId('card-equipment-deleted')).toHaveText('удалён');
+-      }
+-      // удалённому клиенту оборудование не добавить, истории удалённых единиц нет (DS-026):
+-      // вместо выбора — пояснение, кнопок «История работ» у удалённых единиц нет.
+-      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveText('Клиент заказа удалён — добавить автомобиль нельзя');
+-      await expect(page.getByTestId('card-equipment-add')).toHaveCount(0);
+-      await expect(page.getByTestId('card-equipment-new')).toHaveCount(0);
+-      await expect(page.getByTestId('card-equipment-history-toggle')).toHaveCount(0);
++      await expect(card.carRowOf(first.id)).toBeVisible();
++      await expect(card.carDeleted).toHaveText('удалён');
++      await expect(card.carRow.getByTestId('card-car-owner-deleted')).toHaveText('удалён');
++      // истории удалённого автомобиля нет (DS-026) — кнопки «История работ» нет.
++      await expect(card.carHistoryToggle).toHaveCount(0);
+       const apiCard = await adminApi.getCard(task.id);
+       expect(apiCard.task.client_is_deleted).toBe(true);
+-      expect(apiCard.equipment.map((e) => e.is_deleted)).toEqual([true, true]);
++      expect(apiCard.car).toMatchObject({ equipment_id: first.id, is_deleted: true });
+ 
+       // §8.2: «Удалённые» → вкладка «Клиенты».
+       const del = new DeletedPage(page);
+@@ -135,11 +130,10 @@ test.describe('SDCL: мягкое удаление клиентов и обор
+       await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveCount(0);
+       await board.openTaskEdit(task.id);
+       await card.waitOpen();
+-      await expect(card.equipmentRow(first.id)).toBeVisible();
++      await expect(card.carRowOf(first.id)).toBeVisible();
+       await expect(page.getByTestId('task-client-deleted')).toBeHidden();
+-      await expect(page.getByTestId('card-equipment-deleted')).toHaveCount(0);
+-      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveCount(0);
+-      await expect(page.getByTestId('card-equipment-new')).toBeVisible();
++      await expect(card.carDeleted).toHaveCount(0);
++      await expect(card.carHistoryToggle).toBeVisible();
+     } finally {
+       await adminApi.purgeClient(client.id, [task.id]);
+     }
+@@ -155,9 +149,8 @@ test.describe('SDCL: мягкое удаление клиентов и обор
+     const gone = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+     const kept = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+     const column = (await adminApi.listColumns()).items.find((c) => !c.is_final)!;
+-    const task = await adminApi.createTask({ title: uniq('SDCL-002 заказ'), client_id: client.id, column_id: column.id });
+-    await adminApi.addTaskEquipment(task.id, gone.id);
+-    await adminApi.addTaskEquipment(task.id, kept.id);
++    // one-car-order: автомобиль заказа — gone; kept — второй автомобиль клиента, вне заказа.
++    const task = await adminApi.createCarTask(gone, { title: uniq('SDCL-002 заказ'), column_id: column.id });
+ 
+     try {
+       // §8.1: форма единицы → окно «Удаление»; единица в заказе удалению не мешает (DS-014).
+@@ -170,16 +163,16 @@ test.describe('SDCL: мягкое удаление клиентов и обор
+       await expect(page.getByTestId('equipment-table')).toContainText(kept.plate_number);
+       await expect(page.getByTestId('equipment-table')).not.toContainText(gone.plate_number);
+ 
+-      // §8.3: в карточке заказа бейдж только у удалённой единицы; клиент — без бейджа.
++      // §8.3: в карточке заказа бейдж у удалённого автомобиля заказа; клиент — без бейджа.
+       const board = new BoardPage(page);
+       await board.goto(`?client_id=${client.id}`);
+       await expect(board.card(task.id).getByTestId('task-card-client-deleted')).toHaveCount(0);
+       await board.openTaskEdit(task.id);
+       const card = new OrderCardPage(page);
+       await card.waitOpen();
+-      await expect(card.equipmentRow(gone.id).getByTestId('card-equipment-deleted')).toHaveText('удалён');
+-      await expect(card.equipmentRow(kept.id)).toBeVisible();
+-      await expect(card.equipmentRow(kept.id).getByTestId('card-equipment-deleted')).toHaveCount(0);
++      await expect(card.carRowOf(gone.id)).toBeVisible();
++      await expect(card.carDeleted).toHaveText('удалён');
++      await expect(card.carRow.getByTestId('card-car-owner-deleted')).toHaveCount(0);
+       await expect(page.getByTestId('task-client-deleted')).toBeHidden();
+ 
+       // §8.2: вкладка «Оборудование» — без бейджа «вместе с клиентом».
+diff --git a/e2e/tests/user-timezone.spec.ts b/e2e/tests/user-timezone.spec.ts
+index 68a7bce..ae71927 100644
+--- a/e2e/tests/user-timezone.spec.ts
++++ b/e2e/tests/user-timezone.spec.ts
+@@ -38,16 +38,15 @@ async function seedPaidOrder({ adminApi, uniq, insertSubtask }: Seed, label: str
+   const cat = await adminApi.createCategory({ kind: 'service', name: uniq(`TZ услуги ${label}`) });
+   const service = await adminApi.createService({ category_id: cat.id, name: uniq(`TZ услуга ${label}`), price: 1000 });
+   const equipment = await adminApi.createEquipment(client.id, { plate_number: uniqPlate() });
+-  const task = await adminApi.createTask({
++  // one-car-order: автомобиль заказа задаётся при создании (найден по госномеру).
++  const task = await adminApi.createCarTask(equipment, {
+     title: uniq(`TZ заказ ${label}`),
+-    client_id: client.id,
+     column_id: columnByName(columns, 'Приёмка').id,
+     assignee_id: executorId,
+     is_paid: true,
+   });
+-  await adminApi.addTaskEquipment(task.id, equipment.id);
+   const subId = await insertSubtask({ taskId: task.id, serviceId: service.id });
+-  await adminApi.updateSubtask(subId, { status: 'done', price: 1000, assignee_id: executorId, equipment_id: equipment.id, executor_payout: 500 });
++  await adminApi.updateSubtask(subId, { status: 'done', price: 1000, assignee_id: executorId, executor_payout: 500 });
+   await adminApi.markExecutorPayouts([subId], true);
+   return { client, columns, equipment, task, subId };
+ }
+diff --git a/web/ssr/_layout/templates/partials/task-modal.html b/web/ssr/_layout/templates/partials/task-modal.html
+index d11a805..bb25e45 100644
+--- a/web/ssr/_layout/templates/partials/task-modal.html
++++ b/web/ssr/_layout/templates/partials/task-modal.html
+@@ -24,7 +24,8 @@
+             <div class="small text-body-secondary mt-1" id="task-plate-status" data-testid="task-plate-status" aria-live="polite"></div>
+             <div class="text-danger small d-none" data-error-for="plate_number" data-testid="task-plate-error"></div>
+           </div>
+-          <!-- В карточке существующего заказа название по-прежнему правится вручную. -->
++          <!-- В карточке существующего заказа название по-прежнему правится вручную; клиент —
++               владелец автомобиля заказа, только чтение (one-car-order). -->
+           <div class="col-md-6 d-none" id="task-title-wrap">
+             <label class="form-label" for="task-title">Название *</label>
+             <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
+@@ -97,9 +98,14 @@
+           </div>
+         </div>
+ 
+-        <hr>
+-        <h3 class="fs-6">Автомобиль</h3>
+-        <div id="card-equipment" data-testid="card-equipment"></div>
++        <!-- Автомобиль заказа (one-car-order): ровно один, задан при создании, в карточке —
++             только чтение «госномер · владелец · История работ» (js/task-card.js
++             renderOrderCar). Новый заказ — блок скрыт: автомобиль — поле «Госномер» выше. -->
++        <div class="d-none" id="card-car-section" data-testid="card-car-section">
++          <hr>
++          <h3 class="fs-6">Автомобиль</h3>
++          <div id="card-car" data-testid="card-car"></div>
++        </div>
+ 
+         <hr>
+         <h3 class="fs-6">Услуги</h3>
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index c31b66a..33253d5 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -339,13 +339,12 @@ body { background: var(--bs-body-bg); }
+    Шапка модалки — заголовок + кнопки актов + закрыть в одну строку (flex без wrap) на
+    360px шире вьюпорта: переносим кнопки актов на свою строку. Длинные слова без пробелов
+    (серийник, название файла, комментарий) — переносятся, а не раздвигают тело модалки;
+-   поле ввода журнала и заголовок оборудования в d-flex-строках сжимаются (min-width:0 —
+-   урок CT-008); селектор узкий, чтобы не сжимать другие обёртки внутри d-flex (ревью LOW-1). */
++   поле ввода журнала в d-flex-строках сжимается (min-width:0 — урок CT-008); селектор узкий,
++   чтобы не сжимать другие обёртки внутри d-flex (ревью LOW-1). */
+ #task-modal .modal-header { flex-wrap: wrap; row-gap: var(--space-2); }
+ #task-modal .modal-title { min-width: 0; overflow-wrap: anywhere; }
+ #task-modal .modal-body { overflow-wrap: anywhere; }
+-#task-modal .modal-body .d-flex > .form-control,
+-#task-modal .modal-body .card-eq-title { min-width: 0; }
++#task-modal .modal-body .d-flex > .form-control { min-width: 0; }
+ @media (max-width: 576px) {
+   #card-print-actions { order: 3; flex: 1 1 100%; margin-left: 0 !important; flex-wrap: wrap; }
+   #card-print-actions:empty { display: none !important; }
+diff --git a/web/ssr/_shared/js/equipment-history.js b/web/ssr/_shared/js/equipment-history.js
+deleted file mode 100644
+index 1165ba1..0000000
+--- a/web/ssr/_shared/js/equipment-history.js
++++ /dev/null
+@@ -1,82 +0,0 @@
+-/* История оборудования (/equipment/:id/history): правка комплектности/состояния при
+-   приёме в заказ — inline-форма в строке «Принято». Сохраняет через JSON API карточки
+-   заказа PUT /api/v1/tasks/:id/equipment/:equipment_id (та же валидация и блокировка
+-   заказа, что в карточке на доске). */
+-(function () {
+-  'use strict';
+-
+-  var FIELD_TEXT = { too_long: 'Не больше 1000 символов' };
+-
+-  function intakeText(completeness, condition) {
+-    var parts = [];
+-    if (completeness) parts.push('комплектность — ' + completeness);
+-    if (condition) parts.push('состояние — ' + condition);
+-    return parts.length ? parts.join('; ') : 'без замечаний';
+-  }
+-
+-  function init(box) {
+-    var view = box.querySelector('[data-intake-view]');
+-    var form = box.querySelector('[data-intake-form]');
+-    var text = box.querySelector('[data-intake-text]');
+-    var errBox = box.querySelector('[data-intake-error]');
+-    var saveBtn = form.querySelector('[type="submit"]');
+-    var saved = { completeness: form.completeness.value, condition: form.condition.value };
+-
+-    function clearErrors() {
+-      errBox.hidden = true;
+-      errBox.textContent = '';
+-      ['completeness', 'condition'].forEach(function (name) {
+-        form[name].classList.remove('is-invalid');
+-        form.querySelector('[data-field-error="' + name + '"]').textContent = '';
+-      });
+-    }
+-
+-    function open(on) {
+-      clearErrors();
+-      if (on) {
+-        form.completeness.value = saved.completeness;
+-        form.condition.value = saved.condition;
+-      }
+-      form.hidden = !on;
+-      view.classList.toggle('d-none', on); // не hidden: .d-flex (!important) его перебивает
+-      if (on) form.completeness.focus();
+-    }
+-
+-    box.querySelector('[data-intake-edit]').addEventListener('click', function () { open(true); });
+-    box.querySelector('[data-intake-cancel]').addEventListener('click', function () { open(false); });
+-    form.addEventListener('keydown', function (e) { if (e.key === 'Escape') open(false); });
+-
+-    form.addEventListener('submit', function (e) {
+-      e.preventDefault();
+-      clearErrors();
+-      saveBtn.disabled = true;
+-      var body = { completeness: form.completeness.value.trim(), condition: form.condition.value.trim() };
+-      var url = '/api/v1/tasks/' + encodeURIComponent(box.dataset.taskId) +
+-        '/equipment/' + encodeURIComponent(box.dataset.equipmentId);
+-      KT.api.put(url, body).then(function () {
+-        saved = body;
+-        text.textContent = intakeText(body.completeness, body.condition);
+-        open(false);
+-      }).catch(function (err) {
+-        var shown = false;
+-        (err.fields || []).forEach(function (f) {
+-          var name = f.name || f.Name;
+-          var input = form[name];
+-          if (!input) return;
+-          input.classList.add('is-invalid');
+-          form.querySelector('[data-field-error="' + name + '"]').textContent =
+-            FIELD_TEXT[f.message || f.Message] || 'Недопустимое значение';
+-          shown = true;
+-        });
+-        if (!shown) {
+-          errBox.textContent = err.status === 404
+-            ? 'Автомобиль больше не числится в этом заказе — обновите страницу'
+-            : (err.message || 'Не удалось сохранить');
+-          errBox.hidden = false;
+-        }
+-      }).then(function () { saveBtn.disabled = false; });
+-    });
+-  }
+-
+-  document.querySelectorAll('[data-intake]').forEach(init);
+-})();
+diff --git a/web/ssr/_shared/js/task-card.js b/web/ssr/_shared/js/task-card.js
+index 36ebcb4..488bb4b 100644
+--- a/web/ssr/_shared/js/task-card.js
++++ b/web/ssr/_shared/js/task-card.js
+@@ -34,7 +34,6 @@
+   var defaultColumnId = null;
+   var defaultDueDate = '';      // срок нового заказа по умолчанию (календарь: выбранный день)
+   var saving = false;        // защита от двойного submit шапки
+-  var newEquipmentOpen = false;
+   var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
+   // upload (фаза 7) — идущая загрузка вложения {gen, name, percent} либо null; переживает
+   // renderAll (секция перерисовывается после любой row-мутации), кнопка заблокирована.
+@@ -71,7 +70,6 @@
+ 
+   function reqKeySubtask(id) { return 'subtask:' + id; }
+   function reqKeyProduct(id) { return 'product:' + id; }
+-  function reqKeyEquipment(id) { return 'equipment:' + id; }
+   function reqKeyLog(id) { return 'log:' + id; }
+ 
+   function enqueueRow(key, patch, baseGetter, requestFn) {
+@@ -147,7 +145,7 @@
+ 
+   function onRowError(key, err) {
+     var code = err && err.code;
+-    if (code === 'SUBTASK_NOT_FOUND' || code === 'SUBTASK_PRODUCT_NOT_FOUND' || code === 'SUBTASK_LOG_NOT_FOUND' || code === 'TASK_EQUIPMENT_NOT_FOUND') {
++    if (code === 'SUBTASK_NOT_FOUND' || code === 'SUBTASK_PRODUCT_NOT_FOUND' || code === 'SUBTASK_LOG_NOT_FOUND') {
+       KT.uiAlert('Строка уже удалена', 'Не удалось сохранить').then(function () { loadCard(taskId); });
+       return;
+     }
+@@ -180,7 +178,6 @@
+     defaultDueDate = (!id && opts && opts.dueDate) || '';
+     card = null;
+     rowQueue = {};
+-    newEquipmentOpen = false;
+     eqHistory = {};
+     headerDirty = false;
+     upload = null;
+@@ -331,7 +328,9 @@
+   }
+ 
+   function renderLockedSections() {
+-    $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить автомобиль</p>';
++    // новый заказ: автомобиль выбирается полем «Госномер» в шапке — блок «Автомобиль» скрыт.
++    $('#card-car-section').classList.add('d-none');
++    $('#card-car').innerHTML = '';
+     $('#card-subtasks').innerHTML = '<p class="text-body-secondary small" data-testid="card-subtasks-locked">Сохраните заказ, чтобы добавить услуги</p>';
+     $('#card-attachments').innerHTML = '<p class="text-body-secondary small" data-testid="card-attachments-locked">Сохраните заказ, чтобы добавить фото, видео или PDF</p>';
+   }
+@@ -365,6 +364,10 @@
+       paid.disabled = !data.isAdmin;
+       ['#task-client', '#task-column', '#task-assignee'].forEach(function (sel) { var el = $(sel); if (el && el._cbSync) el._cbSync(); });
+     }
++    // one-car-order: клиент заказа — владелец автомобиля; оба заданы при создании и в карточке
++    // только читаются (смены клиента/автомобиля нет).
++    setClientLocked(true);
++    $('#task-client-locked').classList.remove('d-none');
+ 
+     var canDelete = !!data.isAdmin;
+     var delBtn = $('#task-delete-btn');
+@@ -375,7 +378,7 @@
+     saving = false;
+ 
+     renderPrintActions(t.id);
+-    renderEquipment();
++    renderOrderCar();
+     renderSubtasks();
+     renderAttachments();
+     renderTotal();
+@@ -424,83 +427,42 @@
+   }
+ 
+   // ==================================================================
+-  // Оборудование заказа (AC-004/AC-005/AC-006)
++  // Автомобиль заказа (one-car-order): ровно один, задаётся при создании и не меняется.
++  // Карточка показывает строку «госномер · владелец · История работ» — только чтение.
+   // ==================================================================
+ 
+-  var clientEquipmentCache = null; // {clientId, items} — эталон опций «Добавить оборудование клиента»
+   // eqHistory[equipmentId] = {open, loading, items, error} — раскрытая «История работ»
+-  // единицы (GET /api/v1/equipment/:id/history); переживает перерисовки блока, сбрасывается
++  // автомобиля (GET /api/v1/equipment/:id/history); переживает перерисовки блока, сбрасывается
+   // при открытии другой карточки.
+   var eqHistory = {};
+ 
+-  // renderEquipment — доступный клиенту список оборудования нужен ДО рендера <select>
+-  // (не после, отдельным запросом внутри wireEquipment): иначе окно между вставкой пустого
+-  // select в DOM и приходом ответа даёт combobox.js открыть список без опций (гонка,
+-  // combobox.js не перерисовывает уже открытый список при появлении новых <option>).
+-  //
+-  // Клиент заказа мягко удалён (soft-delete-clients §8.3, DS-026): его справочник оборудования
+-  // для обычных адресов не существует (404), а действующих единиц у него нет — запрос не
+-  // выполняется, блок рисуется только по данным карточки.
+-  function renderEquipment() {
+-    var clientId = card.task.client_id;
+-    if (card.task.client_is_deleted) {
+-      renderEquipmentWith([]);
+-      return;
+-    }
+-    if (clientEquipmentCache && clientEquipmentCache.clientId === clientId) {
+-      renderEquipmentWith(clientEquipmentCache.items);
+-      return;
+-    }
+-    KT.api.get('/api/v1/clients/' + clientId + '/equipment?limit=200').then(function (r) {
+-      clientEquipmentCache = { clientId: clientId, items: r.items };
+-      renderEquipmentWith(r.items);
+-    }).catch(function () { renderEquipmentWith([]); });
+-  }
+-
+-  function renderEquipmentWith(clientEquipment) {
+-    var container = $('#card-equipment');
+-    if (!container) return; // модалка уже закрыта раньше ответа сети
+-    var already = {}; card.equipment.forEach(function (e) { already[e.equipment_id] = true; });
+-    var addOptions = clientEquipment.filter(function (e) { return !already[e.id]; });
+-    // клиент заказа удалён — добавлять ему оборудование нельзя (POST /clients/:id/equipment → 404,
+-    // DS-026): вместо выбора и формы новой единицы — пояснение.
+-    var adding = card.task.client_is_deleted
+-      ? '<p class="text-body-secondary small mb-0" data-testid="card-equipment-client-deleted">Клиент заказа удалён — добавить автомобиль нельзя</p>'
+-      : equipmentAddHtml(addOptions) +
+-        (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новый автомобиль</button>');
+-    var html = '<div>' +
+-      card.equipment.map(equipmentRowHtml).join('') +
+-      adding +
+-      '</div>';
+-    rerenderPreserveFocus(container, html);
+-    wireEquipment(container);
+-  }
+-
+-  function equipmentRowHtml(eq) {
+-    var key = reqKeyEquipment(eq.equipment_id);
+-    var history = (eq.history || []).map(function (h) {
+-      return '<div class="small text-body-secondary" data-testid="card-equipment-history">Уже был в ремонте: #' + h.task_id + ' «' + esc(h.title) + '» от ' + fmtDate(h.created_at) + '</div>';
+-    }).join('');
+-    return '' +
+-      '<div class="card mb-2" data-testid="card-equipment-row" data-row-key="' + key + '" data-equipment-id="' + esc(eq.equipment_id) + '">' +
+-      '  <div class="card-body py-2">' +
+-      '    <div class="d-flex justify-content-between align-items-start gap-2">' +
+-      '      <div class="card-eq-title">' + plateBadge(eq.plate_number) +
+-      // единица мягко удалена (soft-delete-clients §8.3 п.3) — в заказе остаётся с бейджем
+-      (eq.is_deleted ? deletedBadge('card-equipment-deleted') : '') + '</div>' +
+-      '      <button type="button" class="btn btn-outline-danger btn-sm" data-testid="card-equipment-remove" data-equipment-id="' + esc(eq.equipment_id) + '">Убрать</button>' +
+-      '    </div>' +
+-      '    <div class="row g-2 mt-1">' +
+-      '      <div class="col-6"><label class="form-label small mb-0">Комплектность</label>' +
+-      '        <input class="form-control form-control-sm" data-field="completeness" data-row-key="' + key + '" data-testid="card-equipment-completeness" maxlength="1000" value="' + esc(eq.completeness) + '"></div>' +
+-      '      <div class="col-6"><label class="form-label small mb-0">Состояние</label>' +
+-      '        <input class="form-control form-control-sm" data-field="condition" data-row-key="' + key + '" data-testid="card-equipment-condition" maxlength="1000" value="' + esc(eq.condition) + '"></div>' +
+-      '    </div>' +
+-      (history ? '<div class="mt-1">' + history + '</div>' : '') +
+-      // история удалённой единицы для обычных адресов не существует (404, DS-026) — без кнопки
+-      (eq.is_deleted ? '' : equipmentHistoryHtml(eq.equipment_id)) +
++  // renderOrderCar — блок «Автомобиль» существующего заказа: госномер (бейдж «удалён», если
++  // автомобиль в удалённых), владелец — клиент заказа, «История работ». Новый заказ — блок
++  // скрыт (автомобиль выбирается полем «Госномер» в шапке).
++  function renderOrderCar() {
++    var section = $('#card-car-section');
++    var container = $('#card-car');
++    if (!section || !container) return; // модалка уже закрыта раньше ответа сети
++    section.classList.remove('d-none');
++    var c = card.car || {};
++    var t = card.task;
++    var html = '' +
++      '<div data-testid="card-car-row" data-equipment-id="' + esc(c.equipment_id || '') + '">' +
++      '  <div class="d-flex flex-wrap align-items-center gap-1">' +
++           plateBadge(c.plate_number, 'card-car-plate') +
++           // автомобиль мягко удалён (soft-delete-clients §8.3 п.3) — в заказе остаётся с бейджем
++           (c.is_deleted ? deletedBadge('card-car-deleted') : '') +
++      '    <span class="text-body-secondary">·</span>' +
++      '    <span data-testid="card-car-owner">' + esc(t.client_name) + '</span>' +
++           (t.client_is_deleted ? deletedBadge('card-car-owner-deleted') : '') +
+       '  </div>' +
++         // история удалённого автомобиля для обычных адресов не существует (404, DS-026) — без кнопки
++         (c.is_deleted || !c.equipment_id ? '' : equipmentHistoryHtml(c.equipment_id)) +
+       '</div>';
++    container.innerHTML = html;
++    $$('[data-testid="card-car-history-toggle"]', container).forEach(function (btn) {
++      btn.addEventListener('click', function () { toggleEquipmentHistory(btn.dataset.equipmentId); });
++    });
+   }
+ 
+   var SERVICE_STATUS = { 'new': ['Новая', 'text-bg-secondary'], in_progress: ['В работе', 'text-bg-primary'], done: ['Выполнена', 'text-bg-success'] };
+@@ -508,12 +470,12 @@
+   // Дата и время — только через KT.time (пояс пользователя, не браузера; DS-032).
+   function fmtDateTime(iso) { return KT.time.fmtDateTime(iso); }
+ 
+-  // equipmentHistoryHtml — кнопка «История работ» + раскрытая панель: другие заказы с этой
+-  // единицей (текущий исключён — его работы и так в карточке) с услугами по ней, товарами
+-  // и журналом. Для admin — ссылка на полную страницу /equipment/:id/history.
++  // equipmentHistoryHtml — кнопка «История работ» + раскрытая панель: другие заказы этого
++  // автомобиля (текущий исключён — его работы и так в карточке) с услугами, товарами и
++  // журналом. Для admin — ссылка на полную страницу /equipment/:id/history.
+   function equipmentHistoryHtml(eqId) {
+     var st = eqHistory[eqId] || {};
+-    var btn = '<button type="button" class="btn btn-link btn-sm p-0 mt-1" data-testid="card-equipment-history-toggle" data-equipment-id="' + esc(eqId) + '" aria-expanded="' + (st.open ? 'true' : 'false') + '">' +
++    var btn = '<button type="button" class="btn btn-link btn-sm p-0 mt-1" data-testid="card-car-history-toggle" data-equipment-id="' + esc(eqId) + '" aria-expanded="' + (st.open ? 'true' : 'false') + '">' +
+       (st.open ? '▾' : '▸') + ' История работ</button>';
+     if (!st.open) return '<div>' + btn + '</div>';
+     var body;
+@@ -522,17 +484,15 @@
+     else {
+       var others = (st.items || []).filter(function (o) { return String(o.task_id) !== String(taskId); });
+       body = others.length ? others.map(historyOrderHtml).join('')
+-        : '<div class="small text-body-secondary" data-testid="card-equipment-history-empty">Других работ по этому автомобилю не было</div>';
++        : '<div class="small text-body-secondary" data-testid="card-car-history-empty">Других работ по этому автомобилю не было</div>';
+       if (host.getData().isAdmin) {
+-        body += '<a class="small" href="/equipment/' + esc(eqId) + '/history" target="_blank" rel="noopener" data-testid="card-equipment-history-page">Открыть полную историю ↗</a>';
++        body += '<a class="small" href="/equipment/' + esc(eqId) + '/history" target="_blank" rel="noopener" data-testid="card-car-history-page">Открыть полную историю ↗</a>';
+       }
+     }
+-    return '<div>' + btn + '<div class="border-start ps-2 mt-1" data-testid="card-equipment-history-panel">' + body + '</div></div>';
++    return '<div>' + btn + '<div class="border-start ps-2 mt-1" data-testid="card-car-history-panel">' + body + '</div></div>';
+   }
+ 
+   function historyOrderHtml(o) {
+-    var intake = o.accepted && (o.completeness || o.condition)
+-      ? '<div class="text-body-secondary">Принято: ' + esc([o.completeness && ('комплектность — ' + o.completeness), o.condition && ('состояние — ' + o.condition)].filter(Boolean).join('; ')) + '</div>' : '';
+     var services = (o.services || []).map(function (s) {
+       var stl = SERVICE_STATUS[s.status] || SERVICE_STATUS['new'];
+       var products = (s.products || []).map(function (p) {
+@@ -541,16 +501,16 @@
+       var logs = (s.logs || []).map(function (l) {
+         return '<div class="ps-2 text-body-secondary">' + fmtDateTime(l.created_at) + ' · ' + esc(l.author_name) + ': <span class="text-body" style="white-space:pre-wrap">' + esc(l.text) + '</span></div>';
+       }).join('');
+-      return '<div class="mt-1" data-testid="card-equipment-history-service">' +
++      return '<div class="mt-1" data-testid="card-car-history-service">' +
+         '<span class="fw-semibold">' + esc(s.name) + '</span> <span class="badge ' + stl[1] + '">' + stl[0] + '</span>' +
+         (s.assignee_name ? ' <span class="text-body-secondary">' + esc(s.assignee_name) + '</span>' : '') +
+         (s.price != null ? ' · ' + esc(String(s.price)) + ' ₽' : '') + products + logs + '</div>';
+     }).join('');
+-    return '<div class="small mb-2" data-testid="card-equipment-history-order">' +
+-      '<a href="/?task=' + o.task_id + '" data-testid="card-equipment-history-link">#' + o.task_id + ' ' + esc(o.title) + '</a>' +
++    return '<div class="small mb-2" data-testid="card-car-history-order">' +
++      '<a href="/?task=' + o.task_id + '" data-testid="card-car-history-link">#' + o.task_id + ' ' + esc(o.title) + '</a>' +
+       ' <span class="badge" style="background-color:' + esc(o.column_color) + '">' + esc(o.column_name) + '</span>' +
+       ' <span class="text-body-secondary">от ' + fmtDate(o.created_at) + '</span>' +
+-      intake + (services || '<div class="text-body-secondary">Услуг по этому автомобилю не было</div>') + '</div>';
++      (services || '<div class="text-body-secondary">Услуг в заказе не было</div>') + '</div>';
+   }
+ 
+   function toggleEquipmentHistory(eqId) {
+@@ -565,15 +525,15 @@
+         st.error = (err && err.message) || 'Не удалось загрузить историю';
+       }).then(function () {
+         st.loading = false;
+-        if (gen === openGeneration) renderEquipment();
++        if (gen === openGeneration && card) renderOrderCar();
+       });
+     }
+-    renderEquipment();
++    renderOrderCar();
+   }
+ 
+-  // plateBadge — госномер автомобиля бейджем перед названием единицы ('' — госномера нет).
+-  function plateBadge(plate) {
+-    return plate ? '<span class="badge text-bg-light border me-1 text-nowrap" data-testid="card-equipment-plate">' + esc(plate) + '</span> ' : '';
++  // plateBadge — госномер автомобиля бейджем ('' — госномера нет); testid — по месту показа.
++  function plateBadge(plate, testid) {
++    return plate ? '<span class="badge text-bg-light border me-1 text-nowrap" data-testid="' + (testid || 'task-car-plate') + '">' + esc(plate) + '</span> ' : '';
+   }
+ 
+   // PLATE_ERROR_TEXT — коды ошибок поля plate_number (details.fields[].message) → текст.
+@@ -583,125 +543,8 @@
+     invalid_text: 'Госномер: недопустимые символы'
+   };
+ 
+-  function equipmentAddHtml(options) {
+-    return '<select class="form-select form-select-sm" data-testid="card-equipment-add"><option value="">+ Добавить автомобиль клиента…</option>' +
+-      (options || []).map(function (e) {
+-        return '<option value="' + esc(e.id) + '">' + esc(e.plate_number) + '</option>';
+-      }).join('') + '</select>';
+-  }
+-
+-  function newEquipmentFormHtml() {
+-    return '' +
+-      '<div class="card mt-2" data-testid="card-equipment-new-form">' +
+-      '  <div class="card-body py-2">' +
+-      '    <div class="row g-2">' +
+-      '      <div class="col-6"><label class="form-label small mb-0">Госномер *</label><input class="form-control form-control-sm text-uppercase" maxlength="20" placeholder="А123ВС 777" data-testid="card-equipment-new-plate"></div>' +
+-      '    </div>' +
+-      '    <div class="alert alert-danger d-none mt-2 py-1 px-2 small" data-testid="card-equipment-new-error"></div>' +
+-      '    <div class="d-flex gap-2 mt-2">' +
+-      '      <button type="button" class="btn btn-primary btn-sm" data-testid="card-equipment-new-save">Добавить</button>' +
+-      '      <button type="button" class="btn btn-outline-secondary btn-sm" data-testid="card-equipment-new-cancel">Отмена</button>' +
+-      '    </div>' +
+-      '  </div>' +
+-      '</div>';
+-  }
+-
+   function fmtDate(iso) { return KT.time.fmtDate(iso); }
+ 
+-  function wireEquipment(container) {
+-    $$('[data-field="completeness"], [data-field="condition"]', container).forEach(function (input) {
+-      input.addEventListener('change', function () {
+-        var eqId = input.closest('[data-testid="card-equipment-row"]').dataset.equipmentId;
+-        var eq = card.equipment.filter(function (e) { return e.equipment_id === eqId; })[0];
+-        var field = input.dataset.field;
+-        var patch = {}; patch[field] = input.value;
+-        enqueueRow(reqKeyEquipment(eqId), patch, function (source) {
+-          var cur = (source || card).equipment.filter(function (e) { return e.equipment_id === eqId; })[0] || eq;
+-          return { completeness: cur.completeness, condition: cur.condition };
+-        }, function (body) {
+-          return KT.api.put('/api/v1/tasks/' + taskId + '/equipment/' + eqId, body);
+-        });
+-      });
+-    });
+-
+-    $$('[data-testid="card-equipment-history-toggle"]', container).forEach(function (btn) {
+-      btn.addEventListener('click', function () { toggleEquipmentHistory(btn.dataset.equipmentId); });
+-    });
+-
+-    $$('[data-testid="card-equipment-remove"]', container).forEach(function (btn) {
+-      btn.addEventListener('click', function () {
+-        var eqId = btn.dataset.equipmentId;
+-        KT.uiConfirm('Убрать автомобиль из заказа?').then(function (ok) {
+-          if (!ok) return;
+-          var ticket = beginRequest();
+-          KT.api.del('/api/v1/tasks/' + taskId + '/equipment/' + eqId).then(function (resp) {
+-            if (!applyCard(resp.card, ticket)) return;
+-            if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
+-            host.onChanged();
+-          }).catch(function (err) {
+-            KT.uiAlert((err && err.message) || 'Не удалось убрать автомобиль', 'Ошибка');
+-            // 409: единица занята услугой — карточка устарела; перечитываем, чтобы показать
+-            // актуальное состояние.
+-            if (err && err.status === 409) refetchCard();
+-          });
+-        });
+-      });
+-    });
+-
+-    var addSel = $('[data-testid="card-equipment-add"]', container);
+-    if (addSel) {
+-      addSel.addEventListener('change', function () {
+-        var eqId = addSel.value;
+-        if (!eqId) return;
+-        var ticket = beginRequest();
+-        KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: eqId, completeness: '', condition: '' }).then(function (resp) {
+-          if (!applyCard(resp.card, ticket)) return;
+-          host.onChanged();
+-        }).catch(function (err) {
+-          // единицу удалили, пока карточка открыта (soft-delete-clients §8.3): ошибка в шапке
+-          var gone = err && err.status === 400 && (err.fields || []).some(function (f) { return f.name === 'equipment_id' && f.message === 'not_found'; });
+-          if (gone) {
+-            clientEquipmentCache = null;
+-            showHeaderError('Автомобиль не найден');
+-            renderEquipment();
+-            return;
+-          }
+-          KT.uiAlert((err && err.message) || 'Не удалось добавить автомобиль', 'Ошибка');
+-        });
+-      });
+-    }
+-
+-    var newBtn = $('[data-testid="card-equipment-new"]', container);
+-    if (newBtn) newBtn.addEventListener('click', function () { newEquipmentOpen = true; renderEquipment(); });
+-    var cancelBtn = $('[data-testid="card-equipment-new-cancel"]', container);
+-    if (cancelBtn) cancelBtn.addEventListener('click', function () { newEquipmentOpen = false; renderEquipment(); });
+-
+-    var saveBtn = $('[data-testid="card-equipment-new-save"]', container);
+-    if (saveBtn) saveBtn.addEventListener('click', function () {
+-      var plate = $('[data-testid="card-equipment-new-plate"]', container).value.trim();
+-      var errEl = $('[data-testid="card-equipment-new-error"]', container);
+-      if (!plate) {
+-        errEl.textContent = 'Укажите госномер';
+-        errEl.classList.remove('d-none');
+-        return;
+-      }
+-      errEl.classList.add('d-none');
+-      var ticket = beginRequest();
+-      KT.api.post('/api/v1/clients/' + card.task.client_id + '/equipment', { plate_number: plate })
+-        .then(function (equipment) {
+-          return KT.api.post('/api/v1/tasks/' + taskId + '/equipment', { equipment_id: equipment.id, completeness: '', condition: '' });
+-        }).then(function (resp) {
+-          newEquipmentOpen = false;
+-          clientEquipmentCache = null; // новая единица появилась у клиента — перечитать список
+-          if (!applyCard(resp.card, ticket)) return;
+-          host.onChanged();
+-        }).catch(function (err) {
+-          errEl.textContent = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return (f.name === 'plate_number' && PLATE_ERROR_TEXT[f.message]) || f.message; }).join('; ') : ((err && err.message) || 'Не удалось создать автомобиль');
+-          errEl.classList.remove('d-none');
+-        });
+-    });
+-  }
+-
+   function toastWarningsHost(w) { host.toastWarnings(w); }
+ 
+   // ==================================================================
+@@ -745,15 +588,6 @@
+   function subtaskRowHtml(sub) {
+     var key = reqKeySubtask(sub.id);
+     var payoutId = 'card-subtask-executor-paid-' + sub.id;
+-    // мягко удалённую единицу услуге заново не назначить (soft-delete-clients §8.3 п.5): в
+-    // списке она остаётся, только если уже назначена этой услуге, — с бейджем у подписи поля.
+-    var subEquipment = card.equipment.filter(function (e) { return e.equipment_id === sub.equipment_id; })[0];
+-    var subEquipmentDeleted = !!(subEquipment && subEquipment.is_deleted);
+-    var equipmentOptions = '<option value="">Без автомобиля</option>' + card.equipment.filter(function (e) {
+-      return !e.is_deleted || e.equipment_id === sub.equipment_id;
+-    }).map(function (e) {
+-      return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.plate_number) + '</option>';
+-    }).join('');
+     var assigneeOptions = '<option value="">Не назначен</option>' + host.getData().assignees.map(function (a) {
+       return '<option value="' + esc(a.id) + '"' + (sub.assignee_id === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.is_active === false ? ' (неактивен)' : '') + '</option>';
+     }).join('');
+@@ -778,8 +612,6 @@
+       '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Цена (пусто — по факту)</label>' +
+       '        <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + key + '" data-testid="card-subtask-price" value="' + (sub.price == null ? '' : esc(sub.price)) + '">' +
+       '        <div class="invalid-feedback d-block d-none small" data-testid="card-subtask-warning"></div></div>' +
+-      '      <div class="col-12"><label class="form-label small mb-0">Автомобиль' + (subEquipmentDeleted ? deletedBadge('card-subtask-equipment-deleted') : '') + '</label>' +
+-      '        <select class="form-select form-select-sm" data-field="equipment_id" data-row-key="' + key + '" data-testid="card-subtask-equipment">' + equipmentOptions + '</select></div>' +
+       // executor-payouts D62–D66: выплата исполнителю — отметка, сумма (отдельная от цены) и
+       // дата отметки. Отметить можно только при назначенном исполнителе; уже стоящую
+       // отметку снять можно всегда (в т.ч. если сотрудника удалили).
+@@ -859,7 +691,7 @@
+   }
+ 
+   function wireSubtasks(container) {
+-    // ---- статус/исполнитель/срок/цена/оборудование (LWW — PUT /subtasks/:id) ----
++    // ---- статус/исполнитель/срок/цена (LWW — PUT /subtasks/:id) ----
+     $$('[data-testid="card-subtask-row"]', container).forEach(function (row) {
+       var subId = row.dataset.subtaskId;
+       var priceWarn = row.querySelector('[data-testid="card-subtask-warning"]');
+@@ -868,7 +700,7 @@
+         input.addEventListener('change', function () {
+           var field = input.dataset.field;
+           var value = input.value;
+-          if (field === 'assignee_id' || field === 'equipment_id') value = value || null;
++          if (field === 'assignee_id') value = value || null;
+           if (field === 'due_date') value = value || null;
+           if (field === 'price') {
+             // LOW code review: num() молча превращал «abc»/отрицательное в 0 и сохранял —
+@@ -921,7 +753,7 @@
+             // снимок, отправленный вместе с правкой срока/статуса/цены, молча снял бы чужую
+             // отметку (или вернул снятую). Эти поля уходят только через patch — когда
+             // пользователь правит именно их; сервер поле, которого нет в теле, не трогает.
+-            return { status: s.status, assignee_id: s.assignee_id, due_date: s.due_date, price: s.price == null ? null : num(s.price), equipment_id: s.equipment_id };
++            return { status: s.status, assignee_id: s.assignee_id, due_date: s.due_date, price: s.price == null ? null : num(s.price) };
+           }, function (body) {
+             return KT.api.put('/api/v1/subtasks/' + subId, body);
+           });
+@@ -1770,7 +1602,6 @@
+     var assignee = $('#task-assignee').value;
+     return {
+       title: $('#task-title').value.trim(),
+-      client_id: $('#task-client').value,
+       column_id: $('#task-column').value,
+       assignee_id: assignee || null,
+       due_date: due || null,
+@@ -1799,17 +1630,6 @@
+     });
+     $('#task-due').addEventListener('change', checkDueCapacity);
+ 
+-    $('#task-client').addEventListener('change', function () {
+-      if (!taskId || !card) return;
+-      var newClientId = $('#task-client').value;
+-      if (newClientId === card.task.client_id) return;
+-      if (card.equipment.length > 0) {
+-        KT.uiConfirm('Автомобиль другого клиента будет убран из заказа.').then(function (ok) {
+-          if (!ok) { $('#task-client').value = card.task.client_id; if ($('#task-client')._cbSync) $('#task-client')._cbSync(); }
+-        });
+-      }
+-    });
+-
+     $('#task-save-btn').addEventListener('click', function () {
+       if (saving) return;
+       saving = true;
+@@ -1898,7 +1718,7 @@
+     });
+ 
+     $('#task-modal').addEventListener('hidden.bs.modal', function () {
+-      card = null; taskId = null; rowQueue = {}; newEquipmentOpen = false; headerDirty = false; upload = null;
++      card = null; taskId = null; rowQueue = {}; headerDirty = false; upload = null;
+       clearTimeout(lookupTimer); lookupSeq++;
+       openGeneration++; // закрыли без переоткрытия — ответы запросов в полёте больше не применяем
+     });
+diff --git a/web/ssr/board/templates/pages/print-handover.html b/web/ssr/board/templates/pages/print-handover.html
+index 045e4de..e60bd59 100644
+--- a/web/ssr/board/templates/pages/print-handover.html
++++ b/web/ssr/board/templates/pages/print-handover.html
+@@ -18,22 +18,8 @@
+ </section>
+ 
+ <section class="print-section">
+-  <h2>Оборудование</h2>
+-  {{ if .Card.Equipment }}
+-  <table class="table table-bordered table-sm" data-testid="print-equipment">
+-    <thead><tr><th>Госномер</th><th>Комплектность</th><th>Состояние</th></tr></thead>
+-    <tbody>
+-    {{ range .Card.Equipment }}
+-    <tr>
+-      <td class="text-nowrap" data-testid="print-plate-number">{{ .PlateNumber }}</td>
+-      <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
+-    </tr>
+-    {{ end }}
+-    </tbody>
+-  </table>
+-  {{ else }}
+-  <p class="text-body-secondary">Оборудование не указано.</p>
+-  {{ end }}
++  <h2>Автомобиль</h2>
++  <p data-testid="print-car">Госномер: <span class="text-nowrap" data-testid="print-plate-number">{{ .Card.Car.PlateNumber }}</span></p>
+ </section>
+ 
+ {{ if .Description }}
+diff --git a/web/ssr/board/templates/pages/print-intake.html b/web/ssr/board/templates/pages/print-intake.html
+index b3622c8..93231c3 100644
+--- a/web/ssr/board/templates/pages/print-intake.html
++++ b/web/ssr/board/templates/pages/print-intake.html
+@@ -17,22 +17,8 @@
+ </section>
+ 
+ <section class="print-section">
+-  <h2>Оборудование</h2>
+-  {{ if .Card.Equipment }}
+-  <table class="table table-bordered table-sm" data-testid="print-equipment">
+-    <thead><tr><th>Госномер</th><th>Комплектность</th><th>Состояние</th></tr></thead>
+-    <tbody>
+-    {{ range .Card.Equipment }}
+-    <tr>
+-      <td class="text-nowrap" data-testid="print-plate-number">{{ .PlateNumber }}</td>
+-      <td>{{ .Completeness }}</td><td>{{ .Condition }}</td>
+-    </tr>
+-    {{ end }}
+-    </tbody>
+-  </table>
+-  {{ else }}
+-  <p class="text-body-secondary">Оборудование не указано.</p>
+-  {{ end }}
++  <h2>Автомобиль</h2>
++  <p data-testid="print-car">Госномер: <span class="text-nowrap" data-testid="print-plate-number">{{ .Card.Car.PlateNumber }}</span></p>
+ </section>
+ 
+ {{ if .Description }}
+diff --git a/web/ssr/clients/templates/pages/equipment-history.html b/web/ssr/clients/templates/pages/equipment-history.html
+index 31c32b1..7d2e6ce 100644
+--- a/web/ssr/clients/templates/pages/equipment-history.html
++++ b/web/ssr/clients/templates/pages/equipment-history.html
+@@ -22,34 +22,6 @@
+         {{ if .IsPaid }}<span class="badge text-bg-success">Оплачен</span>{{ end }}
+         <span class="text-body-secondary small ms-auto" data-testid="history-order-date">{{ timeIn $.Shell.User.Timezone "02.01.2006" .CreatedAt }}</span>
+       </div>
+-      {{ if .Accepted }}
+-      <div class="small mb-2" data-testid="history-intake" data-intake data-task-id="{{ .TaskID }}" data-equipment-id="{{ $.Equipment.ID }}">
+-        <div class="d-flex align-items-start gap-2" data-intake-view>
+-          <div>
+-            <span class="text-body-secondary">Принято:</span>
+-            <span data-intake-text>{{ if .Completeness }}комплектность — {{ .Completeness }}{{ end }}{{ if and .Completeness .Condition }}; {{ end }}{{ if .Condition }}состояние — {{ .Condition }}{{ end }}{{ if not (or .Completeness .Condition) }}без замечаний{{ end }}</span>
+-          </div>
+-          <button type="button" class="btn btn-link btn-sm p-0 ms-auto text-nowrap" data-intake-edit aria-label="Изменить комплектность и состояние" data-testid="history-intake-edit">✎ Изменить</button>
+-        </div>
+-        <form class="border rounded p-2 mt-1" data-intake-form hidden novalidate data-testid="history-intake-form">
+-          <div class="mb-2">
+-            <label class="form-label small mb-1" for="intake-c-{{ .TaskID }}">Комплектность</label>
+-            <textarea id="intake-c-{{ .TaskID }}" name="completeness" class="form-control form-control-sm" rows="2" maxlength="1000" data-testid="history-intake-completeness">{{ .Completeness }}</textarea>
+-            <div class="invalid-feedback" data-field-error="completeness"></div>
+-          </div>
+-          <div class="mb-2">
+-            <label class="form-label small mb-1" for="intake-s-{{ .TaskID }}">Состояние</label>
+-            <textarea id="intake-s-{{ .TaskID }}" name="condition" class="form-control form-control-sm" rows="2" maxlength="1000" data-testid="history-intake-condition">{{ .Condition }}</textarea>
+-            <div class="invalid-feedback" data-field-error="condition"></div>
+-          </div>
+-          <div class="text-danger small mb-2" data-intake-error hidden data-testid="history-intake-error"></div>
+-          <div class="d-flex gap-2">
+-            <button type="submit" class="btn btn-primary btn-sm" data-testid="history-intake-save">Сохранить</button>
+-            <button type="button" class="btn btn-outline-secondary btn-sm" data-intake-cancel>Отмена</button>
+-          </div>
+-        </form>
+-      </div>
+-      {{ end }}
+       {{ if .Services }}
+       <ul class="list-unstyled mb-0">
+         {{ range .Services }}
+@@ -87,7 +59,7 @@
+         {{ end }}
+       </ul>
+       {{ else }}
+-      <div class="text-body-secondary small">Услуг по этому автомобилю в заказе нет</div>
++      <div class="text-body-secondary small">Услуг в заказе нет</div>
+       {{ end }}
+     </div>
+   </div>
+@@ -96,6 +68,3 @@
+   {{ end }}
+ </div>
+ {{ end }}
+-{{ define "scripts" }}
+-<script src="/assets/ssr-shared/js/equipment-history.js"></script>
+-{{ end }}

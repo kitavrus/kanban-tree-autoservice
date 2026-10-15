@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fixture_sync_check.py --repo /Users/igorpotema/mycode/kanban-tree-autoservice --base cd5ab2947ecf51c7e8fb61763d441a818e18ebee
+(exit 0)
+
+fixture-sync: PASS (схемные: 2, тест-данные обновлены: 2)

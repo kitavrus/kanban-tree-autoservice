@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/contract_check.py --feature one-car-order --repo /Users/igorpotema/mycode/kanban-tree-autoservice --go internal/features/board
+(exit 0)
+
+contract one-car-order: SKIP (нет /Users/igorpotema/mycode/kanban-tree-autoservice/frontend/src/features/one-car-order — frontend ещё не создан)
