@@ -69,8 +69,9 @@ func TestBuild_Spans(t *testing.T) {
 }
 
 // TestBuild_PlanRules — order-start-duration: интервал start_date..плановое окончание; выданный —
-// по день выдачи (раньше плана — короче, позже — дольше); выданный раньше даты начала — один
-// день начала; не выданный с прошедшим планом — бессрочно; однодневный заказ сегодня — сегодня.
+// по день выдачи (раньше плана — короче, позже — дольше); выданный раньше даты начала — места
+// не занимает и в orders не попадает (в любом окне, в т.ч. захватывающем день выдачи); не
+// выданный с прошедшим планом — бессрочно; однодневный заказ сегодня — сегодня.
 func TestBuild_PlanRules(t *testing.T) {
 	today := day("2026-10-15")
 	rows := []orderRow{
@@ -89,9 +90,9 @@ func TestBuild_PlanRules(t *testing.T) {
 	}
 	assert.Equal(t, []int64{2, 4}, ids["2026-10-14"])
 	assert.Equal(t, []int64{1, 2, 4}, ids["2026-10-15"])
-	assert.Equal(t, []int64{4, 5}, ids["2026-10-16"])
+	assert.Equal(t, []int64{4, 5}, ids["2026-10-16"], "выдан до начала — в день выдачи места нет")
 	assert.Equal(t, []int64{4, 5}, ids["2026-10-18"])
-	assert.Equal(t, []int64{3, 4}, ids["2026-10-20"], "выдан до начала — занят только день начала")
+	assert.Equal(t, []int64{4}, ids["2026-10-20"], "выдан до начала — в плановый день начала места нет")
 	assert.Equal(t, []int64{4}, ids["2026-10-21"])
 	assert.Equal(t, []int64{4}, ids["2026-10-22"], "просроченный — бессрочно")
 
@@ -102,7 +103,7 @@ func TestBuild_PlanRules(t *testing.T) {
 	assert.NotContains(t, byID, int64(6), "выдан до окна — не в orders")
 	assert.Equal(t, "2026-10-15", *byID[1].EndDate)
 	assert.Equal(t, "2026-10-15", *byID[2].EndDate)
-	assert.Equal(t, "2026-10-20", *byID[3].EndDate, "конец не раньше начала")
+	assert.NotContains(t, byID, int64(3), "выдан до начала — не в orders")
 	assert.True(t, byID[4].OpenEnded)
 	assert.Equal(t, "2026-10-18", *byID[5].EndDate)
 	assert.Equal(t, "2026-10-14", *byID[4].DueDate, "due_date в ответе — плановое окончание")

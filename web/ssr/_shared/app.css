@@ -375,7 +375,8 @@ body { background: var(--bs-body-bg); }
 .cal-order { padding: 8px 10px; border: 1px solid var(--bs-border-color); border-radius: var(--kt-radius); }
 .cal-col-badge { background: var(--cal-col); color: #fff; font-weight: 500; }
 /* Диаграмма Ганта выбранного дня: слева — машина и сколько стоит, справа — шкала дней;
-   полоса = со дня приёмки по срок/выдачу, бессрочная тянется к правому краю с затуханием. */
+   полоса = с «Начать с» по плановое окончание/выдачу, бессрочная (план прошёл, машина не
+   выдана) тянется к правому краю с затуханием. */
 .gantt-scroll { overflow-x: auto; }
 .gantt { --gantt-label: 260px; min-width: calc(var(--gantt-label) + var(--gantt-days) * 30px); }
 .gantt-row { display: grid; grid-template-columns: var(--gantt-label) minmax(0, 1fr); border-top: 1px solid var(--bs-border-color); }

@@ -9,9 +9,14 @@
 // (role='admin' AND is_active) — иначе ErrNoAdmin. Существующий admin не изменяется,
 // демо-мастера заводятся ON CONFLICT (login) DO NOTHING.
 //
-// Автомобиль = единица «оборудования» клиента: только госномер — equipment.plate_number
-// («А123ВС 777»). Марка/модель/VIN/характеристики демо-данных используются лишь для
+// Автомобиль клиента хранится госномером — equipment.plate_number («А123ВС 777»); заказ —
+// ровно одна машина клиента (tasks.car_id, one-car-order), её марка/модель/госномер — в
+// названии заказа. Марка/модель/VIN/характеристики демо-данных используются лишь для
 // генерации медиа и текстов заказов.
+//
+// План работ заказов (order-start-duration) — от «сегодня» по Алматы (pkg/timezone.Default,
+// пояс календаря загрузки у seed-админа): start_date/duration_days, выданным — finished_at не
+// раньше начала; created_at, журнал и вложения — внутри окна «приёмка … выдача».
 //
 // Вложения (task_attachments) создаются, только если передан FileStore (WithFiles): файлы
 // пишутся в него так же, как при загрузке через UI (ключ — uuid, в БД — метаданные). Фото —
@@ -41,6 +46,7 @@ import (
 
 	"github.com/kitavrus/kanban-tree/internal/features/board"
 	"github.com/kitavrus/kanban-tree/internal/filestore"
+	"github.com/kitavrus/kanban-tree/pkg/timezone"
 )
 
 // ErrNoAdmin — в БД нет ни одного активного администратора; демо-данным нужен его id
@@ -264,9 +270,21 @@ func validateDemoData() error {
 			}
 		}
 	}
+	cars := map[string]bool{}
 	for _, t := range demoTasks {
-		if e, ok := keys[t.car]; !ok || e.clientIdx != t.clientIdx {
+		e, ok := keys[t.car]
+		if !ok || e.clientIdx != t.clientIdx {
 			return fmt.Errorf("заказ %q: авто %q не найдено у клиента", t.title, t.car)
+		}
+		if cars[t.car] {
+			return fmt.Errorf("заказ %q: у авто %q уже есть действующий заказ", t.title, t.car)
+		}
+		cars[t.car] = true
+		if !strings.Contains(t.title, e.plate) || !strings.Contains(t.title, strings.Fields(e.model)[0]) {
+			return fmt.Errorf("заказ %q: в названии нет модели/госномера авто %s %s", t.title, e.model, e.plate)
+		}
+		if err := validatePlan(t); err != nil {
+			return fmt.Errorf("заказ %q: %w", t.title, err)
 		}
 		for _, st := range t.subtasks {
 			if !svc[st.service] {
@@ -276,6 +294,58 @@ func validateDemoData() error {
 				if !skus[gd.sku] {
 					return fmt.Errorf("заказ %q: нет товара %q", t.title, gd.sku)
 				}
+			}
+		}
+	}
+	return nil
+}
+
+// demoFinalColumn — финальная колонка демо-доски («Выдан», миграция 0005).
+const demoFinalColumn = "Выдан"
+
+// validatePlan — план работ заказа и время его событий (order-start-duration): дни 1..14;
+// выданный — день выдачи в прошлом и не раньше начала; срок услуги — внутри плана; журнал,
+// вложения и выплата — не раньше приёмки (acceptedH) и, у выданного, не позже выдачи
+// (finished_at — день выдачи 17:30 по Алматы: запас +7 ч на время суток прогона).
+func validatePlan(t demoTaskItem) error {
+	if t.days < 1 || t.days > 14 {
+		return fmt.Errorf("дней на работу %d вне 1..14", t.days)
+	}
+	if t.acceptedH < 1 {
+		return fmt.Errorf("нет момента приёмки")
+	}
+	final := t.column == demoFinalColumn
+	switch {
+	case final && (t.finishedOffset > -1 || t.finishedOffset < t.startOffset):
+		return fmt.Errorf("день выдачи %d: должен быть в прошлом и не раньше начала %d", t.finishedOffset, t.startOffset)
+	case !final && t.finishedOffset != 0:
+		return fmt.Errorf("день выдачи у невыданного заказа")
+	}
+	minAgo := 0
+	if final {
+		minAgo = -t.finishedOffset*24 + 7
+	}
+	check := func(what string, hoursAgo int) error {
+		if hoursAgo > t.acceptedH || hoursAgo < minAgo {
+			return fmt.Errorf("%s: %d ч назад — вне окна приёмки (%d ч) … выдачи", what, hoursAgo, t.acceptedH)
+		}
+		return nil
+	}
+	for _, m := range t.media {
+		if err := check("вложение "+m.name, m.hoursAgo); err != nil {
+			return err
+		}
+	}
+	for _, st := range t.subtasks {
+		if st.dueOffset != nil && (*st.dueOffset < t.startOffset || *st.dueOffset > t.startOffset+t.days-1) {
+			return fmt.Errorf("услуга %s: срок %d вне плана %d..%d", st.service, *st.dueOffset, t.startOffset, t.startOffset+t.days-1)
+		}
+		if st.payoutPaid && t.acceptedH < 24 {
+			return fmt.Errorf("услуга %s: выплата (вчера) раньше приёмки", st.service)
+		}
+		for _, l := range st.logs {
+			if err := check("журнал "+st.service, l.hoursAgo); err != nil {
+				return err
 			}
 		}
 	}
@@ -492,8 +562,20 @@ func dueDate(n *int) *string {
 	return &d
 }
 
-// dayFromToday — YYYY-MM-DD через n дней от сегодня (начало работ заказа, срок услуги).
-func dayFromToday(n int) string { return time.Now().AddDate(0, 0, n).Format("2006-01-02") }
+// dayFromToday — YYYY-MM-DD через n дней от сегодня по Алматы (pkg/timezone.Default — пояс
+// seed-админа: начало работ заказа, день выдачи, срок услуги).
+func dayFromToday(n int) string {
+	return time.Now().In(timezone.Load(timezone.Default)).AddDate(0, 0, n).Format(time.DateOnly)
+}
+
+// finishedDay — день выдачи заказа финальной колонки (nil — не выдан).
+func finishedDay(t demoTaskItem, final bool) *string {
+	if !final {
+		return nil
+	}
+	d := dayFromToday(t.finishedOffset)
+	return &d
+}
 
 func userID(executors []executorRow, idx int, adminID string) string {
 	if idx >= 0 {
@@ -514,13 +596,20 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
 		if t.assignee >= 0 {
 			assigneeID = &executors[t.assignee].ID
 		}
-		// Заказ = ровно один автомобиль клиента (tasks.car_id, one-car-order).
+		// Заказ = ровно один автомобиль клиента (tasks.car_id, one-car-order). Выданный —
+		// finished_at явно (день выдачи 17:30 по Алматы; триггер tasks_set_finished_at его не
+		// перетирает), оплата — в момент выдачи; created_at — момент приёмки/записи.
 		var taskID int64
-		if err := s.tx.QueryRow(s.ctx,
-			`INSERT INTO tasks (column_id, client_id, car_id, title, description_html, assignee_id, start_date, duration_days, is_paid, paid_at, position, created_by)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7::date, $11, $8, CASE WHEN $8 THEN now() END, $9::numeric, $10) RETURNING id`,
+		if err := s.tx.QueryRow(s.ctx, `
+			WITH v AS (SELECT ($12::date + time '17:30') AT TIME ZONE 'Asia/Almaty' AS finished_at)
+			INSERT INTO tasks (column_id, client_id, car_id, title, description_html, assignee_id, start_date, duration_days,
+			                   is_paid, paid_at, finished_at, position, created_by, created_at, updated_at)
+			SELECT $1, $2, $3, $4, $5, $6, $7::date, $11,
+			       $8, CASE WHEN $8 THEN COALESCE(v.finished_at, now()) END, v.finished_at, $9::numeric, $10,
+			       now() - make_interval(hours => $13), COALESCE(v.finished_at, now())
+			FROM v RETURNING id`,
 			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dayFromToday(t.startOffset), t.paid,
-			fmt.Sprintf("%d", (i+1)*1024), s.adminID, t.days).
+			fmt.Sprintf("%d", (i+1)*1024), s.adminID, t.days, finishedDay(t, col.IsFinal), t.acceptedH).
 			Scan(&taskID); err != nil {
 			return err
 		}
@@ -683,15 +772,17 @@ func (s *seeder) seedAttachment(taskID int64, car demoEquipmentItem, m demoMedia
 
 // seedDeletedTask — один мягко удалённый заказ с причиной (soft-delete-core TS-F5, DS-011);
 // без услуг и товаров — возвращать на склад нечего; в Result.Tasks не входит. Автомобиль —
-// та же Lada Vesta клиента (carID).
+// та же Lada Vesta клиента (carID): дубль заказа, заведённый в день её приёмки (план — тот же
+// день, 1 день) и удалённый позже.
 func (s *seeder) seedDeletedTask(clients []clientRow, carID string) error {
 	_, err := s.tx.Exec(s.ctx, `
 		INSERT INTO tasks (column_id, client_id, car_id, title, description_html, position, created_by,
-		                   deleted_at, deleted_by, delete_reason)
+		                   start_date, duration_days, created_at, updated_at, deleted_at, deleted_by, delete_reason)
 		SELECT c.id, $1::uuid, $3::uuid, 'Lada Vesta Е245КХ 797: диагностика (дубль)', '', 999424, $2::uuid,
+		       $4::date, 1, now() - interval '119 hours', now() - interval '2 days',
 		       now() - interval '2 days', $2::uuid, 'Создан по ошибке — дубль заказа'
 		FROM columns c WHERE NOT c.is_final AND c.deleted_at IS NULL ORDER BY c.position, c.id LIMIT 1`,
-		clients[0].ID, s.adminID, carID)
+		clients[0].ID, s.adminID, carID, dayFromToday(-5))
 	return err
 }
 

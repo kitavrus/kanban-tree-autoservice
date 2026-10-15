@@ -95,6 +95,49 @@ test.describe('PLAN: «Начать с» и «Дней на работу»', () 
     await expect(board.card(id).getByTestId('task-card-due')).toHaveAttribute('data-due', 'ok');
   });
 
+  test('PLAN-003: фильтр доски «Горит/просрочено» и метка 📅 — по плановому окончанию', async ({ adminPage: page, adminApi, uniq }) => {
+    const client = await adminApi.createClient({ company_name: uniq('PLAN-003 Клиент'), phones: [{ phone: '9990000973', note: '' }] });
+    const columns = (await adminApi.listColumns()).items;
+    const open = columnByName(columns, 'Приёмка');
+    const final = columns.find((c) => c.is_final)!;
+    const today = (await adminApi.getCalendar()).today;
+    const mk = (label: string, column: string, startOffset: number, days: number) =>
+      adminApi.createTask({ title: uniq(`PLAN-003 ${label}`), client_id: client.id, column_id: column, start_date: addDays(today, startOffset), duration_days: days });
+    // контрольные заказы — с явным планом (фикстура по умолчанию даёт «сегодня, 1 день» = «Горит»).
+    const future = await mk('позже', open.id, 5, 3); // окончание через 7 дней — не горит
+    const endsToday = await mk('кончается сегодня', open.id, -2, 3);
+    const endsTomorrow = await mk('кончается завтра', open.id, 0, 2);
+    const overdue = await mk('просрочен', open.id, -4, 2); // окончание 3 дня назад, не выдан
+    const issued = await mk('выдан', final.id, -4, 1); // выдан — не горит, хоть план и прошёл
+
+    const board = new BoardPage(page);
+    await board.goto(`?client_id=${client.id}`);
+    const due = (id: number) => board.card(id).getByTestId('task-card-due');
+    await expect(due(future.id)).toHaveAttribute('data-due', 'ok');
+    await expect(due(future.id)).toContainText(ymdText(addDays(today, 7)));
+    await expect(due(endsToday.id)).toHaveAttribute('data-due', 'soon');
+    await expect(due(endsToday.id)).toContainText(ymdText(today));
+    await expect(due(endsTomorrow.id)).toHaveAttribute('data-due', 'soon');
+    await expect(due(overdue.id)).toHaveAttribute('data-due', 'overdue');
+    await expect(board.card(overdue.id)).toHaveClass(/overdue/);
+    await expect(due(issued.id)).toHaveAttribute('data-due', 'ok');
+
+    // «Горит» — окончание сегодня/завтра и просроченные открытые.
+    await board.chooseCombobox(board.filterDue, 'Горит (сегодня/завтра, просрочено)');
+    await expect.poll(() => new URL(page.url()).searchParams.get('due')).toBe('soon');
+    for (const t of [endsToday, endsTomorrow, overdue]) await expect(board.card(t.id)).toBeVisible();
+    for (const t of [future, issued]) await expect(board.card(t.id)).toHaveCount(0);
+
+    // «Только просроченные» — плановое окончание прошло, машина не выдана.
+    await board.chooseCombobox(board.filterDue, 'Только просроченные');
+    await expect.poll(() => new URL(page.url()).searchParams.get('due')).toBe('overdue');
+    await expect(board.card(overdue.id)).toBeVisible();
+    for (const t of [future, endsToday, endsTomorrow, issued]) await expect(board.card(t.id)).toHaveCount(0);
+
+    await board.chooseCombobox(board.filterDue, 'Любой срок');
+    for (const t of [future, endsToday, endsTomorrow, overdue, issued]) await expect(board.card(t.id)).toBeVisible();
+  });
+
   test('PLAN-002: «Начать с» и «Дней на работу» обязательны, дни — от 1 до 60 (ошибки под полями, заказ не создаётся)', async ({
     adminPage: page,
     adminApi,

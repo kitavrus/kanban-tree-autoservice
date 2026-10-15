@@ -79,13 +79,15 @@ func build(rows []orderRow, capacity int, today, from, to time.Time) *CalendarRe
 		case r.FinishedOn != nil:
 			o.IsFinished = true
 			end, _ = time.Parse(time.DateOnly, *r.FinishedOn)
+			if end.Before(start) {
+				// выдан раньше плановой даты начала (отмена/ошибка записи) — машины в сервисе в
+				// плановые дни не было: места не занимает ни в сетке, ни на диаграмме.
+				continue
+			}
 		case r.DueDate != nil:
 			if due, err := time.Parse(time.DateOnly, *r.DueDate); err == nil && !due.Before(today) {
 				end = due
 			}
-		}
-		if !end.IsZero() && end.Before(start) {
-			end = start
 		}
 		if end.IsZero() {
 			o.OpenEnded = true

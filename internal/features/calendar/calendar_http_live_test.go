@@ -190,7 +190,7 @@ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
 	tzEdge := s.insertTask("CAL Е004ЕЕ", s.finalColumnID, "2031-03-01", 1, strp("2031-03-02T00:30:00+05:00"))
 	// План давно прошёл, машина не выдана — бессрочно, во всех днях окна.
 	open := s.insertTask("CAL М006ММ", s.workColumnID, "2020-01-10", 2, nil)
-	// Выдан 2031-03-04 — раньше плановой даты начала 2031-03-06: занят только день начала.
+	// Выдан 2031-03-04 — раньше плановой даты начала 2031-03-06: места не занимает вовсе.
 	early := s.insertTask("CAL Р007РР", s.finalColumnID, "2031-03-06", 2, strp("2031-03-04T12:00:00+05:00"))
 	// Удалённый заказ не учитывается.
 	deleted := s.insertTask("CAL Х005ХХ", s.workColumnID, "2031-03-02", 3, nil)
@@ -209,7 +209,7 @@ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
 		"2031-03-03": {finished, planned, open},
 		"2031-03-04": {planned, open},
 		"2031-03-05": {future, open},
-		"2031-03-06": {future, early, open},
+		"2031-03-06": {future, open},
 		"2031-03-07": {open},
 	}
 	mine := map[int64]bool{planned: true, finished: true, future: true, open: true, tzEdge: true, early: true, deleted: true}
@@ -246,7 +246,7 @@ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
 	s.Equal("2031-03-04", *byID[planned].DueDate)
 	s.Equal("2031-03-06", *byID[future].EndDate)
 	s.Equal("2031-03-02", *byID[tzEdge].EndDate, "день выдачи — по Алматы")
-	s.Equal("2031-03-06", *byID[early].EndDate, "конец не раньше начала")
+	s.NotContains(byID, early, "выдан раньше начала — места не занимает")
 }
 
 // TestCalendar_PlanFromAPI — сквозь API заказов: POST с будущим «Начать с» и 3 днями занимает

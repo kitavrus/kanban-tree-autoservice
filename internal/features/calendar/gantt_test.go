@@ -82,6 +82,38 @@ func TestBuildGantt_Bars(t *testing.T) {
 	assert.Equal(t, "срок 10.10 просрочен", r4.Status)
 }
 
+// TestBuildGantt_IssuedBeforeStart — заказ с будущим началом выдан раньше него (отмена): ни на
+// диаграмме дня выдачи, ни на диаграмме плановых дней его нет, и сетка месяца с любым окном
+// (захватывает день выдачи или нет) даёт ту же занятость, что и шкала Ганта.
+func TestBuildGantt_IssuedBeforeStart(t *testing.T) {
+	today := day("2026-10-15")
+	rows := []orderRow{
+		{ID: 8, StartDate: "2026-10-20", DueDate: strp("2026-10-22"), FinishedOn: strp("2026-10-16")},
+		{ID: 9, StartDate: "2026-10-20", DueDate: strp("2026-10-21")},
+	}
+	for _, sel := range []string{"2026-10-16", "2026-10-20"} {
+		selected := day(sel)
+		from, to := GanttWindow(selected)
+		win := build(rows, 5, today, from, to)
+		var ids []int64
+		for _, d := range win.Days {
+			assert.NotContains(t, d.TaskIDs, int64(8), "шкала с %s: %s", sel, d.Date)
+			if d.Date == sel {
+				ids = d.TaskIDs
+			}
+		}
+		g := buildGantt(selected, today, win, ids)
+		for _, r := range g.Rows {
+			assert.NotEqual(t, int64(8), r.ID, "диаграмма %s", sel)
+		}
+	}
+	// окно сетки месяца, начинающееся после дня выдачи (раньше repo/build расходились здесь).
+	month := build(rows, 5, today, day("2026-10-18"), day("2026-10-24"))
+	for _, d := range month.Days {
+		assert.NotContains(t, d.TaskIDs, int64(8), d.Date)
+	}
+}
+
 // TestBuildGantt_FutureStart — order-start-duration: заказ с будущим началом на диаграмме дня
 // начала — полоса ровно «Дней на работу», отметка срока — плановое окончание.
 func TestBuildGantt_FutureStart(t *testing.T) {

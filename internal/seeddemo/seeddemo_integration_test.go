@@ -13,9 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/suite"
 
+	"github.com/kitavrus/kanban-tree/internal/features/calendar"
 	"github.com/kitavrus/kanban-tree/internal/filestore"
 	"github.com/kitavrus/kanban-tree/internal/seeddemo"
 	"github.com/kitavrus/kanban-tree/pkg/testutil"
+	"github.com/kitavrus/kanban-tree/pkg/timezone"
 )
 
 // SeedDemoSuite (§TD-8/BaseSuite) — AC-019: make seed-demo заливает демо-данные автосервиса
@@ -81,11 +83,11 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 	s.Equal(18, res.Equipment)
 	s.Equal(46, res.Products)
 	s.Equal(29, res.Services)
-	s.Equal(15, res.Tasks)
+	s.Equal(16, res.Tasks)
 
 	var tasksTotal int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE deleted_at IS NULL`).Scan(&tasksTotal))
-	s.Equal(15, tasksTotal)
+	s.Equal(16, tasksTotal)
 
 	s.assertPlates()
 	s.assertAttachments(res)
@@ -175,23 +177,11 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
 		SELECT count(*) FROM tasks t JOIN equipment e ON e.id = t.car_id AND e.client_id = t.client_id
 		WHERE t.deleted_at IS NULL`).Scan(&tasksWithEquipment))
-	s.Equal(15, tasksWithEquipment, "у каждого заказа есть автомобиль клиента")
+	s.Equal(16, tasksWithEquipment, "у каждого заказа есть автомобиль клиента")
 
-	// order-start-duration: у демо-заказов реалистичный план — 1..11 дней, часть начинается в
-	// будущем, часть уже просрочена (не выдана, плановое окончание прошло), есть однодневные с
-	// окончанием сегодня; due_date — плановое окончание.
-	var futureStart, overdueOpen, endsToday, badPlan int
-	s.Require().NoError(s.Pool.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE t.start_date > current_date),
-		       count(*) FILTER (WHERE NOT c.is_final AND t.due_date < current_date),
-		       count(*) FILTER (WHERE t.due_date = current_date),
-		       count(*) FILTER (WHERE t.duration_days NOT BETWEEN 1 AND 11 OR t.due_date <> t.start_date + t.duration_days - 1)
-		FROM tasks t JOIN columns c ON c.id = t.column_id
-		WHERE t.deleted_at IS NULL`).Scan(&futureStart, &overdueOpen, &endsToday, &badPlan))
-	s.Equal(2, futureStart, "заказы с началом в будущем (Приёмка, Согласование)")
-	s.Equal(2, overdueOpen, "просроченные невыданные")
-	s.Equal(2, endsToday, "плановое окончание сегодня")
-	s.Zero(badPlan)
+	s.assertOrderPlans()
+	s.assertCalendarLoad()
+	s.assertTexts()
 
 	var movementsTotal int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM stock_movements`).Scan(&movementsTotal))
@@ -221,9 +211,96 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 	s.assertExecutorPayouts()
 }
 
+// almatyToday — «сегодня» по Алматы (пояс плана демо-заказов и календаря seed-админа).
+const almatyToday = `(now() AT TIME ZONE 'Asia/Almaty')::date`
+
+// assertOrderPlans — order-start-duration: у каждого заказа план 1..14 дней и due_date =
+// плановое окончание; название — с госномером машины заказа; выданные — день выдачи не раньше
+// начала и в прошлом, у невыданных finished_at нет; записи на будущее (6), просроченные
+// невыданные (2), «горящие» — окончание сегодня/завтра (3); сроки услуг — внутри плана;
+// журнал — не раньше приёмки и не позже выдачи.
+func (s *SeedDemoSuite) assertOrderPlans() {
+	ctx := context.Background()
+	var badPlan, titleNoPlate, issued, issuedBad, openFinished, future, overdue, soon, subtaskDueOut, logsOut int
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE t.duration_days NOT BETWEEN 1 AND 14 OR t.due_date <> t.start_date + t.duration_days - 1),
+		       count(*) FILTER (WHERE strpos(t.title, e.plate_number) = 0),
+		       count(*) FILTER (WHERE c.is_final),
+		       count(*) FILTER (WHERE c.is_final AND (t.finished_at IS NULL
+		                          OR (t.finished_at AT TIME ZONE 'Asia/Almaty')::date < t.start_date
+		                          OR t.finished_at > now() OR t.finished_at < t.created_at)),
+		       count(*) FILTER (WHERE NOT c.is_final AND t.finished_at IS NOT NULL),
+		       count(*) FILTER (WHERE NOT c.is_final AND t.start_date > `+almatyToday+`),
+		       count(*) FILTER (WHERE NOT c.is_final AND t.due_date < `+almatyToday+`),
+		       count(*) FILTER (WHERE NOT c.is_final AND t.due_date BETWEEN `+almatyToday+` AND `+almatyToday+` + 1),
+		       (SELECT count(*) FROM subtasks s JOIN tasks t2 ON t2.id = s.task_id
+		         WHERE s.due_date IS NOT NULL AND s.due_date NOT BETWEEN t2.start_date AND t2.due_date),
+		       (SELECT count(*) FROM subtask_logs l JOIN subtasks s ON s.id = l.subtask_id JOIN tasks t2 ON t2.id = s.task_id
+		         WHERE l.created_at < t2.created_at OR l.created_at > COALESCE(t2.finished_at, now()))
+		FROM tasks t JOIN columns c ON c.id = t.column_id JOIN equipment e ON e.id = t.car_id
+		WHERE t.deleted_at IS NULL`).
+		Scan(&badPlan, &titleNoPlate, &issued, &issuedBad, &openFinished, &future, &overdue, &soon, &subtaskDueOut, &logsOut))
+	s.Zero(badPlan, "план 1..14 дней, due_date — плановое окончание")
+	s.Zero(titleNoPlate, "название заказа — с госномером его машины")
+	s.Equal(3, issued, "выданные заказы")
+	s.Zero(issuedBad, "выдан в прошлом, не раньше начала и после приёмки")
+	s.Zero(openFinished, "у невыданных finished_at нет")
+	s.Equal(6, future, "записи на будущее")
+	s.Equal(2, overdue, "просроченные невыданные («Только просроченные»)")
+	s.Equal(3, soon, "окончание сегодня/завтра («Горит»)")
+	s.Zero(subtaskDueOut, "сроки услуг — внутри плана заказа")
+	s.Zero(logsOut, "журнал — между приёмкой и выдачей")
+}
+
+// assertCalendarLoad — календарь загрузки (правила calendar.Service, пояс seed-админа) при
+// вместимости по умолчанию 8: сегодня занято 7, в ближайшие 14 дней — не больше вместимости,
+// есть день «под завязку» и не меньше трёх дней с 1–3 свободными местами.
+func (s *SeedDemoSuite) assertCalendarLoad() {
+	ctx := context.Background()
+	_, err := s.Pool.Exec(ctx, `UPDATE shop_settings SET max_cars = 8`) // умолчание миграции 0016
+	s.Require().NoError(err)
+	svc := calendar.NewService(s.Pool)
+	today := svc.Today(timezone.Default)
+	cal, err := svc.Calendar(ctx, timezone.Default, today, today.AddDate(0, 0, 13))
+	s.Require().NoError(err)
+	s.Require().Len(cal.Days, 14)
+	full, tight := 0, 0
+	for _, d := range cal.Days {
+		s.LessOrEqual(d.Occupied, cal.Capacity, "%s: без перегруза", d.Date)
+		switch {
+		case d.Free == 0:
+			full++
+		case d.Free >= 1 && d.Free <= 3:
+			tight++
+		}
+	}
+	s.Equal(7, cal.Days[0].Occupied, "сегодня занято 7 из 8")
+	s.Positive(full, "есть день без свободных мест")
+	s.GreaterOrEqual(tight, 3, "дни с 1–3 свободными местами")
+}
+
+// assertTexts — тексты демо-данных без прежних понятий «оборудование», «комплектность»,
+// «состояние» (one-car-order: заказ — машина клиента).
+func (s *SeedDemoSuite) assertTexts() {
+	ctx := context.Background()
+	var hits int
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT count(*) FROM (
+		  SELECT title || ' ' || description_html || ' ' || coalesce(delete_reason, '') AS txt FROM tasks
+		  UNION ALL SELECT text FROM subtask_logs
+		  UNION ALL SELECT name FROM services
+		  UNION ALL SELECT name FROM products
+		  UNION ALL SELECT name FROM catalog_categories
+		  UNION ALL SELECT original_name FROM task_attachments
+		  UNION ALL SELECT company_name || ' ' || coalesce(delete_reason, '') FROM clients
+		  UNION ALL SELECT note FROM client_phones
+		  UNION ALL SELECT coalesce(delete_reason, '') FROM equipment
+		) x WHERE txt ~* '(оборудован|комплектност|состояни)'`).Scan(&hits))
+	s.Zero(hits, "тексты без «оборудования», «комплектности», «состояния»")
+}
+
 // assertPlates — автомобиль = госномер (equipment.plate_number): у каждого действующего
-// авто — российский номер «А123ВС 777» (кириллица), в том числе у машины снятого двигателя
-// («Р126ОР 750»).
+// авто — российский номер «А123ВС 777» (кириллица).
 func (s *SeedDemoSuite) assertPlates() {
 	ctx := context.Background()
 	rows, err := s.Pool.Query(ctx, `SELECT plate_number FROM equipment WHERE deleted_at IS NULL`)
@@ -240,12 +317,14 @@ func (s *SeedDemoSuite) assertPlates() {
 	}
 	s.Require().NoError(rows.Err())
 	s.Equal(18, cars)
-	s.True(plates["Р126ОР 750"], "у автомобиля снятого двигателя тоже есть госномер")
+	s.True(plates["Р126ОР 750"], "Lada Priora — машина, двигатель которой привезли на капремонт снятым")
 }
 
-// assertAttachments — у каждого заказа есть фото приёмки; есть видео; файл каждой строки
-// task_attachments лежит в FileStore под storage_key, размер совпадает, тип по сигнатуре —
-// тот же, что записан (как при загрузке через UI).
+// assertAttachments — у каждого заказа, машина которого уже побывала в сервисе (начат не
+// позже сегодня либо осмотрен до записи на ремонт), есть фото; у записей на будущее без
+// визита (3 заказа) вложений нет; есть видео; вложения — не раньше приёмки и не позже выдачи;
+// файл каждой строки task_attachments лежит в FileStore под storage_key, размер совпадает, тип
+// по сигнатуре — тот же, что записан (как при загрузке через UI).
 func (s *SeedDemoSuite) assertAttachments(res seeddemo.Result) {
 	ctx := context.Background()
 	var total, videos, tasksWithPhoto int
@@ -256,7 +335,16 @@ func (s *SeedDemoSuite) assertAttachments(res seeddemo.Result) {
 	s.Equal(res.Attachments, total)
 	s.Equal(res.Videos, videos)
 	s.Equal(3, videos)
-	s.Equal(res.Tasks, tasksWithPhoto, "у каждого заказа есть фото")
+	s.Equal(res.Tasks-3, tasksWithPhoto, "фото — у всех заказов, кроме трёх записей без визита")
+	var startedNoPhoto, outOfWindow int
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM tasks t WHERE t.deleted_at IS NULL AND t.start_date <= `+almatyToday+`
+		          AND NOT EXISTS (SELECT 1 FROM task_attachments a WHERE a.task_id = t.id AND a.kind = 'photo')),
+		       (SELECT count(*) FROM task_attachments a JOIN tasks t ON t.id = a.task_id
+		         WHERE a.created_at < t.created_at OR a.created_at > COALESCE(t.finished_at, now()))`).
+		Scan(&startedNoPhoto, &outOfWindow))
+	s.Zero(startedNoPhoto, "у каждого начатого заказа есть фото приёмки")
+	s.Zero(outOfWindow, "вложения — между приёмкой и выдачей")
 
 	rows, err := s.Pool.Query(ctx, `SELECT storage_key, size, content_type FROM task_attachments`)
 	s.Require().NoError(err)

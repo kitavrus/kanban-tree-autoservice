@@ -40,12 +40,12 @@ type GanttRow struct {
 	ColumnColor string
 	Col         int  // первый столбец полосы (1..GanttDays)
 	Span        int  // число столбцов полосы
-	CutLeft     bool // принята раньше начала шкалы
+	CutLeft     bool // работы начаты раньше начала шкалы
 	CutRight    bool // занимает место и после конца шкалы (в т.ч. бессрочно)
 	OpenEnded   bool
 	IsFinished  bool
-	Overdue     bool // срок прошёл, машина не выдана
-	DueCol      int  // столбец срока (0 — срока нет или он вне шкалы)
+	Overdue     bool // плановое окончание прошло, машина не выдана
+	DueCol      int  // столбец планового окончания (0 — оно вне шкалы)
 	Days        int  // дней на месте: всего (известен конец) или пока (бессрочно)
 	Period      string
 	Status      string
@@ -145,14 +145,10 @@ func buildGantt(selected, today time.Time, win *CalendarResponse, ids []int64) *
 			r.Days = daysBetween(start, end) + 1
 			r.Period = fmt.Sprintf("%s → срок %s", shortDate(start), shortDate(end))
 			r.Status = "до срока"
-		default:
+		default: // бессрочно — плановое окончание (всегда задано) прошло, машина не выдана
 			r.Days = daysBetween(start, today) + 1
 			r.Period = "с " + shortDate(start)
-			if o.DueDate != nil {
-				r.Status = "срок " + shortDate(due) + " просрочен"
-			} else {
-				r.Status = "срок не указан"
-			}
+			r.Status = "срок " + shortDate(due) + " просрочен"
 		}
 		if r.Days < 1 {
 			r.Days = 1

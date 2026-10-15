@@ -377,11 +377,11 @@
 
   // ---------- рендер доски ----------
   function due2Class(t) {
-    if (!t.due_date) return '';
     var col = columnById(t.column_id);
     if (col && col.is_final) return '';
     // «Сегодня» — текущая дата в поясе ПОЛЬЗОВАТЕЛЯ, не браузера (DS-032). due_date —
-    // календарная дата без времени (не сдвигается); ISO-даты сравниваются как строки.
+    // плановое окончание заказа (order-start-duration: start_date + duration_days − 1, у заказа
+    // всегда есть), календарная дата без времени (не сдвигается); ISO-даты сравниваются как строки.
     var today = KT.time.today();
     var due = String(t.due_date).slice(0, 10);
     if (due < today) return 'overdue';
@@ -436,7 +436,7 @@
       (totalAmount > 0 ? '<div class="small task-card-total" data-testid="task-card-total">Итог: ' + fmtMoneyCents(Math.round(totalAmount * 100)) + '</div>' : '') +
       (t.last_log ? '<div class="small text-body-secondary task-card-last-log" data-testid="task-card-last-log">💬 ' + esc(t.last_log.text) + ' — ' + esc(t.last_log.author_name) + '</div>' : '') +
       '  <div class="task-card-foot">' +
-      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '" data-testid="task-card-due" data-due="' + esc(ds || 'ok') + '" title="Плановое окончание">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
+      '<span class="due due-' + esc(ds || 'ok') + '" data-testid="task-card-due" data-due="' + esc(ds || 'ok') + '" title="Плановое окончание">📅 ' + fmtDate(t.due_date) + '</span>' +
       (t.assignee_name ? '<span class="avatar" title="' + esc(t.assignee_name) + '">' + esc(initials(t.assignee_name)) + '</span>' : '') +
       '  </div>' +
       '</div>';

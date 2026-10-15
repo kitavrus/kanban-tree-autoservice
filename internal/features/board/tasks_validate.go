@@ -42,9 +42,9 @@ const taskDescriptionMax = 10000
 // dateLayout — YYYY-MM-DD (design-errors.md §Validation Fields `due_date`; start_date заказа).
 const dateLayout = "2006-01-02"
 
-// normalize — trim текстовых полей; nil-указатели (assignee_id/start_date) остаются nil,
-// пустая строка внутри указателя не трактуется как отсутствие значения здесь — это делает
-// nilIfEmpty() в сервисном слое перед записью в БД (start_date пустой — ошибка required).
+// normalize — trim текстовых полей; nil-указатели (assignee_id/start_date) остаются nil.
+// Пустая строка в assignee_id — «не назначен» (nilIfEmpty() в сервисном слое перед записью в
+// БД); пустая start_date — ошибка required в validate().
 func (in TaskHeader) normalize() TaskHeader {
 	in.Title = strings.TrimSpace(in.Title)
 	in.ColumnID = strings.TrimSpace(in.ColumnID)
