@@ -39,7 +39,7 @@ index 645fd4c..8d78504 100644
  }
  
 diff --git a/internal/features/board/board_fuzz_test.go b/internal/features/board/board_fuzz_test.go
-index fdc5440..7c7882d 100644
+index fdc5440..621800a 100644
 --- a/internal/features/board/board_fuzz_test.go
 +++ b/internal/features/board/board_fuzz_test.go
 @@ -79,19 +79,25 @@ func FuzzParseTaskFilter(f *testing.F) {
@@ -102,19 +102,22 @@ index fdc5440..7c7882d 100644
  func (fakeCardService) CreateSubtask(context.Context, Actor, string, SubtaskCreateRequest) (*OrderCardMutationResponse, error) {
  	return nil, nil
  }
-@@ -311,8 +302,9 @@ func FuzzSubtaskProductBody(f *testing.F) {
+@@ -311,11 +302,11 @@ func FuzzSubtaskProductBody(f *testing.F) {
  	})
  }
  
 -// FuzzSubtaskLogAndEquipmentBody — FZ-003: POST /subtasks/:id/logs, POST /tasks/:id/equipment.
 -func FuzzSubtaskLogAndEquipmentBody(f *testing.F) {
-+// FuzzSubtaskLogBody — FZ-003: POST /subtasks/:id/logs (оборудования заказа больше нет —
-+// автомобиль задаётся при создании заказа, one-car-order).
++// FuzzSubtaskLogBody — FZ-003: POST /subtasks/:id/logs.
 +func FuzzSubtaskLogBody(f *testing.F) {
  	for _, s := range []string{
  		`{}`, `null`, `[]`, `{"text":""}`, `{"text":"` + strings.Repeat("я", 4001) + `"}`,
- 		`{"equipment_id":"` + validUUID + `"}`, `{"equipment_id":"\u0000"}`, `{"text":{"nested":true}}`,
-@@ -323,10 +315,8 @@ func FuzzSubtaskLogAndEquipmentBody(f *testing.F) {
+-		`{"equipment_id":"` + validUUID + `"}`, `{"equipment_id":"\u0000"}`, `{"text":{"nested":true}}`,
++		`{"text":"\u0000"}`, `{"text":"Запись","extra":1}`, `{"text":{"nested":true}}`,
+ 	} {
+ 		f.Add(s)
+ 	}
+@@ -323,10 +314,8 @@ func FuzzSubtaskLogAndEquipmentBody(f *testing.F) {
  	app := newFakeCardApp()
  	h := NewCardHandler(fakeCardService{})
  	app.Post("/subtasks/:id/logs", h.CreateLog)
@@ -987,6 +990,198 @@ index 2cdaba8..342a134 100644
  	ErrSubtaskFinalColumn     = errorspkg.New("SUBTASK_FINAL_COLUMN", http.StatusConflict, "Заказ в финальной колонке: нельзя добавить услугу или вернуть её из «Выполнена»")
  	ErrSubtaskLogForbidden    = errorspkg.New("SUBTASK_LOG_FORBIDDEN", http.StatusForbidden, "Можно менять только свои записи")
  
+diff --git a/internal/features/board/migration_one_car_order_integration_test.go b/internal/features/board/migration_one_car_order_integration_test.go
+new file mode 100644
+index 0000000..cb4fca0
+--- /dev/null
++++ b/internal/features/board/migration_one_car_order_integration_test.go
+@@ -0,0 +1,186 @@
++//go:build integration
++
++package board_test
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/golang-migrate/migrate/v4"
++	_ "github.com/golang-migrate/migrate/v4/database/postgres"
++	_ "github.com/golang-migrate/migrate/v4/source/file"
++	"github.com/stretchr/testify/suite"
++
++	"github.com/kitavrus/kanban-tree/pkg/testutil"
++)
++
++// OneCarOrderMigrationSuite — миграция 0017 (one-car-order): бэкфилл tasks.car_id из
++// task_equipment / первой машины клиента / новой машины из названия заказа, затем NOT NULL,
++// индекс и DROP task_equipment, subtasks.equipment_id; down восстанавливает обе из car_id.
++type OneCarOrderMigrationSuite struct {
++	testutil.BaseSuite
++}
++
++func TestOneCarOrderMigrationSuite(t *testing.T) {
++	suite.Run(t, new(OneCarOrderMigrationSuite))
++}
++
++const ocoAdminID = "aaaaaaaa-0017-0017-0017-000000000001"
++
++func (s *OneCarOrderMigrationSuite) scalar(q string, args ...any) string {
++	var v string
++	s.Require().NoError(s.Pool.QueryRow(context.Background(), q, args...).Scan(&v), q)
++	return v
++}
++
++func (s *OneCarOrderMigrationSuite) exec(q string, args ...any) {
++	_, err := s.Pool.Exec(context.Background(), q, args...)
++	s.Require().NoError(err, q)
++}
++
++func (s *OneCarOrderMigrationSuite) id(q string, args ...any) string { return s.scalar(q, args...) }
++
++// TestMigration0017_Backfill_UpDown — случаи бэкфилла (код-ревью MEDIUM-1, LOW-2):
++//
++//	(a) в task_equipment две свои машины и чужая → первая СВОЯ по госномеру (чужая пропущена);
++//	(e) несколько своих машин, с одной чаще работали в услугах → она, вопреки порядку госномеров;
++//	(b) task_equipment нет / только чужая машина → первая машина клиента, действующая раньше
++//	    удалённой;
++//	(c) у клиента машин нет → машина из названия: допустимые символы, верхний регистр, ≤ 20
++//	    символов; одинаковое название двух заказов — одна машина; название из спецсимволов —
++//	    «БЕЗ НОМЕРА»;
++//	(d) мягко удалённый клиент без машин → новая машина удалена «вместе с клиентом» с его
++//	    «кто, когда, почему».
++//
++// После up — car_id NOT NULL, FK, индекс, владелец машины = клиент заказа, task_equipment и
++// subtasks.equipment_id нет. Down → task_equipment и subtasks.equipment_id восстановлены из car_id.
++func (s *OneCarOrderMigrationSuite) TestMigration0017_Backfill_UpDown() {
++	mig, err := migrate.New(migrateRoot(), s.DSN)
++	s.Require().NoError(err)
++	defer func() { _, _ = mig.Close() }()
++
++	s.Require().NoError(mig.Migrate(16))
++	defer func() {
++		if err := mig.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
++			s.Require().NoError(err)
++		}
++	}()
++	s.Equal("1", s.scalar(`SELECT count(*)::text FROM information_schema.tables WHERE table_name = 'task_equipment'`), "0016: task_equipment есть")
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'car_id'`))
++
++	// ---- данные «до» (0016) ----
++	s.exec(`INSERT INTO users (id, login, password_hash, name, role) VALUES ($1, 'oco-admin', 'x', 'Admin', 'admin') ON CONFLICT (id) DO NOTHING`, ocoAdminID)
++	column := s.id(`SELECT id::text FROM columns WHERE deleted_at IS NULL ORDER BY position, id LIMIT 1`)
++	client := func(name string) string {
++		return s.id(`INSERT INTO clients (company_name) VALUES ($1) RETURNING id::text`, name)
++	}
++	car := func(clientID, plate string) string {
++		return s.id(`INSERT INTO equipment (client_id, plate_number) VALUES ($1, $2) RETURNING id::text`, clientID, plate)
++	}
++	task := func(clientID, title string) string {
++		return s.id(`INSERT INTO tasks (column_id, client_id, title, position, created_by) VALUES ($1, $2, $3, 1, $4) RETURNING id::text`,
++			column, clientID, title, ocoAdminID)
++	}
++	attach := func(taskID, carID string) {
++		s.exec(`INSERT INTO task_equipment (task_id, equipment_id) VALUES ($1::bigint, $2)`, taskID, carID)
++	}
++	catID := s.id(`INSERT INTO catalog_categories (kind, name) VALUES ('service', 'OCO услуги ' || gen_random_uuid()) RETURNING id::text`)
++	svcID := s.id(`INSERT INTO services (category_id, name) VALUES ($1, 'OCO услуга') RETURNING id::text`, catID)
++	subtask := func(taskID string, carID any) string {
++		return s.id(`INSERT INTO subtasks (task_id, service_id, equipment_id) VALUES ($1::bigint, $2, $3) RETURNING id::text`, taskID, svcID, carID)
++	}
++
++	cA, cF, cB, cC, cD := client("OCO клиент A"), client("OCO чужой F"), client("OCO клиент B"), client("OCO клиент C"), client("OCO клиент D")
++	var tasks []string
++	defer func() {
++		ctx := context.Background()
++		for _, t := range tasks {
++			_, _ = s.Pool.Exec(ctx, `DELETE FROM tasks WHERE id = $1::bigint`, t)
++		}
++		for _, c := range []string{cA, cF, cB, cC, cD} {
++			_, _ = s.Pool.Exec(ctx, `DELETE FROM clients WHERE id = $1`, c) // машины — каскадом
++		}
++		_, _ = s.Pool.Exec(ctx, `DELETE FROM services WHERE id = $1`, svcID)
++		_, _ = s.Pool.Exec(ctx, `DELETE FROM catalog_categories WHERE id = $1`, catID)
++		_, _ = s.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, ocoAdminID)
++	}()
++
++	// (a): свои Б222/А111 и чужая А000 (по алфавиту первая, но не своя) → А111.
++	a1, a2, f1 := car(cA, "Б222 ОК"), car(cA, "А111 ОК"), car(cF, "А000 ЧУЖ")
++	tA := task(cA, "OCO заказ A")
++	attach(tA, a1)
++	attach(tA, a2)
++	attach(tA, f1)
++	// (e): обе свои, в услугах чаще Б222 (2 против 1) → Б222, хотя А111 раньше по алфавиту.
++	tE := task(cA, "OCO заказ E")
++	attach(tE, a1)
++	attach(tE, a2)
++	subE := []string{subtask(tE, a1), subtask(tE, a1), subtask(tE, a2), subtask(tE, nil)}
++	// (b): у B удалённая А000 и действующая Я999; заказ без task_equipment и заказ только с чужой.
++	bGone, bLive := car(cB, "А000 УД"), car(cB, "Я999 ЖИВ")
++	s.exec(`UPDATE equipment SET deleted_at = now(), deleted_by = $2, delete_reason = 'Продан' WHERE id = $1`, bGone, ocoAdminID)
++	tB := task(cB, "OCO заказ B")
++	tB2 := task(cB, "OCO заказ B чужая")
++	attach(tB2, f1)
++	// (c): у C машин нет.
++	tC1 := task(cC, "Ремонт: двигатель!!! и коробка передач, срочно")
++	tC2 := task(cC, "Ремонт: двигатель!!! и коробка передач, срочно")
++	tC3 := task(cC, "!!! ??? ***")
++	// (d): мягко удалённый клиент без машин.
++	s.exec(`UPDATE clients SET deleted_at = '2026-10-01T10:00:00Z', deleted_by = $2, delete_reason = 'Закрылся' WHERE id = $1`, cD, ocoAdminID)
++	tD := task(cD, "т555тт 55")
++	tasks = append(tasks, tA, tE, tB, tB2, tC1, tC2, tC3, tD)
++
++	// ---- up → 0017 ----
++	s.Require().NoError(mig.Migrate(17))
++	s.Equal("NO", s.scalar(`SELECT is_nullable FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'car_id'`), "car_id NOT NULL")
++	s.Equal("1", s.scalar(`SELECT count(*)::text FROM pg_indexes WHERE indexname = 'tasks_car_id_idx'`))
++	s.Equal("1", s.scalar(`SELECT count(*)::text FROM pg_constraint WHERE conname = 'tasks_car_id_fkey'`))
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM information_schema.tables WHERE table_name = 'task_equipment'`), "task_equipment удалена")
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'subtasks' AND column_name = 'equipment_id'`))
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM tasks WHERE car_id IS NULL`))
++
++	carOf := func(taskID string) string {
++		return s.scalar(`SELECT car_id::text FROM tasks WHERE id = $1::bigint`, taskID)
++	}
++	s.Equal(a2, carOf(tA), "(a) первая своя по госномеру, чужая пропущена")
++	s.Equal(a1, carOf(tE), "(e) машина, с которой чаще работали в услугах")
++	s.Equal(bLive, carOf(tB), "(b) действующая раньше удалённой")
++	s.Equal(bLive, carOf(tB2), "(b) только чужая в task_equipment → первая машина клиента")
++
++	s.Equal(carOf(tC1), carOf(tC2), "(c) одинаковое название — одна машина")
++	s.NotEqual(carOf(tC1), carOf(tC3))
++	s.Equal("РЕМОНТ ДВИГАТЕЛЬ И К", s.scalar(`SELECT plate_number FROM equipment WHERE id = $1`, carOf(tC1)), "(c) госномер из названия ≤ 20")
++	s.Equal("БЕЗ НОМЕРА", s.scalar(`SELECT plate_number FROM equipment WHERE id = $1`, carOf(tC3)), "(c) название из спецсимволов")
++	s.Equal("2", s.scalar(`SELECT count(*)::text FROM equipment WHERE client_id = $1 AND deleted_at IS NULL`, cC), "(c) клиенту заведены две машины")
++
++	s.Equal("Т555ТТ 55|true|true|Закрылся|true", s.scalar(`
++		SELECT e.plate_number || '|' || (e.deleted_at = c.deleted_at)::text || '|' || (e.deleted_by = c.deleted_by)::text || '|' ||
++		       e.delete_reason || '|' || e.deleted_with_client::text
++		FROM tasks t JOIN equipment e ON e.id = t.car_id JOIN clients c ON c.id = t.client_id WHERE t.id = $1::bigint`, tD),
++		"(d) машина удалённого клиента — удалена вместе с ним")
++
++	s.Equal("0", s.scalar(`
++		SELECT count(*)::text FROM tasks t JOIN equipment e ON e.id = t.car_id
++		WHERE t.id::text = ANY($1) AND e.client_id <> t.client_id`, tasks), "владелец машины = клиент заказа")
++
++	// ---- down → 0016: task_equipment и subtasks.equipment_id — из car_id ----
++	s.Require().NoError(mig.Migrate(16))
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'car_id'`))
++	for _, tc := range []struct{ task, car string }{{tA, a2}, {tE, a1}, {tB, bLive}, {tB2, bLive}} {
++		s.Equal(tc.car+"|1", s.scalar(`
++			SELECT string_agg(equipment_id::text, ',') || '|' || count(*)::text || ''
++			FROM task_equipment WHERE task_id = $1::bigint`, tc.task), "task_equipment заказа %s", tc.task)
++	}
++	s.Equal("|", s.scalar(`SELECT coalesce(completeness, '-') || '|' || coalesce(condition, '-') FROM task_equipment WHERE task_id = $1::bigint`, tA),
++		"комплектность/состояние после отката пустые")
++	for _, sub := range subE {
++		s.Equal(a1, s.scalar(`SELECT equipment_id::text FROM subtasks WHERE id = $1`, sub), "услуга заказа — машина заказа")
++	}
++
++	// повторный up поверх отката проходит, выбор машин прежний.
++	s.Require().NoError(mig.Migrate(17))
++	s.Equal(a2, carOf(tA))
++	s.Equal(a1, carOf(tE))
++}
 diff --git a/internal/features/board/one_car_helpers_live_test.go b/internal/features/board/one_car_helpers_live_test.go
 new file mode 100644
 index 0000000..47f3949
@@ -1040,7 +1235,7 @@ index 0000000..47f3949
 +	return out
 +}
 diff --git a/internal/features/board/order_card_http_live_test.go b/internal/features/board/order_card_http_live_test.go
-index 005bb7a..9864ef7 100644
+index 005bb7a..e87525f 100644
 --- a/internal/features/board/order_card_http_live_test.go
 +++ b/internal/features/board/order_card_http_live_test.go
 @@ -46,18 +46,11 @@ type cardColumnDTO struct {
@@ -1601,7 +1796,7 @@ index 005bb7a..9864ef7 100644
  	})
  	s.Require().Equal(http.StatusOK, st, string(raw))
  	sub := m.Card.Subtasks[0]
-@@ -718,10 +664,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
+@@ -718,10 +664,26 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
  	s.Require().NotNil(sub.DueDate)
  	s.Equal("2026-05-01", *sub.DueDate)
  	s.Nil(sub.Price, "price=null — «по факту»")
@@ -1611,14 +1806,26 @@ index 005bb7a..9864ef7 100644
  	s.Equal(json.Number("0.00"), m.Card.Task.TotalAmount)
 +
 +	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-+		"status": "in_progress", "assignee_id": adminID, "due_date": nil, "price": nil, "equipment_id": s.taskCar(taskID),
++		"status": "new", "assignee_id": nil, "due_date": nil, "price": 700, "equipment_id": s.taskCar(taskID),
 +	})
 +	s.Equal(http.StatusBadRequest, st, string(raw))
 +	s.Equal("BAD_REQUEST", s.errOf(raw).Code)
++	// отказ ничего не изменил: строка услуги прежняя.
++	st, card, raw := s.getCard(s.admin, taskID)
++	s.Require().Equal(http.StatusOK, st, string(raw))
++	s.Require().Len(card.Subtasks, 1)
++	after := card.Subtasks[0]
++	s.Equal("in_progress", after.Status)
++	s.Require().NotNil(after.AssigneeID)
++	s.Equal(adminID, *after.AssigneeID)
++	s.Require().NotNil(after.DueDate)
++	s.Equal("2026-05-01", *after.DueDate)
++	s.Nil(after.Price)
++	s.Equal(sub.Total, after.Total)
  }
  
  // LV-105/AC-008: POST/PUT/DELETE /subtask-products — line_total корректен на каждом шаге.
-@@ -909,13 +859,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_UnaffectedByRowMutat
+@@ -909,13 +871,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_UnaffectedByRowMutat
  	s.Equal(version, m.Card.Task.Version)
  
  	st, m, raw = s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
@@ -1634,7 +1841,7 @@ index 005bb7a..9864ef7 100644
  		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
  	})
  	s.Require().Equal(http.StatusOK, st, string(raw), "version, захваченный ДО row-мутаций, всё ещё актуален")
-@@ -928,13 +878,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_ConflictOnHeader() {
+@@ -928,13 +890,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_ConflictOnHeader() {
  	taskID, version := s.newTask(c, col)
  
  	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
@@ -1650,7 +1857,7 @@ index 005bb7a..9864ef7 100644
  		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
  	})
  	s.Equal(http.StatusConflict, st, string(raw))
-@@ -976,38 +926,19 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_FinalColumn_BlocksUndone() {
+@@ -976,38 +938,19 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_FinalColumn_BlocksUndone() {
  	s.Require().Equal(http.StatusOK, st, string(raw))
  
  	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subtaskID, map[string]any{
@@ -1691,7 +1898,7 @@ index 005bb7a..9864ef7 100644
  // LV-146/AC-007: assignee_id заблокированного — 400 только при СМЕНЕ значения (SD-007).
  func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400() {
  	c := s.newClient("Клиент-Исполнитель-Неактивен")
-@@ -1020,14 +951,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400(
+@@ -1020,14 +963,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400(
  
  	inactiveID := s.SeedUser("card-inactive-"+subID[:8], "password1", "Неактивный", "executor", false)
  	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
@@ -1708,7 +1915,7 @@ index 005bb7a..9864ef7 100644
  	})
  	s.Require().Equal(http.StatusOK, st, string(raw))
  
-@@ -1035,7 +966,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400(
+@@ -1035,7 +978,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_InactiveAssignee400(
  	s.Require().NoError(err)
  
  	st, m, raw = s.doCard(s.admin, http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
@@ -1717,7 +1924,7 @@ index 005bb7a..9864ef7 100644
  	})
  	s.Require().Equal(http.StatusOK, st, string(raw), "тот же assignee_id — SD-007 без повторной проверки active")
  	s.Require().NotNil(m.Card.Subtasks[0].AssigneeIsActive)
-@@ -1113,15 +1044,11 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Access_ExecutorRowEndpoints(
+@@ -1113,15 +1056,11 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Access_ExecutorRowEndpoints(
  	s.Require().Equal(http.StatusCreated, st, string(raw))
  	s.Require().NotNil(m.Card.Subtasks[0].Products[0].Price, "executor видит цену товара")
  
@@ -1734,7 +1941,7 @@ index 005bb7a..9864ef7 100644
  		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
  	})
  	s.Equal(http.StatusOK, st, string(raw), "правка без смены is_paid — доступна executor")
-@@ -1193,7 +1120,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_NoSession401() {
+@@ -1193,7 +1132,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_NoSession401() {
  	}
  }
  
@@ -1743,7 +1950,7 @@ index 005bb7a..9864ef7 100644
  func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidInput400() {
  	c := s.newClient("Клиент-Невалидный-Ввод")
  	col := s.columnID("Приёмка")
-@@ -1232,21 +1159,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidInput400() {
+@@ -1232,21 +1171,14 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_InvalidInput400() {
  	s.Equal(http.StatusBadRequest, st, string(raw))
  	s.Equal("too_long", s.fields(raw)["text"])
  
@@ -1768,7 +1975,7 @@ index 005bb7a..9864ef7 100644
  	})
  	s.Equal(http.StatusBadRequest, st, string(raw))
  	fields := s.fields(raw)
-@@ -1315,23 +1235,30 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_LogOnDeletedSubtask404() {
+@@ -1315,23 +1247,30 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_LogOnDeletedSubtask404() {
  
  // ---- Access Control ----
  
@@ -2106,9 +2313,20 @@ index 803c0bb..be94325 100644
  
  	st, raw := s.admin.Do(http.MethodDelete, "/api/v1/test/purge/columns/"+col, nil)
 diff --git a/internal/features/board/stock_engine_integration_test.go b/internal/features/board/stock_engine_integration_test.go
-index bda40f8..6c25110 100644
+index bda40f8..86d0632 100644
 --- a/internal/features/board/stock_engine_integration_test.go
 +++ b/internal/features/board/stock_engine_integration_test.go
+@@ -50,8 +50,8 @@ func (s *StockEngineSuite) SetupSuite() {
+ 
+ func (s *StockEngineSuite) SetupTest() {
+ 	ctx := context.Background()
+-	// CASCADE тянет за собой tasks/subtasks/subtask_products/task_stock/task_equipment/
+-	// stock_movements — колонки/каталог/услуги для каждого теста создаются заново.
++	// CASCADE тянет за собой tasks/subtasks/subtask_products/task_stock/stock_movements —
++	// колонки/каталог/услуги для каждого теста создаются заново.
+ 	_, err := s.Pool.Exec(ctx, `TRUNCATE TABLE catalog_categories, products, services, columns RESTART IDENTITY CASCADE`)
+ 	s.Require().NoError(err)
+ 	_, err = s.Pool.Exec(ctx, `INSERT INTO columns (id, name, color, is_final, consumes_stock, position) VALUES
 @@ -88,8 +88,9 @@ func (s *StockEngineSuite) createTaskWithDemand(columnID string, productQty map[
  
  	var taskID int64

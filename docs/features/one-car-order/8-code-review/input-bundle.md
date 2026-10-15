@@ -1,5 +1,5 @@
 # Review Bundle: one-car-order — READY
-**Base:** cd5ab2947ecf51c7e8fb61763d441a818e18ebee | **HEAD:** 86f3840 | **Generated:** 2026-10-15 14:48 | diff: 90 files changed, 8201 insertions(+), 2133 deletions(-)
+**Base:** cd5ab2947ecf51c7e8fb61763d441a818e18ebee | **HEAD:** 65f3c01 | **Generated:** 2026-10-15 15:03 | diff: 92 files changed, 8564 insertions(+), 2142 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -20,10 +20,10 @@
 ## Diff по линзам
 | Линза | Файлов | Patch |
 |---|---|---|
-| backend | 49 | 8-code-review/diff-backend.patch |
+| backend | 50 | 8-code-review/diff-backend.patch |
 | migrations | 2 | 8-code-review/diff-migrations.patch |
 | other | 20 | 8-code-review/diff-other.patch |
-| docs | 19 | — (артефакты, не ревьюятся построчно) |
+| docs | 20 | — (артефакты, не ревьюятся построчно) |
 
 ### backend
 - `M` internal/features/board/attachments_gc_integration_test.go
@@ -39,6 +39,7 @@
 - `M` internal/features/board/card_validate_test.go
 - `M` internal/features/board/columns_soft_delete_http_live_test.go
 - `M` internal/features/board/errors.go
+- `A` internal/features/board/migration_one_car_order_integration_test.go
 - `A` internal/features/board/one_car_helpers_live_test.go
 - `M` internal/features/board/order_card_http_live_test.go
 - `M` internal/features/board/pagination_http_live_test.go
@@ -120,6 +121,7 @@
 - `A` docs/features/one-car-order/8-code-review/diff-migrations.patch
 - `A` docs/features/one-car-order/8-code-review/diff-other.patch
 - `A` docs/features/one-car-order/8-code-review/input-bundle.md
+- `A` docs/features/one-car-order/8-code-review/output.md
 - `A` docs/features/one-car-order/9-validation/evidence/e2e-run.txt
 - `A` docs/features/one-car-order/9-validation/evidence/last-run.json
 
@@ -132,7 +134,8 @@ MISSING
 
 ## Инвентарь доков (точечный grep разрешён, полное чтение — нет)
 - 0-setup/idioms.md — 30KB
-- 8-code-review/input-bundle.md — 5KB
-- 0-setup/light-progress.md — 5KB
+- 8-code-review/output.md — 17KB
+- 0-setup/light-progress.md — 8KB
+- 8-code-review/input-bundle.md — 6KB
 - 0-setup/pipeline-state.md — 2KB
 - 9-validation/evidence/last-run.json — 0KB
