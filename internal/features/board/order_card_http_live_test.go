@@ -668,10 +668,22 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Subtask_UpdateFields() {
 	s.Equal(json.Number("0.00"), m.Card.Task.TotalAmount)
 
 	st, raw = s.admin.Do(http.MethodPut, "/api/v1/subtasks/"+subID, map[string]any{
-		"status": "in_progress", "assignee_id": adminID, "due_date": nil, "price": nil, "equipment_id": s.taskCar(taskID),
+		"status": "new", "assignee_id": nil, "due_date": nil, "price": 700, "equipment_id": s.taskCar(taskID),
 	})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("BAD_REQUEST", s.errOf(raw).Code)
+	// отказ ничего не изменил: строка услуги прежняя.
+	st, card, raw := s.getCard(s.admin, taskID)
+	s.Require().Equal(http.StatusOK, st, string(raw))
+	s.Require().Len(card.Subtasks, 1)
+	after := card.Subtasks[0]
+	s.Equal("in_progress", after.Status)
+	s.Require().NotNil(after.AssigneeID)
+	s.Equal(adminID, *after.AssigneeID)
+	s.Require().NotNil(after.DueDate)
+	s.Equal("2026-05-01", *after.DueDate)
+	s.Nil(after.Price)
+	s.Equal(sub.Total, after.Total)
 }
 
 // LV-105/AC-008: POST/PUT/DELETE /subtask-products — line_total корректен на каждом шаге.

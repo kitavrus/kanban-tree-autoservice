@@ -1660,7 +1660,7 @@
         $('#task-save-btn').disabled = false;
         host.onChanged();
         // SD-006: и создание, и правка шапки — модалка остаётся открытой, карточка
-        // перечитывается заново, разделы оборудования/услуг разблокируются.
+        // перечитывается заново, разделы автомобиля/услуг/вложений разблокируются.
         return loadCard(resp.task.id);
       }).catch(function (err) {
         saving = false;
@@ -1675,11 +1675,9 @@
           return;
         }
         if (err && err.fields && err.fields.length) {
-          // клиента удалили, пока форма открыта (soft-delete-clients §8.3) — текст под полем
-          var clientGone = err.fields.some(function (f) { return f.name === 'client_id' && f.message === 'not_found'; });
-          if (clientGone) showClientError('Клиент не найден');
-          var rest = err.fields.filter(function (f) { return !(f.name === 'client_id' && f.message === 'not_found'); });
-          if (rest.length) showHeaderError(rest.map(function (f) { return f.message; }).join('; '));
+          // правка шапки существующего заказа: клиента в теле нет (one-car-order) — все ошибки
+          // полей показываются в шапке.
+          showHeaderError(err.fields.map(function (f) { return f.message; }).join('; '));
           return;
         }
         showHeaderError((err && err.message) || 'Не удалось сохранить заказ');

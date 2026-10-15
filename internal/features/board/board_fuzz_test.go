@@ -302,12 +302,11 @@ func FuzzSubtaskProductBody(f *testing.F) {
 	})
 }
 
-// FuzzSubtaskLogBody — FZ-003: POST /subtasks/:id/logs (оборудования заказа больше нет —
-// автомобиль задаётся при создании заказа, one-car-order).
+// FuzzSubtaskLogBody — FZ-003: POST /subtasks/:id/logs.
 func FuzzSubtaskLogBody(f *testing.F) {
 	for _, s := range []string{
 		`{}`, `null`, `[]`, `{"text":""}`, `{"text":"` + strings.Repeat("я", 4001) + `"}`,
-		`{"equipment_id":"` + validUUID + `"}`, `{"equipment_id":"\u0000"}`, `{"text":{"nested":true}}`,
+		`{"text":"\u0000"}`, `{"text":"Запись","extra":1}`, `{"text":{"nested":true}}`,
 	} {
 		f.Add(s)
 	}

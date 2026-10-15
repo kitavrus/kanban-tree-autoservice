@@ -2,11 +2,13 @@
 
 - track: light
 - status: in-progress
-- stage: light-judge
+- stage: light-review
 - feature-base: cd5ab2947ecf51c7e8fb61763d441a818e18ebee
 - branch: feat/one-car-order
 - input: текст задачи (спеки нет), Tier: S/M-граница — light по явному выбору пользователя
-- axes: UI-scope / Совместимость — дефолты (§US-1/§CM-1), watch-gate: нет
+- axes: UI-scope — дефолт (§US-1); Совместимость — MVP (§CM-1: удаление task_equipment,
+  subtasks.equipment_id и эндпоинтов /tasks/:id/equipment — явное требование пользователя;
+  внешних клиентов API нет); watch-gate: нет
 
 ## Задача
 

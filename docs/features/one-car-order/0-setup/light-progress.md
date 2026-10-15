@@ -32,3 +32,13 @@
       машина клиента, 21 — новые машины из названия (20 машин у 20 клиентов, e2e-мусор); car_id NULL = 0,
       несовпадений владельца = 0; task_equipment и subtasks.equipment_id удалены. Сухой прогон — BEGIN/ROLLBACK.
 - [x] DONE (исполнитель завершил)
+
+## Fix-loop 1 (код-ревью APPROVED с замечаниями)
+
+- [x] MEDIUM-1: `internal/features/board/migration_one_car_order_integration_test.go` (тег integration, прецедент clients/migration_soft_delete): Migrate(16) → сид (a) 2 своих + чужая в task_equipment → первая своя по госномеру; (e) чаще в услугах → она; (b) без task_equipment / только чужая → действующая раньше удалённой; (c) клиент без машин → «РЕМОНТ ДВИГАТЕЛЬ И К» (≤20), два заказа с одним названием → одна машина, спецсимволы → «БЕЗ НОМЕРА»; (d) удалённый клиент → машина deleted_with_client с его deleted_*; Migrate(17) → NOT NULL/FK/индекс/нет task_equipment и subtasks.equipment_id/владелец = клиент; Migrate(16) → task_equipment (1 строка = car_id, пустые комплектность/состояние) и subtasks.equipment_id = car_id; повторный up — выбор прежний. PASS.
+- [x] LOW-2: шаг 1 миграции — сначала машина, чаще всего указанная в subtasks.equipment_id заказа, затем plate_number, id (случай (e) теста). На dev-БД уже применён прежний шаг 1 (4 заказа с несколькими машинами — по госномеру); пере-бэкфилл через down/up невозможен (down знает только car_id) — не трогал.
+- [x] LOW-4: task-card.js — убрана мёртвая ветка clientGone, ошибки полей PUT шапки → в шапку; комментарий «разделы оборудования/услуг» исправлен; stock_engine_integration_test.go (комментарий без task_equipment), board_fuzz_test.go (сиды FuzzSubtaskLogBody без equipment_id).
+- [x] LOW-5: order_card_http_live_test.go Subtask_UpdateFields — PUT /api/v1/subtasks/:id с equipment_id → 400 BAD_REQUEST и строка услуги не изменилась (status/assignee/due/price/total).
+- [x] Составной FK (car_id, client_id) — НЕ делаем, known issue (решение координатора).
+- [x] Self-check: go build/vet (+ vet -tags=integration board) ok; node --check task-card.js ok; gofmt чисто; golangci-lint board (с тегом integration и без) — 0 issues; `go test ./... -count=1` — 18 ok / 0 FAIL; integration board+clients+executorpayouts (миграционные тесты проходят через 0017) — exit 0, 461 PASS / 0 FAIL.
+- [x] DONE (fix-loop 1 завершён)

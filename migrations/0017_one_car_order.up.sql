@@ -8,14 +8,18 @@
 
 ALTER TABLE tasks ADD COLUMN car_id uuid NULL REFERENCES equipment(id) ON DELETE RESTRICT;
 
--- 1) Автомобиль из task_equipment: единица клиента заказа, первая по госномеру (затем id).
+-- 1) Автомобиль из task_equipment: единица клиента заказа, с которой чаще всего работали
+--    (больше всего услуг заказа с subtasks.equipment_id = она), затем первая по госномеру и id.
+--    Остальные единицы такого заказа из него уходят (их история этот заказ теряет — осознанно).
 UPDATE tasks t SET car_id = x.equipment_id
 FROM (
     SELECT DISTINCT ON (te.task_id) te.task_id, te.equipment_id
     FROM task_equipment te
     JOIN tasks o     ON o.id = te.task_id
     JOIN equipment e ON e.id = te.equipment_id AND e.client_id = o.client_id
-    ORDER BY te.task_id, e.plate_number, e.id
+    ORDER BY te.task_id,
+             (SELECT count(*) FROM subtasks s WHERE s.task_id = te.task_id AND s.equipment_id = te.equipment_id) DESC,
+             e.plate_number, e.id
 ) x
 WHERE x.task_id = t.id;
 

@@ -50,8 +50,8 @@ func (s *StockEngineSuite) SetupSuite() {
 
 func (s *StockEngineSuite) SetupTest() {
 	ctx := context.Background()
-	// CASCADE тянет за собой tasks/subtasks/subtask_products/task_stock/task_equipment/
-	// stock_movements — колонки/каталог/услуги для каждого теста создаются заново.
+	// CASCADE тянет за собой tasks/subtasks/subtask_products/task_stock/stock_movements —
+	// колонки/каталог/услуги для каждого теста создаются заново.
 	_, err := s.Pool.Exec(ctx, `TRUNCATE TABLE catalog_categories, products, services, columns RESTART IDENTITY CASCADE`)
 	s.Require().NoError(err)
 	_, err = s.Pool.Exec(ctx, `INSERT INTO columns (id, name, color, is_final, consumes_stock, position) VALUES

@@ -1,4 +1,4 @@
 $ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e2e_mode_check.py --feature one-car-order --repo /Users/igorpotema/mycode/kanban-tree-autoservice
 (exit 0)
 
-E2E-MODE SKIP-NO-EVIDENCE: нет docs/features/one-car-order/9-validation/evidence/e2e-run.txt — прогонов E2E не зафиксировано (фича без фронта либо улика не сохранялась)
+E2E-MODE: PASS (прогонов сверено 1/1, полных 0; источник режима — самоотчёт оркестратора (cmd в улике); из конфига машинно проверен только запрет `headless: true`)
