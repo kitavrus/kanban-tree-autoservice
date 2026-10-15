@@ -44,4 +44,11 @@
   - created_at = приёмка/запись; журнал, вложения, сроки услуг — внутри окна приёмки…выдачи (validatePlan в validateDemoData); у записей без визита фото приёмки нет
   - удалённый дубль Vesta — с явным планом; тексты без «оборудован/комплектност/состояни» (услуга «ремня навесных агрегатов», характеристика «Состояние» убрана)
   - тесты: plan_test.go (unit: загрузка календаря, состав плана), seeddemo_integration_test (assertOrderPlans / assertCalendarLoad через calendar.Service / assertTexts, фото и окна времени)
+
+## Fix-loop 2 (сид, LOW-2/LOW-3 повторного ревью)
+
+- [x] LOW-2: даты в журнале/описаниях — плейсхолдеры плана {start}/{end}/{fin} → «16.10 (чт)» (planText/dayText, настоящий день недели); убраны «завтра/послезавтра/через N дней/в пятницу/вечером»; комментарий data_tasks.go:13-14 исправлен
+- [x] LOW-3: validatePlan — приёмка не позже дня начала (start ≤ 0 → acceptedH ≥ −start·24) и раньше выдачи (выданный → acceptedH ≥ minAgo) для каждого заказа; неизвестные плейсхолдеры/{fin} у невыданного — ошибка; plan_test: TestValidatePlan_Acceptance, TestDemoTexts_PlanDates; integration: приёмка ≤ start_date, тексты без относительных дат и «{}»
+- [x] Self-checks fix-loop 2: vet (+integration) OK; unit seeddemo ok (8 PASS); integration seeddemo 12 PASS / 0 FAIL
+
 - [x] Self-checks итог: build/vet OK; go test ./... 18 ok/0; integration seeddemo 10 PASS, board+calendar 369 PASS; node --check OK; e2e tsc OK, --list 189; fixture_sync PASS

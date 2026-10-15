@@ -1,6 +1,7 @@
 package seeddemo
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -83,4 +84,58 @@ func TestDemoPlan_Mix(t *testing.T) {
 		}
 	}
 	assert.Positive(t, idle, "есть машины клиентов без заказов")
+}
+
+// TestValidatePlan_Acceptance — приёмка проверяется для каждого заказа напрямую, не только
+// через журнал и фото: начатый заказ заведён не позже дня начала; выданный — раньше выдачи.
+func TestValidatePlan_Acceptance(t *testing.T) {
+	for _, task := range demoTasks {
+		require.NoError(t, validatePlan(task), task.title)
+	}
+	bare := func(tk demoTaskItem) demoTaskItem { tk.subtasks, tk.media, tk.descHTML = nil, nil, ""; return tk }
+
+	started := bare(demoTaskItem{column: "В ремонте", startOffset: -3, days: 4, acceptedH: 72})
+	require.NoError(t, validatePlan(started))
+	started.acceptedH = 71 // заведён в день после начала при прогоне в 23:59
+	require.ErrorContains(t, validatePlan(started), "позже дня начала")
+
+	booked := bare(demoTaskItem{column: "Приёмка", startOffset: 3, days: 1, acceptedH: 1})
+	require.NoError(t, validatePlan(booked), "запись на будущее — заведена сегодня")
+
+	issued := bare(demoTaskItem{column: demoFinalColumn, startOffset: -3, days: 2, acceptedH: 72, finishedOffset: -2})
+	require.NoError(t, validatePlan(issued))
+	issued.startOffset, issued.acceptedH = -2, 50 // приёмка 50 ч назад, выдача — не ближе 55 ч назад
+	require.ErrorContains(t, validatePlan(issued), "раньше выдачи")
+}
+
+// relativeDate — относительные даты и дни недели, которые расходились бы с планом в
+// зависимости от дня и часа прогона.
+var relativeDate = regexp.MustCompile(`(?i)завтра|вчера|сегодня|через (\d+|два|три|пару) дн|понедельник|вторник|сред[уы]|четверг|пятниц|суббот|воскресень|вечером`)
+
+// TestDemoTexts_PlanDates — в текстах журнала и описаниях даты — только из плана заказа
+// (плейсхолдеры {start}/{end}/{fin} → «16.10 (чт)»), без относительных «завтра/в пятницу».
+func TestDemoTexts_PlanDates(t *testing.T) {
+	placeholder := regexp.MustCompile(`\{[a-z]+\}`)
+	used := 0
+	for _, task := range demoTasks {
+		texts := []string{task.descHTML}
+		for _, st := range task.subtasks {
+			for _, l := range st.logs {
+				texts = append(texts, l.text)
+			}
+		}
+		for _, s := range texts {
+			assert.NotRegexp(t, relativeDate, s, task.title)
+			if placeholder.MatchString(s) {
+				used++
+			}
+			out := planText(s, task)
+			assert.NotRegexp(t, placeholder, out, "плейсхолдер не заменён: %s", task.title)
+		}
+	}
+	assert.GreaterOrEqual(t, used, 10, "даты в текстах — из плана")
+
+	tk := demoTaskItem{startOffset: 2, days: 3, finishedOffset: -1}
+	assert.Equal(t, "с "+dayText(2)+" по "+dayText(4)+", выдан "+dayText(-1), planText("с {start} по {end}, выдан {fin}", tk))
+	assert.Regexp(t, `^\d{2}\.\d{2} \((пн|вт|ср|чт|пт|сб|вс)\)$`, dayText(0))
 }

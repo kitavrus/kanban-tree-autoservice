@@ -221,7 +221,7 @@ const almatyToday = `(now() AT TIME ZONE 'Asia/Almaty')::date`
 // журнал — не раньше приёмки и не позже выдачи.
 func (s *SeedDemoSuite) assertOrderPlans() {
 	ctx := context.Background()
-	var badPlan, titleNoPlate, issued, issuedBad, openFinished, future, overdue, soon, subtaskDueOut, logsOut int
+	var badPlan, titleNoPlate, issued, issuedBad, openFinished, future, overdue, soon, subtaskDueOut, logsOut, acceptedLate int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE t.duration_days NOT BETWEEN 1 AND 14 OR t.due_date <> t.start_date + t.duration_days - 1),
 		       count(*) FILTER (WHERE strpos(t.title, e.plate_number) = 0),
@@ -236,10 +236,11 @@ func (s *SeedDemoSuite) assertOrderPlans() {
 		       (SELECT count(*) FROM subtasks s JOIN tasks t2 ON t2.id = s.task_id
 		         WHERE s.due_date IS NOT NULL AND s.due_date NOT BETWEEN t2.start_date AND t2.due_date),
 		       (SELECT count(*) FROM subtask_logs l JOIN subtasks s ON s.id = l.subtask_id JOIN tasks t2 ON t2.id = s.task_id
-		         WHERE l.created_at < t2.created_at OR l.created_at > COALESCE(t2.finished_at, now()))
+		         WHERE l.created_at < t2.created_at OR l.created_at > COALESCE(t2.finished_at, now())),
+		       count(*) FILTER (WHERE (t.created_at AT TIME ZONE 'Asia/Almaty')::date > t.start_date)
 		FROM tasks t JOIN columns c ON c.id = t.column_id JOIN equipment e ON e.id = t.car_id
 		WHERE t.deleted_at IS NULL`).
-		Scan(&badPlan, &titleNoPlate, &issued, &issuedBad, &openFinished, &future, &overdue, &soon, &subtaskDueOut, &logsOut))
+		Scan(&badPlan, &titleNoPlate, &issued, &issuedBad, &openFinished, &future, &overdue, &soon, &subtaskDueOut, &logsOut, &acceptedLate))
 	s.Zero(badPlan, "план 1..14 дней, due_date — плановое окончание")
 	s.Zero(titleNoPlate, "название заказа — с госномером его машины")
 	s.Equal(3, issued, "выданные заказы")
@@ -250,6 +251,7 @@ func (s *SeedDemoSuite) assertOrderPlans() {
 	s.Equal(3, soon, "окончание сегодня/завтра («Горит»)")
 	s.Zero(subtaskDueOut, "сроки услуг — внутри плана заказа")
 	s.Zero(logsOut, "журнал — между приёмкой и выдачей")
+	s.Zero(acceptedLate, "приёмка (created_at) — не позже дня начала")
 }
 
 // assertCalendarLoad — календарь загрузки (правила calendar.Service, пояс seed-админа) при
@@ -297,6 +299,14 @@ func (s *SeedDemoSuite) assertTexts() {
 		  UNION ALL SELECT coalesce(delete_reason, '') FROM equipment
 		) x WHERE txt ~* '(оборудован|комплектност|состояни)'`).Scan(&hits))
 	s.Zero(hits, "тексты без «оборудования», «комплектности», «состояния»")
+
+	// даты в журнале и описаниях — из плана заказа (plan placeholders), без относительных.
+	var relative int
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT count(*) FROM (
+		  SELECT description_html AS txt FROM tasks UNION ALL SELECT text FROM subtask_logs
+		) x WHERE txt ~* '(завтра|вчера|пятниц|через ([0-9]+|два|три) дн|[{}])'`).Scan(&relative))
+	s.Zero(relative, "без «завтра/в пятницу/через N дней» и незаменённых плейсхолдеров")
 }
 
 // assertPlates — автомобиль = госномер (equipment.plate_number): у каждого действующего

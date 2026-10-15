@@ -10,8 +10,14 @@ import "github.com/kitavrus/kanban-tree/internal/features/board"
 //
 // Заказ = ровно одна машина клиента (one-car-order); у таксопарка и доставки — по заказу на
 // машину, часть машин клиентов без заказов. План работ (order-start-duration) подобран так,
-// чтобы календарь загрузки при вместимости 8 машин был наглядным: сегодня занято 7 мест, в
-// ближайшую неделю — 5–7, а через 5 дней — все 8 (см. TestValidateDemoData / seed-тест).
+// чтобы календарь загрузки при вместимости 8 машин был наглядным: сегодня занято 7 мест,
+// следующие 4 дня — 6–7, через 5 дней — все 8, дальше — 2–5 (TestDemoPlan_CalendarLoad в
+// plan_test.go, assertCalendarLoad в seed-тесте).
+//
+// Даты в текстах журнала и описаниях — только плейсхолдерами плана (planText): {start} —
+// начало работ, {end} — плановое окончание, {fin} — день выдачи («16.10 (чт)»), чтобы текст не
+// расходился с планом при любом дне и часе прогона; относительных «завтра / через N дней /
+// в пятницу» нет (TestDemoTexts_PlanDates).
 
 // demoSubtaskItem — услуга заказа: service — code из demoServices; assignee -1 — без
 // исполнителя; dueOffset — срок услуги, дни от сегодня (внутри плана заказа);
@@ -108,7 +114,7 @@ var demoTasks = []demoTaskItem{
 		car: "cx5",
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stNew, assignee: exMotor, dueOffset: offset(2), goodsOverride: []protoGood{g("OIL-5W30-208", "4.2"), g("PE01-14-302A", "1")}, logs: []demoLog{
-				{exIntake, 6, "Клиент записан на ТО послезавтра к 10:00, будет ждать в зоне отдыха. Масло 5W-30 согласовано."},
+				{exIntake, 6, "Клиент записан на ТО {start} к 10:00, будет ждать в зоне отдыха. Масло 5W-30 согласовано."},
 			}},
 			{service: "plugs", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("SK16HR11", "4")}},
 			{service: "throttle", status: stNew, assignee: exMotor},
@@ -122,7 +128,7 @@ var demoTasks = []demoTaskItem{
 			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W30-208", "7.5"), g("04152-YZZA6", "1")}},
 			{service: "fuel", status: stNew, assignee: exMotor},
 			{service: "diag", status: stNew, assignee: exElectric, logs: []demoLog{
-				{exIntake, 26, "Записан на завтра 9:00. Клиент: на разгоне 1500–2000 об/мин лёгкие рывки, началось после заправки на трассе. Взять пробу топлива."},
+				{exIntake, 26, "Записан на {start} к 9:00. Клиент: на разгоне 1500–2000 об/мин лёгкие рывки, началось после заправки на трассе. Взять пробу топлива."},
 			}},
 		},
 	},
@@ -132,7 +138,7 @@ var demoTasks = []demoTaskItem{
 		car: "taxi-logan",
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W40-208", "4.8"), g("8200768913", "1")}, logs: []demoLog{
-				{exAdmin, 20, "Таксопарк записал борт №31 на ТО и регулировку клапанов: пробег 345 000, на холодную стучат клапаны."},
+				{exAdmin, 20, "Таксопарк записал борт №31 на ТО и регулировку клапанов на {start}: пробег 345 000, на холодную стучат клапаны."},
 			}},
 			{service: "valves", status: stNew, assignee: exMotor},
 		},
@@ -144,7 +150,7 @@ var demoTasks = []demoTaskItem{
 		car:      "gazelle",
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stNew, assignee: exNone, dueOffset: offset(0), logs: []demoLog{
-				{exIntake, 3, "Машина нужна клиенту к пятнице — развозка по объектам. Разрешили диагностику до 5 000 ₽ без согласования."},
+				{exIntake, 3, "Машина нужна клиенту к {end} — развозка по объектам. Разрешили диагностику до 5 000 ₽ без согласования."},
 			}},
 			{service: "compr", status: stNew, assignee: exNone},
 		},
@@ -205,7 +211,7 @@ var demoTasks = []demoTaskItem{
 		column: "Согласование", clientIdx: 7, title: "Fiat Ducato У603МН 190: течь масла, замена ремня ГРМ по регламенту", assignee: exMotor,
 		startOffset: 3, days: 3, acceptedH: 30,
 		descHTML: "<p>Пробег 402 600 км, ремень ГРМ меняли 120 000 км назад — пора по регламенту. Течь масла из-под шкива коленвала, пятно на стоянке.</p>" +
-			"<p>Осмотр сделали вчера, машину клиент забрал на линию — ремонт записан на ближайшее окно.</p>",
+			"<p>Осмотр сделан, машину клиент забрал на линию — ремонт записан на {start}.</p>",
 		car: "ducato",
 		subtasks: []demoSubtaskItem{
 			{service: "noise", status: stDone, assignee: exMotor, payout: "500", payoutPaid: true, logs: []demoLog{
@@ -213,7 +219,7 @@ var demoTasks = []demoTaskItem{
 			}},
 			{service: "timing", status: stNew, assignee: exMotor, dueOffset: offset(4), priceOverride: "9500", goodsOverride: []protoGood{g("KTB553", "1")}},
 			{service: "seals", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("12019350B", "1")}, logs: []demoLog{
-				{exAdmin, 20, "Предварительно записали на ремонт через 3 дня. Клиент согласовывает ГРМ + сальник, по деньгам думает до завтра."},
+				{exAdmin, 20, "Предварительно записали на ремонт на {start}. Клиент согласовывает ГРМ + сальник, по деньгам ещё думает."},
 			}},
 		},
 		media: []demoMedia{
@@ -256,7 +262,7 @@ var demoTasks = []demoTaskItem{
 				{exMotor, 96, "ГБЦ снята. Прокладка прогорела между 2-м и 3-м цилиндром, фото приложено. Головка ушла в мехцех."},
 			}},
 			{service: "headmill", status: stWork, assignee: exNone, logs: []demoLog{
-				{exAdmin, 94, "ГБЦ отдана в мехцех «ГБЦ-Сервис», обещали готовность через два дня."},
+				{exAdmin, 94, "ГБЦ отдана в мехцех «ГБЦ-Сервис», обещали готовность к {end}."},
 				{exAdmin, 5, "Мехцех нашёл трещину между сёдлами клапанов — ищут другую головку. Клиенту сообщили, срок ремонта сдвигается."},
 			}},
 			{service: "coolant", status: stNew, assignee: exMotor},
@@ -290,7 +296,7 @@ var demoTasks = []demoTaskItem{
 		column: "Ждёт запчасти", clientIdx: 3, title: "Toyota Camry М555АУ 177: эмульсия в масле, белый выхлоп — замена прокладки ГБЦ", assignee: exMotor,
 		startOffset: 3, days: 4, acceptedH: 44,
 		descHTML: "<p>После перегрева на трассе — белый густой выхлоп, антифриз уходит, на щупе эмульсия.</p>" +
-			"<p>Прокладка ГБЦ 11115-36020 под заказ, поставка через 3 дня. Клиент забрал машину до поставки (ездит аккуратно, доливает антифриз), ремонт записан на день поставки.</p>",
+			"<p>Прокладка ГБЦ 11115-36020 под заказ, поставка к {start}. Клиент забрал машину до поставки (ездит аккуратно, доливает антифриз), ремонт записан на {start}.</p>",
 		car: "camry",
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stDone, assignee: exDiag},
@@ -298,7 +304,7 @@ var demoTasks = []demoTaskItem{
 				{exDiag, 40, "Тест CO₂ положительный, в масле эмульсия. Компрессия 4-го цилиндра 9 бар против 13 в остальных."},
 			}},
 			{service: "headgasket", status: stNew, assignee: exMotor, dueOffset: offset(4), goodsOverride: []protoGood{g("11115-36020", "1"), g("RTV-GREY-80", "1")}, logs: []demoLog{
-				{exAdmin, 18, "Прокладка 11115-36020 заказана у «АвтоДеталь-Опт», счёт оплачен, поставка через 3 дня."},
+				{exAdmin, 18, "Прокладка 11115-36020 заказана у «АвтоДеталь-Опт», счёт оплачен, поставка к {start}."},
 			}},
 			{service: "headmill", status: stNew, assignee: exNone},
 			{service: "coolant", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("AF-G12P-RED", "7")}},
@@ -318,7 +324,7 @@ var demoTasks = []demoTaskItem{
 			}},
 			{service: "noise", status: stDone, assignee: exDiag},
 			{service: "chain", status: stNew, assignee: exMotor, logs: []demoLog{
-				{exAdmin, 36, "Цепь G4FG с натяжителем под заказ у поставщика, срок 3 дня. Таксопарк забрал машину на линию до поставки, ремонт записан."},
+				{exAdmin, 36, "Цепь G4FG с натяжителем под заказ у поставщика, поставка к {start}. Таксопарк забрал машину на линию до поставки, ремонт записан на {start}."},
 			}},
 		},
 		media: []demoMedia{
@@ -337,8 +343,8 @@ var demoTasks = []demoTaskItem{
 			}},
 			{service: "maf", status: stDone, assignee: exElectric, payout: "600", goodsOverride: []protoGood{g("22680-7S000", "1")}, logs: []demoLog{
 				{exElectric, 50, "ДМРВ заменён, адаптация ХХ выполнена."},
-				{exElectric, 48, "Тест-драйв 20 минут: обороты ровные, ошибок нет. Клиенту позвонили — заберёт вечером."},
-				{exAdmin, 6, "Клиент второй день не забирает машину — в командировке, обещал в пятницу. Машина на стоянке, место №3."},
+				{exElectric, 48, "Тест-драйв 20 минут: обороты ровные, ошибок нет. Клиенту позвонили — обещал забрать {end}."},
+				{exAdmin, 6, "Клиент так и не забрал машину {end} — уехал в командировку, заберёт, как вернётся. Машина на стоянке, место №3."},
 			}},
 			{service: "throttle", status: stDone, assignee: exElectric},
 		},
@@ -354,7 +360,7 @@ var demoTasks = []demoTaskItem{
 		car: "outlander",
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stDone, assignee: exElectric, logs: []demoLog{
-				{exIntake, 52, "Клиент оповещён по SMS, оплата при выдаче. Заберёт завтра после работы."},
+				{exIntake, 52, "Клиент оповещён по SMS, оплата при выдаче. Заберёт {fin} после работы."},
 			}},
 			{service: "injectors", status: stDone, assignee: exElectric, payout: "1200", logs: []demoLog{
 				{exElectric, 60, "Форсунки на стенде: производительность 2-й и 4-й на 12% ниже. После УЗ-промывки разброс 2%."},

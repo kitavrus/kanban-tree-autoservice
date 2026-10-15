@@ -325,6 +325,32 @@ func validatePlan(t demoTaskItem) error {
 	if final {
 		minAgo = -t.finishedOffset*24 + 7
 	}
+	// приёмка (created_at = now − acceptedH) — не позже дня начала: начатый заказ (start ≤ 0)
+	// заведён не позже конца дня start при любом часе прогона; запись на будущее — сегодня или
+	// раньше, т.е. до дня начала, всегда.
+	if t.startOffset <= 0 && t.acceptedH < -t.startOffset*24 {
+		return fmt.Errorf("приёмка %d ч назад — позже дня начала %d", t.acceptedH, t.startOffset)
+	}
+	// приёмка — раньше выдачи (даже у заказа без журнала и фото).
+	if final && t.acceptedH < minAgo {
+		return fmt.Errorf("приёмка %d ч назад — не раньше выдачи (день %d)", t.acceptedH, t.finishedOffset)
+	}
+	// даты в текстах — только плейсхолдеры плана; {fin} — только у выданного.
+	texts := []string{t.descHTML}
+	for _, st := range t.subtasks {
+		for _, l := range st.logs {
+			texts = append(texts, l.text)
+		}
+	}
+	for _, s := range texts {
+		rest := strings.NewReplacer("{start}", "", "{end}", "").Replace(s)
+		if final {
+			rest = strings.ReplaceAll(rest, "{fin}", "")
+		}
+		if strings.ContainsAny(rest, "{}") {
+			return fmt.Errorf("неизвестный плейсхолдер в тексте %q", s)
+		}
+	}
 	check := func(what string, hoursAgo int) error {
 		if hoursAgo > t.acceptedH || hoursAgo < minAgo {
 			return fmt.Errorf("%s: %d ч назад — вне окна приёмки (%d ч) … выдачи", what, hoursAgo, t.acceptedH)
@@ -568,6 +594,26 @@ func dayFromToday(n int) string {
 	return time.Now().In(timezone.Load(timezone.Default)).AddDate(0, 0, n).Format(time.DateOnly)
 }
 
+// weekdayShort — день недели в датах текстов демо-заказов.
+var weekdayShort = [...]string{"вс", "пн", "вт", "ср", "чт", "пт", "сб"}
+
+// dayText — «16.10 (чт)»: день через n дней от сегодня по Алматы с настоящим днём недели.
+func dayText(n int) string {
+	d := time.Now().In(timezone.Load(timezone.Default)).AddDate(0, 0, n)
+	return d.Format("02.01") + " (" + weekdayShort[d.Weekday()] + ")"
+}
+
+// planText — текст журнала/описания заказа с датами его плана вместо плейсхолдеров:
+// {start} — начало работ, {end} — плановое окончание, {fin} — день выдачи. Текст не
+// расходится с планом при любом дне и часе прогона (относительные «завтра» устаревали бы).
+func planText(s string, t demoTaskItem) string {
+	return strings.NewReplacer(
+		"{start}", dayText(t.startOffset),
+		"{end}", dayText(t.startOffset+t.days-1),
+		"{fin}", dayText(t.finishedOffset),
+	).Replace(s)
+}
+
 // finishedDay — день выдачи заказа финальной колонки (nil — не выдан).
 func finishedDay(t demoTaskItem, final bool) *string {
 	if !final {
@@ -608,14 +654,14 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
 			       $8, CASE WHEN $8 THEN COALESCE(v.finished_at, now()) END, v.finished_at, $9::numeric, $10,
 			       now() - make_interval(hours => $13), COALESCE(v.finished_at, now())
 			FROM v RETURNING id`,
-			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dayFromToday(t.startOffset), t.paid,
+			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, planText(t.descHTML, t), assigneeID, dayFromToday(t.startOffset), t.paid,
 			fmt.Sprintf("%d", (i+1)*1024), s.adminID, t.days, finishedDay(t, col.IsFinal), t.acceptedH).
 			Scan(&taskID); err != nil {
 			return err
 		}
 
 		for pos, st := range t.subtasks {
-			if err := s.seedSubtask(taskID, pos, st, executors, services, products); err != nil {
+			if err := s.seedSubtask(taskID, pos, st, t, executors, services, products); err != nil {
 				return fmt.Errorf("заказ %q, услуга %s: %w", t.title, st.service, err)
 			}
 		}
@@ -643,7 +689,7 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
 	return nil
 }
 
-func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, executors []executorRow,
+func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, task demoTaskItem, executors []executorRow,
 	services map[string]serviceRow, products map[string]productRow) error {
 	svc := services[st.service]
 	var assigneeID *string
@@ -677,7 +723,7 @@ func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, executor
 		if _, err := s.tx.Exec(s.ctx,
 			`INSERT INTO subtask_logs (subtask_id, user_id, text, created_at, updated_at)
 			 VALUES ($1, $2, $3, now() - make_interval(hours => $4), now() - make_interval(hours => $4))`,
-			subtaskID, userID(executors, l.user, s.adminID), l.text, l.hoursAgo); err != nil {
+			subtaskID, userID(executors, l.user, s.adminID), planText(l.text, task), l.hoursAgo); err != nil {
 			return err
 		}
 	}
