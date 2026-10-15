@@ -11,7 +11,10 @@ export class ShellPage {
   /** Скрытый нативный select под комбобоксом — источник value. */
   readonly timezoneNative: Locator;
   readonly timezoneToast: Locator;
+  /** ☰ в шапке: на широком экране сворачивает/разворачивает меню, на узком — drawer. */
   readonly menuToggle: Locator;
+  /** Логотип «Kanban-tree» в сайдбаре — тот же переключатель (скрыть меню). */
+  readonly sidebarBrand: Locator;
   readonly dialog: Locator;
   readonly dialogOk: Locator;
   readonly dialogCancel: Locator;
@@ -26,6 +29,7 @@ export class ShellPage {
     this.timezoneNative = page.locator('#app-timezone');
     this.timezoneToast = page.getByTestId('timezone-toast-error');
     this.menuToggle = page.getByTestId('menu-toggle');
+    this.sidebarBrand = page.getByTestId('sidebar-brand');
     this.dialog = page.getByTestId('ui-dialog');
     this.dialogOk = page.getByTestId('ui-dialog-ok');
     this.dialogCancel = page.getByTestId('ui-dialog-cancel');
@@ -91,5 +95,11 @@ export class ShellPage {
 
   async hasHorizontalOverflow(): Promise<boolean> {
     return this.page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  }
+
+  /** Сколько ширины окна НЕ досталось контенту (.app-main): 0 — меню свёрнуто, иначе ширина сайдбара. */
+  async contentGap(): Promise<number> {
+    return this.page.evaluate(() =>
+      Math.round(document.documentElement.clientWidth - document.querySelector('.app-main')!.getBoundingClientRect().width));
   }
 }

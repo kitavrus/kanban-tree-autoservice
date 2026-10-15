@@ -7,6 +7,9 @@
 <!-- Тема (system/light/dark, localStorage kt-theme, см. /assets/ssr-shared/js/theme.js):
      снипет ДО стилей, иначе вспышка светлой темы. Bootstrap color modes — data-bs-theme. -->
 <script>(function(){var d=false;try{var p=localStorage.getItem('kt-theme')||'system';d=p==='dark'||(p==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);}catch(e){}document.documentElement.setAttribute('data-bs-theme',d?'dark':'light');})();</script>
+<!-- Свёрнутый сайдбар (localStorage kt-sidebar, см. theme.js) — тоже до стилей: страница
+     сразу рисуется без меню, без вспышки развёрнутого. -->
+<script>try{if(localStorage.getItem('kt-sidebar')==='collapsed')document.documentElement.setAttribute('data-sidebar','collapsed');}catch(e){}</script>
 <link rel="icon" href="/assets/ssr-shared/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/ssr-shared/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/assets/ssr-shared/app.css">
@@ -17,7 +20,7 @@
 <body data-timezone="{{ .Shell.User.Timezone }}">
 <div class="app-shell">
   <aside class="app-sidebar" id="app-sidebar" data-testid="sidebar">
-    <div class="app-brand"><span class="app-brand-logo">▦</span> Kanban-tree</div>
+    <button type="button" class="app-brand app-brand-btn" data-sidebar-toggle aria-controls="app-sidebar" data-testid="sidebar-brand"><span class="app-brand-logo">▦</span> Kanban-tree <span class="app-brand-collapse" aria-hidden="true">‹</span></button>
     <nav class="app-nav">
       {{ range .Shell.Menu }}
       <div class="app-nav-label">{{ .Label }}</div>
@@ -51,7 +54,7 @@
   <div class="app-backdrop" data-sidebar-close></div>
   <div class="app-main">
     <header class="app-topbar">
-      <button type="button" class="btn btn-sm btn-outline-secondary app-menu-btn" data-sidebar-toggle aria-label="Меню" data-testid="menu-toggle">☰</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary app-menu-btn" data-sidebar-toggle aria-controls="app-sidebar" aria-label="Меню" data-testid="menu-toggle">☰</button>
       <h1 class="app-title">{{ .Shell.Title }}</h1>
       {{ block "actions" . }}{{ end }}
     </header>

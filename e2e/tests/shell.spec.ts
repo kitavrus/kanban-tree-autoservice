@@ -224,7 +224,9 @@ test.describe('SH: адаптив (US-1 adaptive:min)', () => {
     const shell = new ShellPage(page);
     await shell.goto('/');
     await expect(shell.sidebar).toBeInViewport();
-    await expect(shell.menuToggle).toBeHidden();
+    // ☰ на широком экране тоже видна — сворачивает меню (SH-032)
+    await expect(shell.menuToggle).toBeVisible();
+    await expect(shell.menuToggle).toHaveAttribute('aria-expanded', 'true');
     expect(await shell.hasHorizontalOverflow()).toBe(false);
   });
 
@@ -239,5 +241,89 @@ test.describe('SH: адаптив (US-1 adaptive:min)', () => {
     await expect(shell.sidebar).toBeInViewport();
     await page.mouse.click(350, 320); // backdrop справа от сайдбара
     await expect(shell.sidebar).not.toBeInViewport();
+  });
+});
+
+test.describe('SH: сворачивание бокового меню', () => {
+  test('SH-032: 1280px — ☰ и логотип скрывают меню, контент на всю ширину, состояние переживает перезагрузку и переход', async ({
+    adminPage: page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // Без вспышки развёрнутого меню: data-sidebar на <html> уже стоит, когда парсер дошёл
+    // до сайдбара (снипет в <head>), а не после скриптов в конце <body>.
+    await page.addInitScript(() => {
+      new MutationObserver((_, obs) => {
+        if (!document.querySelector('.app-sidebar')) return;
+        (window as unknown as { __sidebarAtParse: string | null }).__sidebarAtParse =
+          document.documentElement.getAttribute('data-sidebar');
+        obs.disconnect();
+      }).observe(document, { childList: true, subtree: true });
+    });
+    const html = page.locator('html');
+    const shell = new ShellPage(page);
+    await shell.goto('/');
+    await expect(shell.sidebar).toBeInViewport();
+    expect(await shell.contentGap()).toBeGreaterThan(0);
+
+    await shell.menuToggle.click();
+    await expect(html).toHaveAttribute('data-sidebar', 'collapsed');
+    await expect(shell.sidebar).toBeHidden();
+    await expect(shell.menuToggle).toBeVisible();
+    await expect(shell.menuToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect.poll(() => shell.contentGap()).toBe(0);
+    expect(await shell.hasHorizontalOverflow()).toBe(false);
+
+    await page.reload();
+    await expect(html).toHaveAttribute('data-sidebar', 'collapsed');
+    expect(await page.evaluate(() => (window as unknown as { __sidebarAtParse: string | null }).__sidebarAtParse)).toBe('collapsed');
+    await expect(shell.sidebar).toBeHidden();
+    expect(await shell.contentGap()).toBe(0);
+
+    // другой экран — тоже свёрнуто; ☰ разворачивает обратно
+    await shell.goto('/calendar');
+    await expect(shell.sidebar).toBeHidden();
+    expect(await shell.contentGap()).toBe(0);
+    await shell.menuToggle.click();
+    await expect(html).not.toHaveAttribute('data-sidebar');
+    await expect(shell.sidebar).toBeInViewport();
+    await expect(shell.menuToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect.poll(() => shell.contentGap()).toBeGreaterThan(0);
+
+    // логотип в сайдбаре — тоже переключатель
+    await shell.sidebarBrand.click();
+    await expect(shell.sidebar).toBeHidden();
+    await expect.poll(() => shell.contentGap()).toBe(0);
+    await shell.menuToggle.click();
+    await expect(shell.sidebar).toBeInViewport();
+
+    // развёрнутое состояние тоже сохраняется
+    await page.reload();
+    await expect(html).not.toHaveAttribute('data-sidebar');
+    expect(await page.evaluate(() => (window as unknown as { __sidebarAtParse: string | null }).__sidebarAtParse)).toBeNull();
+    await expect(shell.sidebar).toBeInViewport();
+  });
+
+  test('SH-033: 360px — сохранённое «свёрнуто» не ломает мобильное меню и не меняется им', async ({ adminPage: page }) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    const shell = new ShellPage(page);
+    await shell.goto('/');
+    await page.evaluate(() => localStorage.setItem('kt-sidebar', 'collapsed'));
+    await page.reload();
+    expect(await shell.hasHorizontalOverflow()).toBe(false);
+    await expect(shell.sidebar).not.toBeInViewport();
+    await expect(shell.menuToggle).toHaveAttribute('aria-expanded', 'false');
+
+    await shell.menuToggle.click();
+    await expect(shell.sidebar).toBeInViewport();
+    await expect(shell.menuToggle).toHaveAttribute('aria-expanded', 'true');
+    await shell.sidebarBrand.click(); // логотип в выехавшем меню закрывает его
+    await expect(shell.sidebar).not.toBeInViewport();
+    expect(await page.evaluate(() => localStorage.getItem('kt-sidebar'))).toBe('collapsed');
+
+    // на широком экране меню по-прежнему свёрнуто
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(shell.sidebar).toBeHidden();
+    await expect(shell.menuToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect.poll(() => shell.contentGap()).toBe(0);
   });
 });

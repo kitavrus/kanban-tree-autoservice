@@ -155,6 +155,11 @@ body { background: var(--bs-body-bg); }
 .app-brand { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-lg); font-weight: 700; margin-bottom: var(--space-4); }
 .app-brand-logo { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; font-size: 15px;
   background: var(--bs-primary); color: var(--kt-on-accent); }
+/* логотип в сайдбаре — кнопка «Скрыть меню» (js/theme.js), «‹» справа — подсказка */
+.app-brand-btn { width: 100%; padding: 2px; border: 0; border-radius: 6px; background: none; color: inherit; text-align: left; cursor: pointer; }
+.app-brand-btn:hover { background: var(--bs-secondary-bg); }
+.app-brand-btn:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: 2px; }
+.app-brand-collapse { margin-left: auto; padding: 0 6px; font-weight: 400; color: var(--bs-secondary-color); }
 .app-nav { display: flex; flex-direction: column; gap: 2px; }
 .app-nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--bs-secondary-color); margin: var(--space-3) 0 var(--space-1); }
 .app-nav-link { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; color: var(--bs-body-color); text-decoration: none; }
@@ -169,13 +174,21 @@ body { background: var(--bs-body-bg); }
   background: var(--bs-body-bg); border-bottom: 1px solid var(--bs-border-color); }
 .app-title { font-size: var(--text-lg); font-weight: 600; margin: 0 auto 0 0; }
 .app-content { padding: var(--space-5); min-width: 0; }
-.app-menu-btn, .app-backdrop { display: none; }
+.app-backdrop { display: none; }
+/* Свёрнутое меню (широкий экран): сайдбар уезжает влево, .app-main (flex: 1) занимает всю
+   ширину; ☰ в шапке остаётся видимой и разворачивает обратно. visibility — чтобы ссылки
+   скрытого меню не ловили Tab. Атрибут ставит снипет в base.html до стилей — при загрузке
+   перехода нет (первый расчёт стилей уже свёрнутый). */
+.app-sidebar { transition: margin-left .2s, visibility .2s; }
+[data-sidebar="collapsed"] .app-sidebar { margin-left: calc(-1 * var(--sidebar-w)); visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .app-sidebar { transition: none; } }
 
 @media (max-width: 900px) {
+  /* на узком экране сворачивание не действует — там выезжающий drawer (.sidebar-open) */
+  .app-sidebar, [data-sidebar="collapsed"] .app-sidebar { margin-left: 0; visibility: visible; }
   .app-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 1030; transform: translateX(-100%); transition: transform .2s; }
   .app-shell.sidebar-open .app-sidebar { transform: none; box-shadow: var(--bs-box-shadow-lg); }
   .app-shell.sidebar-open .app-backdrop { display: block; position: fixed; inset: 0; z-index: 1029; background: rgba(0, 0, 0, .35); }
-  .app-menu-btn { display: inline-flex; }
   .app-topbar, .app-content { padding-left: var(--space-4); padding-right: var(--space-4); }
 }
 
