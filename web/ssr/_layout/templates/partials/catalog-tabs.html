@@ -1,6 +1,6 @@
 {{ define "catalogTabs" }}
 <div class="tabs mb-3" data-testid="catalog-tabs" role="tablist">
   <a href="/catalog/services" class="tab-link{{ if eq .Active "services" }} active{{ end }}" data-testid="catalog-tab-services"{{ if eq .Active "services" }} aria-current="page"{{ end }}>🛠 Услуги <span class="count">{{ .Services }}</span></a>
-  <a href="/catalog/products" class="tab-link{{ if eq .Active "products" }} active{{ end }}" data-testid="catalog-tab-products"{{ if eq .Active "products" }} aria-current="page"{{ end }}>📦 Товары <span class="count">{{ .Products }}</span></a>
+  <a href="/catalog/products" class="tab-link{{ if eq .Active "products" }} active{{ end }}" data-testid="catalog-tab-products"{{ if eq .Active "products" }} aria-current="page"{{ end }}>📦 Запчасти <span class="count">{{ .Products }}</span></a>
 </div>
 {{ end }}

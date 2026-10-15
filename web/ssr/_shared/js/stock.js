@@ -3,7 +3,7 @@
    этого проекта).
 
    Данные — GET /api/v1/stock/summary (KPI-плитки) + GET /api/v1/stock?scope=&q= (таблица:
-   одна строка на товар). Правка остатка — PUT /api/v1/stock/:product_id {stock}, доступна
+   одна строка на запчасть). Правка остатка — PUT /api/v1/stock/:product_id {stock}, доступна
    только admin (кнопка правки не рендерится
    в DOM для executor — testid отсутствует, а не просто скрыт, тот же приём, что и
    task-delete в board.js). После успешной правки — KT.refreshNavBadge() (ADR-004).
@@ -201,7 +201,7 @@
           // окно закрывается, отчёт перечитывается без этой строки
           if (err && err.status === 404) {
             stockModal.hide();
-            KT.uiToast(err.message || 'Товар не найден', true);
+            KT.uiToast(err.message || 'Запчасть не найдена', true);
             reloadAll();
             return;
           }

@@ -114,8 +114,15 @@ func (s *CardService) Card(ctx context.Context, a Actor, taskID string) (*OrderC
 		return nil, err
 	}
 
+	works, parts, err := s.card.Totals(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
 	return &OrderCardResponse{
 		Task:        toTaskResponse(*task),
+		WorksAmount: works,
+		PartsAmount: parts,
 		Column:      *col,
 		Car:         *car,
 		Subtasks:    subtasks,

@@ -233,6 +233,10 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_Handover_FullContent() {
 	s.Contains(body, ">—<", "цена работы «по факту» — прочерк")
 	// итог: 500.00 (услуга) + 2*20.00 (товар) = 540.00 — совпадает с task.total_amount (AC-013).
 	s.Contains(body, "540.00")
+	// работы и запчасти считаются отдельно: 500.00 (цена услуги) + 40.00 (запчасти).
+	s.Contains(body, "Работы: 500.00")
+	s.Contains(body, "Запчасти: 40.00")
+	s.Contains(body, `data-testid="print-subtask-parts-total">40.00<`)
 	s.Contains(body, "Оплачено")
 	s.Contains(body, "Выдал:")
 	s.Contains(body, "Получил:")

@@ -66,7 +66,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     // окно: заголовок с номером и названием, пояснение, счётчик символов.
     const text = await card.openDeleteTask();
     await expect(card.deleteDialogTitle).toHaveText(`Удалить «#${task.id} ${task.title}»?`);
-    await expect(text).toHaveText('Товары заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».');
+    await expect(text).toHaveText('Запчасти заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».');
     await expect(card.deleteReasonCounter).toHaveText('0 / 500');
 
     // негатив: пустая причина и причина из пробелов — проверяет сервер, окно остаётся.
@@ -241,7 +241,7 @@ test.describe('SD: мягкое удаление заказа и раздел «
     await expect(del.warnings).toBeVisible();
     await expect(del.warnings).toContainText(`Восстановлено: #${task.id} ${task.title}`);
     await expect(del.warningLines).toHaveCount(1);
-    await expect(del.warningLines).toHaveText(`Не хватает товара «${product.name}»: остаток −2`);
+    await expect(del.warningLines).toHaveText(`Не хватает запчасти «${product.name}»: остаток −2`);
     await expect(del.warningOpen).toHaveText(`Открыть заказ #${task.id}`);
     await expect(del.warningOpen).toHaveAttribute('href', `/?task=${task.id}`);
 

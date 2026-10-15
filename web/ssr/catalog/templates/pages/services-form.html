@@ -24,14 +24,14 @@
         {{ with index .Errors "price" }}<div class="invalid-feedback" data-testid="error-price">{{ . }}</div>{{ end }}
       </div>
     </div>
-    <div class="section-title text-body-secondary small text-uppercase mb-2">Товары в комплекте</div>
+    <div class="section-title text-body-secondary small text-uppercase mb-2">Запчасти в комплекте</div>
     {{ with index .Errors "products" }}<div class="alert alert-danger py-2" role="alert" data-testid="error-products">{{ . }}</div>{{ end }}
     <div id="products-rows" class="row-list" data-row-list data-row-min="0" data-testid="products-rows">
       {{ range $i, $row := .Products }}
       <div class="row-list-item d-flex gap-2 align-items-start mb-2" data-testid="product-row-item">
         <div class="flex-grow-1">
           <select name="product_id" class="form-select{{ if index $.Errors (printf "products[%d].product_id" $i) }} is-invalid{{ end }}" data-testid="service-product-select">
-            <option value="">— выбрать товар —</option>
+            <option value="">— выбрать запчасть —</option>
             {{ range $.ProductOptions }}{{ if or (not .IsDeleted) (eq .ID $row.ProductID) }}<option value="{{ .ID }}" data-hint="{{ .Hint }}"{{ if eq .ID $row.ProductID }} selected{{ end }}>{{ .Name }}{{ if .IsDeleted }} (удалён){{ else if not .IsActive }} (архив){{ end }}</option>{{ end }}{{ end }}
           </select>
           {{ if $row.IsDeleted }}<span class="badge text-bg-secondary mt-1" data-testid="product-deleted-badge">удалён</span>{{ end }}
@@ -48,7 +48,7 @@
         <div class="row-list-item d-flex gap-2 align-items-start mb-2" data-testid="product-row-item">
           <div class="flex-grow-1">
             <select name="product_id" class="form-select" data-testid="service-product-select">
-              <option value="">— выбрать товар —</option>
+              <option value="">— выбрать запчасть —</option>
               {{ range .ProductOptions }}{{ if not .IsDeleted }}<option value="{{ .ID }}" data-hint="{{ .Hint }}">{{ .Name }}{{ if not .IsActive }} (архив){{ end }}</option>{{ end }}{{ end }}
             </select>
           </div>
@@ -59,7 +59,7 @@
         </div>
       </template>
     </div>
-    <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-3" data-row-add="products-rows" data-testid="service-product-add">+ Товар</button>
+    <button type="button" class="btn btn-outline-secondary btn-sm mt-2 mb-3" data-row-add="products-rows" data-testid="service-product-add">+ Запчасть</button>
     <div class="d-flex gap-2">
       <button type="submit" class="btn btn-primary" data-testid="service-save">Сохранить</button>
       <a href="/catalog/services" class="btn btn-outline-secondary">Отмена</a>
@@ -87,7 +87,7 @@
 <script src="/assets/ssr-shared/js/row-list.js"></script>
 <script>
 /* pagination DS-007: комбобокс товара в строке комплекта ищет на сервере
-   (GET /api/v1/products?q=&limit=50 — только активные), чтобы товар за пределами
+   (GET /api/v1/products?q=&limit=50 — только активные), чтобы запчасть за пределами
    предзагруженных опций (первые 2000 активных) находился вводом. Эталон — task-card.js
    card-product-add: combobox.js зовёт sel._cbFetchOptions(q), когда в поле ввода есть текст.
    Новые строки (row-list.js из <template>) подхватываются MutationObserver'ом. */

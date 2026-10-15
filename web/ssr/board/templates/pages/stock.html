@@ -2,7 +2,7 @@
 <div id="stock" class="stock-view" data-testid="stock-root" data-is-admin="{{ .Shell.IsAdmin }}">
   <div class="stock-kpis" data-testid="stock-kpis">
     <div class="stock-kpi">
-      <span>Товаров</span>
+      <span>Запчастей</span>
       <b id="stock-kpi-total" data-testid="stock-kpi-total">0</b>
     </div>
     <div class="stock-kpi">
@@ -22,7 +22,7 @@
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="stock-filters">
     <select class="form-select form-select-sm" id="stock-scope" data-testid="stock-scope" style="max-width:220px">
       <option value="risky">Только рисковые</option>
-      <option value="all">Все товары</option>
+      <option value="all">Все запчасти</option>
     </select>
     <input type="search" class="form-control form-control-sm" id="stock-q" data-testid="stock-q"
            placeholder="Поиск по названию" style="max-width:260px" autocomplete="off">
@@ -32,11 +32,11 @@
     <table class="table table-hover align-middle" data-testid="stock-table">
       <thead>
         <tr id="stock-thead-row">
-          <th>Товар</th>
+          <th>Запчасть</th>
           <th class="d-none d-md-table-cell">Где лежит</th>
           <th data-testid="stock-col-total">Остаток</th>
           <th>Минимум</th>
-          <th class="d-none d-md-table-cell" title="Товары в заказах, которые ещё не взяты в работу">В новых заказах</th>
+          <th class="d-none d-md-table-cell" title="Запчасти в заказах, которые ещё не взяты в работу">В новых заказах</th>
           <th class="d-none d-md-table-cell">Прогноз</th>
           <th>Состояние</th>
           <th></th>
@@ -46,8 +46,8 @@
     </table>
   </div>
   <p class="text-body-secondary small d-none" id="stock-shown" data-testid="stock-shown"></p>
-  <div class="empty-state d-none" id="stock-empty" data-testid="stock-empty">Все товары выше минимального остатка 👍</div>
-  <p class="text-body-secondary small">Товары списываются со склада, когда заказ попадает в колонку с признаком «Списывать товары». «Прогноз» — остаток после списания товаров из заказов, которые ещё не взяты в работу.</p>
+  <div class="empty-state d-none" id="stock-empty" data-testid="stock-empty">Все запчасти выше минимального остатка 👍</div>
+  <p class="text-body-secondary small">Запчасти списываются со склада, когда заказ попадает в колонку с признаком «Списывать запчасти». «Прогноз» — остаток после списания запчастей из заказов, которые ещё не взяты в работу.</p>
 </div>
 
 <!-- Модалка правки остатка (admin, ADR-004) -->
@@ -55,7 +55,7 @@
   <div class="modal-dialog">
     <form class="modal-content" id="stock-form-el" novalidate>
       <div class="modal-header">
-        <h2 class="modal-title fs-5" id="stock-modal-title">Остаток товара</h2>
+        <h2 class="modal-title fs-5" id="stock-modal-title">Остаток запчасти</h2>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
       </div>
       <div class="modal-body">
@@ -63,7 +63,7 @@
         <div class="mb-3">
           <label class="form-label" for="stock-value">Остаток *</label>
           <input type="number" step="any" class="form-control" id="stock-value" data-testid="stock-value" required>
-          <div class="form-text d-none" id="stock-write-off-hint" data-testid="stock-write-off-hint">Товар удалён — остаток можно только списать (уменьшить до нуля).</div>
+          <div class="form-text d-none" id="stock-write-off-hint" data-testid="stock-write-off-hint">Запчасть удалена — остаток можно только списать (уменьшить до нуля).</div>
         </div>
       </div>
       <div class="modal-footer">

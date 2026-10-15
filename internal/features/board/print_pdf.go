@@ -19,7 +19,7 @@ import (
 )
 
 // PDF-версия акта выдачи — тот же PrintVM и то же содержимое, что print-handover.html
-// (клиент, телефоны, госномер, описание, все услуги с товарами, итог task.total_amount,
+// (клиент, телефоны, госномер, описание, все услуги с запчастями, итоги работ и запчастей, итог task.total_amount,
 // отметка оплаты, подписи), но файлом PDF без «Печать → Сохранить как PDF» в браузере.
 // Кириллица — встроенный TTF DejaVu Sans Condensed (из go-pdf/fpdf, свободная лицензия
 // Bitstream Vera/DejaVu).
@@ -129,10 +129,10 @@ func renderHandoverPDF(vm *PrintVM) ([]byte, error) {
 	if len(vm.Card.Subtasks) == 0 {
 		pdf.MultiCell(contentW, 5, "Услуги не добавлены.", "", "L", false)
 	} else {
-		widths := []float64{contentW * 0.32, contentW * 0.13, contentW * 0.13, contentW * 0.29, contentW * 0.13}
-		aligns := []string{"L", "L", "R", "L", "R"}
+		widths := []float64{contentW * 0.24, contentW * 0.14, contentW * 0.10, contentW * 0.28, contentW * 0.13, contentW * 0.11}
+		aligns := []string{"L", "L", "R", "L", "R", "R"}
 		pdf.SetFont(pdfFont, "B", 9)
-		pdfTableRow(pdf, widths, aligns, []string{"Услуга", "Статус", "Цена работы", "Товары", "Итого"}, true)
+		pdfTableRow(pdf, widths, aligns, []string{"Услуга", "Статус", "Работа", "Запчасти", "Стоимость запчастей", "Итого"}, true)
 		pdf.SetFont(pdfFont, "", 9)
 		for _, st := range vm.Card.Subtasks {
 			status, ok := subtaskStatusTitles[st.Status]
@@ -147,11 +147,14 @@ func renderHandoverPDF(vm *PrintVM) ([]byte, error) {
 			if len(products) > 0 {
 				productsCell = strings.Join(products, "\n")
 			}
-			pdfTableRow(pdf, widths, aligns, []string{st.ServiceName, status, amountOrDash(st.Price), productsCell, st.Total.String()}, false)
+			pdfTableRow(pdf, widths, aligns, []string{st.ServiceName, status, amountOrDash(st.Price), productsCell, st.PartsTotal.String(), st.Total.String()}, false)
 		}
 	}
 
 	pdf.Ln(4)
+	pdf.SetFont(pdfFont, "", 10)
+	pdf.MultiCell(contentW, 5, "Работы: "+vm.Card.WorksAmount.String(), "", "L", false)
+	pdf.MultiCell(contentW, 5, "Запчасти: "+vm.Card.PartsAmount.String(), "", "L", false)
 	pdf.SetFont(pdfFont, "B", 13)
 	pdf.MultiCell(contentW, 7, "Итого: "+vm.Card.Task.TotalAmount.String(), "", "L", false)
 	pdf.SetFont(pdfFont, "", 10)

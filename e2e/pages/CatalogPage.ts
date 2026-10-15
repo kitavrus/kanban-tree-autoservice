@@ -100,7 +100,7 @@ export class CatalogPage {
 
   async gotoProducts(query = '') {
     await this.page.goto(`/catalog/products${query}`);
-    await expect(this.page.locator('.app-title')).toHaveText('Каталог: товары');
+    await expect(this.page.locator('.app-title')).toHaveText('Каталог: запчасти');
   }
 
   /**
@@ -121,7 +121,7 @@ export class CatalogPage {
 
   async gotoNewProduct() {
     await this.page.goto('/catalog/products/new');
-    await expect(this.page.locator('.app-title')).toHaveText('Новый товар');
+    await expect(this.page.locator('.app-title')).toHaveText('Новая запчасть');
   }
 
   row(name: string): Locator {

@@ -70,7 +70,7 @@
 
   function toastWarnings(warnings) {
     if (!warnings || !warnings.length || !KT.uiToast) return;
-    KT.uiToast('Внимание, товары на минимуме: ' + warnings.map(function (w) { return w.name; }).join(', '), true);
+    KT.uiToast('Внимание, запчасти на минимуме: ' + warnings.map(function (w) { return w.name; }).join(', '), true);
   }
 
   function openOrder(id) {

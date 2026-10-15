@@ -1,7 +1,7 @@
 /* KT.taskCard — карточка заказа поверх доски (фаза 6, D25/SD-006/ADR-101/ADR-105).
    Заменяет простую форму фазы 5 (`#task-modal`): шапка (title/client/column/assignee/
    due/paid/description) сохраняется кнопкой; разделы «Оборудование»/«Услуги» заблокированы
-   у нового заказа до первого сохранения шапки (SD-006); строки услуг/товаров/оборудования
+   у нового заказа до первого сохранения шапки (SD-006); строки услуг/запчастей/оборудования
    сохраняются по каждому change без отдельной кнопки (ADR-105 rowQueue — не более одного
    запроса строки в полёте, накопленные изменения уходят следующим PUT).
 
@@ -634,7 +634,10 @@
       '    </div>' +
       '    <div class="mt-2">' + subtaskProductsHtml(sub) + '</div>' +
       '    <div class="mt-2">' + subtaskLogsHtml(sub) + '</div>' +
-      '    <div class="text-end small mt-1"><strong data-testid="card-subtask-total">Итог: ' + money(sub.total) + '</strong></div>' +
+      '    <div class="text-end small mt-1">' +
+      '      <span class="text-body-secondary me-3" data-testid="card-subtask-work-total">Работа: ' + money(sub.price) + '</span>' +
+      '      <span class="text-body-secondary me-3" data-testid="card-subtask-parts-total">Запчасти: ' + money(sub.parts_total) + '</span>' +
+      '      <strong data-testid="card-subtask-total">Итог: ' + money(sub.total) + '</strong></div>' +
       '  </div>' +
       '</div>';
   }
@@ -658,10 +661,10 @@
     }).join('');
     return '' +
       '<div class="table-responsive"><table class="table table-sm align-middle mb-1">' +
-      '  <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Остаток</th><th>Сумма</th><th></th></tr></thead>' +
+      '  <thead><tr><th>Запчасть</th><th>Кол-во</th><th>Цена</th><th>Остаток</th><th>Сумма</th><th></th></tr></thead>' +
       '  <tbody>' + rows + '</tbody>' +
       '</table></div>' +
-      '<select class="form-select form-select-sm" data-testid="card-product-add" data-subtask-id="' + esc(sub.id) + '"><option value="">+ Добавить товар…</option></select>';
+      '<select class="form-select form-select-sm" data-testid="card-product-add" data-subtask-id="' + esc(sub.id) + '"><option value="">+ Добавить запчасть…</option></select>';
   }
 
   function subtaskLogsHtml(sub) {
@@ -770,7 +773,7 @@
     $$('[data-testid="card-subtask-delete"]', container).forEach(function (btn) {
       btn.addEventListener('click', function () {
         var subId = btn.dataset.subtaskId;
-        KT.uiConfirm('Услуга удалится вместе с товарами и журналом.').then(function (ok) {
+        KT.uiConfirm('Услуга удалится вместе с запчастями и журналом.').then(function (ok) {
           if (!ok) return;
           var ticket = beginRequest();
           KT.api.del('/api/v1/subtasks/' + subId).then(function (resp) {
@@ -867,7 +870,7 @@
           if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
           host.onChanged();
         }).catch(function (err) {
-          KT.uiAlert((err && err.message) || 'Не удалось удалить товар', 'Ошибка');
+          KT.uiAlert((err && err.message) || 'Не удалось удалить запчасть', 'Ошибка');
         });
       });
     });
@@ -888,7 +891,7 @@
           if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
           host.onChanged();
         }).catch(function (err) {
-          KT.uiAlert((err && err.message) || 'Не удалось добавить товар', 'Ошибка');
+          KT.uiAlert((err && err.message) || 'Не удалось добавить запчасть', 'Ошибка');
         });
       });
     });
@@ -1128,9 +1131,11 @@
     });
   }
 
-  // renderTotal — итог заказа (услуги + товары).
+  // renderTotal — итог заказа: работы (цены услуг) и запчасти считаются отдельно.
   function renderTotal() {
     $('#card-total').innerHTML =
+      '<span class="text-body-secondary me-3" data-testid="card-works-total">Работы: ' + money(card.works_amount) + '</span>' +
+      '<span class="text-body-secondary me-3" data-testid="card-parts-total">Запчасти: ' + money(card.parts_amount) + '</span>' +
       '<strong data-testid="card-total">Итог заказа: ' + money(card.task.total_amount) + '</strong>';
   }
 
@@ -1784,7 +1789,7 @@
       var title = (card && card.task && card.task.title) || '';
       KT.uiDeleteDialog({
         title: 'Удалить «#' + id + (title ? ' ' + title : '') + '»?',
-        text: 'Товары заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».',
+        text: 'Запчасти заказа вернутся на склад. Заказ можно восстановить в разделе «Удалённые».',
         submit: function (reason) { return KT.api.delWith('/api/v1/tasks/' + id, { reason: reason }); },
         onOffline: function () { KT.uiToast('Нет связи с сервером', true); }
       }).then(function (out) {

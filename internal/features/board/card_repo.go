@@ -75,6 +75,8 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
 		       s.due_date::text, s.price::text, s.position,
 		       round(coalesce(s.price, 0) + coalesce((SELECT sum(round(sp.qty * coalesce(sp.price, 0), 2))
 		                FROM subtask_products sp WHERE sp.subtask_id = s.id), 0), 2)::text AS subtask_total,
+		       round(coalesce((SELECT sum(round(sp.qty * coalesce(sp.price, 0), 2))
+		                FROM subtask_products sp WHERE sp.subtask_id = s.id), 0), 2)::text AS parts_total,
 		       s.is_executor_paid, s.executor_paid_at, s.executor_payout::text, sv.deleted_at IS NOT NULL
 		FROM subtasks s JOIN services sv ON sv.id = s.service_id LEFT JOIN users u ON u.id = s.assignee_id
 		WHERE s.task_id = $1 ORDER BY s.position, s.id`, taskID)
@@ -88,9 +90,9 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
 		var c CardSubtask
 		var assigneeID, assigneeName, dueDate, price, payout sql.NullString
 		var assigneeActive sql.NullBool
-		var total string
+		var total, partsTotal string
 		if err := rows.Scan(&c.ID, &c.ServiceID, &c.ServiceName, &c.Status, &assigneeID, &assigneeName,
-			&assigneeActive, &dueDate, &price, &c.Position, &total,
+			&assigneeActive, &dueDate, &price, &c.Position, &total, &partsTotal,
 			&c.IsExecutorPaid, &c.ExecutorPaidAt, &payout, &c.ServiceIsDeleted); err != nil {
 			return nil, err
 		}
@@ -119,6 +121,7 @@ func (r *CardRepo) Subtasks(ctx context.Context, taskID int64) ([]CardSubtask, e
 			c.Price = &v
 		}
 		c.Total = numeric.Amount(total)
+		c.PartsTotal = numeric.Amount(partsTotal)
 		c.Products = []CardSubtaskProduct{}
 		c.Logs = []CardSubtaskLog{}
 		out = append(out, c)
@@ -225,4 +228,18 @@ func (r *CardRepo) PrintHeader(ctx context.Context, taskID int64) (*printHeader,
 		return nil, errNotFound
 	}
 	return &h, err
+}
+
+// Totals — разбивка итога заказа на работы (цены услуг, «по факту» = 0) и запчасти (сумма
+// round(qty*price, 2) по строкам). Округление то же, что в totalAmountSelectSQL, поэтому
+// works + parts == task.total_amount.
+func (r *CardRepo) Totals(ctx context.Context, taskID int64) (works, parts numeric.Amount, err error) {
+	var w, p string
+	err = r.pool.QueryRow(ctx, `
+		SELECT round(coalesce(sum(coalesce(s.price, 0)), 0), 2)::text,
+		       round(coalesce((SELECT sum(round(sp.qty * coalesce(sp.price, 0), 2))
+		                FROM subtask_products sp JOIN subtasks s2 ON s2.id = sp.subtask_id
+		                WHERE s2.task_id = $1), 0), 2)::text
+		FROM subtasks s WHERE s.task_id = $1`, taskID).Scan(&w, &p)
+	return numeric.Amount(w), numeric.Amount(p), err
 }

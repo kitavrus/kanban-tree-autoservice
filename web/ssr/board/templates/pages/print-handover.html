@@ -1,5 +1,5 @@
 {{/* print-handover — акт выдачи (AC-016, SD-009): ВСЕ услуги заказа со статусом и ценами
-     (не только выполненные), товары qty×цена, итог = task.total_amount (одна цифра с
+     (не только выполненные), запчасти qty×цена, итоги работ/запчастей отдельно, итог = task.total_amount (одна цифра с
      карточкой, ADR-005), отметка оплаты. Каждый реквизит фирмы — свой `{{ if }}`. */}}
 {{ define "content" }}
 <header class="print-firm" data-testid="print-firm">
@@ -33,13 +33,13 @@
   <h2>Услуги</h2>
   {{ if .Card.Subtasks }}
   <table class="table table-bordered table-sm" data-testid="print-subtasks">
-    <thead><tr><th>Услуга</th><th>Статус</th><th>Цена работы</th><th>Товары</th><th>Итого</th></tr></thead>
+    <thead><tr><th>Услуга</th><th>Статус</th><th>Работа</th><th>Запчасти</th><th>Стоимость запчастей</th><th>Итого</th></tr></thead>
     <tbody>
     {{ range .Card.Subtasks }}
     <tr data-testid="print-subtask-row">
       <td>{{ .ServiceName }}</td>
       <td>{{ if eq .Status "new" }}Новая{{ else if eq .Status "in_progress" }}В работе{{ else if eq .Status "done" }}Выполнена{{ else }}{{ .Status }}{{ end }}</td>
-      <td>{{ if .Price }}{{ .Price }}{{ else }}—{{ end }}</td>
+      <td class="text-end">{{ if .Price }}{{ .Price }}{{ else }}—{{ end }}</td>
       <td>
         {{ if .Products }}
         <ul class="print-products-list">
@@ -51,7 +51,8 @@
         <span class="text-body-secondary">—</span>
         {{ end }}
       </td>
-      <td>{{ .Total }}</td>
+      <td class="text-end" data-testid="print-subtask-parts-total">{{ .PartsTotal }}</td>
+      <td class="text-end">{{ .Total }}</td>
     </tr>
     {{ end }}
     </tbody>
@@ -62,6 +63,8 @@
 </section>
 
 <section class="print-section print-total" data-testid="print-total">
+  <p class="mb-1" data-testid="print-works-total">Работы: {{ .Card.WorksAmount }}</p>
+  <p class="mb-1" data-testid="print-parts-total">Запчасти: {{ .Card.PartsAmount }}</p>
   <h2>Итого: {{ .Card.Task.TotalAmount }}</h2>
   <p data-testid="print-payment">
     {{ if .Card.Task.IsPaid }}Оплачено{{ if .Card.Task.PaidAt }} {{ timeIn .Timezone "02.01.2006" .Card.Task.PaidAt }}{{ end }}{{ else }}Не оплачено{{ end }}

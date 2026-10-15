@@ -732,7 +732,7 @@
     el.setAttribute('data-testid', 'toast-warnings');
     el.setAttribute('role', 'alert');
     var text = document.createElement('div');
-    text.textContent = '⚠ Внимание, товары на минимуме: ' + warnings.map(function (w) {
+    text.textContent = '⚠ Внимание, запчасти на минимуме: ' + warnings.map(function (w) {
       return w.name + ' (' + (w.kind === 'negative' ? 'не хватает' : 'на минимуме') + ')';
     }).join(', ');
     el.appendChild(text);

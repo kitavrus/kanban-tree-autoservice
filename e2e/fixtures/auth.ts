@@ -230,7 +230,7 @@ export class AdminApi {
 
   async createProduct(p: NewProduct): Promise<Product> {
     const res = await this.ctx.post('/api/v1/products', { data: p, headers: await this.headers() });
-    expect(res.status(), `создание товара ${p.name}: ${await res.text()}`).toBe(201);
+    expect(res.status(), `создание запчасти ${p.name}: ${await res.text()}`).toBe(201);
     return res.json();
   }
 
@@ -669,13 +669,13 @@ export class AdminApi {
     p: { product_id: string; qty: number },
   ): Promise<import('./board-types').OrderCardMutationResponse> {
     const res = await this.ctx.post(`/api/v1/subtasks/${subtaskId}/products`, { data: p, headers: await this.headers() });
-    expect(res.status(), `добавление товара услуге ${subtaskId}: ${await res.text()}`).toBe(201);
+    expect(res.status(), `добавление запчасти услуге ${subtaskId}: ${await res.text()}`).toBe(201);
     return res.json();
   }
 
   async deleteSubtaskProduct(id: string): Promise<import('./board-types').OrderCardMutationResponse> {
     const res = await this.ctx.delete(`/api/v1/subtask-products/${id}`, { headers: await this.headers() });
-    expect(res.status(), `удаление товара услуги ${id}: ${await res.text()}`).toBe(200);
+    expect(res.status(), `удаление запчасти услуги ${id}: ${await res.text()}`).toBe(200);
     return res.json();
   }
 

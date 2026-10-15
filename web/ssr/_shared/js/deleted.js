@@ -63,9 +63,9 @@
     // «Запись вернётся в архив» в подтверждении). Отказ 409 NAME_TAKEN (категория, тип) — тост
     // с текстом сервера, строка остаётся.
     {
-      kind: 'products', label: 'Товары', countKey: 'products',
+      kind: 'products', label: 'Запчасти', countKey: 'products',
       restoreUrl: function (id) { return '/api/v1/products/' + encodeURIComponent(id) + '/restore'; },
-      notFound: 'Товар не найден', confirmText: archivedConfirm
+      notFound: 'Запчасть не найдена', confirmText: archivedConfirm
     },
     {
       kind: 'services', label: 'Услуги', countKey: 'services',
@@ -324,8 +324,8 @@
     (resp.warnings || []).forEach(function (w) {
       var stock = String(w.stock).replace(/^-/, '−');
       lines.push(w.kind === 'negative'
-        ? 'Не хватает товара «' + w.name + '»: остаток ' + stock
-        : 'Товар «' + w.name + '» на минимуме: остаток ' + stock);
+        ? 'Не хватает запчасти «' + w.name + '»: остаток ' + stock
+        : 'Запчасть «' + w.name + '» на минимуме: остаток ' + stock);
     });
     (resp.notices || []).forEach(function (n) { lines.push(n.message); });
     if (!lines.length) return;

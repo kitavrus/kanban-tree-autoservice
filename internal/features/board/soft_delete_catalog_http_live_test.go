@@ -375,7 +375,7 @@ func (s *OrderCardLiveSuite) TestStock_DeletedProductAdjustOnlyWriteOff() {
 	expectStatus(p, -1, http.StatusConflict, "PRODUCT_DELETED_WRITE_OFF_ONLY", "смена знака")
 	s.Equal("4.000|0", s.defaultStock(p)+"|"+movements(p), "отказы остаток и журнал не тронули")
 	st, _, raw := s.catAdjust(p, 5)
-	s.Equal("Товар удалён — его остаток можно только списать", s.sdErr(raw).Message, "%d", st)
+	s.Equal("Запчасть удалена — её остаток можно только списать", s.sdErr(raw).Message, "%d", st)
 
 	// списание: частично, затем до нуля.
 	expectStatus(p, 1.5, http.StatusOK, "", "частичное списание")

@@ -28,6 +28,7 @@ func TestRenderHandoverPDF(t *testing.T) {
 			Status:      SubtaskStatusDone,
 			Price:       &price,
 			Total:       "1540.00",
+			PartsTotal:  "40.00",
 			Products: []CardSubtaskProduct{{
 				Name: "Термопаста", Unit: "шт", Qty: "2", Price: nil, LineTotal: "40.00",
 			}},
@@ -43,6 +44,8 @@ func TestRenderHandoverPDF(t *testing.T) {
 	}
 	vm.Card.Task.ID = 6
 	vm.Card.Task.TotalAmount = "61600.00"
+	vm.Card.WorksAmount = "60000.00"
+	vm.Card.PartsAmount = "1600.00"
 	vm.Card.Subtasks = subtasks
 
 	out, err := renderHandoverPDF(vm)

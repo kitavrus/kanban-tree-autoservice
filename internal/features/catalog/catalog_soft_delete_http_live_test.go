@@ -217,7 +217,7 @@ func (s *CatalogLiveSuite) TestTS027_ProductDelete_StockGuard() {
 		s.Require().Equal(http.StatusConflict, st, "%s: %s", name, raw)
 		e := s.sdErr(raw)
 		s.Equal("PRODUCT_HAS_STOCK", e.Code, name)
-		s.Equal("У товара есть остаток на складе — сначала спишите его", e.Message, name)
+		s.Equal("У запчасти есть остаток на складе — сначала спишите её", e.Message, name)
 		s.Equal(sdLiveActive, s.sdState("products", id), "%s: товар не помечен", name)
 	}
 
@@ -740,7 +740,7 @@ func (s *CatalogLiveSuite) TestSSR_ProductAndServiceDeleteForms() {
 	status, _, body := s.postForm("/catalog/products/"+withStock+"/delete", url.Values{"reason": {"Не нужен"}})
 	s.Equal(http.StatusConflict, status)
 	s.Contains(body, `data-testid="form-error"`)
-	s.Contains(body, "У товара есть остаток на складе — сначала спишите его")
+	s.Contains(body, "У запчасти есть остаток на складе — сначала спишите её")
 	s.Contains(body, `data-testid="product-stock"`, "форма товара перерисована целиком")
 	s.NotContains(body, "data-delete-error")
 	s.Equal(sdLiveActive, s.sdState("products", withStock))

@@ -71,7 +71,7 @@ test.describe('BD: экран «Остатки»', () => {
     expect(willLowAfterEdit).toBe(willLowBefore);
 
     // scope=all — товар виден с новым остатком, состояние «норма».
-    await stock.chooseScope('Все товары');
+    await stock.chooseScope('Все запчасти');
     await expect(stock.row(product.id)).toBeVisible();
     await expect(stock.row(product.id)).toContainText('20');
     await expect(stock.row(product.id)).toContainText('норма');
@@ -82,7 +82,7 @@ test.describe('BD: экран «Остатки»', () => {
     const user = await makeUser({ login });
     await loginAs(page, login, user.password);
     await stock.goto();
-    await stock.chooseScope('Все товары');
+    await stock.chooseScope('Все запчасти');
     await expect(stock.row(product.id)).toBeVisible();
     await expect(stock.editBtn(product.id)).toHaveCount(0);
 

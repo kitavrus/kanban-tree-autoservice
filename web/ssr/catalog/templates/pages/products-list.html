@@ -1,4 +1,4 @@
-{{ define "actions" }}<a href="/catalog/products/new" class="btn btn-primary" data-testid="product-add">+ Товар</a>{{ end }}
+{{ define "actions" }}<a href="/catalog/products/new" class="btn btn-primary" data-testid="product-add">+ Запчасть</a>{{ end }}
 {{ define "content" }}
 {{ template "catalogTabs" .Tabs }}
 {{ if .Flash }}<div class="alert alert-success py-2" role="status" data-testid="flash">{{ .Flash }}</div>{{ end }}
@@ -17,7 +17,7 @@
   {{ if .Items }}
   <div class="table-responsive">
   <table class="table table-hover align-middle" data-testid="products-table">
-    <thead><tr><th>Товар</th><th>Артикул</th><th class="d-none d-md-table-cell">Ед.</th><th>Цена</th><th>В наличии</th><th class="d-none d-md-table-cell">Где лежит</th><th></th></tr></thead>
+    <thead><tr><th>Запчасть</th><th>Артикул</th><th class="d-none d-md-table-cell">Ед.</th><th>Цена</th><th>В наличии</th><th class="d-none d-md-table-cell">Где лежит</th><th></th></tr></thead>
     <tbody>
     {{ range .Items }}
       <tr data-testid="product-row" data-name="{{ .Name }}">
@@ -45,9 +45,9 @@
     </tbody>
   </table>
   </div>
-  <p class="text-body-secondary small" data-testid="products-total">Товаров: {{ .Total }}</p>
+  <p class="text-body-secondary small" data-testid="products-total">Запчастей: {{ .Total }}</p>
   {{ else }}
-  <div class="empty-state" data-testid="products-empty">{{ if or .Q .Archived }}Ничего не нашли по фильтру.{{ else }}Товаров пока нет.{{ end }}</div>
+  <div class="empty-state" data-testid="products-empty">{{ if or .Q .Archived }}Ничего не нашли по фильтру.{{ else }}Запчастей пока нет.{{ end }}</div>
   {{ end }}
   {{ template "catalogPager" .Pager }}
   </div>

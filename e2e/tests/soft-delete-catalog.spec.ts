@@ -79,7 +79,7 @@ test.describe('SDCT: мягкое удаление каталога', () => {
     await del.goto(`kind=catalog-categories&q=${encodeURIComponent(catName)}`);
     await expect(del.tab('catalog-categories')).toHaveClass(/active/);
     await expect(del.tab('catalog-categories')).toContainText('Категории');
-    await expect(del.tab('products')).toContainText('Товары');
+    await expect(del.tab('products')).toContainText('Запчасти');
     await expect(del.tab('services')).toContainText('Услуги');
     // вкладки «Типы оборудования» больше нет.
     await expect(page.getByTestId('deleted-tab-equipment-types')).toHaveCount(0);
@@ -151,7 +151,7 @@ test.describe('SDCT: мягкое удаление каталога', () => {
     await catalog.gotoProductsByName(stockName);
     await catalog.open(stockName);
     await catalog.confirmDelete(uniq('SDCT-001 не нужен'));
-    await expect(catalog.formError).toHaveText('У товара есть остаток на складе — сначала спишите его');
+    await expect(catalog.formError).toHaveText('У запчасти есть остаток на складе — сначала спишите её');
     await expect(catalog.form).toBeVisible();
     await catalog.gotoProductsByName(stockName);
     await expect(catalog.row(stockName)).toBeVisible();
@@ -250,7 +250,7 @@ test.describe('SDCT: мягкое удаление каталога', () => {
 
       // увеличение — отказ под полем, окно остаётся, остаток прежний.
       await stock.submitValue(6);
-      await expect(stock.error).toHaveText('Товар удалён — его остаток можно только списать');
+      await expect(stock.error).toHaveText('Запчасть удалена — её остаток можно только списать');
       await expect(stock.form).toBeVisible();
       await expect(stock.save).toBeEnabled();
       expect(await stockOf(), 'остаток не изменился').toBe(4);

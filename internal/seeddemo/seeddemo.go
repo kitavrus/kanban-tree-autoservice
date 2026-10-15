@@ -266,7 +266,7 @@ func validateDemoData() error {
 		svc[sv.code] = true
 		for _, gd := range sv.goods {
 			if !skus[gd.sku] {
-				return fmt.Errorf("услуга %s: нет товара %q", sv.code, gd.sku)
+				return fmt.Errorf("услуга %s: нет запчасти %q", sv.code, gd.sku)
 			}
 		}
 	}
@@ -292,7 +292,7 @@ func validateDemoData() error {
 			}
 			for _, gd := range st.goodsOverride {
 				if !skus[gd.sku] {
-					return fmt.Errorf("заказ %q: нет товара %q", t.title, gd.sku)
+					return fmt.Errorf("заказ %q: нет запчасти %q", t.title, gd.sku)
 				}
 			}
 		}

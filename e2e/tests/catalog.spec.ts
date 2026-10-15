@@ -96,7 +96,7 @@ test.describe('CT: товары', () => {
     await catalog.save.click();
 
     await expect(page).toHaveURL(/\/catalog\/products\?flash=created$/);
-    await expect(catalog.flash).toHaveText('Товар создан');
+    await expect(catalog.flash).toHaveText('Запчасть создана');
     const createdProduct = await adminApi.findCatalogByName('products', name);
     expect(createdProduct, 'товар создан через экран').toBeTruthy();
     catalogCleanup('products', createdProduct!.id);

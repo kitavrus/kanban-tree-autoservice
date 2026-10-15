@@ -47,10 +47,10 @@ func (h *SSR) tabs(c fiber.Ctx, active string) TabsVM {
 }
 
 var flashes = map[string]string{
-	"created":           "Товар создан",
+	"created":           "Запчасть создана",
 	"saved":             "Изменения сохранены",
-	"archived":          "Товар отправлен в архив",
-	"restored":          "Товар возвращён из архива",
+	"archived":          "Запчасть отправлена в архив",
+	"restored":          "Запчасть возвращена из архива",
 	"service_created":   "Услуга создана",
 	"service_saved":     "Изменения сохранены",
 	"service_archived":  "Услуга отправлена в архив",

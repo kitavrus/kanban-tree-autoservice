@@ -54,6 +54,6 @@ func main() {
 		fmt.Println("seed-demo:", res.Message)
 		return
 	}
-	fmt.Printf("seed-demo: %s (мастера: %d, клиенты: %d, автомобили: %d, товары: %d, услуги: %d, заказы: %d, вложения: %d, из них видео: %d → %s)\n",
+	fmt.Printf("seed-demo: %s (мастера: %d, клиенты: %d, автомобили: %d, запчасти: %d, услуги: %d, заказы: %d, вложения: %d, из них видео: %d → %s)\n",
 		res.Message, res.Executors, res.Clients, res.Equipment, res.Products, res.Services, res.Tasks, res.Attachments, res.Videos, files.Dir())
 }

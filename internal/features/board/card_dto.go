@@ -13,11 +13,14 @@ import (
 // карточке; отдельного поля total нет). Subtasks/Stock — всегда массивы, не null (AC-001).
 // Car — автомобиль заказа (one-car-order: ровно один, задан при создании, не меняется).
 type OrderCardResponse struct {
-	Task     TaskResponse  `json:"task"`
-	Column   CardColumn    `json:"column"`
-	Car      CardCar       `json:"car"`
-	Subtasks []CardSubtask `json:"subtasks"`
-	Stock    []CardStock   `json:"stock"`
+	Task TaskResponse `json:"task"`
+	// WorksAmount/PartsAmount — разбивка task.total_amount: работы (цены услуг) и запчасти.
+	WorksAmount numeric.Amount `json:"works_amount"`
+	PartsAmount numeric.Amount `json:"parts_amount"`
+	Column      CardColumn     `json:"column"`
+	Car         CardCar        `json:"car"`
+	Subtasks    []CardSubtask  `json:"subtasks"`
+	Stock       []CardStock    `json:"stock"`
 	// Attachments — вложения заказа (фаза 7, D21), всегда массив, порядок загрузки.
 	Attachments []CardAttachment `json:"attachments"`
 }
@@ -68,7 +71,9 @@ type CardSubtask struct {
 	DueDate          *string         `json:"due_date"`           // YYYY-MM-DD
 	Price            *numeric.Amount `json:"price"`              // null = «по факту»
 	Position         int             `json:"position"`
-	Total            numeric.Amount  `json:"total"` // subtask_total
+	Total            numeric.Amount  `json:"total"` // subtask_total = price + parts_total
+	// PartsTotal — стоимость запчастей услуги (сумма line_total), отдельно от цены работы.
+	PartsTotal numeric.Amount `json:"parts_total"`
 	// Выплата исполнителю (D62–D64): флаг, дата отметки (null, пока не выплачено) и сумма
 	// выплаты — отдельная от price (null = не задана).
 	IsExecutorPaid bool                 `json:"is_executor_paid"`

@@ -77,7 +77,7 @@ func (h *SSR) productsList(c fiber.Ctx) error {
 	}
 	vm.Items, vm.Total = resp.Items, resp.Total
 	vm.Pager = buildPager("/catalog/products", vm.Q, "", vm.Archived, offset, len(resp.Items), resp.Total)
-	vm.Shell = h.shell.Build(c, "Каталог: товары")
+	vm.Shell = h.shell.Build(c, "Каталог: запчасти")
 	vm.Tabs = h.tabs(c, "products")
 	return h.r.Page(c, "products-list", vm)
 }
@@ -214,9 +214,9 @@ func (h *SSR) productFormError(c fiber.Ctx, vm ProductFormVM, err error) error {
 }
 
 func (h *SSR) renderProductForm(c fiber.Ctx, status int, vm ProductFormVM) error {
-	title := "Товар"
+	title := "Запчасть"
 	if vm.IsNew {
-		title = "Новый товар"
+		title = "Новая запчасть"
 	}
 	vm.Shell = h.shell.Build(c, title)
 	vm.Tabs = h.tabs(c, "products")

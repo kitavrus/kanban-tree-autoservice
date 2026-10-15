@@ -14,14 +14,14 @@ import (
 )
 
 var (
-	ErrProductNotFoundErr = errorspkg.New("PRODUCT_NOT_FOUND", http.StatusNotFound, "Товар не найден")
+	ErrProductNotFoundErr = errorspkg.New("PRODUCT_NOT_FOUND", http.StatusNotFound, "Запчасть не найдена")
 	// ErrProductInUse — только служебная уборка автотестов (DS-027): продуктовое удаление мягкое,
 	// ссылки ему не мешают (DS-014).
 	ErrProductInUse = errorspkg.New("PRODUCT_IN_USE", http.StatusConflict,
-		"Товар используется в услугах, заказах или журнале склада — удалить нельзя, отправьте его в архив")
+		"Запчасть используется в услугах, заказах или журнале склада — удалить нельзя, отправьте её в архив")
 	// ErrProductHasStock — товар с ненулевым остатком не удаляется (DS-021).
 	ErrProductHasStock = errorspkg.New("PRODUCT_HAS_STOCK", http.StatusConflict,
-		"У товара есть остаток на складе — сначала спишите его")
+		"У запчасти есть остаток на складе — сначала спишите её")
 )
 
 type ProductService struct {
