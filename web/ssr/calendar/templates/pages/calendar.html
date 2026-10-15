@@ -1,5 +1,9 @@
+{{ define "actions" }}
+<button type="button" class="btn btn-primary btn-sm" id="task-add-btn" data-testid="task-add">+ Заказ</button>
+{{ end }}
+
 {{ define "content" }}
-<div id="cal" data-testid="cal-root">
+<div id="cal" data-testid="cal-root" data-viewer-id="{{ .ViewerID }}" data-is-admin="{{ .IsAdmin }}">
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
     <a class="btn btn-outline-secondary btn-sm" href="{{ .PrevURL }}" data-testid="cal-prev" aria-label="Предыдущий месяц">‹</a>
     <h2 class="h5 mb-0 cal-month-title" data-testid="cal-month">{{ .MonthTitle }}</h2>
@@ -25,51 +29,79 @@
   </div>
   <div class="alert alert-danger d-none py-2" id="cal-error" data-testid="cal-error" role="alert"></div>
 
-  <div class="cal-layout">
-    <div class="cal-grid" data-testid="cal-grid" role="grid" aria-label="Загрузка по дням">
-      {{ range .WeekDays }}<div class="cal-head" role="columnheader">{{ . }}</div>{{ end }}
-      {{ range .Weeks }}{{ range . }}
-      <a href="{{ .URL }}" role="gridcell"
-         class="cal-cell cal-{{ .Level }}{{ if not .InMonth }} cal-out{{ end }}{{ if .IsPast }} cal-past{{ end }}{{ if .IsToday }} cal-is-today{{ end }}{{ if .IsSelected }} cal-selected{{ end }}"
-         data-testid="cal-day" data-date="{{ .Date }}" data-occupied="{{ .Occupied }}" data-free="{{ .Free }}" data-level="{{ .Level }}"
-         {{ if .IsSelected }}aria-current="date"{{ end }}>
-        <span class="cal-num">{{ .Day }}</span>
-        <span class="cal-load">{{ .Occupied }}/{{ $.Capacity }}</span>
-        <span class="cal-note">{{ if gt .Over 0 }}+{{ .Over }} сверх{{ else if gt .Free 0 }}своб. {{ .Free }}{{ else }}мест нет{{ end }}</span>
-      </a>
-      {{ end }}{{ end }}
-    </div>
-
-    <aside class="card cal-day" data-testid="cal-day-panel">
-      {{ with .Selected }}
-      <div class="card-body">
-        <h3 class="h6 mb-1" data-testid="cal-day-title">{{ .Title }}</h3>
-        <p class="small mb-3" data-testid="cal-day-summary">
-          В ремонте: <strong>{{ .Occupied }}</strong> из {{ $.Capacity }} ·
-          {{ if gt .Over 0 }}<span class="text-danger fw-semibold">перегруз +{{ .Over }}</span>
-          {{ else if gt .Free 0 }}<span class="text-success fw-semibold">свободно {{ .Free }}</span>
-          {{ else }}<span class="text-danger fw-semibold">мест нет</span>{{ end }}
-        </p>
-        {{ if .Orders }}
-        <ul class="list-unstyled mb-0 d-flex flex-column gap-2" data-testid="cal-day-orders">
-          {{ range .Orders }}
-          <li class="cal-order" data-testid="cal-day-order" data-task-id="{{ .ID }}">
-            <div class="d-flex align-items-center gap-2">
-              <a href="/?task={{ .ID }}" class="fw-semibold text-decoration-none">#{{ .ID }} {{ .Title }}</a>
-              <span class="badge cal-col-badge ms-auto" style="--cal-col: {{ .ColumnColor }}">{{ .ColumnName }}</span>
-            </div>
-            <div class="small text-body-secondary">{{ .ClientName }}</div>
-            <div class="small {{ if .OpenEnded }}text-warning-emphasis{{ else }}text-body-secondary{{ end }}">{{ .Period }}</div>
-          </li>
-          {{ end }}
-        </ul>
-        {{ else }}
-        <div class="empty-state" data-testid="cal-day-empty">В этот день машин в ремонте нет.</div>
-        {{ end }}
-      </div>
-      {{ end }}
-    </aside>
+  <div class="cal-grid" data-testid="cal-grid" role="grid" aria-label="Загрузка по дням">
+    {{ range .WeekDays }}<div class="cal-head" role="columnheader">{{ . }}</div>{{ end }}
+    {{ range .Weeks }}{{ range . }}
+    <a href="{{ .URL }}" role="gridcell"
+       class="cal-cell cal-{{ .Level }}{{ if not .InMonth }} cal-out{{ end }}{{ if .IsPast }} cal-past{{ end }}{{ if .IsToday }} cal-is-today{{ end }}{{ if .IsSelected }} cal-selected{{ end }}"
+       data-testid="cal-day" data-date="{{ .Date }}" data-occupied="{{ .Occupied }}" data-free="{{ .Free }}" data-level="{{ .Level }}"
+       {{ if .IsSelected }}aria-current="date"{{ end }}>
+      <span class="cal-num">{{ .Day }}</span>
+      <span class="cal-load">{{ .Occupied }}/{{ $.Capacity }}</span>
+      <span class="cal-note">{{ if gt .Over 0 }}+{{ .Over }} сверх{{ else if gt .Free 0 }}своб. {{ .Free }}{{ else }}мест нет{{ end }}</span>
+    </a>
+    {{ end }}{{ end }}
   </div>
+
+  {{ with .Gantt }}
+  <section class="card mt-3" data-testid="cal-gantt">
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-baseline gap-2 mb-2">
+        <h3 class="h6 mb-0" data-testid="cal-gantt-title">Сроки машин в ремонте{{ with $.Selected }} — {{ .Title }}{{ end }}</h3>
+        <span class="small text-body-secondary" data-testid="cal-gantt-range">шкала: {{ .RangeTitle }}</span>
+        {{ with $.Selected }}{{ if not .IsPast }}
+        <button type="button" class="btn btn-outline-primary btn-sm" data-testid="cal-day-add" data-due="{{ .Date }}">+ Заказ со сроком на этот день</button>
+        {{ end }}{{ end }}
+        <div class="ms-auto d-flex flex-wrap gap-3 small text-body-secondary gantt-legend">
+          <span><i class="gantt-key"></i>в ремонте (цвет — колонка)</span>
+          <span><i class="gantt-key open-ended"></i>бессрочно — пока не выдана</span>
+          <span><i class="gantt-key finished"></i>выдана</span>
+          <span><i class="gantt-key-due"></i>срок</span>
+        </div>
+      </div>
+      {{ if .Rows }}
+      <div class="gantt-scroll">
+        <div class="gantt" style="--gantt-days: {{ len .Days }}">
+          <div class="gantt-row gantt-head-row">
+            <div class="gantt-label small text-body-secondary">Машина · сколько стоит</div>
+            <div class="gantt-track">
+              {{ range .Days }}<div class="gantt-hd{{ if .IsWeekend }} is-weekend{{ end }}{{ if .IsToday }} is-today{{ end }}{{ if .IsSelected }} is-selected{{ end }}" style="grid-column: {{ .Col }}"><span>{{ .Weekday }}</span><b>{{ .Day }}</b></div>{{ end }}
+            </div>
+          </div>
+          <div class="gantt-row">
+            <div class="gantt-label small text-body-secondary">Занято мест из {{ .Capacity }}</div>
+            <div class="gantt-track">
+              {{ range .Days }}<div class="gantt-load cal-{{ .Level }}{{ if .IsPast }} is-past{{ end }}" style="grid-column: {{ .Col }}" data-testid="cal-gantt-load" data-date="{{ .Date }}" title="{{ .Date }}: {{ .Occupied }} из {{ $.Capacity }}">{{ .Occupied }}</div>{{ end }}
+            </div>
+          </div>
+          {{ $g := . }}
+          {{ range .Rows }}
+          <div class="gantt-row" data-testid="cal-gantt-row" data-task-id="{{ .ID }}" data-col="{{ .Col }}" data-span="{{ .Span }}" data-days="{{ .Days }}">
+            <div class="gantt-label">
+              <a href="/?task={{ .ID }}" data-open-task="{{ .ID }}" class="fw-semibold text-decoration-none d-block text-truncate">#{{ .ID }} {{ .Title }}</a>
+              <div class="small text-body-secondary text-truncate">{{ .ClientName }} · <span class="badge cal-col-badge" style="--cal-col: {{ .ColumnColor }}">{{ .ColumnName }}</span></div>
+              <div class="small text-truncate{{ if .Overdue }} text-danger{{ else if .OpenEnded }} text-warning-emphasis{{ else }} text-body-secondary{{ end }}" data-testid="cal-gantt-period">{{ .Period }} · <strong>{{ .Days }} дн.</strong> · {{ .Status }}</div>
+            </div>
+            <div class="gantt-track">
+              {{ range $g.Days }}<div class="gantt-bg{{ if .IsWeekend }} is-weekend{{ end }}{{ if .IsToday }} is-today{{ end }}{{ if .IsSelected }} is-selected{{ end }}" style="grid-column: {{ .Col }}"></div>{{ end }}
+              {{ if .DueCol }}<div class="gantt-due{{ if .Overdue }} is-overdue{{ end }}" style="grid-column: {{ .DueCol }}" title="Срок"></div>{{ end }}
+              <a href="/?task={{ .ID }}" data-open-task="{{ .ID }}" data-testid="cal-gantt-bar"
+                 class="gantt-bar{{ if .CutLeft }} cut-left{{ end }}{{ if .CutRight }} cut-right{{ end }}{{ if .OpenEnded }} open-ended{{ end }}{{ if .IsFinished }} finished{{ end }}"
+                 style="grid-column: {{ .Col }} / span {{ .Span }}; --cal-col: {{ .ColumnColor }}"
+                 title="#{{ .ID }} {{ .Title }} — {{ .Period }}, {{ .Days }} дн., {{ .Status }}">
+                <span class="gantt-bar-text">{{ if .CutLeft }}◀ {{ end }}{{ .Days }} дн.{{ if .OpenEnded }} · {{ .Status }} ▶{{ end }}</span>
+              </a>
+            </div>
+          </div>
+          {{ end }}
+        </div>
+      </div>
+      {{ else }}
+      <div class="empty-state" data-testid="cal-gantt-empty">В этот день машин в ремонте нет.</div>
+      {{ end }}
+    </div>
+  </section>
+  {{ end }}
 
   <p class="text-body-secondary small mt-3 mb-0">
     Машина занимает место со дня приёмки до выдачи (перенос заказа в финальную колонку, например «Выдан»). Пока машина не выдана,
@@ -77,8 +109,11 @@
     дни, пока машину не выдадут. Удалённые заказы не учитываются.
   </p>
 </div>
+
+{{ template "task-modal" . }}
 {{ end }}
 
 {{ define "scripts" }}
+<script src="/assets/ssr-shared/js/task-card.js"></script>
 <script src="/assets/ssr-shared/js/calendar.js"></script>
 {{ end }}

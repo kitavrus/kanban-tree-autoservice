@@ -32,6 +32,7 @@
   var card = null;           // последний известный OrderCardResponse (или null — новый заказ)
   var taskId = null;         // null — режим «новый заказ»
   var defaultColumnId = null;
+  var defaultDueDate = '';      // срок нового заказа по умолчанию (календарь: выбранный день)
   var saving = false;        // защита от двойного submit шапки
   var newEquipmentOpen = false;
   var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
@@ -172,9 +173,11 @@
   }
 
   // ---------- открытие/закрытие ----------
-  function open(id, defColId) {
+  // opts (только новый заказ): {dueDate: 'YYYY-MM-DD'} — срок по умолчанию.
+  function open(id, defColId, opts) {
     taskId = id || null;
     defaultColumnId = defColId || null;
+    defaultDueDate = (!id && opts && opts.dueDate) || '';
     card = null;
     rowQueue = {};
     newEquipmentOpen = false;
@@ -249,6 +252,8 @@
     $('#task-column').value = defaultColumnId || (data.columns[0] && data.columns[0].id) || '';
     $('#task-assignee').value = '';
     $('#task-due').value = '';
+    resetCapacity(!taskId);
+    if (defaultDueDate) { $('#task-due').value = defaultDueDate; checkDueCapacity(); }
     $('#task-description').value = '';
     var paid = $('#task-paid');
     paid.checked = false;
@@ -1292,6 +1297,86 @@
   }
 
   // ==================================================================
+  // Загрузка сервиса в диалоге «Новый заказ» (GET /api/v1/calendar, internal/features/calendar):
+  // «Сегодня в ремонте X из N, свободно K» и предупреждение, если от сегодня до выбранного
+  // срока есть дни без свободных мест (free == 0). Только информация — сохранение не блокирует.
+  // «Сегодня» — дата в поясе пользователя (KT.time.today), как и у сервера (пояс зрителя).
+  // ==================================================================
+
+  var CAPACITY_SPAN = 62;       // предел окна GET /calendar (calendar.maxSpanDays)
+  var CAPACITY_HORIZON = 366;   // дальше года вперёд не проверяем
+  var CAPACITY_DAYS_SHOWN = 5;  // сколько занятых дней перечислять в предупреждении
+  // Ответы устаревших запросов (другое открытие / другой срок) отбрасываются: todaySeq —
+  // строка «сегодня», dueSeq — предупреждение по сроку (счётчики раздельные: срок по умолчанию
+  // проверяется сразу при открытии, параллельно со строкой «сегодня»).
+  var todaySeq = 0;
+  var dueSeq = 0;
+
+  // ymdText — «2026-10-16» → «16.10.2026» без пересчёта пояса (календарная дата).
+  function ymdText(ymd) { var p = String(ymd).split('-'); return p[2] + '.' + p[1] + '.' + p[0]; }
+
+  function calendarWindow(from, to) {
+    return KT.api.get('/api/v1/calendar?from=' + from + '&to=' + to);
+  }
+
+  // resetCapacity — состояние блока при открытии карточки: у нового заказа — загрузка сегодня,
+  // у существующего блок скрыт.
+  function resetCapacity(isNew) {
+    todaySeq++;
+    dueSeq++;
+    $('#task-capacity-wrap').classList.toggle('d-none', !isNew);
+    $('#task-capacity').textContent = '';
+    hideCapacityWarning();
+    if (!isNew) return;
+    var seq = todaySeq;
+    var today = KT.time.today();
+    calendarWindow(today, today).then(function (r) {
+      if (seq !== todaySeq) return;
+      var d = (r.days || [])[0] || { occupied: 0, free: r.capacity };
+      $('#task-capacity').textContent = 'Сегодня в ремонте ' + d.occupied + ' из ' + r.capacity + ', свободно ' + d.free;
+      $('#task-capacity').dataset.free = String(d.free);
+    }).catch(function () {
+      if (seq === todaySeq) $('#task-capacity').textContent = 'Не удалось загрузить загрузку сервиса';
+    });
+  }
+
+  function hideCapacityWarning() {
+    var w = $('#task-capacity-warning');
+    w.classList.add('d-none');
+    w.textContent = '';
+  }
+
+  // checkDueCapacity — срок изменён: дни от сегодня до срока (включительно) без свободных мест.
+  // Окно API ограничено CAPACITY_SPAN днями — длинный период запрашивается кусками.
+  function checkDueCapacity() {
+    if (taskId) return;
+    dueSeq++;
+    var seq = dueSeq;
+    hideCapacityWarning();
+    var today = KT.time.today();
+    var due = $('#task-due').value;
+    if (!due || due < today) return;
+    var last = KT.time.addDays(today, CAPACITY_HORIZON - 1);
+    if (due < last) last = due;
+    var reqs = [];
+    for (var from = today; from <= last; from = KT.time.addDays(from, CAPACITY_SPAN)) {
+      var to = KT.time.addDays(from, CAPACITY_SPAN - 1);
+      reqs.push(calendarWindow(from, to < last ? to : last));
+    }
+    Promise.all(reqs).then(function (rs) {
+      if (seq !== dueSeq) return;
+      var full = [];
+      rs.forEach(function (r) { (r.days || []).forEach(function (d) { if (d.free <= 0) full.push(d.date); }); });
+      if (!full.length) return;
+      var shown = full.slice(0, CAPACITY_DAYS_SHOWN).map(ymdText).join(', ');
+      if (full.length > CAPACITY_DAYS_SHOWN) shown += ' и ещё ' + (full.length - CAPACITY_DAYS_SHOWN);
+      var w = $('#task-capacity-warning');
+      w.textContent = '⚠ До срока нет свободных мест: ' + shown + '. Заказ можно сохранить, но сервис будет перегружен.';
+      w.classList.remove('d-none');
+    }).catch(function () { /* предупреждение необязательно — без него заказ сохраняется как обычно */ });
+  }
+
+  // ==================================================================
   // Новый заказ по госномеру: поиск автомобиля, «Новый автомобиль», новый клиент.
   // Сохранение — ОДИН POST /api/v1/tasks (plate_number + equipment_id | new_equipment
   // [+ new_client]): сервер атомарно создаёт клиента/автомобиль/заказ и кладёт автомобиль в
@@ -1344,6 +1429,8 @@
       lookupSeq++;
       if (plateAC) plateAC.close();
       $('#task-car').classList.add('d-none');
+      todaySeq++; dueSeq++; // заказ создан — загрузка сервиса в карточке больше не показывается
+      $('#task-capacity-wrap').classList.add('d-none');
       $('#task-new-client-toggle-wrap').classList.add('d-none');
       $('#task-new-client').classList.add('d-none');
       $('#task-client-locked').classList.add('d-none');
@@ -1710,6 +1797,7 @@
     ['#task-client', '#task-column', '#task-assignee', '#task-due', '#task-paid'].forEach(function (sel) {
       var el = $(sel); if (el) el.addEventListener('change', function () { headerDirty = true; });
     });
+    $('#task-due').addEventListener('change', checkDueCapacity);
 
     $('#task-client').addEventListener('change', function () {
       if (!taskId || !card) return;

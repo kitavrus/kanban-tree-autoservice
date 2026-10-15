@@ -6,14 +6,17 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/kitavrus/kanban-tree/internal/server/middleware"
 	"github.com/kitavrus/kanban-tree/internal/ssr"
 )
 
 // Root — шаблоны экрана «Календарь» относительно корня модуля.
 const Root = "web/ssr/calendar/templates"
 
-// SSR — экран «Календарь»: сетка месяца с загрузкой по дням и список машин выбранного дня.
-// Сетка рисуется на сервере; js/calendar.js — только сохранение вместимости (admin).
+// SSR — экран «Календарь»: сетка месяца с загрузкой по дням и диаграмма Ганта выбранного дня
+// (машины этого дня и их сроки — gantt.go).
+// Сетка рисуется на сервере; js/calendar.js — сохранение вместимости (admin) и новый заказ
+// (карточка заказа js/task-card.js, срок по умолчанию — выбранный день).
 type SSR struct {
 	svc   *Service
 	r     *ssr.Renderer
@@ -53,32 +56,17 @@ type Cell struct {
 	URL        string
 }
 
-// DayOrder — машина выбранного дня.
-type DayOrder struct {
-	ID          int64
-	Title       string
-	ClientName  string
-	ColumnName  string
-	ColumnColor string
-	Period      string
-	OpenEnded   bool
-	IsFinished  bool
-}
-
-// DayView — выбранный день.
+// DayView — выбранный день (заголовок диаграммы Ганта и кнопка «+ Заказ со сроком»).
 type DayView struct {
-	Date     string
-	Title    string
-	Occupied int
-	Free     int
-	Over     int
-	Level    string
-	Orders   []DayOrder
+	Date   string
+	Title  string
+	IsPast bool // прошедший день — заказ «со сроком на этот день» не предлагается
 }
 
 // PageVM — view-model страницы.
 type PageVM struct {
 	Shell      ssr.Shell
+	ViewerID   string // для карточки заказа (js/task-card.js)
 	IsAdmin    bool
 	MonthTitle string
 	WeekDays   []string
@@ -90,6 +78,7 @@ type PageVM struct {
 	MinCars    int
 	MaxCars    int
 	Selected   *DayView
+	Gantt      *Gantt // диаграмма Ганта выбранного дня (nil — день не выбран)
 	Today      *Cell
 }
 
@@ -151,7 +140,7 @@ func (h *SSR) page(c fiber.Ctx) error {
 	}
 
 	vm := PageVM{
-		Shell: sh, IsAdmin: sh.IsAdmin,
+		Shell: sh, ViewerID: middleware.CurrentPrincipal(c).ID, IsAdmin: sh.IsAdmin,
 		MonthTitle: fmt.Sprintf("%s %d", monthNames[month.Month()-1], month.Year()),
 		WeekDays:   []string{"Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"},
 		PrevURL:    pageURL(month.AddDate(0, -1, 0), ""),
@@ -159,11 +148,8 @@ func (h *SSR) page(c fiber.Ctx) error {
 		TodayURL:   "/calendar",
 		Capacity:   cal.Capacity, MinCars: MinCars, MaxCars: MaxCars,
 	}
-	orders := make(map[int64]Order, len(cal.Orders))
-	for _, o := range cal.Orders {
-		orders[o.ID] = o
-	}
 	var week []Cell
+	var selectedIDs []int64
 	for _, d := range cal.Days {
 		dt, _ := time.Parse(time.DateOnly, d.Date)
 		cell := Cell{
@@ -180,7 +166,8 @@ func (h *SSR) page(c fiber.Ctx) error {
 			vm.Today = &t
 		}
 		if cell.IsSelected {
-			vm.Selected = dayView(dt, cell, d.TaskIDs, orders)
+			vm.Selected = dayView(dt, cell)
+			selectedIDs = d.TaskIDs
 		}
 		week = append(week, cell)
 		if len(week) == 7 {
@@ -188,36 +175,22 @@ func (h *SSR) page(c fiber.Ctx) error {
 			week = nil
 		}
 	}
+	if vm.Selected != nil {
+		sel, _ := time.Parse(time.DateOnly, vm.Selected.Date)
+		gFrom, gTo := GanttWindow(sel)
+		win, err := h.svc.Calendar(c.Context(), tz, gFrom, gTo)
+		if err != nil {
+			return err
+		}
+		vm.Gantt = buildGantt(sel, today, win, selectedIDs)
+	}
 	return h.r.Page(c, "calendar", vm)
 }
 
-func dayView(dt time.Time, cell Cell, ids []int64, orders map[int64]Order) *DayView {
-	v := &DayView{
-		Date:     cell.Date,
-		Title:    fmt.Sprintf("%s, %s", humanDate(dt), weekdayNames[dt.Weekday()]),
-		Occupied: cell.Occupied, Free: cell.Free, Over: cell.Over, Level: cell.Level,
+func dayView(dt time.Time, cell Cell) *DayView {
+	return &DayView{
+		Date:   cell.Date,
+		Title:  fmt.Sprintf("%s, %s", humanDate(dt), weekdayNames[dt.Weekday()]),
+		IsPast: cell.IsPast,
 	}
-	for _, id := range ids {
-		o := orders[id]
-		start, _ := time.Parse(time.DateOnly, o.StartDate)
-		period := "с " + humanDate(start)
-		switch {
-		case o.IsFinished && o.EndDate != nil:
-			end, _ := time.Parse(time.DateOnly, *o.EndDate)
-			period += " — выдан " + humanDate(end)
-		case o.EndDate != nil:
-			end, _ := time.Parse(time.DateOnly, *o.EndDate)
-			period += " по " + humanDate(end)
-		case o.DueDate != nil:
-			due, _ := time.Parse(time.DateOnly, *o.DueDate)
-			period += " · срок " + humanDate(due) + " просрочен"
-		default:
-			period += " · срок не указан"
-		}
-		v.Orders = append(v.Orders, DayOrder{
-			ID: o.ID, Title: o.Title, ClientName: o.ClientName, ColumnName: o.ColumnName,
-			ColumnColor: o.ColumnColor, Period: period, OpenEnded: o.OpenEnded, IsFinished: o.IsFinished,
-		})
-	}
-	return v
 }

@@ -27,8 +27,14 @@ export class NewOrderDialog {
   readonly plateSuggestions: Locator;
   readonly plateSuggestion: Locator;
   readonly clientNewAction: Locator;
+  readonly due: Locator;
+  readonly capacity: Locator;
+  readonly capacityWarning: Locator;
 
   constructor(readonly page: Page) {
+    this.due = page.getByTestId('task-due');
+    this.capacity = page.getByTestId('task-capacity');
+    this.capacityWarning = page.getByTestId('task-capacity-warning');
     this.plate = page.getByTestId('task-plate');
     this.plateStatus = page.getByTestId('task-plate-status');
     this.plateError = page.getByTestId('task-plate-error');

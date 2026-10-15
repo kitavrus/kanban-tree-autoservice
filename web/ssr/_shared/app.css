@@ -353,9 +353,8 @@ body { background: var(--bs-body-bg); }
 }
 
 /* ---- Календарь загрузки «/calendar» ----
-   Сетка месяца Пн–Вс + панель выбранного дня. Цвет ячейки — уровень загрузки:
+   Сетка месяца Пн–Вс + диаграмма Ганта выбранного дня. Цвет ячейки — уровень загрузки:
    free (2+ места) / busy (1 место) / full (мест нет) / over (перегруз). Только --bs-* токены. */
-.cal-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
 .cal-month-title { min-width: 150px; text-align: center; }
 .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
 .cal-head { font-size: 12px; text-align: center; color: var(--bs-secondary-color); padding-bottom: 2px; }
@@ -376,8 +375,45 @@ body { background: var(--bs-body-bg); }
 .cal-cell.cal-selected { outline: 2px solid var(--bs-primary); outline-offset: 1px; opacity: 1; }
 .cal-order { padding: 8px 10px; border: 1px solid var(--bs-border-color); border-radius: var(--kt-radius); }
 .cal-col-badge { background: var(--cal-col); color: #fff; font-weight: 500; }
-@media (max-width: 992px) {
-  .cal-layout { grid-template-columns: 1fr; }
+/* Диаграмма Ганта выбранного дня: слева — машина и сколько стоит, справа — шкала дней;
+   полоса = со дня приёмки по срок/выдачу, бессрочная тянется к правому краю с затуханием. */
+.gantt-scroll { overflow-x: auto; }
+.gantt { --gantt-label: 260px; min-width: calc(var(--gantt-label) + var(--gantt-days) * 30px); }
+.gantt-row { display: grid; grid-template-columns: var(--gantt-label) minmax(0, 1fr); border-top: 1px solid var(--bs-border-color); }
+.gantt-head-row { border-top: 0; }
+.gantt-label { min-width: 0; padding: 6px 10px 6px 0; align-self: center; }
+.gantt-track { display: grid; grid-template-columns: repeat(var(--gantt-days), minmax(0, 1fr)); grid-template-rows: minmax(34px, auto); }
+.gantt-track > * { grid-row: 1; min-width: 0; }
+.gantt-hd { text-align: center; font-size: 11px; line-height: 1.25; padding: 4px 0; color: var(--bs-secondary-color); }
+.gantt-hd b { display: block; font-size: 13px; color: var(--bs-body-color); }
+.gantt-hd.is-today b { display: inline-block; padding: 0 5px; border-radius: 9px; background: var(--bs-primary); color: #fff; }
+.gantt-hd.is-selected { box-shadow: inset 0 -2px 0 var(--bs-primary); }
+.gantt-hd.is-weekend, .gantt-bg.is-weekend { background: var(--bs-tertiary-bg); }
+.gantt-bg { border-left: 1px solid var(--bs-border-color-translucent); }
+.gantt-bg.is-selected { background: var(--bs-primary-bg-subtle); }
+.gantt-bg.is-today { box-shadow: inset 2px 0 0 var(--bs-primary); }
+.gantt-load { display: flex; align-items: center; justify-content: center; margin: 4px 1px; border-radius: 4px;
+  font-size: 12px; font-variant-numeric: tabular-nums; }
+.gantt-load.cal-free { background: var(--bs-success-bg-subtle); color: var(--bs-success-text-emphasis); }
+.gantt-load.cal-busy { background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
+.gantt-load.cal-full, .gantt-load.cal-over { background: var(--bs-danger-bg-subtle); color: var(--bs-danger-text-emphasis); font-weight: 600; }
+.gantt-load.is-past { opacity: .6; }
+.gantt-bar { z-index: 1; align-self: center; display: flex; align-items: center; height: 24px; margin: 0 2px; padding: 0 8px;
+  border-radius: 6px; background: var(--cal-col); color: #fff; font-size: 12px; white-space: nowrap; overflow: hidden; text-decoration: none; }
+.gantt-bar:hover { color: #fff; filter: brightness(1.12); }
+.gantt-bar.cut-left { margin-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.gantt-bar.cut-right { margin-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.gantt-bar.open-ended { background: linear-gradient(90deg, var(--cal-col) 65%, color-mix(in srgb, var(--cal-col) 20%, transparent)); }
+.gantt-bar.finished { opacity: .5; }
+.gantt-bar-text { overflow: hidden; text-overflow: ellipsis; }
+.gantt-due { z-index: 2; justify-self: end; width: 3px; margin: 3px 0; border-radius: 2px; background: var(--bs-success); }
+.gantt-due.is-overdue { background: var(--bs-danger); }
+.gantt-key { display: inline-block; width: 22px; height: 10px; margin-right: 6px; border-radius: 3px; vertical-align: middle; background: var(--bs-primary); }
+.gantt-key.open-ended { background: linear-gradient(90deg, var(--bs-primary) 50%, transparent); }
+.gantt-key.finished { opacity: .5; }
+.gantt-key-due { display: inline-block; width: 3px; height: 12px; margin-right: 6px; border-radius: 2px; vertical-align: middle; background: var(--bs-success); }
+@media (max-width: 576px) {
+  .gantt { --gantt-label: 160px; }
 }
 @media (max-width: 576px) {
   .cal-grid { gap: 3px; }

@@ -263,6 +263,8 @@ func (s *CalendarLiveSuite) TestSSR_Page() {
 		s.Contains(page, `data-testid="cal-grid"`)
 		s.Contains(page, "Май 2031")
 		s.Contains(page, fmt.Sprintf(`data-task-id="%d"`, id))
+		s.Contains(page, `data-testid="cal-gantt"`, "диаграмма Ганта выбранного дня")
+		s.Contains(page, `data-testid="cal-gantt-row" data-task-id="`+fmt.Sprint(id)+`" data-col="8" data-span="2" data-days="2"`, "03..04 мая со шкалой с 26 апреля")
 		s.Contains(page, "CAL ssr К777КК")
 		s.Contains(page, `href="/calendar"`, "пункт сайдбара")
 	}

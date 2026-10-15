@@ -24,6 +24,14 @@ export type TimezoneBody = { timezone: string };
 
 // Wire-типы clients (internal/features/clients/dto.go, §TD-6.2).
 export type Phone = { phone: string; note: string };
+/** GET /api/v1/calendar (internal/features/calendar/dto.go), без списка заказов. */
+export type CalendarResponse = {
+  capacity: number;
+  today: string;
+  from: string;
+  to: string;
+  days: Array<{ date: string; occupied: number; free: number; task_ids: number[] }>;
+};
 export type NewClient = {
   company_name: string;
   phones: Phone[];
@@ -473,6 +481,26 @@ export class AdminApi {
     const res = await this.ctx.get('/api/v1/columns?limit=100');
     expect(res.status()).toBe(200);
     return res.json();
+  }
+
+  // ---- календарь загрузки сервиса (internal/features/calendar) ----
+
+  /** Без from/to — текущий месяц (сервер берёт «сегодня» в поясе пользователя). */
+  async getCalendar(from = '', to = ''): Promise<CalendarResponse> {
+    const res = await this.ctx.get(`/api/v1/calendar?from=${from}&to=${to}`);
+    expect(res.status(), `календарь ${from}..${to}: ${await res.text()}`).toBe(200);
+    return res.json();
+  }
+
+  async getCalendarSettings(): Promise<{ max_cars: number }> {
+    const res = await this.ctx.get('/api/v1/calendar/settings');
+    expect(res.status(), `настройки календаря: ${await res.text()}`).toBe(200);
+    return res.json();
+  }
+
+  async setCalendarMaxCars(maxCars: number): Promise<void> {
+    const res = await this.ctx.put('/api/v1/calendar/settings', { data: { max_cars: maxCars }, headers: await this.headers() });
+    expect(res.status(), `вместимость ${maxCars}: ${await res.text()}`).toBe(200);
   }
 
   async createTask(t: import('./board-types').NewTask): Promise<import('./board-types').Task> {

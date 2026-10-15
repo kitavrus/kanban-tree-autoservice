@@ -1,0 +1,123 @@
+{{/* Карточка заказа — общий каркас модалки (js/task-card.js, KT.taskCard): доска и
+   календарь подключают её {{ template "task-modal" . }}. */}}
+{{ define "task-modal" }}
+<!-- Карточка заказа (фаза 6, D25/SD-006) — рендер и вся логика в js/task-card.js
+     (KT.taskCard); board.html — только каркас: шапка + контейнеры секций. -->
+<div class="modal fade" id="task-modal" tabindex="-1" aria-hidden="true" data-testid="task-form">
+  <div class="modal-dialog modal-xl modal-fullscreen-lg-down modal-dialog-scrollable">
+    <div class="modal-content" id="task-form-el">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="task-modal-title">Новый заказ</h2>
+        <div class="d-flex gap-2 ms-3" id="card-print-actions"></div>
+        <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger d-none" id="task-error" data-testid="task-error"></div>
+
+        <div class="row g-3">
+          <!-- Новый заказ: первое поле — госномер; автомобиль ищется по нему (js/task-card.js
+               carLookup), название заказа генерируется сервером «{Марка} {Модель} {ГОСНОМЕР}». -->
+          <div class="col-md-6" id="task-plate-wrap" data-testid="task-plate-wrap">
+            <label class="form-label" for="task-plate">Госномер *</label>
+            <input class="form-control text-uppercase" id="task-plate" data-testid="task-plate" maxlength="20"
+                   placeholder="А123ВС 777" autocomplete="off" required>
+            <div class="small text-body-secondary mt-1" id="task-plate-status" data-testid="task-plate-status" aria-live="polite"></div>
+            <div class="text-danger small d-none" data-error-for="plate_number" data-testid="task-plate-error"></div>
+          </div>
+          <!-- В карточке существующего заказа название по-прежнему правится вручную. -->
+          <div class="col-md-6 d-none" id="task-title-wrap">
+            <label class="form-label" for="task-title">Название *</label>
+            <input class="form-control" id="task-title" data-testid="task-title" maxlength="200" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="task-client">Клиент * <span class="badge text-bg-secondary d-none" id="task-client-deleted" data-testid="task-client-deleted">удалён</span></label>
+            <select class="form-select" id="task-client" data-testid="task-client" required>
+              <option value="">Выберите клиента</option>
+            </select>
+            <div class="small text-body-secondary mt-1 d-none" id="task-client-locked" data-testid="task-client-locked">Владелец автомобиля</div>
+            <div class="text-danger small d-none" id="task-client-error" data-testid="task-client-error"></div>
+            <div class="form-check mt-1 d-none" id="task-new-client-toggle-wrap">
+              <input type="checkbox" class="form-check-input" id="task-new-client-toggle" data-testid="task-new-client-toggle">
+              <label class="form-check-label" for="task-new-client-toggle">Новый клиент</label>
+            </div>
+            <div class="row g-2 mt-0 d-none" id="task-new-client" data-testid="task-new-client">
+              <div class="col-12">
+                <label class="form-label small mb-0" for="task-new-client-name">ФИО *</label>
+                <input class="form-control form-control-sm" id="task-new-client-name" data-testid="task-new-client-name" maxlength="200">
+                <div class="text-danger small d-none" data-error-for="new_client.company_name"></div>
+              </div>
+              <div class="col-12">
+                <label class="form-label small mb-0" for="task-new-client-phone">Телефон *</label>
+                <input type="tel" class="form-control form-control-sm" id="task-new-client-phone" data-testid="task-new-client-phone" maxlength="32" placeholder="+7 900 000-00-00">
+                <div class="text-danger small d-none" data-error-for="new_client.phones"></div>
+                <div class="text-danger small d-none" data-error-for="new_client.phones[0].phone"></div>
+              </div>
+            </div>
+          </div>
+          <!-- Результат поиска по госномеру: найден один / несколько / «Новый автомобиль». -->
+          <div class="col-12 d-none" id="task-car" data-testid="task-car">
+            <div class="alert alert-light border py-2 mb-0 d-none" id="task-car-found" data-testid="task-car-found"></div>
+            <div class="d-none" id="task-car-choices" data-testid="task-car-choices" role="radiogroup" aria-label="Автомобиль"></div>
+            <div class="text-danger small d-none" data-error-for="equipment_id" data-testid="task-car-error"></div>
+            <div class="card d-none" id="task-new-car" data-testid="task-new-car">
+              <div class="card-body py-2">
+                <div class="fw-semibold small">Новый автомобиль</div>
+                <div class="text-body-secondary small">Автомобиль с этим госномером будет добавлен клиенту</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="task-column">Колонка *</label>
+            <select class="form-select" id="task-column" data-testid="task-column" required></select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="task-assignee">Ответственный</label>
+            <select class="form-select" id="task-assignee" data-testid="task-assignee">
+              <option value="">Не назначен</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="task-due">Срок</label>
+            <input type="date" class="form-control" id="task-due" data-testid="task-due">
+          </div>
+          <!-- Новый заказ: загрузка сервиса (GET /api/v1/calendar, js/task-card.js «Загрузка
+               сервиса») — сколько машин в ремонте сегодня и предупреждение, если до срока
+               есть дни без свободных мест. Только предупреждение, сохранение не блокирует. -->
+          <div class="col-12 d-none" id="task-capacity-wrap" data-testid="task-capacity-wrap">
+            <div class="small text-body-secondary" id="task-capacity" data-testid="task-capacity" aria-live="polite"></div>
+            <div class="alert alert-warning py-2 mt-2 mb-0 d-none" id="task-capacity-warning" data-testid="task-capacity-warning" role="alert"></div>
+          </div>
+          <div class="col-12">
+            <label class="form-label" for="task-description">Описание</label>
+            <textarea class="form-control" id="task-description" data-testid="card-description" maxlength="10000" rows="3"></textarea>
+          </div>
+          <div class="col-12 form-check">
+            <input type="checkbox" class="form-check-input" id="task-paid" data-testid="task-paid">
+            <label class="form-check-label" for="task-paid">Оплачен</label>
+          </div>
+        </div>
+
+        <hr>
+        <h3 class="fs-6">Оборудование</h3>
+        <div id="card-equipment" data-testid="card-equipment"></div>
+
+        <hr>
+        <h3 class="fs-6">Услуги</h3>
+        <div id="card-subtasks" data-testid="card-subtasks"></div>
+
+        <hr>
+        <h3 class="fs-6">Вложения</h3>
+        <div id="card-attachments" data-testid="card-attachments"></div>
+
+        <hr>
+        <div id="card-total"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-danger me-auto d-none" id="task-delete-btn" data-testid="task-delete">Удалить</button>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="button" class="btn btn-primary" id="task-save-btn" data-testid="task-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>
+{{ end }}
