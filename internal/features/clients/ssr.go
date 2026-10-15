@@ -79,8 +79,8 @@ type EquipmentRow struct {
 var flashes = map[string]string{
 	"created":    "Клиент создан",
 	"saved":      "Изменения сохранены",
-	"eq_created": "Оборудование добавлено",
-	"eq_saved":   "Оборудование сохранено",
+	"eq_created": "Автомобиль добавлен",
+	"eq_saved":   "Автомобиль сохранён",
 }
 
 // Ключи flash мягкого удаления (soft-delete-clients §8.1): после PRG-перехода — тост.
@@ -93,7 +93,7 @@ const (
 
 // clientDeletedToast — тост после удаления клиента; n — число единиц, ушедших вместе с ним.
 func clientDeletedToast(n int) string {
-	return fmt.Sprintf("Удалено вместе с оборудованием: %d. Восстановить можно в разделе «Удалённые»", n)
+	return fmt.Sprintf("Удалено вместе с автомобилями: %d. Восстановить можно в разделе «Удалённые»", n)
 }
 
 // reasonErrorText — код ошибки поля reason → текст под полем «Причина» (§6.1, DS-020).
@@ -408,9 +408,9 @@ func (h *SSR) equipmentFormError(c fiber.Ctx, vm EquipmentFormVM, err error) err
 }
 
 func (h *SSR) renderEquipmentForm(c fiber.Ctx, status int, vm EquipmentFormVM) error {
-	title := "Оборудование"
+	title := "Автомобиль"
 	if vm.IsNew {
-		title = "Новое оборудование"
+		title = "Новый автомобиль"
 	}
 	vm.Shell = h.shell.Build(c, title)
 	c.Status(status)

@@ -22,7 +22,7 @@ test.describe('EQ: создание и валидация', () => {
     await clients.goto(`?q=${company}`);
     await clients.open(company);
     await page.getByTestId('equipment-add').click();
-    await expect(page.locator('.app-title')).toHaveText('Новое оборудование');
+    await expect(page.locator('.app-title')).toHaveText('Новый автомобиль');
 
     const eq = new EquipmentPage(page);
     await expect(eq.clientName).toHaveText(company);

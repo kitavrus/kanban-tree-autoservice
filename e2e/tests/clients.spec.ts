@@ -229,7 +229,7 @@ test.describe('CL: список, поиск, правка, удаление', ()
       await clients.deleteReason.fill(uniq('CL-008 создан по ошибке'));
       await clients.deleteDialogOk.click();
       await expect(page).toHaveURL(/\/clients\?flash=deleted&n=0$/);
-      await expect(clients.toast).toHaveText('Удалено вместе с оборудованием: 0. Восстановить можно в разделе «Удалённые»');
+      await expect(clients.toast).toHaveText('Удалено вместе с автомобилями: 0. Восстановить можно в разделе «Удалённые»');
       await expect(clients.row(company)).toHaveCount(0);
       expect((await adminApi.listDeleted('clients', { q: company })).total).toBe(1);
     } finally {
@@ -295,7 +295,7 @@ test.describe('CL: хардening', () => {
 
     // форма автомобиля — имя клиента текстом.
     await page.getByTestId('equipment-plate-number').getByRole('link').click();
-    await expect(page.locator('.app-title')).toHaveText('Оборудование');
+    await expect(page.locator('.app-title')).toHaveText('Автомобиль');
     const eq = new EquipmentPage(page);
     await expect(eq.clientName).toHaveText(company);
     await expect(eq.plate).toHaveValue(plate);

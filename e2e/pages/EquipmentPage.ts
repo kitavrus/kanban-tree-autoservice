@@ -21,12 +21,12 @@ export class EquipmentPage {
 
   async gotoNew(clientId: string) {
     await this.page.goto(`/clients/${clientId}/equipment/new`);
-    await expect(this.page.locator('.app-title')).toHaveText('Новое оборудование');
+    await expect(this.page.locator('.app-title')).toHaveText('Новый автомобиль');
   }
 
   async gotoEdit(equipmentId: string) {
     await this.page.goto(`/equipment/${equipmentId}`);
-    await expect(this.page.locator('.app-title')).toHaveText('Оборудование');
+    await expect(this.page.locator('.app-title')).toHaveText('Автомобиль');
   }
 
   fieldError(field: 'plate_number'): Locator {

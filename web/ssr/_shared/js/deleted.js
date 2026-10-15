@@ -48,15 +48,15 @@
       kind: 'clients', label: 'Клиенты', countKey: 'clients',
       restoreUrl: function (id) { return '/api/v1/clients/' + encodeURIComponent(id) + '/restore'; },
       notFound: 'Клиент не найден',
-      confirmText: function (it) { return 'Восстановить «' + it.title + '» вместе с оборудованием?'; },
-      restored: function (resp) { return 'Восстановлено вместе с оборудованием: ' + (resp && resp.equipment_restored || 0); }
+      confirmText: function (it) { return 'Восстановить «' + it.title + '» вместе с автомобилями?'; },
+      restored: function (resp) { return 'Восстановлено вместе с автомобилями: ' + (resp && resp.equipment_restored || 0); }
     },
     {
       // часть 4: единицы оборудования. Отказ 409 CLIENT_DELETED «Сначала восстановите клиента» —
       // тост с текстом сервера, строка остаётся.
-      kind: 'equipment', label: 'Оборудование', countKey: 'equipment',
+      kind: 'equipment', label: 'Автомобили', countKey: 'equipment',
       restoreUrl: function (id) { return '/api/v1/equipment/' + encodeURIComponent(id) + '/restore'; },
-      notFound: 'Оборудование не найдено'
+      notFound: 'Автомобиль не найден'
     },
     // часть 5 (soft-delete-catalog §8.2): товары, услуги, категории каталога и типы
     // оборудования. Запись возвращается с прежним признаком архива (бейдж «в архиве» и строка

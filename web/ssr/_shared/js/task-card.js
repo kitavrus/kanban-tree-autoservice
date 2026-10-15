@@ -331,7 +331,7 @@
   }
 
   function renderLockedSections() {
-    $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить оборудование</p>';
+    $('#card-equipment').innerHTML = '<p class="text-body-secondary small" data-testid="card-equipment-locked">Сохраните заказ, чтобы добавить автомобиль</p>';
     $('#card-subtasks').innerHTML = '<p class="text-body-secondary small" data-testid="card-subtasks-locked">Сохраните заказ, чтобы добавить услуги</p>';
     $('#card-attachments').innerHTML = '<p class="text-body-secondary small" data-testid="card-attachments-locked">Сохраните заказ, чтобы добавить фото, видео или PDF</p>';
   }
@@ -465,9 +465,9 @@
     // клиент заказа удалён — добавлять ему оборудование нельзя (POST /clients/:id/equipment → 404,
     // DS-026): вместо выбора и формы новой единицы — пояснение.
     var adding = card.task.client_is_deleted
-      ? '<p class="text-body-secondary small mb-0" data-testid="card-equipment-client-deleted">Клиент заказа удалён — добавить оборудование нельзя</p>'
+      ? '<p class="text-body-secondary small mb-0" data-testid="card-equipment-client-deleted">Клиент заказа удалён — добавить автомобиль нельзя</p>'
       : equipmentAddHtml(addOptions) +
-        (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новое оборудование</button>');
+        (newEquipmentOpen ? newEquipmentFormHtml() : '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-testid="card-equipment-new">+ Новый автомобиль</button>');
     var html = '<div>' +
       card.equipment.map(equipmentRowHtml).join('') +
       adding +
@@ -522,7 +522,7 @@
     else {
       var others = (st.items || []).filter(function (o) { return String(o.task_id) !== String(taskId); });
       body = others.length ? others.map(historyOrderHtml).join('')
-        : '<div class="small text-body-secondary" data-testid="card-equipment-history-empty">Других работ по этому оборудованию не было</div>';
+        : '<div class="small text-body-secondary" data-testid="card-equipment-history-empty">Других работ по этому автомобилю не было</div>';
       if (host.getData().isAdmin) {
         body += '<a class="small" href="/equipment/' + esc(eqId) + '/history" target="_blank" rel="noopener" data-testid="card-equipment-history-page">Открыть полную историю ↗</a>';
       }
@@ -550,7 +550,7 @@
       '<a href="/?task=' + o.task_id + '" data-testid="card-equipment-history-link">#' + o.task_id + ' ' + esc(o.title) + '</a>' +
       ' <span class="badge" style="background-color:' + esc(o.column_color) + '">' + esc(o.column_name) + '</span>' +
       ' <span class="text-body-secondary">от ' + fmtDate(o.created_at) + '</span>' +
-      intake + (services || '<div class="text-body-secondary">Услуг по этому оборудованию не было</div>') + '</div>';
+      intake + (services || '<div class="text-body-secondary">Услуг по этому автомобилю не было</div>') + '</div>';
   }
 
   function toggleEquipmentHistory(eqId) {
@@ -584,7 +584,7 @@
   };
 
   function equipmentAddHtml(options) {
-    return '<select class="form-select form-select-sm" data-testid="card-equipment-add"><option value="">+ Добавить оборудование клиента…</option>' +
+    return '<select class="form-select form-select-sm" data-testid="card-equipment-add"><option value="">+ Добавить автомобиль клиента…</option>' +
       (options || []).map(function (e) {
         return '<option value="' + esc(e.id) + '">' + esc(e.plate_number) + '</option>';
       }).join('') + '</select>';
@@ -631,7 +631,7 @@
     $$('[data-testid="card-equipment-remove"]', container).forEach(function (btn) {
       btn.addEventListener('click', function () {
         var eqId = btn.dataset.equipmentId;
-        KT.uiConfirm('Убрать оборудование из заказа?').then(function (ok) {
+        KT.uiConfirm('Убрать автомобиль из заказа?').then(function (ok) {
           if (!ok) return;
           var ticket = beginRequest();
           KT.api.del('/api/v1/tasks/' + taskId + '/equipment/' + eqId).then(function (resp) {
@@ -639,7 +639,7 @@
             if (resp.warnings && resp.warnings.length) toastWarningsHost(resp.warnings);
             host.onChanged();
           }).catch(function (err) {
-            KT.uiAlert((err && err.message) || 'Не удалось убрать оборудование', 'Ошибка');
+            KT.uiAlert((err && err.message) || 'Не удалось убрать автомобиль', 'Ошибка');
             // 409: единица занята услугой — карточка устарела; перечитываем, чтобы показать
             // актуальное состояние.
             if (err && err.status === 409) refetchCard();
@@ -662,11 +662,11 @@
           var gone = err && err.status === 400 && (err.fields || []).some(function (f) { return f.name === 'equipment_id' && f.message === 'not_found'; });
           if (gone) {
             clientEquipmentCache = null;
-            showHeaderError('Оборудование не найдено');
+            showHeaderError('Автомобиль не найден');
             renderEquipment();
             return;
           }
-          KT.uiAlert((err && err.message) || 'Не удалось добавить оборудование', 'Ошибка');
+          KT.uiAlert((err && err.message) || 'Не удалось добавить автомобиль', 'Ошибка');
         });
       });
     }
@@ -696,7 +696,7 @@
           if (!applyCard(resp.card, ticket)) return;
           host.onChanged();
         }).catch(function (err) {
-          errEl.textContent = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return (f.name === 'plate_number' && PLATE_ERROR_TEXT[f.message]) || f.message; }).join('; ') : ((err && err.message) || 'Не удалось создать оборудование');
+          errEl.textContent = (err && err.fields && err.fields.length) ? err.fields.map(function (f) { return (f.name === 'plate_number' && PLATE_ERROR_TEXT[f.message]) || f.message; }).join('; ') : ((err && err.message) || 'Не удалось создать автомобиль');
           errEl.classList.remove('d-none');
         });
     });
@@ -749,7 +749,7 @@
     // списке она остаётся, только если уже назначена этой услуге, — с бейджем у подписи поля.
     var subEquipment = card.equipment.filter(function (e) { return e.equipment_id === sub.equipment_id; })[0];
     var subEquipmentDeleted = !!(subEquipment && subEquipment.is_deleted);
-    var equipmentOptions = '<option value="">Без оборудования</option>' + card.equipment.filter(function (e) {
+    var equipmentOptions = '<option value="">Без автомобиля</option>' + card.equipment.filter(function (e) {
       return !e.is_deleted || e.equipment_id === sub.equipment_id;
     }).map(function (e) {
       return '<option value="' + esc(e.equipment_id) + '"' + (sub.equipment_id === e.equipment_id ? ' selected' : '') + '>' + esc(e.plate_number) + '</option>';
@@ -778,7 +778,7 @@
       '      <div class="col-6 col-md-3"><label class="form-label small mb-0">Цена (пусто — по факту)</label>' +
       '        <input type="text" inputmode="decimal" class="form-control form-control-sm" data-field="price" data-row-key="' + key + '" data-testid="card-subtask-price" value="' + (sub.price == null ? '' : esc(sub.price)) + '">' +
       '        <div class="invalid-feedback d-block d-none small" data-testid="card-subtask-warning"></div></div>' +
-      '      <div class="col-12"><label class="form-label small mb-0">Оборудование' + (subEquipmentDeleted ? deletedBadge('card-subtask-equipment-deleted') : '') + '</label>' +
+      '      <div class="col-12"><label class="form-label small mb-0">Автомобиль' + (subEquipmentDeleted ? deletedBadge('card-subtask-equipment-deleted') : '') + '</label>' +
       '        <select class="form-select form-select-sm" data-field="equipment_id" data-row-key="' + key + '" data-testid="card-subtask-equipment">' + equipmentOptions + '</select></div>' +
       // executor-payouts D62–D66: выплата исполнителю — отметка, сумма (отдельная от цены) и
       // дата отметки. Отметить можно только при назначенном исполнителе; уже стоящую
@@ -1804,7 +1804,7 @@
       var newClientId = $('#task-client').value;
       if (newClientId === card.task.client_id) return;
       if (card.equipment.length > 0) {
-        KT.uiConfirm('Оборудование другого клиента будет убрано из заказа.').then(function (ok) {
+        KT.uiConfirm('Автомобиль другого клиента будет убран из заказа.').then(function (ok) {
           if (!ok) { $('#task-client').value = card.task.client_id; if ($('#task-client')._cbSync) $('#task-client')._cbSync(); }
         });
       }

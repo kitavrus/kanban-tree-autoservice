@@ -20,7 +20,7 @@ test.use({ colorScheme: 'light' });
 const DATE_TIME = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
 
 test.describe('SDCL: мягкое удаление клиентов и оборудования', () => {
-  test('SDCL-001 (TS-043): клиент с заказом и двумя единицами удаляется с причиной → список без клиента, тост «Удалено вместе с оборудованием: 2…»; на доске и в карточке заказа бейдж «удалён» у клиента и обеих единиц; в «Удалённых» вкладка «Клиенты» — строка клиента, вкладка «Оборудование» — единицы с бейджем «вместе с клиентом»; «Восстановить» клиента возвращает всё, бейджи исчезают; негатив: «Восстановить» у единицы удалённого клиента → «Сначала восстановите клиента», строка остаётся', async ({
+  test('SDCL-001 (TS-043): клиент с заказом и двумя единицами удаляется с причиной → список без клиента, тост «Удалено вместе с автомобилями: 2…»; на доске и в карточке заказа бейдж «удалён» у клиента и обеих единиц; в «Удалённых» вкладка «Клиенты» — строка клиента, вкладка «Оборудование» — единицы с бейджем «вместе с клиентом»; «Восстановить» клиента возвращает всё, бейджи исчезают; негатив: «Восстановить» у единицы удалённого клиента → «Сначала восстановите клиента», строка остаётся', async ({
     adminPage: page,
     adminApi,
     uniq,
@@ -45,13 +45,13 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await clients.openDelete();
       await expect(clients.deleteDialogTitle).toHaveText(`Удалить «${company}»?`);
       await expect(clients.deleteDialogText).toHaveText(
-        'Оборудование клиента (2 ед.) будет удалено вместе с ним. Заказы клиента останутся на доске с пометкой «удалён». Удалить можно, только когда всё оборудование у клиента',
+        'Автомобили клиента (2 шт.) будут удалены вместе с ним. Заказы клиента останутся на доске с пометкой «удалён». Удалить можно, только когда все автомобили у клиента',
       );
       const reason = uniq('SDCL-001 клиент закрылся');
       await clients.deleteReason.fill(reason);
       await clients.deleteDialogOk.click();
       await expect(page).toHaveURL(/\/clients\?flash=deleted&n=2$/);
-      await expect(clients.toast).toHaveText('Удалено вместе с оборудованием: 2. Восстановить можно в разделе «Удалённые»');
+      await expect(clients.toast).toHaveText('Удалено вместе с автомобилями: 2. Восстановить можно в разделе «Удалённые»');
       await clients.goto(`?q=${encodeURIComponent(company)}`);
       await expect(clients.row(company)).toHaveCount(0);
       await expect(clients.empty).toBeVisible();
@@ -73,7 +73,7 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       }
       // удалённому клиенту оборудование не добавить, истории удалённых единиц нет (DS-026):
       // вместо выбора — пояснение, кнопок «История работ» у удалённых единиц нет.
-      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveText('Клиент заказа удалён — добавить оборудование нельзя');
+      await expect(page.getByTestId('card-equipment-client-deleted')).toHaveText('Клиент заказа удалён — добавить автомобиль нельзя');
       await expect(page.getByTestId('card-equipment-add')).toHaveCount(0);
       await expect(page.getByTestId('card-equipment-new')).toHaveCount(0);
       await expect(page.getByTestId('card-equipment-history-toggle')).toHaveCount(0);
@@ -86,7 +86,7 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await del.goto(`kind=clients&q=${encodeURIComponent(company)}`);
       await expect(del.tab('clients')).toHaveClass(/active/);
       await expect(del.tab('clients')).toContainText('Клиенты');
-      await expect(del.tab('equipment')).toContainText('Оборудование');
+      await expect(del.tab('equipment')).toContainText('Автомобили');
       await expect(del.rows).toHaveCount(1);
       await expect(del.rowTitle(client.id)).toHaveText(company);
       await expect(del.rowSubtitle(client.id)).toHaveCount(0);
@@ -120,9 +120,9 @@ test.describe('SDCL: мягкое удаление клиентов и обор�
       await del.tab('clients').click();
       await expect(del.row(client.id)).toBeVisible();
       await del.restoreBtn(client.id).click();
-      await expect(del.dialogText).toHaveText(`Восстановить «${company}» вместе с оборудованием?`);
+      await expect(del.dialogText).toHaveText(`Восстановить «${company}» вместе с автомобилями?`);
       await del.dialogOk.click();
-      await expect(del.toast).toHaveText('Восстановлено вместе с оборудованием: 2');
+      await expect(del.toast).toHaveText('Восстановлено вместе с автомобилями: 2');
       await expect(del.row(client.id)).toHaveCount(0);
       await expect(del.tabCount('clients')).toHaveText(String(summary.counts.clients - 1));
       await expect(del.tabCount('equipment')).toHaveText(String(summary.counts.equipment - 2));

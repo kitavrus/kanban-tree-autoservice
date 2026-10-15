@@ -52,8 +52,8 @@
 <div class="card mw-760 mt-4">
   <div class="card-body">
     <div class="d-flex align-items-center mb-3">
-      <h2 class="fs-6 mb-0">Оборудование клиента</h2>
-      <a href="/clients/{{ .ID }}/equipment/new" class="btn btn-outline-secondary btn-sm ms-auto" data-testid="equipment-add">+ Оборудование</a>
+      <h2 class="fs-6 mb-0">Автомобили клиента</h2>
+      <a href="/clients/{{ .ID }}/equipment/new" class="btn btn-outline-secondary btn-sm ms-auto" data-testid="equipment-add">+ Автомобиль</a>
     </div>
     {{ if .Equipment }}
     <div class="table-responsive">
@@ -78,13 +78,13 @@
     </table>
     </div>
     {{ else }}
-    <div class="empty-state" data-testid="equipment-empty">Оборудования пока нет</div>
+    <div class="empty-state" data-testid="equipment-empty">Автомобилей пока нет</div>
     {{ end }}
   </div>
 </div>
 <form method="post" action="/clients/{{ .ID }}/delete" class="mt-3" data-testid="client-delete-form" data-delete-dialog
       data-delete-title="Удалить «{{ .CompanyName }}»?"
-      data-delete-text="Оборудование клиента ({{ .EquipmentCount }} ед.) будет удалено вместе с ним. Заказы клиента останутся на доске с пометкой «удалён». Удалить можно, только когда всё оборудование у клиента"
+      data-delete-text="Автомобили клиента ({{ .EquipmentCount }} шт.) будут удалены вместе с ним. Заказы клиента останутся на доске с пометкой «удалён». Удалить можно, только когда все автомобили у клиента"
       {{ if .DeleteError }}data-delete-error="{{ .DeleteError }}"{{ end }}>
   <input type="hidden" name="_csrf" value="{{ .Shell.CSRFToken }}">
   <input type="hidden" name="reason" value="{{ .DeleteReason }}">

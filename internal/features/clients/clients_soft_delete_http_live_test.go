@@ -580,7 +580,7 @@ func (s *ClientsLiveSuite) TestTS026_CardMarks() {
 		notices[n.Code] = n.Message
 	}
 	s.Equal("Клиент заказа в удалённых", notices["client_deleted"])
-	s.Equal("Оборудование заказа в удалённых", notices["equipment_deleted"])
+	s.Equal("Автомобиль заказа в удалённых", notices["equipment_deleted"])
 
 	// клиента восстановили — пометки ушли; единица, удалённая отдельно, остаётся помеченной.
 	_, _, raw = s.restoreClient(s.admin, c.ID)
@@ -783,7 +783,7 @@ func (s *ClientsLiveSuite) TestSSR_SoftDeleteForms() {
 	st, page := s.admin.Do(http.MethodGet, "/clients/"+c.ID, nil)
 	s.Require().Equal(http.StatusOK, st)
 	s.Contains(string(page), `data-testid="client-delete-form" data-delete-dialog`)
-	s.Contains(string(page), "Оборудование клиента (2 ед.) будет удалено вместе с ним")
+	s.Contains(string(page), "Автомобили клиента (2 шт.) будут удалены вместе с ним")
 	s.NotContains(string(page), "data-delete-error")
 
 	// причина не указана / слишком длинная.
@@ -816,7 +816,7 @@ func (s *ClientsLiveSuite) TestSSR_SoftDeleteForms() {
 	s.Equal("/clients?flash=deleted&n=1", loc)
 	st, page = s.admin.Do(http.MethodGet, loc, nil)
 	s.Require().Equal(http.StatusOK, st)
-	s.Contains(string(page), `data-kt-toast="Удалено вместе с оборудованием: 1. Восстановить можно в разделе «Удалённые»"`)
+	s.Contains(string(page), `data-kt-toast="Удалено вместе с автомобилями: 1. Восстановить можно в разделе «Удалённые»"`)
 	s.Equal("true|clients-admin|Закрылся", s.clientState(c.ID))
 	s.Equal("true|clients-admin|Закрылся|true", s.unitState(u1))
 

@@ -567,7 +567,7 @@ func (s *TaskService) Restore(ctx context.Context, a Actor, idStr string) (*Task
 			notices = append(notices, RestoreNotice{Code: noticeClientDeleted, Message: "Клиент заказа в удалённых"})
 		}
 		if equipmentDeleted {
-			notices = append(notices, RestoreNotice{Code: noticeEquipmentDeleted, Message: "Оборудование заказа в удалённых"})
+			notices = append(notices, RestoreNotice{Code: noticeEquipmentDeleted, Message: "Автомобиль заказа в удалённых"})
 		}
 		return nil
 	})
