@@ -1,8 +1,8 @@
 # pipeline-state — order-start-duration
 
 - track: light
-- status: in-progress
-- stage: light-review
+- status: done
+- stage: done
 - feature-base: 999e1f069f0429fe0436bc2ab590bf90546e8c8d
 - branch: feat/order-start-duration
 - input: текст задачи (спеки нет), light по выбору пользователя (как one-car-order)
