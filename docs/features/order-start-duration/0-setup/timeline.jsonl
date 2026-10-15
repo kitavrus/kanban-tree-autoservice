@@ -19,3 +19,5 @@
 {"type": "event_start", "stage": "light-review", "label": "e2e-run", "kind": "other", "ts": "2026-10-15T19:42:07+05:00"}
 {"type": "event_end", "stage": "light-review", "label": "e2e-run", "status": "ok", "ts": "2026-10-15T19:46:46+05:00"}
 {"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-10-15T19:47:03+05:00"}
+{"type": "handoff", "stage": "8-code-review", "kind": "bundle", "path": "8-code-review/input-bundle.md", "bytes": 6337, "checkers": {"pass": 8, "fail": 1, "skip": 0}, "patches_bytes": 269861, "ts": "2026-10-15T19:50:26+05:00"}
+{"type": "tool", "tool": "review_bundle", "status": "FAIL", "total_s": 2.0, "steps": [{"name": "go_naming", "s": 0.0}, {"name": "api_conventions", "s": 0.1}, {"name": "contract", "s": 0.0}, {"name": "date_bound", "s": 0.7}, {"name": "fuzz_verdict", "s": 0.0}, {"name": "live_suite", "s": 0.1}, {"name": "fixture_sync", "s": 0.1}, {"name": "e2e_mode", "s": 0.0}, {"name": "rule_usage", "s": 1.0}], "ts": "2026-10-15T19:50:26+05:00"}

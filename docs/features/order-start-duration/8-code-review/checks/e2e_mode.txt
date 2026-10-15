@@ -2,3 +2,4 @@ $ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/e
 (exit 1)
 
 E2E-MODE FAIL HEADLESS-RUN: прогон [2026-10-15 16:36:12] без `--headed` — §TD-3 запрещает headless (команда: npx playwright test --project=chromium --workers=1 --retries=1 --reporter=list  # full suite, headless by user request (E2E_HEADLESS=1 make e2e-isolated-full, clean tmpfs stand))
+E2E-MODE FAIL HEADLESS-RUN: прогон [2026-10-15 19:47:03] без `--headed` — §TD-3 запрещает headless (команда: npx playwright test --project=chromium --workers=1 --retries=1 --reporter=list  # full suite, headless by user request (E2E_HEADLESS=1 make e2e-isolated-full, clean tmpfs stand))

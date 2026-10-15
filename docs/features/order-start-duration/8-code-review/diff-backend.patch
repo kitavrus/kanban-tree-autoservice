@@ -1886,10 +1886,10 @@ index 6ebf7cc..ff4e915 100644
  		specs: []sp{{"Год выпуска", "2017"}, {"Двигатель", "2AR-FE, 2.5 л, 181 л.с."}, {"Топливо", "бензин АИ-95"}, {"КПП", "АКПП-6"}, {"Пробег", "158 900 км"}, {"Цвет", "чёрный"}}},
  	{key: "sportage", clientIdx: 3, typeIdx: typeCrossover, brand: "Kia", model: "Sportage 2.0", serial: "XWEPH81ADJ0012345", plate: "Р307ЕК 777",
 diff --git a/internal/seeddemo/data_tasks.go b/internal/seeddemo/data_tasks.go
-index 49a60fd..ed9adf7 100644
+index 49a60fd..de4bd24 100644
 --- a/internal/seeddemo/data_tasks.go
 +++ b/internal/seeddemo/data_tasks.go
-@@ -3,13 +3,20 @@ package seeddemo
+@@ -3,13 +3,26 @@ package seeddemo
  import "github.com/kitavrus/kanban-tree/internal/features/board"
  
  // Заказы автосервиса по колонкам доски (колонки сеет миграция 0005): «Приёмка» — авто только
@@ -1903,8 +1903,14 @@ index 49a60fd..ed9adf7 100644
 +//
 +// Заказ = ровно одна машина клиента (one-car-order); у таксопарка и доставки — по заказу на
 +// машину, часть машин клиентов без заказов. План работ (order-start-duration) подобран так,
-+// чтобы календарь загрузки при вместимости 8 машин был наглядным: сегодня занято 7 мест, в
-+// ближайшую неделю — 5–7, а через 5 дней — все 8 (см. TestValidateDemoData / seed-тест).
++// чтобы календарь загрузки при вместимости 8 машин был наглядным: сегодня занято 7 мест,
++// следующие 4 дня — 6–7, через 5 дней — все 8, дальше — 2–5 (TestDemoPlan_CalendarLoad в
++// plan_test.go, assertCalendarLoad в seed-тесте).
++//
++// Даты в текстах журнала и описаниях — только плейсхолдерами плана (planText): {start} —
++// начало работ, {end} — плановое окончание, {fin} — день выдачи («16.10 (чт)»), чтобы текст не
++// расходился с планом при любом дне и часе прогона; относительных «завтра / через N дней /
++// в пятницу» нет (TestDemoTexts_PlanDates).
  
  // demoSubtaskItem — услуга заказа: service — code из demoServices; assignee -1 — без
 -// исполнителя; dueOffset — дни от сегодня; goodsOverride/priceOverride — вместо комплекта
@@ -1915,7 +1921,7 @@ index 49a60fd..ed9adf7 100644
  type demoSubtaskItem struct {
  	service       string
  	status        string
-@@ -22,7 +29,8 @@ type demoSubtaskItem struct {
+@@ -22,7 +35,8 @@ type demoSubtaskItem struct {
  	payoutPaid    bool
  }
  
@@ -1925,7 +1931,7 @@ index 49a60fd..ed9adf7 100644
  type demoLog struct {
  	user     int
  	hoursAgo int
-@@ -31,7 +39,7 @@ type demoLog struct {
+@@ -31,7 +45,7 @@ type demoLog struct {
  
  // Сцены вложений (media.go).
  const (
@@ -1934,7 +1940,7 @@ index 49a60fd..ed9adf7 100644
  	mediaDash      = "dash"      // приборная панель, Check Engine, коды, пробег
  	mediaEngine    = "engine"    // подкапотное, выноска на дефект
  	mediaEndoscope = "endoscope" // кадр эндоскопа
-@@ -57,17 +65,26 @@ type demoMedia struct {
+@@ -57,17 +71,26 @@ type demoMedia struct {
  }
  
  // demoTaskItem — заказ доски.
@@ -1971,7 +1977,7 @@ index 49a60fd..ed9adf7 100644
  }
  
  func offset(n int) *int { return &n }
-@@ -84,25 +101,49 @@ func intakePhoto(hoursAgo int) demoMedia {
+@@ -84,26 +107,50 @@ func intakePhoto(hoursAgo int) demoMedia {
  }
  
  var demoTasks = []demoTaskItem{
@@ -1986,7 +1992,7 @@ index 49a60fd..ed9adf7 100644
 -			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W30-208", "4.2"), g("PE01-14-302A", "1")}, logs: []demoLog{
 -				{exIntake, 6, "Клиент записан на 10:00, ждёт в зоне отдыха. Масло 5W-30 согласовано."},
 +			{service: "oil", status: stNew, assignee: exMotor, dueOffset: offset(2), goodsOverride: []protoGood{g("OIL-5W30-208", "4.2"), g("PE01-14-302A", "1")}, logs: []demoLog{
-+				{exIntake, 6, "Клиент записан на ТО послезавтра к 10:00, будет ждать в зоне отдыха. Масло 5W-30 согласовано."},
++				{exIntake, 6, "Клиент записан на ТО {start} к 10:00, будет ждать в зоне отдыха. Масло 5W-30 согласовано."},
  			}},
  			{service: "plugs", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("SK16HR11", "4")}},
  			{service: "throttle", status: stNew, assignee: exMotor},
@@ -2002,7 +2008,7 @@ index 49a60fd..ed9adf7 100644
 +			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W30-208", "7.5"), g("04152-YZZA6", "1")}},
 +			{service: "fuel", status: stNew, assignee: exMotor},
 +			{service: "diag", status: stNew, assignee: exElectric, logs: []demoLog{
-+				{exIntake, 26, "Записан на завтра 9:00. Клиент: на разгоне 1500–2000 об/мин лёгкие рывки, началось после заправки на трассе. Взять пробу топлива."},
++				{exIntake, 26, "Записан на {start} к 9:00. Клиент: на разгоне 1500–2000 об/мин лёгкие рывки, началось после заправки на трассе. Взять пробу топлива."},
 +			}},
 +		},
 +	},
@@ -2012,7 +2018,7 @@ index 49a60fd..ed9adf7 100644
 +		car: "taxi-logan",
 +		subtasks: []demoSubtaskItem{
 +			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W40-208", "4.8"), g("8200768913", "1")}, logs: []demoLog{
-+				{exAdmin, 20, "Таксопарк записал борт №31 на ТО и регулировку клапанов: пробег 345 000, на холодную стучат клапаны."},
++				{exAdmin, 20, "Таксопарк записал борт №31 на ТО и регулировку клапанов на {start}: пробег 345 000, на холодную стучат клапаны."},
 +			}},
 +			{service: "valves", status: stNew, assignee: exMotor},
 +		},
@@ -2024,11 +2030,13 @@ index 49a60fd..ed9adf7 100644
  		car:      "gazelle",
  		subtasks: []demoSubtaskItem{
 -			{service: "diag", status: stNew, assignee: exNone, logs: []demoLog{
+-				{exIntake, 3, "Машина нужна клиенту к пятнице — развозка по объектам. Разрешили диагностику до 5 000 ₽ без согласования."},
 +			{service: "diag", status: stNew, assignee: exNone, dueOffset: offset(0), logs: []demoLog{
- 				{exIntake, 3, "Машина нужна клиенту к пятнице — развозка по объектам. Разрешили диагностику до 5 000 ₽ без согласования."},
++				{exIntake, 3, "Машина нужна клиенту к {end} — развозка по объектам. Разрешили диагностику до 5 000 ₽ без согласования."},
  			}},
  			{service: "compr", status: stNew, assignee: exNone},
-@@ -114,61 +155,65 @@ var demoTasks = []demoTaskItem{
+ 		},
+@@ -114,61 +161,65 @@ var demoTasks = []demoTaskItem{
  	},
  	// --- Диагностика ---
  	{
@@ -2099,7 +2107,7 @@ index 49a60fd..ed9adf7 100644
 -		car:      "ducato",
 +		startOffset: 3, days: 3, acceptedH: 30,
 +		descHTML: "<p>Пробег 402 600 км, ремень ГРМ меняли 120 000 км назад — пора по регламенту. Течь масла из-под шкива коленвала, пятно на стоянке.</p>" +
-+			"<p>Осмотр сделали вчера, машину клиент забрал на линию — ремонт записан на ближайшее окно.</p>",
++			"<p>Осмотр сделан, машину клиент забрал на линию — ремонт записан на {start}.</p>",
 +		car: "ducato",
  		subtasks: []demoSubtaskItem{
  			{service: "noise", status: stDone, assignee: exMotor, payout: "500", payoutPaid: true, logs: []demoLog{
@@ -2109,11 +2117,11 @@ index 49a60fd..ed9adf7 100644
 +			{service: "timing", status: stNew, assignee: exMotor, dueOffset: offset(4), priceOverride: "9500", goodsOverride: []protoGood{g("KTB553", "1")}},
  			{service: "seals", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("12019350B", "1")}, logs: []demoLog{
 -				{exAdmin, 20, "Клиент согласовывает ГРМ + сальник, по деньгам думает до завтра."},
-+				{exAdmin, 20, "Предварительно записали на ремонт через 3 дня. Клиент согласовывает ГРМ + сальник, по деньгам думает до завтра."},
++				{exAdmin, 20, "Предварительно записали на ремонт на {start}. Клиент согласовывает ГРМ + сальник, по деньгам ещё думает."},
  			}},
  		},
  		media: []demoMedia{
-@@ -178,101 +223,94 @@ var demoTasks = []demoTaskItem{
+@@ -178,101 +229,94 @@ var demoTasks = []demoTaskItem{
  	},
  	// --- В ремонте ---
  	{
@@ -2161,7 +2169,7 @@ index 49a60fd..ed9adf7 100644
  			}},
  			{service: "headmill", status: stWork, assignee: exNone, logs: []demoLog{
 -				{exAdmin, 20, "ГБЦ отдана в мехцех «ГБЦ-Сервис», готовность завтра к 12:00."},
-+				{exAdmin, 94, "ГБЦ отдана в мехцех «ГБЦ-Сервис», обещали готовность через два дня."},
++				{exAdmin, 94, "ГБЦ отдана в мехцех «ГБЦ-Сервис», обещали готовность к {end}."},
 +				{exAdmin, 5, "Мехцех нашёл трещину между сёдлами клапанов — ищут другую головку. Клиенту сообщили, срок ремонта сдвигается."},
  			}},
  			{service: "coolant", status: stNew, assignee: exMotor},
@@ -2225,7 +2233,7 @@ index 49a60fd..ed9adf7 100644
 +		column: "Ждёт запчасти", clientIdx: 3, title: "Toyota Camry М555АУ 177: эмульсия в масле, белый выхлоп — замена прокладки ГБЦ", assignee: exMotor,
 +		startOffset: 3, days: 4, acceptedH: 44,
 +		descHTML: "<p>После перегрева на трассе — белый густой выхлоп, антифриз уходит, на щупе эмульсия.</p>" +
-+			"<p>Прокладка ГБЦ 11115-36020 под заказ, поставка через 3 дня. Клиент забрал машину до поставки (ездит аккуратно, доливает антифриз), ремонт записан на день поставки.</p>",
++			"<p>Прокладка ГБЦ 11115-36020 под заказ, поставка к {start}. Клиент забрал машину до поставки (ездит аккуратно, доливает антифриз), ремонт записан на {start}.</p>",
 +		car: "camry",
  		subtasks: []demoSubtaskItem{
  			{service: "diag", status: stDone, assignee: exDiag},
@@ -2235,7 +2243,7 @@ index 49a60fd..ed9adf7 100644
 -			{service: "headgasket", status: stNew, assignee: exMotor, dueOffset: offset(5), goodsOverride: []protoGood{g("11115-36020", "1"), g("RTV-GREY-80", "1")}, logs: []demoLog{
 -				{exAdmin, 18, "Прокладка 11115-36020 заказана у «АвтоДеталь-Опт», счёт оплачен, поставка в пятницу."},
 +			{service: "headgasket", status: stNew, assignee: exMotor, dueOffset: offset(4), goodsOverride: []protoGood{g("11115-36020", "1"), g("RTV-GREY-80", "1")}, logs: []demoLog{
-+				{exAdmin, 18, "Прокладка 11115-36020 заказана у «АвтоДеталь-Опт», счёт оплачен, поставка через 3 дня."},
++				{exAdmin, 18, "Прокладка 11115-36020 заказана у «АвтоДеталь-Опт», счёт оплачен, поставка к {start}."},
  			}},
  			{service: "headmill", status: stNew, assignee: exNone},
  			{service: "coolant", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("AF-G12P-RED", "7")}},
@@ -2253,12 +2261,12 @@ index 49a60fd..ed9adf7 100644
  		car: "taxi-solaris",
  		subtasks: []demoSubtaskItem{
  			{service: "diag", status: stDone, assignee: exDiag, payout: "700", payoutPaid: true, logs: []demoLog{
-@@ -280,70 +318,75 @@ var demoTasks = []demoTaskItem{
+@@ -280,70 +324,75 @@ var demoTasks = []demoTaskItem{
  			}},
  			{service: "noise", status: stDone, assignee: exDiag},
  			{service: "chain", status: stNew, assignee: exMotor, logs: []demoLog{
 -				{exAdmin, 36, "Комплект цепи G4FG под заказ у поставщика, срок 3 дня. Таксопарк подтвердил ремонт письмом."},
-+				{exAdmin, 36, "Цепь G4FG с натяжителем под заказ у поставщика, срок 3 дня. Таксопарк забрал машину на линию до поставки, ремонт записан."},
++				{exAdmin, 36, "Цепь G4FG с натяжителем под заказ у поставщика, поставка к {start}. Таксопарк забрал машину на линию до поставки, ремонт записан на {start}."},
  			}},
  		},
  		media: []demoMedia{
@@ -2283,8 +2291,8 @@ index 49a60fd..ed9adf7 100644
 -				{exElectric, 5, "ДМРВ заменён, адаптация ХХ выполнена."},
 -				{exElectric, 3, "Тест-драйв 20 минут: обороты ровные, ошибок нет. Клиенту позвонили — заберёт вечером."},
 +				{exElectric, 50, "ДМРВ заменён, адаптация ХХ выполнена."},
-+				{exElectric, 48, "Тест-драйв 20 минут: обороты ровные, ошибок нет. Клиенту позвонили — заберёт вечером."},
-+				{exAdmin, 6, "Клиент второй день не забирает машину — в командировке, обещал в пятницу. Машина на стоянке, место №3."},
++				{exElectric, 48, "Тест-драйв 20 минут: обороты ровные, ошибок нет. Клиенту позвонили — обещал забрать {end}."},
++				{exAdmin, 6, "Клиент так и не забрал машину {end} — уехал в командировку, заберёт, как вернётся. Машина на стоянке, место №3."},
  			}},
  			{service: "throttle", status: stDone, assignee: exElectric},
  		},
@@ -2304,7 +2312,7 @@ index 49a60fd..ed9adf7 100644
  		subtasks: []demoSubtaskItem{
  			{service: "diag", status: stDone, assignee: exElectric, logs: []demoLog{
 -				{exIntake, 6, "Клиент оповещён по SMS, оплата при выдаче. Машина на стоянке, место №3."},
-+				{exIntake, 52, "Клиент оповещён по SMS, оплата при выдаче. Заберёт завтра после работы."},
++				{exIntake, 52, "Клиент оповещён по SMS, оплата при выдаче. Заберёт {fin} после работы."},
  			}},
  			{service: "injectors", status: stDone, assignee: exElectric, payout: "1200", logs: []demoLog{
 -				{exElectric, 28, "Форсунки на стенде: производительность 2-й и 4-й на 12% ниже. После УЗ-промывки разброс 2%."},
@@ -2351,13 +2359,14 @@ index 49a60fd..ed9adf7 100644
  }
 diff --git a/internal/seeddemo/plan_test.go b/internal/seeddemo/plan_test.go
 new file mode 100644
-index 0000000..05caa63
+index 0000000..781daa6
 --- /dev/null
 +++ b/internal/seeddemo/plan_test.go
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,141 @@
 +package seeddemo
 +
 +import (
++	"regexp"
 +	"testing"
 +
 +	"github.com/stretchr/testify/assert"
@@ -2441,8 +2450,62 @@ index 0000000..05caa63
 +	}
 +	assert.Positive(t, idle, "есть машины клиентов без заказов")
 +}
++
++// TestValidatePlan_Acceptance — приёмка проверяется для каждого заказа напрямую, не только
++// через журнал и фото: начатый заказ заведён не позже дня начала; выданный — раньше выдачи.
++func TestValidatePlan_Acceptance(t *testing.T) {
++	for _, task := range demoTasks {
++		require.NoError(t, validatePlan(task), task.title)
++	}
++	bare := func(tk demoTaskItem) demoTaskItem { tk.subtasks, tk.media, tk.descHTML = nil, nil, ""; return tk }
++
++	started := bare(demoTaskItem{column: "В ремонте", startOffset: -3, days: 4, acceptedH: 72})
++	require.NoError(t, validatePlan(started))
++	started.acceptedH = 71 // заведён в день после начала при прогоне в 23:59
++	require.ErrorContains(t, validatePlan(started), "позже дня начала")
++
++	booked := bare(demoTaskItem{column: "Приёмка", startOffset: 3, days: 1, acceptedH: 1})
++	require.NoError(t, validatePlan(booked), "запись на будущее — заведена сегодня")
++
++	issued := bare(demoTaskItem{column: demoFinalColumn, startOffset: -3, days: 2, acceptedH: 72, finishedOffset: -2})
++	require.NoError(t, validatePlan(issued))
++	issued.startOffset, issued.acceptedH = -2, 50 // приёмка 50 ч назад, выдача — не ближе 55 ч назад
++	require.ErrorContains(t, validatePlan(issued), "раньше выдачи")
++}
++
++// relativeDate — относительные даты и дни недели, которые расходились бы с планом в
++// зависимости от дня и часа прогона.
++var relativeDate = regexp.MustCompile(`(?i)завтра|вчера|сегодня|через (\d+|два|три|пару) дн|понедельник|вторник|сред[уы]|четверг|пятниц|суббот|воскресень|вечером`)
++
++// TestDemoTexts_PlanDates — в текстах журнала и описаниях даты — только из плана заказа
++// (плейсхолдеры {start}/{end}/{fin} → «16.10 (чт)»), без относительных «завтра/в пятницу».
++func TestDemoTexts_PlanDates(t *testing.T) {
++	placeholder := regexp.MustCompile(`\{[a-z]+\}`)
++	used := 0
++	for _, task := range demoTasks {
++		texts := []string{task.descHTML}
++		for _, st := range task.subtasks {
++			for _, l := range st.logs {
++				texts = append(texts, l.text)
++			}
++		}
++		for _, s := range texts {
++			assert.NotRegexp(t, relativeDate, s, task.title)
++			if placeholder.MatchString(s) {
++				used++
++			}
++			out := planText(s, task)
++			assert.NotRegexp(t, placeholder, out, "плейсхолдер не заменён: %s", task.title)
++		}
++	}
++	assert.GreaterOrEqual(t, used, 10, "даты в текстах — из плана")
++
++	tk := demoTaskItem{startOffset: 2, days: 3, finishedOffset: -1}
++	assert.Equal(t, "с "+dayText(2)+" по "+dayText(4)+", выдан "+dayText(-1), planText("с {start} по {end}, выдан {fin}", tk))
++	assert.Regexp(t, `^\d{2}\.\d{2} \((пн|вт|ср|чт|пт|сб|вс)\)$`, dayText(0))
++}
 diff --git a/internal/seeddemo/seeddemo.go b/internal/seeddemo/seeddemo.go
-index a31980d..b4d148b 100644
+index a31980d..854bb71 100644
 --- a/internal/seeddemo/seeddemo.go
 +++ b/internal/seeddemo/seeddemo.go
 @@ -9,10 +9,15 @@
@@ -2495,7 +2558,7 @@ index a31980d..b4d148b 100644
  		for _, st := range t.subtasks {
  			if !svc[st.service] {
  				return fmt.Errorf("заказ %q: нет услуги %q", t.title, st.service)
-@@ -282,6 +300,58 @@ func validateDemoData() error {
+@@ -282,6 +300,84 @@ func validateDemoData() error {
  	return nil
  }
  
@@ -2523,6 +2586,32 @@ index a31980d..b4d148b 100644
 +	minAgo := 0
 +	if final {
 +		minAgo = -t.finishedOffset*24 + 7
++	}
++	// приёмка (created_at = now − acceptedH) — не позже дня начала: начатый заказ (start ≤ 0)
++	// заведён не позже конца дня start при любом часе прогона; запись на будущее — сегодня или
++	// раньше, т.е. до дня начала, всегда.
++	if t.startOffset <= 0 && t.acceptedH < -t.startOffset*24 {
++		return fmt.Errorf("приёмка %d ч назад — позже дня начала %d", t.acceptedH, t.startOffset)
++	}
++	// приёмка — раньше выдачи (даже у заказа без журнала и фото).
++	if final && t.acceptedH < minAgo {
++		return fmt.Errorf("приёмка %d ч назад — не раньше выдачи (день %d)", t.acceptedH, t.finishedOffset)
++	}
++	// даты в текстах — только плейсхолдеры плана; {fin} — только у выданного.
++	texts := []string{t.descHTML}
++	for _, st := range t.subtasks {
++		for _, l := range st.logs {
++			texts = append(texts, l.text)
++		}
++	}
++	for _, s := range texts {
++		rest := strings.NewReplacer("{start}", "", "{end}", "").Replace(s)
++		if final {
++			rest = strings.ReplaceAll(rest, "{fin}", "")
++		}
++		if strings.ContainsAny(rest, "{}") {
++			return fmt.Errorf("неизвестный плейсхолдер в тексте %q", s)
++		}
 +	}
 +	check := func(what string, hoursAgo int) error {
 +		if hoursAgo > t.acceptedH || hoursAgo < minAgo {
@@ -2554,7 +2643,7 @@ index a31980d..b4d148b 100644
  // ---------------------------------------------------------------------------------------
  // Люди и автомобили.
  // ---------------------------------------------------------------------------------------
-@@ -488,7 +558,22 @@ func dueDate(n *int) *string {
+@@ -488,7 +584,42 @@ func dueDate(n *int) *string {
  	if n == nil {
  		return nil
  	}
@@ -2569,6 +2658,26 @@ index a31980d..b4d148b 100644
 +	return time.Now().In(timezone.Load(timezone.Default)).AddDate(0, 0, n).Format(time.DateOnly)
 +}
 +
++// weekdayShort — день недели в датах текстов демо-заказов.
++var weekdayShort = [...]string{"вс", "пн", "вт", "ср", "чт", "пт", "сб"}
++
++// dayText — «16.10 (чт)»: день через n дней от сегодня по Алматы с настоящим днём недели.
++func dayText(n int) string {
++	d := time.Now().In(timezone.Load(timezone.Default)).AddDate(0, 0, n)
++	return d.Format("02.01") + " (" + weekdayShort[d.Weekday()] + ")"
++}
++
++// planText — текст журнала/описания заказа с датами его плана вместо плейсхолдеров:
++// {start} — начало работ, {end} — плановое окончание, {fin} — день выдачи. Текст не
++// расходится с планом при любом дне и часе прогона (относительные «завтра» устаревали бы).
++func planText(s string, t demoTaskItem) string {
++	return strings.NewReplacer(
++		"{start}", dayText(t.startOffset),
++		"{end}", dayText(t.startOffset+t.days-1),
++		"{fin}", dayText(t.finishedOffset),
++	).Replace(s)
++}
++
 +// finishedDay — день выдачи заказа финальной колонки (nil — не выдан).
 +func finishedDay(t demoTaskItem, final bool) *string {
 +	if !final {
@@ -2578,7 +2687,7 @@ index a31980d..b4d148b 100644
  	return &d
  }
  
-@@ -511,13 +596,20 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
+@@ -511,19 +642,26 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
  		if t.assignee >= 0 {
  			assigneeID = &executors[t.assignee].ID
  		}
@@ -2600,12 +2709,37 @@ index a31980d..b4d148b 100644
 +			       $8, CASE WHEN $8 THEN COALESCE(v.finished_at, now()) END, v.finished_at, $9::numeric, $10,
 +			       now() - make_interval(hours => $13), COALESCE(v.finished_at, now())
 +			FROM v RETURNING id`,
-+			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dayFromToday(t.startOffset), t.paid,
++			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, planText(t.descHTML, t), assigneeID, dayFromToday(t.startOffset), t.paid,
 +			fmt.Sprintf("%d", (i+1)*1024), s.adminID, t.days, finishedDay(t, col.IsFinal), t.acceptedH).
  			Scan(&taskID); err != nil {
  			return err
  		}
-@@ -680,15 +772,17 @@ func (s *seeder) seedAttachment(taskID int64, car demoEquipmentItem, m demoMedia
+ 
+ 		for pos, st := range t.subtasks {
+-			if err := s.seedSubtask(taskID, pos, st, executors, services, products); err != nil {
++			if err := s.seedSubtask(taskID, pos, st, t, executors, services, products); err != nil {
+ 				return fmt.Errorf("заказ %q, услуга %s: %w", t.title, st.service, err)
+ 			}
+ 		}
+@@ -551,7 +689,7 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
+ 	return nil
+ }
+ 
+-func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, executors []executorRow,
++func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, task demoTaskItem, executors []executorRow,
+ 	services map[string]serviceRow, products map[string]productRow) error {
+ 	svc := services[st.service]
+ 	var assigneeID *string
+@@ -585,7 +723,7 @@ func (s *seeder) seedSubtask(taskID int64, pos int, st demoSubtaskItem, executor
+ 		if _, err := s.tx.Exec(s.ctx,
+ 			`INSERT INTO subtask_logs (subtask_id, user_id, text, created_at, updated_at)
+ 			 VALUES ($1, $2, $3, now() - make_interval(hours => $4), now() - make_interval(hours => $4))`,
+-			subtaskID, userID(executors, l.user, s.adminID), l.text, l.hoursAgo); err != nil {
++			subtaskID, userID(executors, l.user, s.adminID), planText(l.text, task), l.hoursAgo); err != nil {
+ 			return err
+ 		}
+ 	}
+@@ -680,15 +818,17 @@ func (s *seeder) seedAttachment(taskID int64, car demoEquipmentItem, m demoMedia
  
  // seedDeletedTask — один мягко удалённый заказ с причиной (soft-delete-core TS-F5, DS-011);
  // без услуг и товаров — возвращать на склад нечего; в Result.Tasks не входит. Автомобиль —
@@ -2627,7 +2761,7 @@ index a31980d..b4d148b 100644
  }
  
 diff --git a/internal/seeddemo/seeddemo_integration_test.go b/internal/seeddemo/seeddemo_integration_test.go
-index 78bfa85..828de5c 100644
+index 78bfa85..15b77f5 100644
 --- a/internal/seeddemo/seeddemo_integration_test.go
 +++ b/internal/seeddemo/seeddemo_integration_test.go
 @@ -13,9 +13,11 @@ import (
@@ -2669,7 +2803,7 @@ index 78bfa85..828de5c 100644
  
  	var movementsTotal int
  	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM stock_movements`).Scan(&movementsTotal))
-@@ -205,9 +211,96 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
+@@ -205,9 +211,106 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
  	s.assertExecutorPayouts()
  }
  
@@ -2683,7 +2817,7 @@ index 78bfa85..828de5c 100644
 +// журнал — не раньше приёмки и не позже выдачи.
 +func (s *SeedDemoSuite) assertOrderPlans() {
 +	ctx := context.Background()
-+	var badPlan, titleNoPlate, issued, issuedBad, openFinished, future, overdue, soon, subtaskDueOut, logsOut int
++	var badPlan, titleNoPlate, issued, issuedBad, openFinished, future, overdue, soon, subtaskDueOut, logsOut, acceptedLate int
 +	s.Require().NoError(s.Pool.QueryRow(ctx, `
 +		SELECT count(*) FILTER (WHERE t.duration_days NOT BETWEEN 1 AND 14 OR t.due_date <> t.start_date + t.duration_days - 1),
 +		       count(*) FILTER (WHERE strpos(t.title, e.plate_number) = 0),
@@ -2698,10 +2832,11 @@ index 78bfa85..828de5c 100644
 +		       (SELECT count(*) FROM subtasks s JOIN tasks t2 ON t2.id = s.task_id
 +		         WHERE s.due_date IS NOT NULL AND s.due_date NOT BETWEEN t2.start_date AND t2.due_date),
 +		       (SELECT count(*) FROM subtask_logs l JOIN subtasks s ON s.id = l.subtask_id JOIN tasks t2 ON t2.id = s.task_id
-+		         WHERE l.created_at < t2.created_at OR l.created_at > COALESCE(t2.finished_at, now()))
++		         WHERE l.created_at < t2.created_at OR l.created_at > COALESCE(t2.finished_at, now())),
++		       count(*) FILTER (WHERE (t.created_at AT TIME ZONE 'Asia/Almaty')::date > t.start_date)
 +		FROM tasks t JOIN columns c ON c.id = t.column_id JOIN equipment e ON e.id = t.car_id
 +		WHERE t.deleted_at IS NULL`).
-+		Scan(&badPlan, &titleNoPlate, &issued, &issuedBad, &openFinished, &future, &overdue, &soon, &subtaskDueOut, &logsOut))
++		Scan(&badPlan, &titleNoPlate, &issued, &issuedBad, &openFinished, &future, &overdue, &soon, &subtaskDueOut, &logsOut, &acceptedLate))
 +	s.Zero(badPlan, "план 1..14 дней, due_date — плановое окончание")
 +	s.Zero(titleNoPlate, "название заказа — с госномером его машины")
 +	s.Equal(3, issued, "выданные заказы")
@@ -2712,6 +2847,7 @@ index 78bfa85..828de5c 100644
 +	s.Equal(3, soon, "окончание сегодня/завтра («Горит»)")
 +	s.Zero(subtaskDueOut, "сроки услуг — внутри плана заказа")
 +	s.Zero(logsOut, "журнал — между приёмкой и выдачей")
++	s.Zero(acceptedLate, "приёмка (created_at) — не позже дня начала")
 +}
 +
 +// assertCalendarLoad — календарь загрузки (правила calendar.Service, пояс seed-админа) при
@@ -2759,6 +2895,14 @@ index 78bfa85..828de5c 100644
 +		  UNION ALL SELECT coalesce(delete_reason, '') FROM equipment
 +		) x WHERE txt ~* '(оборудован|комплектност|состояни)'`).Scan(&hits))
 +	s.Zero(hits, "тексты без «оборудования», «комплектности», «состояния»")
++
++	// даты в журнале и описаниях — из плана заказа (plan placeholders), без относительных.
++	var relative int
++	s.Require().NoError(s.Pool.QueryRow(ctx, `
++		SELECT count(*) FROM (
++		  SELECT description_html AS txt FROM tasks UNION ALL SELECT text FROM subtask_logs
++		) x WHERE txt ~* '(завтра|вчера|пятниц|через ([0-9]+|два|три) дн|[{}])'`).Scan(&relative))
++	s.Zero(relative, "без «завтра/в пятницу/через N дней» и незаменённых плейсхолдеров")
 +}
 +
  // assertPlates — автомобиль = госномер (equipment.plate_number): у каждого действующего
@@ -2768,7 +2912,7 @@ index 78bfa85..828de5c 100644
  func (s *SeedDemoSuite) assertPlates() {
  	ctx := context.Background()
  	rows, err := s.Pool.Query(ctx, `SELECT plate_number FROM equipment WHERE deleted_at IS NULL`)
-@@ -224,12 +317,14 @@ func (s *SeedDemoSuite) assertPlates() {
+@@ -224,12 +327,14 @@ func (s *SeedDemoSuite) assertPlates() {
  	}
  	s.Require().NoError(rows.Err())
  	s.Equal(18, cars)
@@ -2787,7 +2931,7 @@ index 78bfa85..828de5c 100644
  func (s *SeedDemoSuite) assertAttachments(res seeddemo.Result) {
  	ctx := context.Background()
  	var total, videos, tasksWithPhoto int
-@@ -240,7 +335,16 @@ func (s *SeedDemoSuite) assertAttachments(res seeddemo.Result) {
+@@ -240,7 +345,16 @@ func (s *SeedDemoSuite) assertAttachments(res seeddemo.Result) {
  	s.Equal(res.Attachments, total)
  	s.Equal(res.Videos, videos)
  	s.Equal(3, videos)

@@ -1,5 +1,5 @@
 # Review Bundle: order-start-duration — CHECKS-FAILED
-**Base:** 999e1f069f0429fe0436bc2ab590bf90546e8c8d | **HEAD:** fab3064 | **Generated:** 2026-10-15 19:40 | diff: 72 files changed, 5573 insertions(+), 458 deletions(-)
+**Base:** 999e1f069f0429fe0436bc2ab590bf90546e8c8d | **HEAD:** 9367baa | **Generated:** 2026-10-15 19:50 | diff: 72 files changed, 6639 insertions(+), 462 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -14,7 +14,7 @@
 | fuzz_verdict | ✅ | 0 | — |
 | live_suite | ✅ | 0 | — |
 | fixture_sync | ✅ | 0 | — |
-| e2e_mode | ❌ | 1 | E2E-MODE FAIL HEADLESS-RUN: прогон [2026-10-15 16:36:12] без `--headed` — §TD-3 запрещает headless (команда: npx playwright test --project=chromium --workers=1 --retries=1 --reporter=list  # full suite, headless by user request (E2E_HEADLESS=1 make e2e-isolated-full, clean tmpfs stand)) |
+| e2e_mode | ❌ | 1 | E2E-MODE FAIL HEADLESS-RUN: прогон [2026-10-15 16:36:12] без `--headed` — §TD-3 запрещает headless (команда: npx playwright test --project=chromium --workers=1 --retries=1 --reporter=list  # full suite, headless by user request (E2E_HEADLESS=1 make e2e-isolated-full, clean tmpfs stand))<br>E2E-MODE FAIL HEADLESS-RUN: прогон [2026-10-15 19:47:03] без `--headed` — §TD-3 запрещает headless (команда: npx playwright test --project=chromium --workers=1 --retries=1 --reporter=list  # full suite, headless by user request (E2E_HEADLESS=1 make e2e-isolated-full, clean tmpfs stand)) |
 | rule_usage | ✅ | 0 | — |
 
 ## Diff по линзам
@@ -113,8 +113,8 @@ MISSING
 MISSING
 
 ## Инвентарь доков (точечный grep разрешён, полное чтение — нет)
-- 8-code-review/output.md — 12KB
-- 0-setup/light-progress.md — 6KB
+- 8-code-review/output.md — 10KB
+- 0-setup/light-progress.md — 7KB
 - 0-setup/idioms.md — 6KB
 - 8-code-review/input-bundle.md — 5KB
 - 0-setup/pipeline-state.md — 1KB
