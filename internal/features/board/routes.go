@@ -101,4 +101,6 @@ func Register(app *fiber.App, api fiber.Router, a *middleware.Auth, h *Handlers,
 	app.Get("/stock", a.RequireSSR(), s.stock)
 	// Печать актов приёма/выдачи (фаза 04, ADR-102) — D19: доступно и executor.
 	app.Get("/tasks/:id/print/:kind", a.RequireSSR(), s.print)
+	// PDF-файл акта (пока только handover) — тот же контур доступа, что и HTML-печать.
+	app.Get("/tasks/:id/print/:kind/pdf", a.RequireSSR(), s.printPDF)
 }

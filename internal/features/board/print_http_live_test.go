@@ -280,6 +280,49 @@ func (s *PrintLiveSuite) TestPrintLiveSuite_EmptyFirmAndEdgeCases() {
 	s.Equal("no-store, must-revalidate", resp4.Header.Get("Cache-Control"))
 }
 
+// ---- PDF-версия акта выдачи: /tasks/:id/print/handover/pdf — файл application/pdf;
+// иной kind/чужой заказ — 404, аноним — редирект на /login. ----
+
+func (s *PrintLiveSuite) TestPrintLiveSuite_HandoverPDF() {
+	c := s.newClient("Клиент-Печать-PDF", "8 900 000-00-03")
+	col := s.columnID("Приёмка")
+	taskID, _ := s.newTask(c, col, "")
+	svc := s.newService("Диагностика PDF", "500")
+	sub := s.addSubtask(taskID, svc)
+	prodID := s.newProduct("Термопаста PDF", "20", "100", "1")
+	s.addProduct(sub, prodID, 2)
+	s.addSubtask(taskID, s.newService("Чистка PDF по факту", ""))
+
+	for _, b := range []*testutil.Browser{s.admin, s.executor} {
+		resp := b.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/handover/pdf", taskID), nil, nil)
+		s.Require().Equal(http.StatusOK, resp.StatusCode)
+		s.Equal("application/pdf", resp.Header.Get("Content-Type"))
+		s.Equal(fmt.Sprintf(`attachment; filename="akt-vydachi-%d.pdf"`, taskID), resp.Header.Get("Content-Disposition"))
+		body := s.readBody(resp)
+		resp.Body.Close()
+		s.True(strings.HasPrefix(body, "%PDF-"), "тело — PDF-документ")
+	}
+
+	// HTML-страница акта выдачи ведёт на PDF-версию.
+	respHTML := s.admin.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/handover", taskID), nil, nil)
+	defer respHTML.Body.Close()
+	s.Contains(s.readBody(respHTML), fmt.Sprintf(`href="/tasks/%d/print/handover/pdf"`, taskID))
+
+	resp2 := s.admin.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/intake/pdf", taskID), nil, nil)
+	defer resp2.Body.Close()
+	s.Equal(http.StatusNotFound, resp2.StatusCode)
+
+	resp3 := s.admin.Request(http.MethodGet, "/tasks/999999999/print/handover/pdf", nil, nil)
+	defer resp3.Body.Close()
+	s.Equal(http.StatusNotFound, resp3.StatusCode)
+
+	anon := s.NewBrowser()
+	resp4 := anon.Request(http.MethodGet, fmt.Sprintf("/tasks/%d/print/handover/pdf", taskID), nil, nil)
+	defer resp4.Body.Close()
+	s.Equal(http.StatusFound, resp4.StatusCode)
+	s.True(strings.HasPrefix(resp4.Header.Get("Location"), "/login"), resp4.Header.Get("Location"))
+}
+
 func (s *PrintLiveSuite) readBody(resp *http.Response) string {
 	raw, err := io.ReadAll(resp.Body)
 	s.Require().NoError(err)

@@ -7,6 +7,7 @@ go 1.26.0
 // prometheus/client_golang, otel (+ golang-jwt/v5 при auth.mode=jwt).
 
 require (
+	github.com/go-pdf/fpdf v0.9.0
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
