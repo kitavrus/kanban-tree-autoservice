@@ -108,7 +108,7 @@ func (s *CarOrderLiveSuite) lookup(b *testutil.Browser, plate string) (int, look
 }
 
 func (s *CarOrderLiveSuite) createTask(b *testutil.Browser, body map[string]any) (int, carTaskDTO, []byte) {
-	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", body)
+	st, raw := b.Do(http.MethodPost, "/api/v1/tasks", withPlan(body))
 	var t carTaskDTO
 	if st == http.StatusCreated {
 		s.Require().NoError(json.Unmarshal(raw, &t), string(raw))

@@ -23,13 +23,18 @@ type TaskCard struct {
 	Title           string  `json:"title"`
 	AssigneeID      *string `json:"assignee_id"`
 	AssigneeName    *string `json:"assignee_name"`
-	DueDate         *string `json:"due_date"` // YYYY-MM-DD
-	IsPaid          bool    `json:"is_paid"`
-	Position        string  `json:"position"`
-	Version         int64   `json:"version"`
-	SubtasksTotal   int     `json:"subtasks_total"`
-	SubtasksDone    int     `json:"subtasks_done"`
-	SubtasksLate    int     `json:"subtasks_late"`
+	// StartDate/DurationDays — план работ (order-start-duration): начало (YYYY-MM-DD) и дней на
+	// работу (1..60). DueDate — плановое окончание start_date + duration_days − 1 (вычисляется
+	// БД, вводом не принимается); у действующих заказов всегда задан.
+	StartDate     string  `json:"start_date"`
+	DurationDays  int     `json:"duration_days"`
+	DueDate       *string `json:"due_date"` // YYYY-MM-DD
+	IsPaid        bool    `json:"is_paid"`
+	Position      string  `json:"position"`
+	Version       int64   `json:"version"`
+	SubtasksTotal int     `json:"subtasks_total"`
+	SubtasksDone  int     `json:"subtasks_done"`
+	SubtasksLate  int     `json:"subtasks_late"`
 	// TotalAmount/LastLog — фаза 6 (design-sql.md §Totals Expression/§Last Log Expression).
 	// Одно имя итога и в GET /tasks, и в карточке (design-go-layers.md §DTO OrderCard).
 	TotalAmount numeric.Amount `json:"total_amount"`
@@ -80,12 +85,17 @@ type TaskResponse struct {
 // 403 PAID_ADMIN_ONLY (AC-011). Клиента и автомобиля здесь нет (one-car-order): они задаются
 // только при создании (TaskCreateRequest) и потом не меняются — PUT с client_id/equipment_id
 // отклоняется как тело с неизвестным полем (strictJSON → 400 BAD_REQUEST).
+//
+// order-start-duration: план работ — StartDate (YYYY-MM-DD) и DurationDays (1..60), оба
+// обязательны и в POST, и в PUT; due_date вводом не принимается (то же strictJSON → 400) —
+// плановое окончание вычисляет БД.
 type TaskHeader struct {
-	Title      string  `json:"title"`
-	ColumnID   string  `json:"column_id"`
-	AssigneeID *string `json:"assignee_id"`
-	DueDate    *string `json:"due_date"`
-	IsPaid     *bool   `json:"is_paid"`
+	Title        string  `json:"title"`
+	ColumnID     string  `json:"column_id"`
+	AssigneeID   *string `json:"assignee_id"`
+	StartDate    *string `json:"start_date"`
+	DurationDays *int    `json:"duration_days"`
+	IsPaid       *bool   `json:"is_paid"`
 	// Description — plain text ≤10000 символов (design-errors.md §Validation Fields).
 	// POST: nil → "" (пусто); PUT (через embed в TaskUpdateRequest): nil → не менять.
 	Description *string `json:"description"`

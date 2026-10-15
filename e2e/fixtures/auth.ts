@@ -22,6 +22,12 @@ export function testPlate(): string {
   return p;
 }
 
+// todayYmd — «сегодня» (YYYY-MM-DD) в поясе tz (по умолчанию Asia/Almaty — пояс seed-пользователей):
+// «Начать с» по умолчанию у заказов фикстур (order-start-duration).
+export function todayYmd(tz = 'Asia/Almaty'): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
 export type Role = 'admin' | 'executor';
 // timezone — часовой пояс IANA (user-timezone DS-031/DS-056): не передан при создании → Asia/Almaty,
 // не передан при правке → не меняется (internal/features/users/dto.go, §TD-6.2).
@@ -517,7 +523,13 @@ export class AdminApi {
    *  ни plate_number, ни equipment_id, дописывается новый автомобиль клиента с уникальным
    *  госномером из букв (цифры совпадали бы с поиском доски по номеру заказа). */
   async createTask(t: import('./board-types').NewTask): Promise<import('./board-types').Task> {
-    const data = t.plate_number || t.equipment_id ? t : { ...t, plate_number: testPlate(), new_equipment: {} };
+    const car = t.plate_number || t.equipment_id ? t : { ...t, plate_number: testPlate(), new_equipment: {} };
+    // order-start-duration: план работ обязателен — по умолчанию начало сегодня, 1 день.
+    const data = {
+      ...car,
+      start_date: t.start_date === undefined ? todayYmd() : t.start_date,
+      duration_days: t.duration_days === undefined ? 1 : t.duration_days,
+    };
     const res = await this.ctx.post('/api/v1/tasks', { data, headers: await this.headers() });
     expect(res.status(), `создание заказа ${t.title}: ${await res.text()}`).toBe(201);
     const body: import('./board-types').TaskMutationResponse = await res.json();
@@ -529,9 +541,19 @@ export class AdminApi {
     return this.createTask({ ...t, plate_number: car.plate_number, equipment_id: car.id });
   }
 
-  /** Не проверяет статус — BD-010 (конфликт версии) ждёт 409, а не 200. */
+  /** Не проверяет статус — BD-010 (конфликт версии) ждёт 409, а не 200. PUT — полная замена
+   *  шапки: план работ, не заданный в t (undefined), берётся текущим из заказа. */
   async updateTask(id: number, t: import('./board-types').UpdateTask): Promise<{ status: number; body: import('./board-types').TaskMutationResponse }> {
-    const res = await this.ctx.put(`/api/v1/tasks/${id}`, { data: t, headers: await this.headers() });
+    let data = t;
+    if (t.start_date === undefined || t.duration_days === undefined) {
+      const cur = await this.getTask(id);
+      data = {
+        ...t,
+        start_date: t.start_date === undefined ? cur.start_date : t.start_date,
+        duration_days: t.duration_days === undefined ? cur.duration_days : t.duration_days,
+      };
+    }
+    const res = await this.ctx.put(`/api/v1/tasks/${id}`, { data, headers: await this.headers() });
     return { status: res.status(), body: await res.json() };
   }
 

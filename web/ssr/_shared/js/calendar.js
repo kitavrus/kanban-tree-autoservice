@@ -2,7 +2,8 @@
    - сохранение вместимости (admin): PUT /api/v1/calendar/settings {max_cars}, затем
      перезагрузка страницы — счётчики «свободно» пересчитываются сервером;
    - новый заказ: та же карточка заказа, что на доске (js/task-card.js, KT.taskCard).
-     «+ Заказ» в шапке — без срока, «+ Заказ со сроком на этот день» — срок = выбранный день;
+     «+ Заказ» в шапке — «Начать с» сегодня, «+ Заказ с началом в этот день» — «Начать с» =
+     выбранный день (дней на работу по умолчанию — 1);
      клик по заказу (список дня, полоса диаграммы Ганта — [data-open-task]) открывает его
      карточку здесь же, без перехода на доску (обычный клик; с Ctrl/⌘ — ссылка /?task=N).
      Справочники карточки (колонки/исполнители/клиенты) грузятся при первом открытии; после
@@ -81,10 +82,10 @@
     });
   }
 
-  function openNewOrder(dueDate) {
+  function openNewOrder(startDate) {
     showError('');
     ensureCardData().then(function () {
-      KT.taskCard.open(null, null, { dueDate: dueDate || '' });
+      KT.taskCard.open(null, null, { startDate: startDate || '' });
     }).catch(function (err) {
       showError('Не удалось открыть новый заказ: ' + ((err && err.message) || 'ошибка сети'));
     });
@@ -112,7 +113,7 @@
       openOrder(id);
     });
     document.querySelectorAll('[data-testid="cal-day-add"]').forEach(function (b) {
-      b.addEventListener('click', function () { openNewOrder(b.dataset.due); });
+      b.addEventListener('click', function () { openNewOrder(b.dataset.start); });
     });
   }
 

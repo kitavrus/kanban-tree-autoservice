@@ -235,8 +235,9 @@ func (s *StockEngineSuite) TestIT010_FullSequence_ViaTaskServiceAndColumnService
 	// подзадача-услуга с потребностью в товаре — напрямую SQL (subtask_products не входит
 	// в DTO заказа фазы 03, появится в фазе 6), заказ и его перенос — через сервис.
 	// one-car-order: заказ создаётся только с автомобилем (новый автомобиль клиента).
+	seStart, seDays := "2031-01-10", 2 // order-start-duration: план работ обязателен
 	create, err := taskSvc.Create(ctx, actor, board.TaskCreateRequest{
-		TaskHeader:   board.TaskHeader{Title: "IT-010 заказ", ColumnID: seColTodo},
+		TaskHeader:   board.TaskHeader{Title: "IT-010 заказ", ColumnID: seColTodo, StartDate: &seStart, DurationDays: &seDays},
 		ClientID:     seClientID,
 		PlateNumber:  "ИТ010 77",
 		NewEquipment: &board.TaskNewEquipment{},

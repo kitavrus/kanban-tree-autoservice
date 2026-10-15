@@ -177,9 +177,9 @@ func (s *OrderCardLiveSuite) newTask(clientID, columnID string) (int64, int64) {
 // newTaskWithCar — заказ на уже существующий автомобиль equipmentID (найден по госномеру,
 // клиент заказа — владелец автомобиля).
 func (s *OrderCardLiveSuite) newTaskWithCar(equipmentID, plate, columnID string) int64 {
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
 		"title": "Заказ карточки", "column_id": columnID, "plate_number": plate, "equipment_id": equipmentID,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m struct {
 		Task struct {
@@ -367,7 +367,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
 	// PUT description=null — не меняет сохранённый HTML.
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", m.Task.ID), map[string]any{
 		"title": "Заказ с описанием", "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": m.Task.Version, "description": nil,
+		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": m.Task.Version, "description": nil,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	st, card, raw = s.getCard(s.admin, m.Task.ID)
@@ -377,7 +377,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Description_EscapeAndUpdate(
 	// PUT с новым description — переписывает.
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", m.Task.ID), map[string]any{
 		"title": "Заказ с описанием", "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": int64(2), "description": "Новый текст",
+		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": int64(2), "description": "Новый текст",
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 	st, card, raw = s.getCard(s.admin, m.Task.ID)
@@ -404,9 +404,9 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_DeepLink_SSR() {
 func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_NewCarInCard() {
 	c := s.newClient("Клиент-Автомобиль-Новый")
 	col := s.columnID("Приёмка")
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
 		"client_id": c, "column_id": col, "plate_number": "н002нн 77", "new_equipment": map[string]any{},
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m struct {
 		Task struct {
@@ -458,7 +458,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_PutCannotChangeClientOrC
 	otherCar := s.newEquipment(c2)
 
 	base := func(extra map[string]any) map[string]any {
-		m := map[string]any{"title": "Заказ", "column_id": col, "assignee_id": nil, "due_date": nil, "is_paid": false, "version": version}
+		m := map[string]any{"title": "Заказ", "column_id": col, "assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version}
 		for k, v := range extra {
 			m[k] = v
 		}
@@ -523,22 +523,22 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Car_ForeignOrUnknownCar400()
 	col := s.columnID("Приёмка")
 	foreignEqID := s.newEquipment(c2)
 
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
 		"client_id": c1, "column_id": col, "plate_number": "М001ММ 77", "equipment_id": foreignEqID,
-	})
+	}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("foreign_client", s.fields(raw)["equipment_id"])
 
 	unknown := "00000000-0000-0000-0000-000000000000"
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
 		"column_id": col, "plate_number": "М001ММ 77", "equipment_id": unknown,
-	})
+	}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["equipment_id"])
 
-	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw = s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
 		"client_id": c1, "column_id": col, "plate_number": "М001ММ 77", "equipment_id": "",
-	})
+	}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("required", s.fields(raw)["equipment_id"])
 }
@@ -878,7 +878,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_UnaffectedByRowMutat
 
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
 		"title": "Заказ карточки", "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
+		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw), "version, захваченный ДО row-мутаций, всё ещё актуален")
 }
@@ -891,13 +891,13 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Version_ConflictOnHeader() {
 
 	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
 		"title": "Первая правка", "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
+		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
 		"title": "Вторая правка", "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
+		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
 	})
 	s.Equal(http.StatusConflict, st, string(raw))
 	s.Equal("TASK_VERSION_CONFLICT", s.errOf(raw).Code)
@@ -1061,7 +1061,7 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Access_ExecutorRowEndpoints(
 
 	st, raw = exec.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
 		"title": "Заказ карточки", "column_id": col,
-		"assignee_id": nil, "due_date": nil, "is_paid": false, "version": version,
+		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": version,
 	})
 	s.Equal(http.StatusOK, st, string(raw), "правка без смены is_paid — доступна executor")
 }
@@ -1258,9 +1258,9 @@ func (s *OrderCardLiveSuite) TestOrderCardLiveSuite_Executor_CarOrderAllowed() {
 	col := s.columnID("Приёмка")
 	eqID := s.newEquipment(c)
 
-	st, raw := exec.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := exec.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
 		"column_id": col, "plate_number": "М001ММ 77", "equipment_id": eqID,
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m struct {
 		Task struct {

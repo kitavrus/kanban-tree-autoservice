@@ -85,7 +85,7 @@ test.describe('OC: deep-link /?task=N', () => {
 });
 
 test.describe('OC: шапка заказа', () => {
-  test('OC-003: title/описание/срок сохраняются кнопкой и переживают reload', async ({ adminPage: page, adminApi, uniq }) => {
+  test('OC-003: title/описание/план работ сохраняются кнопкой и переживают reload', async ({ adminPage: page, adminApi, uniq }) => {
     const { client, columns } = await setup(adminApi, uniq, 'OC-003');
     const task = await adminApi.createTask({ title: uniq('OC-003 заказ'), client_id: client.id, column_id: columnByName(columns, 'Приёмка').id });
     const board = new BoardPage(page);
@@ -96,7 +96,8 @@ test.describe('OC: шапка заказа', () => {
 
     const newTitle = uniq('OC-003 переименован');
     const desc = 'Первый абзац\n\nВторой абзац';
-    await card.fillHeader({ title: newTitle, due: '2031-02-20', description: desc });
+    await card.fillHeader({ title: newTitle, start: '2031-02-18', days: 3, description: desc });
+    await expect(card.plannedEnd).toHaveText('Плановое окончание: 20.02.2031');
     await card.save();
     await expect(card.error).toBeHidden();
 
@@ -104,8 +105,12 @@ test.describe('OC: шапка заказа', () => {
     await board.openTaskEdit(task.id);
     await card.waitOpen();
     await expect(card.taskTitle).toHaveValue(newTitle);
-    await expect(card.taskDue).toHaveValue('2031-02-20');
+    await expect(card.taskStart).toHaveValue('2031-02-18');
+    await expect(card.taskDuration).toHaveValue('3');
+    await expect(card.plannedEnd).toHaveText('Плановое окончание: 20.02.2031');
     await expect(card.description).toHaveValue(desc);
+    const saved = await adminApi.getTask(task.id);
+    expect(`${saved.start_date}|${saved.duration_days}|${saved.due_date}`).toBe('2031-02-18|3|2031-02-20');
   });
 
   test('OC-004: конкурентная правка шапки — вторая вкладка видит «уже изменён», данные первой на месте', async ({

@@ -50,13 +50,13 @@
         <h3 class="h6 mb-0" data-testid="cal-gantt-title">Сроки машин в ремонте{{ with $.Selected }} — {{ .Title }}{{ end }}</h3>
         <span class="small text-body-secondary" data-testid="cal-gantt-range">шкала: {{ .RangeTitle }}</span>
         {{ with $.Selected }}{{ if not .IsPast }}
-        <button type="button" class="btn btn-outline-primary btn-sm" data-testid="cal-day-add" data-due="{{ .Date }}">+ Заказ со сроком на этот день</button>
+        <button type="button" class="btn btn-outline-primary btn-sm" data-testid="cal-day-add" data-start="{{ .Date }}">+ Заказ с началом в этот день</button>
         {{ end }}{{ end }}
         <div class="ms-auto d-flex flex-wrap gap-3 small text-body-secondary gantt-legend">
           <span><i class="gantt-key"></i>в ремонте (цвет — колонка)</span>
           <span><i class="gantt-key open-ended"></i>бессрочно — пока не выдана</span>
           <span><i class="gantt-key finished"></i>выдана</span>
-          <span><i class="gantt-key-due"></i>срок</span>
+          <span><i class="gantt-key-due"></i>срок (плановое окончание)</span>
         </div>
       </div>
       {{ if .Rows }}
@@ -84,7 +84,7 @@
             </div>
             <div class="gantt-track">
               {{ range $g.Days }}<div class="gantt-bg{{ if .IsWeekend }} is-weekend{{ end }}{{ if .IsToday }} is-today{{ end }}{{ if .IsSelected }} is-selected{{ end }}" style="grid-column: {{ .Col }}"></div>{{ end }}
-              {{ if .DueCol }}<div class="gantt-due{{ if .Overdue }} is-overdue{{ end }}" style="grid-column: {{ .DueCol }}" title="Срок"></div>{{ end }}
+              {{ if .DueCol }}<div class="gantt-due{{ if .Overdue }} is-overdue{{ end }}" style="grid-column: {{ .DueCol }}" title="Плановое окончание" data-testid="cal-gantt-due"></div>{{ end }}
               <a href="/?task={{ .ID }}" data-open-task="{{ .ID }}" data-testid="cal-gantt-bar"
                  class="gantt-bar{{ if .CutLeft }} cut-left{{ end }}{{ if .CutRight }} cut-right{{ end }}{{ if .OpenEnded }} open-ended{{ end }}{{ if .IsFinished }} finished{{ end }}"
                  style="grid-column: {{ .Col }} / span {{ .Span }}; --cal-col: {{ .ColumnColor }}"
@@ -104,9 +104,9 @@
   {{ end }}
 
   <p class="text-body-secondary small mt-3 mb-0">
-    Машина занимает место со дня приёмки до выдачи (перенос заказа в финальную колонку, например «Выдан»). Пока машина не выдана,
-    место занято по срок заказа; если срок не указан или уже прошёл — место считается занятым и во все следующие
-    дни, пока машину не выдадут. Удалённые заказы не учитываются.
+    Машина занимает место с дня начала работ («Начать с» в заказе) до выдачи (перенос заказа в финальную колонку, например «Выдан»).
+    Пока машина не выдана, место занято по плановое окончание — начало плюс «Дней на работу»; если плановое окончание уже
+    прошло — место считается занятым и во все следующие дни, пока машину не выдадут. Удалённые заказы не учитываются.
   </p>
 </div>
 

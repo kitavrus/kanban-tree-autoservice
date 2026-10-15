@@ -3,7 +3,7 @@ import { NewOrderDialog } from './NewOrderDialog';
 
 // POM карточки заказа (фаза 6, testid-контракт js/task-card.js — KT.taskCard). Разделяет
 // шапку (переиспользует testid простой формы фазы 5 — task-title/task-client/task-column/
-// task-assignee/task-due/task-paid/task-save/task-delete/task-error) и новые разделы
+// task-assignee/task-start/task-duration/task-paid/task-save/task-delete/task-error) и новые разделы
 // автомобиля/услуг/товаров/журнала/итогов/печати (префикс card-*). Автомобиль заказа
 // (one-car-order) — ровно один, в карточке только читается: «госномер · владелец · История». Комбобоксы —
 // js/combobox.js переносит testid на видимую кнопку, выбор — клик по кнопке и затем по
@@ -17,7 +17,9 @@ export class OrderCardPage {
   readonly taskClient: Locator;
   readonly taskColumn: Locator;
   readonly taskAssignee: Locator;
-  readonly taskDue: Locator;
+  readonly taskStart: Locator;
+  readonly taskDuration: Locator;
+  readonly plannedEnd: Locator;
   readonly taskPaid: Locator;
   readonly description: Locator;
   readonly saveBtn: Locator;
@@ -69,7 +71,10 @@ export class OrderCardPage {
     this.taskClient = page.getByTestId('task-client');
     this.taskColumn = page.getByTestId('task-column');
     this.taskAssignee = page.getByTestId('task-assignee');
-    this.taskDue = page.getByTestId('task-due');
+    // План работ (order-start-duration): «Начать с», «Дней на работу», подсказка окончания.
+    this.taskStart = page.getByTestId('task-start');
+    this.taskDuration = page.getByTestId('task-duration');
+    this.plannedEnd = page.getByTestId('task-planned-end');
     this.taskPaid = page.getByTestId('task-paid');
     this.description = page.getByTestId('card-description');
     this.saveBtn = page.getByTestId('task-save');
@@ -125,12 +130,13 @@ export class OrderCardPage {
     await expect(this.modal).toBeVisible();
   }
 
-  async fillHeader(t: { title?: string; client?: string; column?: string; assignee?: string; due?: string; description?: string }) {
+  async fillHeader(t: { title?: string; client?: string; column?: string; assignee?: string; start?: string; days?: number; description?: string }) {
     if (t.title !== undefined) await this.taskTitle.fill(t.title);
     if (t.client !== undefined) await this.chooseCombobox(this.taskClient, t.client);
     if (t.column !== undefined) await this.chooseCombobox(this.taskColumn, t.column);
     if (t.assignee !== undefined) await this.chooseCombobox(this.taskAssignee, t.assignee);
-    if (t.due !== undefined) await this.taskDue.fill(t.due);
+    if (t.start !== undefined) await this.taskStart.fill(t.start);
+    if (t.days !== undefined) await this.taskDuration.fill(String(t.days));
     if (t.description !== undefined) await this.description.fill(t.description);
   }
 

@@ -26,7 +26,9 @@ type Task struct {
 	Title           string
 	AssigneeID      *string
 	AssigneeName    *string
-	DueDate         *string // YYYY-MM-DD
+	StartDate       string  // YYYY-MM-DD — начало работ (order-start-duration)
+	DurationDays    int     // дней на работу, 1..60
+	DueDate         *string // YYYY-MM-DD — плановое окончание (вычисляемая колонка)
 	IsPaid          bool
 	PaidAt          *time.Time
 	Position        string
@@ -70,7 +72,8 @@ type taskRow struct {
 	CarID           string
 	ColumnID        string
 	AssigneeID      *string
-	DueDate         *string
+	StartDate       string // YYYY-MM-DD; due_date (плановое окончание) вычисляет БД
+	DurationDays    int
 	IsPaid          bool
 	Position        string
 	DescriptionHTML string
@@ -84,10 +87,10 @@ func NewTaskRepo(pool *pgxpool.Pool) *TaskRepo { return &TaskRepo{pool: pool} }
 
 // taskWriteReturning — общий список колонок RETURNING для Insert/Update/Move (без JOIN —
 // денормализованные поля добавляет только Get/List).
-const taskWriteReturning = `id, column_id, client_id, title, assignee_id, due_date::text, is_paid, paid_at, position::text, version, created_at, updated_at`
+const taskWriteReturning = `id, column_id, client_id, title, assignee_id, start_date::text, duration_days, due_date::text, is_paid, paid_at, position::text, version, created_at, updated_at`
 
 func scanTaskRow(row pgx.Row, t *Task) error {
-	return row.Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.DueDate,
+	return row.Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.StartDate, &t.DurationDays, &t.DueDate,
 		&t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt)
 }
 
@@ -176,10 +179,10 @@ func (r *TaskRepo) LockTaskAny(ctx context.Context, tx pgx.Tx, id int64) (*Task,
 	var t Task
 	var deleted bool
 	err := tx.QueryRow(ctx, `
-		SELECT id, column_id, client_id, title, assignee_id, due_date::text, is_paid, paid_at, position::text, version, description_html,
+		SELECT id, column_id, client_id, title, assignee_id, start_date::text, duration_days, due_date::text, is_paid, paid_at, position::text, version, description_html,
 		       deleted_at IS NOT NULL
 		FROM tasks WHERE id = $1 FOR UPDATE`, id).
-		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.DescriptionHTML,
+		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.Title, &t.AssigneeID, &t.StartDate, &t.DurationDays, &t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.DescriptionHTML,
 			&deleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, errNotFound
@@ -316,12 +319,12 @@ func (r *TaskRepo) Update(ctx context.Context, tx pgx.Tx, id, version int64, in 
 	var t Task
 	err := scanTaskRow(tx.QueryRow(ctx, `
 		UPDATE tasks SET title = $3, column_id = $4::uuid, assignee_id = $5::uuid,
-		       due_date = $6::date, is_paid = $7,
+		       start_date = $6::date, duration_days = $10, is_paid = $7,
 		       paid_at = CASE WHEN $7 AND NOT is_paid THEN now() WHEN NOT $7 THEN NULL ELSE paid_at END,
 		       position = $8::numeric, description_html = $9, version = version + 1, updated_at = now()
 		WHERE id = $1 AND version = $2
 		RETURNING `+taskWriteReturning,
-		id, version, in.Title, in.ColumnID, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, in.DescriptionHTML), &t)
+		id, version, in.Title, in.ColumnID, in.AssigneeID, in.StartDate, in.IsPaid, in.Position, in.DescriptionHTML, in.DurationDays), &t)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errVersionConflict
 	}
@@ -332,10 +335,10 @@ func (r *TaskRepo) Update(ctx context.Context, tx pgx.Tx, id, version int64, in 
 func (r *TaskRepo) Insert(ctx context.Context, tx pgx.Tx, in taskRow, createdBy string) (*Task, error) {
 	var t Task
 	err := scanTaskRow(tx.QueryRow(ctx, `
-		INSERT INTO tasks (column_id, client_id, car_id, title, assignee_id, due_date, is_paid, paid_at, position, created_by, description_html)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6::date, $7, CASE WHEN $7 THEN now() END, $8::numeric, $9::uuid, $10)
+		INSERT INTO tasks (column_id, client_id, car_id, title, assignee_id, start_date, duration_days, is_paid, paid_at, position, created_by, description_html)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6::date, $11, $7, CASE WHEN $7 THEN now() END, $8::numeric, $9::uuid, $10)
 		RETURNING `+taskWriteReturning,
-		in.ColumnID, in.ClientID, in.CarID, in.Title, in.AssigneeID, in.DueDate, in.IsPaid, in.Position, createdBy, in.DescriptionHTML), &t)
+		in.ColumnID, in.ClientID, in.CarID, in.Title, in.AssigneeID, in.StartDate, in.IsPaid, in.Position, createdBy, in.DescriptionHTML, in.DurationDays), &t)
 	return &t, err
 }
 
@@ -416,7 +419,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
 	}
 	err := r.pool.QueryRow(ctx, `
 		SELECT t.id, t.column_id, t.client_id, cl.company_name, cl.deleted_at IS NOT NULL, t.title, t.assignee_id, u.name,
-		       t.due_date::text, t.is_paid, t.paid_at, t.position::text, t.version, t.created_at, t.updated_at,
+		       t.start_date::text, t.duration_days, t.due_date::text, t.is_paid, t.paid_at, t.position::text, t.version, t.created_at, t.updated_at,
 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id),
 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done'),
 		       (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done' AND s.due_date < COALESCE($2::date, current_date)),
@@ -429,7 +432,7 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
 		`+lastLogJoinSQL+`
 		WHERE t.id = $1 AND t.deleted_at IS NULL`, id, todayArg).
 		Scan(&t.ID, &t.ColumnID, &t.ClientID, &t.ClientName, &t.ClientIsDeleted, &t.Title, &t.AssigneeID, &t.AssigneeName,
-			&t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
+			&t.StartDate, &t.DurationDays, &t.DueDate, &t.IsPaid, &t.PaidAt, &t.Position, &t.Version, &t.CreatedAt, &t.UpdatedAt,
 			&t.SubtasksTotal, &t.SubtasksDone, &t.SubtasksLate, &t.DescriptionHTML, &totalAmount,
 			&llText, &llCut, &llAuthor, &llCreatedAt, &t.ExecutorUnpaidDone)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -443,8 +446,10 @@ func (r *TaskRepo) Get(ctx context.Context, id int64, today string) (*Task, erro
 	return &t, nil
 }
 
-// boardListSQL — design-sql.md §Board List Query, `due_date`/`position` приведены к text
-// (TaskCard.DueDate/Position — *string/string, не time.Time/Amount).
+// boardListSQL — design-sql.md §Board List Query, `start_date`/`due_date`/`position` приведены
+// к text (TaskCard.StartDate/DueDate/Position — string/*string/string, не time.Time/Amount).
+// Фильтр due (overdue/soon) — по плановому окончанию due_date (вычисляемая колонка,
+// order-start-duration).
 //
 // pagination DS-002: фильтры считаются в CTE base по «лёгким» колонкам; там же окна
 // row_number()/count(*) по колонке (column_total) и count(*) OVER () (total — без окна
@@ -500,7 +505,7 @@ WITH base AS (
   LIMIT $8 OFFSET $9
 )
 SELECT t.id, t.column_id, t.client_id, cl.company_name, cl.deleted_at IS NOT NULL, t.title, t.assignee_id, u.name,
-       t.due_date::text, t.is_paid, t.position::text, t.version,
+       t.start_date::text, t.duration_days, t.due_date::text, t.is_paid, t.position::text, t.version,
        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id)                       AS subtasks_total,
        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status = 'done') AS subtasks_done,
        (SELECT count(*) FROM subtasks s WHERE s.task_id = t.id AND s.status <> 'done'
@@ -553,7 +558,7 @@ func (r *TaskRepo) List(ctx context.Context, f TaskFilter) ([]TaskCard, int, err
 		var llCut sql.NullBool
 		var llCreatedAt sql.NullTime
 		if err := rows.Scan(&c.ID, &c.ColumnID, &c.ClientID, &c.ClientName, &c.ClientIsDeleted, &c.Title, &c.AssigneeID, &c.AssigneeName,
-			&c.DueDate, &c.IsPaid, &c.Position, &c.Version, &c.SubtasksTotal, &c.SubtasksDone, &c.SubtasksLate,
+			&c.StartDate, &c.DurationDays, &c.DueDate, &c.IsPaid, &c.Position, &c.Version, &c.SubtasksTotal, &c.SubtasksDone, &c.SubtasksLate,
 			&totalAmount, &llText, &llCut, &llAuthor, &llCreatedAt, &c.ColumnTotal, &total, &c.ExecutorUnpaidDone); err != nil {
 			return nil, 0, err
 		}

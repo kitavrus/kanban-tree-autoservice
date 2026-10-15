@@ -488,9 +488,12 @@ func dueDate(n *int) *string {
 	if n == nil {
 		return nil
 	}
-	d := time.Now().AddDate(0, 0, *n).Format("2006-01-02")
+	d := dayFromToday(*n)
 	return &d
 }
+
+// dayFromToday — YYYY-MM-DD через n дней от сегодня (начало работ заказа, срок услуги).
+func dayFromToday(n int) string { return time.Now().AddDate(0, 0, n).Format("2006-01-02") }
 
 func userID(executors []executorRow, idx int, adminID string) string {
 	if idx >= 0 {
@@ -514,10 +517,10 @@ func (s *seeder) seedTasks(res *Result, columns map[string]columnRow, clients []
 		// Заказ = ровно один автомобиль клиента (tasks.car_id, one-car-order).
 		var taskID int64
 		if err := s.tx.QueryRow(s.ctx,
-			`INSERT INTO tasks (column_id, client_id, car_id, title, description_html, assignee_id, due_date, is_paid, paid_at, position, created_by)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, CASE WHEN $8 THEN now() END, $9::numeric, $10) RETURNING id`,
-			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dueDate(t.dueOffset), t.paid,
-			fmt.Sprintf("%d", (i+1)*1024), s.adminID).
+			`INSERT INTO tasks (column_id, client_id, car_id, title, description_html, assignee_id, start_date, duration_days, is_paid, paid_at, position, created_by)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7::date, $11, $8, CASE WHEN $8 THEN now() END, $9::numeric, $10) RETURNING id`,
+			col.ID, clients[t.clientIdx].ID, equip[t.car], t.title, t.descHTML, assigneeID, dayFromToday(t.startOffset), t.paid,
+			fmt.Sprintf("%d", (i+1)*1024), s.adminID, t.days).
 			Scan(&taskID); err != nil {
 			return err
 		}

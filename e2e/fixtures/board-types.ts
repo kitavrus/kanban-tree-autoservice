@@ -41,6 +41,10 @@ export type TaskCard = {
   title: string;
   assignee_id: string | null;
   assignee_name: string | null;
+  // order-start-duration: план работ — начало (YYYY-MM-DD) и дней на работу (1..60);
+  // due_date — плановое окончание start_date + duration_days − 1 (вычисляет сервер).
+  start_date: string;
+  duration_days: number;
   due_date: string | null;
   is_paid: boolean;
   position: string;
@@ -63,12 +67,16 @@ export type Task = TaskCard & {
   description_html: string;
 };
 
-/** Шапка заказа — общая часть POST и PUT /api/v1/tasks (board.TaskHeader). */
+/** Шапка заказа — общая часть POST и PUT /api/v1/tasks (board.TaskHeader). order-start-duration:
+ *  start_date/duration_days обязательны на сервере; adminApi.createTask/updateTask без них
+ *  подставляют план (новый заказ — сегодня, 1 день; правка — текущий план заказа). due_date во
+ *  входе не принимается (400). */
 export type TaskHeader = {
   title: string;
   column_id: string;
   assignee_id?: string | null;
-  due_date?: string | null;
+  start_date?: string | null;
+  duration_days?: number | null;
   is_paid?: boolean | null;
   description?: string | null;
 };

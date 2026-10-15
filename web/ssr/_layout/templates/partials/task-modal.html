@@ -77,13 +77,31 @@
               <option value="">Не назначен</option>
             </select>
           </div>
+          <!-- План работ (order-start-duration): «Начать с» + «Дней на работу» (1–60); срок заказа
+               на доске — плановое окончание = начало + дни − 1, считается сервером (здесь —
+               подсказка task-planned-end). Новый заказ: начало по умолчанию сегодня (из календаря —
+               выбранный день), 1 день. -->
           <div class="col-md-4">
-            <label class="form-label" for="task-due">Срок</label>
-            <input type="date" class="form-control" id="task-due" data-testid="task-due">
+            <div class="row g-2 align-items-end">
+              <div class="col-7">
+                <label class="form-label" for="task-start">Начать с *</label>
+                <input type="date" class="form-control" id="task-start" data-testid="task-start" required>
+              </div>
+              <div class="col-5">
+                <label class="form-label" for="task-duration">Дней на работу *</label>
+                <input type="number" class="form-control" id="task-duration" data-testid="task-duration"
+                       min="1" max="60" step="1" inputmode="numeric" required>
+              </div>
+              <div class="col-12 mt-0">
+                <div class="text-danger small d-none" data-error-for="start_date" data-testid="task-start-error"></div>
+                <div class="text-danger small d-none" data-error-for="duration_days" data-testid="task-duration-error"></div>
+                <div class="small text-body-secondary" id="task-planned-end" data-testid="task-planned-end" aria-live="polite"></div>
+              </div>
+            </div>
           </div>
           <!-- Новый заказ: загрузка сервиса (GET /api/v1/calendar, js/task-card.js «Загрузка
-               сервиса») — сколько машин в ремонте сегодня и предупреждение, если до срока
-               есть дни без свободных мест. Только предупреждение, сохранение не блокирует. -->
+               сервиса») — сколько машин в ремонте в день начала и предупреждение, если в плановые
+               дни нет свободных мест. Только предупреждение, сохранение не блокирует. -->
           <div class="col-12 d-none" id="task-capacity-wrap" data-testid="task-capacity-wrap">
             <div class="small text-body-secondary" id="task-capacity" data-testid="task-capacity" aria-live="polite"></div>
             <div class="alert alert-warning py-2 mt-2 mb-0 d-none" id="task-capacity-warning" data-testid="task-capacity-warning" role="alert"></div>

@@ -1,0 +1,3 @@
+{"type": "stage_start", "stage": "light-exec", "ts": "2026-10-15T15:59:16+05:00"}
+{"type": "stage_end", "stage": "light-exec", "status": "ok", "ts": "2026-10-15T16:29:06+05:00"}
+{"type": "stage_start", "stage": "light-judge", "ts": "2026-10-15T16:29:06+05:00"}

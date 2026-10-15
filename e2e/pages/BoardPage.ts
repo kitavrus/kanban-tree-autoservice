@@ -25,7 +25,8 @@ export class BoardPage {
   readonly taskClient: Locator;
   readonly taskColumn: Locator;
   readonly taskAssignee: Locator;
-  readonly taskDue: Locator;
+  readonly taskStart: Locator;
+  readonly taskDuration: Locator;
   readonly taskPaid: Locator;
   readonly taskSave: Locator;
   readonly taskDelete: Locator;
@@ -68,7 +69,8 @@ export class BoardPage {
     this.taskClient = page.getByTestId('task-client');
     this.taskColumn = page.getByTestId('task-column');
     this.taskAssignee = page.getByTestId('task-assignee');
-    this.taskDue = page.getByTestId('task-due');
+    this.taskStart = page.getByTestId('task-start');
+    this.taskDuration = page.getByTestId('task-duration');
     this.taskPaid = page.getByTestId('task-paid');
     this.taskSave = page.getByTestId('task-save');
     this.taskDelete = page.getByTestId('task-delete');
@@ -260,12 +262,13 @@ export class BoardPage {
     await expect(this.columnForm).toBeVisible();
   }
 
-  async fillTask(t: { title?: string; client?: string; column?: string; assignee?: string; due?: string }) {
+  async fillTask(t: { title?: string; client?: string; column?: string; assignee?: string; start?: string; days?: number }) {
     if (t.title !== undefined) await this.taskTitle.fill(t.title);
     if (t.client !== undefined) await this.chooseCombobox(this.taskClient, t.client);
     if (t.column !== undefined) await this.chooseCombobox(this.taskColumn, t.column);
     if (t.assignee !== undefined) await this.chooseCombobox(this.taskAssignee, t.assignee);
-    if (t.due !== undefined) await this.taskDue.fill(t.due);
+    if (t.start !== undefined) await this.taskStart.fill(t.start);
+    if (t.days !== undefined) await this.taskDuration.fill(String(t.days));
   }
 
   async fillColumn(c: { name?: string; color?: string; position?: number; isFinal?: boolean; consumes?: boolean }) {

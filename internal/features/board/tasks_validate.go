@@ -12,11 +12,24 @@ import (
 	"github.com/kitavrus/kanban-tree/pkg/sqlutil"
 )
 
-// msgNotFound/msgInvalidDate — коды полей заказов; msgRequired/msgTooLong/msgInvalid/
-// msgInvalidText — общие (columns_validate.go).
+// msgNotFound/msgInvalidDate/msgOutOfRange — коды полей заказов; msgRequired/msgTooLong/
+// msgInvalid/msgInvalidText — общие (columns_validate.go).
 const (
 	msgNotFound    = "not_found"
 	msgInvalidDate = "invalid_date"
+	msgOutOfRange  = "out_of_range"
+)
+
+// Границы плана работ заказа (order-start-duration): дней на работу — те же, что CHECK
+// tasks.duration_days; дата начала — разумное окно (опечатка в годе — ошибка поля, не 500 БД).
+const (
+	taskDurationMin = 1
+	taskDurationMax = 60
+)
+
+var (
+	taskStartMin = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	taskStartMax = time.Date(2099, 12, 31, 0, 0, 0, 0, time.UTC)
 )
 
 // taskTitleMax — design-errors.md §Validation Fields (`title`, trim 1..200).
@@ -26,12 +39,12 @@ const taskTitleMax = 200
 // символов; NULL — PUT «не менять», POST «пусто» — длина не проверяется).
 const taskDescriptionMax = 10000
 
-// dateLayout — YYYY-MM-DD (design-errors.md §Validation Fields `due_date`).
+// dateLayout — YYYY-MM-DD (design-errors.md §Validation Fields `due_date`; start_date заказа).
 const dateLayout = "2006-01-02"
 
-// normalize — trim текстовых полей; nil-указатели (assignee_id/due_date) остаются nil,
+// normalize — trim текстовых полей; nil-указатели (assignee_id/start_date) остаются nil,
 // пустая строка внутри указателя не трактуется как отсутствие значения здесь — это делает
-// nilIfEmpty() в сервисном слое перед записью в БД.
+// nilIfEmpty() в сервисном слое перед записью в БД (start_date пустой — ошибка required).
 func (in TaskHeader) normalize() TaskHeader {
 	in.Title = strings.TrimSpace(in.Title)
 	in.ColumnID = strings.TrimSpace(in.ColumnID)
@@ -39,9 +52,9 @@ func (in TaskHeader) normalize() TaskHeader {
 		v := strings.TrimSpace(*in.AssigneeID)
 		in.AssigneeID = &v
 	}
-	if in.DueDate != nil {
-		v := strings.TrimSpace(*in.DueDate)
-		in.DueDate = &v
+	if in.StartDate != nil {
+		v := strings.TrimSpace(*in.StartDate)
+		in.StartDate = &v
 	}
 	return in
 }
@@ -78,10 +91,25 @@ func (in TaskHeader) validateWith(titleRequired bool) []errorspkg.Field {
 		add("assignee_id", msgInvalid)
 	}
 
-	if in.DueDate != nil && *in.DueDate != "" {
-		if _, err := time.Parse(dateLayout, *in.DueDate); err != nil {
-			add("due_date", msgInvalidDate)
+	// План работ (order-start-duration): начало и дни обязательны; плановое окончание
+	// (due_date) вычисляет БД.
+	switch {
+	case in.StartDate == nil || *in.StartDate == "":
+		add("start_date", msgRequired)
+	default:
+		d, err := time.Parse(dateLayout, *in.StartDate)
+		switch {
+		case err != nil:
+			add("start_date", msgInvalidDate)
+		case d.Before(taskStartMin) || d.After(taskStartMax):
+			add("start_date", msgOutOfRange)
 		}
+	}
+	switch {
+	case in.DurationDays == nil:
+		add("duration_days", msgRequired)
+	case *in.DurationDays < taskDurationMin || *in.DurationDays > taskDurationMax:
+		add("duration_days", msgOutOfRange)
 	}
 
 	if in.Description != nil && utf8.RuneCountInString(*in.Description) > taskDescriptionMax {

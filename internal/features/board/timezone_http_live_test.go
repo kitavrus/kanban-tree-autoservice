@@ -93,7 +93,8 @@ func (s *PrintLiveSuite) TestTS041_DueFilter_TodayInViewerTimezone() {
 
 	eastToday := time.Now().In(time.FixedZone("", 14*3600))
 	due := eastToday.AddDate(0, 0, -1).Format(time.DateOnly)
-	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET due_date = $2::date WHERE id = $1`, taskID, due)
+	// order-start-duration: срок заказа — плановое окончание; однодневный план с началом due.
+	_, err := s.Pool.Exec(ctx, `UPDATE tasks SET start_date = $2::date, duration_days = 1 WHERE id = $1`, taskID, due)
 	s.Require().NoError(err)
 	// Услуга с тем же сроком — для счётчика subtasks_late.
 	svc := s.newService("Услуга-Пояс-Срок", "100")
@@ -201,7 +202,7 @@ func (s *PrintLiveSuite) TestTS041_CardAndMutations_SubtasksLate_TodayInViewerTi
 	putTask := func(b *testutil.Browser, title string) int {
 		st, raw := b.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", taskID), map[string]any{
 			"title": title, "column_id": col,
-			"assignee_id": nil, "due_date": nil, "is_paid": false, "version": getTask(b).Version,
+			"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": false, "version": getTask(b).Version,
 		})
 		s.Require().Equal(http.StatusOK, st, string(raw))
 		var m struct {

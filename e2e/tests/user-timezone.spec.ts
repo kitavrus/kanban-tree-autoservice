@@ -307,7 +307,9 @@ test.describe('TZ: пояс применяется во всей системе'
     const moscowUser = await makeUser({ login: uniq('tz011-moscow'), name: uniq('Админ Москва TZ-011'), role: 'admin', timezone: TZ_MOSCOW });
     const client = await adminApi.createClient({ company_name: uniq('TZ-011 клиент'), phones: [{ phone: '9990000301', note: '' }] });
     const column = columnByName((await adminApi.listColumns()).items, 'Приёмка');
-    const mk = (label: string, due: string) => adminApi.createTask({ title: uniq(`TZ-011 ${label}`), client_id: client.id, column_id: column.id, due_date: due });
+    // order-start-duration: срок на доске — плановое окончание; однодневный план с началом в день срока.
+    const mk = (label: string, due: string) =>
+      adminApi.createTask({ title: uniq(`TZ-011 ${label}`), client_id: client.id, column_id: column.id, start_date: due, duration_days: 1 });
     // «Сейчас» = момент TS-F5: в Алматы уже 7 октября, в Москве и в браузере (Нью-Йорк) — 6-е.
     const due6 = await mk('срок 6 октября', TZ_FIXTURE.moscow.today);
     const due8 = await mk('срок 8 октября', '2026-10-08');

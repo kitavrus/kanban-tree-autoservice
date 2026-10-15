@@ -654,7 +654,7 @@ func (s *OrderCardLiveSuite) TestTS007_MutationsOfDeletedTask() {
 		body               map[string]any
 		code               string
 	}{
-		{"правка заказа", http.MethodPut, taskPath(taskID, ""), map[string]any{"title": "Новое название", "column_id": newCol, "version": json.Number(version)}, "TASK_NOT_FOUND"},
+		{"правка заказа", http.MethodPut, taskPath(taskID, ""), withPlan(map[string]any{"title": "Новое название", "column_id": newCol, "version": json.Number(version)}), "TASK_NOT_FOUND"},
 		{"перенос заказа", http.MethodPost, taskPath(taskID, "/move"), map[string]any{"column_id": wip}, "TASK_NOT_FOUND"},
 		{"добавление услуги", http.MethodPost, taskPath(taskID, "/subtasks"), map[string]any{"service_id": svc}, "TASK_NOT_FOUND"},
 		{"правка услуги", http.MethodPut, "/api/v1/subtasks/" + subtaskID, map[string]any{"status": "in_progress"}, "SUBTASK_NOT_FOUND"},

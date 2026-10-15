@@ -74,10 +74,10 @@ func (s *PrintLiveSuite) newTask(clientID, columnID, description string) (int64,
 
 // newTaskWithPlate — заказ с новым автомобилем клиента с госномером plate (one-car-order).
 func (s *PrintLiveSuite) newTaskWithPlate(clientID, columnID, description, plate string) (int64, int64) {
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", withPlan(map[string]any{
 		"title": "Заказ печати", "client_id": clientID, "column_id": columnID, "description": description,
 		"plate_number": plate, "new_equipment": map[string]any{},
-	})
+	}))
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var m printTaskCreated
 	s.Require().NoError(json.Unmarshal(raw, &m), string(raw))
@@ -87,7 +87,7 @@ func (s *PrintLiveSuite) newTaskWithPlate(clientID, columnID, description, plate
 func (s *PrintLiveSuite) markPaid(taskID, clientID, columnID string, version int64) {
 	st, raw := s.admin.Do(http.MethodPut, "/api/v1/tasks/"+taskID, map[string]any{
 		"title": "Заказ печати", "column_id": columnID,
-		"assignee_id": nil, "due_date": nil, "is_paid": true, "version": version,
+		"assignee_id": nil, "start_date": testToday(), "duration_days": 1, "is_paid": true, "version": version,
 	})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 }

@@ -436,7 +436,7 @@
       (totalAmount > 0 ? '<div class="small task-card-total" data-testid="task-card-total">Итог: ' + fmtMoneyCents(Math.round(totalAmount * 100)) + '</div>' : '') +
       (t.last_log ? '<div class="small text-body-secondary task-card-last-log" data-testid="task-card-last-log">💬 ' + esc(t.last_log.text) + ' — ' + esc(t.last_log.author_name) + '</div>' : '') +
       '  <div class="task-card-foot">' +
-      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '" data-testid="task-card-due" data-due="' + esc(ds || 'ok') + '">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
+      (t.due_date ? '<span class="due due-' + esc(ds || 'ok') + '" data-testid="task-card-due" data-due="' + esc(ds || 'ok') + '" title="Плановое окончание">📅 ' + fmtDate(t.due_date) + '</span>' : '<span></span>') +
       (t.assignee_name ? '<span class="avatar" title="' + esc(t.assignee_name) + '">' + esc(initials(t.assignee_name)) + '</span>' : '') +
       '  </div>' +
       '</div>';

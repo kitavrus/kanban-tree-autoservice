@@ -15,7 +15,7 @@ import (
 
 func carReq(mut func(*TaskCreateRequest)) TaskCreateRequest {
 	in := TaskCreateRequest{
-		TaskHeader:   TaskHeader{ColumnID: validUUID},
+		TaskHeader:   withPlan(TaskHeader{ColumnID: validUUID}),
 		ClientID:     validUUID,
 		PlateNumber:  " о718мр  199 ",
 		NewEquipment: &TaskNewEquipment{},

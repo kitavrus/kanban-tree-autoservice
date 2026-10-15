@@ -126,7 +126,7 @@ func (s *TaskService) Create(ctx context.Context, a Actor, in TaskCreateRequest)
 
 		created, err := s.repo.Insert(ctx, tx, taskRow{
 			Title: title, ClientID: clientID, CarID: carID, ColumnID: in.ColumnID,
-			AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
+			AssigneeID: assigneeID, StartDate: *in.StartDate, DurationDays: *in.DurationDays,
 			IsPaid: in.IsPaid != nil && *in.IsPaid, Position: pos, DescriptionHTML: descHTML,
 		}, a.ID)
 		if err != nil {
@@ -276,7 +276,7 @@ func (s *TaskService) Update(ctx context.Context, a Actor, idStr string, in Task
 
 		if _, err := s.repo.Update(ctx, tx, id, *in.Version, taskRow{
 			Title: in.Title, ColumnID: in.ColumnID,
-			AssigneeID: assigneeID, DueDate: nilIfEmpty(in.DueDate),
+			AssigneeID: assigneeID, StartDate: *in.StartDate, DurationDays: *in.DurationDays,
 			IsPaid: in.IsPaid != nil && *in.IsPaid, Position: pos, DescriptionHTML: descHTML,
 		}); err != nil {
 			if errors.Is(err, errVersionConflict) {
@@ -627,6 +627,7 @@ func toTaskResponse(t Task) TaskResponse {
 			ID: t.ID, ColumnID: t.ColumnID, ClientID: t.ClientID, ClientName: t.ClientName,
 			ClientIsDeleted: t.ClientIsDeleted,
 			Title:           t.Title, AssigneeID: t.AssigneeID, AssigneeName: t.AssigneeName,
+			StartDate: t.StartDate, DurationDays: t.DurationDays,
 			DueDate: t.DueDate, IsPaid: t.IsPaid, Position: t.Position, Version: t.Version,
 			SubtasksTotal: t.SubtasksTotal, SubtasksDone: t.SubtasksDone, SubtasksLate: t.SubtasksLate,
 			TotalAmount: t.TotalAmount, LastLog: t.LastLog,

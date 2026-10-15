@@ -56,18 +56,21 @@ type demoMedia struct {
 	shake, steam bool
 }
 
-// demoTaskItem — заказ доски.
+// demoTaskItem — заказ доски. План работ (order-start-duration): startOffset — дни от сегодня
+// до начала (отрицательные — уже начат, положительные — машина приедет позже), days — дней на
+// работу (плановое окончание = начало + days − 1).
 type demoTaskItem struct {
-	column    string
-	clientIdx int
-	title     string
-	assignee  int
-	dueOffset *int
-	paid      bool
-	descHTML  string
-	car       string // ключ автомобиля заказа (demoEquipment.key) — ровно один на заказ
-	subtasks  []demoSubtaskItem
-	media     []demoMedia
+	column      string
+	clientIdx   int
+	title       string
+	assignee    int
+	startOffset int
+	days        int
+	paid        bool
+	descHTML    string
+	car         string // ключ автомобиля заказа (demoEquipment.key) — ровно один на заказ
+	subtasks    []demoSubtaskItem
+	media       []demoMedia
 }
 
 func offset(n int) *int { return &n }
@@ -86,7 +89,7 @@ func intakePhoto(hoursAgo int) demoMedia {
 var demoTasks = []demoTaskItem{
 	// --- Приёмка ---
 	{
-		column: "Приёмка", clientIdx: 9, title: "Mazda CX-5 Е019ТТ 178: ТО-120 000 (масло, фильтр, свечи, дроссель)", assignee: exMotor, dueOffset: offset(3),
+		column: "Приёмка", clientIdx: 9, title: "Mazda CX-5 Е019ТТ 178: ТО-120 000 (масло, фильтр, свечи, дроссель)", assignee: exMotor, startOffset: 1, days: 3,
 		car: "cx5",
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stNew, assignee: exMotor, goodsOverride: []protoGood{g("OIL-5W30-208", "4.2"), g("PE01-14-302A", "1")}, logs: []demoLog{
@@ -98,7 +101,7 @@ var demoTasks = []demoTaskItem{
 		media: []demoMedia{intakePhoto(6)},
 	},
 	{
-		column: "Приёмка", clientIdx: 6, title: "ГАЗель Next В734СА 750: тяжело заводится на холодную, белый дым", assignee: exNone, dueOffset: offset(2),
+		column: "Приёмка", clientIdx: 6, title: "ГАЗель Next В734СА 750: тяжело заводится на холодную, белый дым", assignee: exNone, startOffset: 0, days: 3,
 		descHTML: "<p>Пригнали на буксире. Заводится с 5–6 попытки, первые минуты белый дым и вибрация, тяга слабая.</p><p>Подозрение: свечи накала / форсунки / компрессия.</p>",
 		car:      "gazelle",
 		subtasks: []demoSubtaskItem{
@@ -114,7 +117,7 @@ var demoTasks = []demoTaskItem{
 	},
 	// --- Диагностика ---
 	{
-		column: "Диагностика", clientIdx: 1, title: "Hyundai Solaris О718МР 199: троит на холодную, Check Engine P0300", assignee: exDiag, dueOffset: offset(1),
+		column: "Диагностика", clientIdx: 1, title: "Hyundai Solaris О718МР 199: троит на холодную, Check Engine P0300", assignee: exDiag, startOffset: -1, days: 3,
 		descHTML: "<p>Со слов клиента: первые 3–5 минут после холодного пуска двигатель троит, на прогретом — ровно. Горит Check Engine.</p>" +
 			"<ul><li>Пробег 187 000 км, свечи меняли ~40 000 км назад</li><li>Ошибки (сканер на заправке): P0300, P0302</li><li>Проверить свечи, катушки, компрессию 2-го цилиндра</li></ul>",
 		car: "solaris",
@@ -133,7 +136,7 @@ var demoTasks = []demoTaskItem{
 	},
 	// --- Согласование ---
 	{
-		column: "Согласование", clientIdx: 2, title: "VW Polo К902ТН 750: стук в двигателе, расход масла 1 л на 1000 км", assignee: exMotor,
+		column: "Согласование", clientIdx: 2, title: "VW Polo К902ТН 750: стук в двигателе, расход масла 1 л на 1000 км", assignee: exMotor, startOffset: -2, days: 5,
 		descHTML: "<p>Стук на прогретом двигателе под нагрузкой, сизый дым при перегазовке, расход масла ~1 л/1000 км.</p>" +
 			"<p><strong>Дефектовка:</strong> компрессия 1–2–3–4: 12,5 / 12,0 / 8,5 / 12,0 бар; эндоскопия — задиры в 3-м цилиндре. Рекомендован капремонт.</p>",
 		car: "polo",
@@ -159,7 +162,7 @@ var demoTasks = []demoTaskItem{
 		},
 	},
 	{
-		column: "Согласование", clientIdx: 7, title: "Fiat Ducato У603МН 190: течь масла, замена ремня ГРМ по регламенту", assignee: exMotor,
+		column: "Согласование", clientIdx: 7, title: "Fiat Ducato У603МН 190: течь масла, замена ремня ГРМ по регламенту", assignee: exMotor, startOffset: 3, days: 2,
 		descHTML: "<p>Пробег 402 600 км, ремень ГРМ меняли 120 000 км назад — пора по регламенту. Течь масла из-под шкива коленвала, пятно на стоянке.</p>",
 		car:      "ducato",
 		subtasks: []demoSubtaskItem{
@@ -178,7 +181,7 @@ var demoTasks = []demoTaskItem{
 	},
 	// --- В ремонте ---
 	{
-		column: "В ремонте", clientIdx: 5, title: "Skoda Octavia Т389ХК 799 (такси): плавают обороты ХХ + ремень ГРМ по пробегу", assignee: exMotor, dueOffset: offset(0),
+		column: "В ремонте", clientIdx: 5, title: "Skoda Octavia Т389ХК 799 (такси): плавают обороты ХХ + ремень ГРМ по пробегу", assignee: exMotor, startOffset: -2, days: 3,
 		car: "taxi-octavia",
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stDone, assignee: exDiag, payout: "700", payoutPaid: true, logs: []demoLog{
@@ -197,7 +200,7 @@ var demoTasks = []demoTaskItem{
 		},
 	},
 	{
-		column: "В ремонте", clientIdx: 0, title: "Lada Vesta Е245КХ 797: перегрев, уходит антифриз — пробита прокладка ГБЦ", assignee: exMotor, dueOffset: offset(-1),
+		column: "В ремонте", clientIdx: 0, title: "Lada Vesta Е245КХ 797: перегрев, уходит антифриз — пробита прокладка ГБЦ", assignee: exMotor, startOffset: -3, days: 3,
 		descHTML: "<p>Перегрев в пробке, стрелка в красной зоне, пар из-под капота. Антифриз уходит ~0,5 л в день, внешних течей нет.</p>" +
 			"<ul><li>Тест CO₂ — положительный, пузыри в расширительном бачке</li><li>ГБЦ — в мехцех на опрессовку и проверку плоскости</li></ul>",
 		car: "vesta",
@@ -220,7 +223,7 @@ var demoTasks = []demoTaskItem{
 		},
 	},
 	{
-		column: "В ремонте", clientIdx: 8, title: "Toyota LC Prado С808ВО 77: ТО-165 000, топливный фильтр, рывки на разгоне", assignee: exMotor, dueOffset: offset(1),
+		column: "В ремонте", clientIdx: 8, title: "Toyota LC Prado С808ВО 77: ТО-165 000, топливный фильтр, рывки на разгоне", assignee: exMotor, startOffset: -1, days: 3,
 		car: "prado",
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stDone, assignee: exMotor, payout: "900", goodsOverride: []protoGood{g("OIL-5W30-208", "7.5"), g("04152-YZZA6", "1")}, logs: []demoLog{
@@ -234,7 +237,7 @@ var demoTasks = []demoTaskItem{
 		media: []demoMedia{intakePhoto(26)},
 	},
 	{
-		column: "В ремонте", clientIdx: 2, title: "Двигатель ВАЗ-21126 (снятый): капремонт с заменой колец и вкладышей", assignee: exMotor, dueOffset: offset(7),
+		column: "В ремонте", clientIdx: 2, title: "Двигатель ВАЗ-21126 (снятый): капремонт с заменой колец и вкладышей", assignee: exMotor, startOffset: -3, days: 11,
 		descHTML: "<p>Привезён снятым с Lada Priora. Со слов клиента: «масложор», стук, после обрыва ремня год назад меняли клапаны.</p>" +
 			"<p>Дефектовка: кольца закоксованы, на 1-м цилиндре лёгкие задиры — хон, кольца STD, вкладыши, колпачки, полный комплект прокладок.</p>",
 		car: "vaz21126",
@@ -252,7 +255,7 @@ var demoTasks = []demoTaskItem{
 	},
 	// --- Ждёт запчасти ---
 	{
-		column: "Ждёт запчасти", clientIdx: 3, title: "Toyota Camry М555АУ 177: эмульсия в масле, белый выхлоп — замена прокладки ГБЦ", assignee: exMotor, dueOffset: offset(5),
+		column: "Ждёт запчасти", clientIdx: 3, title: "Toyota Camry М555АУ 177: эмульсия в масле, белый выхлоп — замена прокладки ГБЦ", assignee: exMotor, startOffset: -2, days: 8,
 		descHTML: "<p>После перегрева на трассе — белый густой выхлоп, антифриз уходит, на щупе эмульсия.</p><p>Прокладка ГБЦ 11115-36020 под заказ, поставка через 3 дня. Автомобиль на стоянке сервиса.</p>",
 		car:      "camry",
 		subtasks: []demoSubtaskItem{
@@ -272,7 +275,7 @@ var demoTasks = []demoTaskItem{
 		},
 	},
 	{
-		column: "Ждёт запчасти", clientIdx: 5, title: "Hyundai Solaris Т110ХК 799 (такси): гремит цепь ГРМ при пуске, P0016", assignee: exMotor, dueOffset: offset(3),
+		column: "Ждёт запчасти", clientIdx: 5, title: "Hyundai Solaris Т110ХК 799 (такси): гремит цепь ГРМ при пуске, P0016", assignee: exMotor, startOffset: -1, days: 5,
 		car: "taxi-solaris",
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stDone, assignee: exDiag, payout: "700", payoutPaid: true, logs: []demoLog{
@@ -290,7 +293,7 @@ var demoTasks = []demoTaskItem{
 	},
 	// --- Готов к выдаче ---
 	{
-		column: "Готов к выдаче", clientIdx: 4, title: "Nissan Qashqai Н481ОР 50: плавают обороты, ошибка P0101 (ДМРВ)", assignee: exElectric, dueOffset: offset(0),
+		column: "Готов к выдаче", clientIdx: 4, title: "Nissan Qashqai Н481ОР 50: плавают обороты, ошибка P0101 (ДМРВ)", assignee: exElectric, startOffset: -2, days: 3,
 		car: "qashqai",
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stDone, assignee: exElectric, payout: "800", payoutPaid: true, logs: []demoLog{
@@ -308,7 +311,7 @@ var demoTasks = []demoTaskItem{
 		},
 	},
 	{
-		column: "Готов к выдаче", clientIdx: 8, title: "Mitsubishi Outlander Х350ЕМ 97: неровный ХХ — промывка форсунок, свечи", assignee: exElectric, dueOffset: offset(-1),
+		column: "Готов к выдаче", clientIdx: 8, title: "Mitsubishi Outlander Х350ЕМ 97: неровный ХХ — промывка форсунок, свечи", assignee: exElectric, startOffset: -3, days: 3,
 		car: "outlander",
 		subtasks: []demoSubtaskItem{
 			{service: "diag", status: stDone, assignee: exElectric, logs: []demoLog{
@@ -323,7 +326,7 @@ var demoTasks = []demoTaskItem{
 	},
 	// --- Выдан ---
 	{
-		column: "Выдан", clientIdx: 5, title: "Kia Rio Т245ХК 799 (такси): ТО-285 000, пропуски зажигания 3-го цилиндра", assignee: exElectric, dueOffset: offset(-2), paid: true,
+		column: "Выдан", clientIdx: 5, title: "Kia Rio Т245ХК 799 (такси): ТО-285 000, пропуски зажигания 3-го цилиндра", assignee: exElectric, startOffset: -4, days: 3, paid: true,
 		car: "taxi-rio",
 		subtasks: []demoSubtaskItem{
 			{service: "oil", status: stDone, assignee: exMotor, payout: "700", payoutPaid: true, goodsOverride: []protoGood{g("OIL-5W30-208", "3.6"), g("26300-35505", "1")}},
@@ -336,7 +339,7 @@ var demoTasks = []demoTaskItem{
 		media: []demoMedia{intakePhoto(60)},
 	},
 	{
-		column: "Выдан", clientIdx: 6, title: "Lada Largus В946СА 750: замена ремня ГРМ с помпой, антифриз", assignee: exMotor, dueOffset: offset(-4), paid: true,
+		column: "Выдан", clientIdx: 6, title: "Lada Largus В946СА 750: замена ремня ГРМ с помпой, антифриз", assignee: exMotor, startOffset: -6, days: 3, paid: true,
 		car: "largus",
 		subtasks: []demoSubtaskItem{
 			{service: "timingpump", status: stDone, assignee: exMotor, payout: "3500", payoutPaid: true, logs: []demoLog{

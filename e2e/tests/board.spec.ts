@@ -40,7 +40,9 @@ test.describe('BD: карточка и цвет колонки', () => {
       client_id: client.id,
       column_id: newCol.id,
       assignee_id: assignee.id,
-      due_date: '2030-01-15',
+      // срок на карточке — плановое окончание: 13.01 + 3 дня − 1 = 15.01.
+      start_date: '2030-01-13',
+      duration_days: 3,
       is_paid: true,
     });
 
@@ -381,7 +383,8 @@ test.describe('BD: конфликт версии', () => {
       title: task.title,
       column_id: task.column_id,
       assignee_id: task.assignee_id,
-      due_date: task.due_date,
+      start_date: task.start_date,
+      duration_days: task.duration_days,
       is_paid: task.is_paid,
       version: task.version,
     });
@@ -430,7 +433,10 @@ test.describe('BD: оплата — только администратор', ()
     // Актуальная версия: с устаревшей сервер сначала отвечает 409 TASK_VERSION_CONFLICT (AC-010).
     const current = await adminApi.getTask(task.id);
     const res = await page.request.put(`/api/v1/tasks/${task.id}`, {
-      data: { title: current.title, column_id: current.column_id, is_paid: false, version: current.version },
+      data: {
+        title: current.title, column_id: current.column_id, is_paid: false, version: current.version,
+        start_date: current.start_date, duration_days: current.duration_days,
+      },
       headers: { 'X-Csrf-Token': await csrfToken(page) },
       failOnStatusCode: false,
     });

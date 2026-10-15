@@ -77,22 +77,23 @@ func FuzzParseTaskFilter(f *testing.F) {
 
 // FuzzTaskInputValidate — design-tests.md §Fuzz Targets: normalize()+validate() не должны
 // паниковать; поля ошибок — подмножество {title, client_id, column_id, assignee_id,
-// due_date} (version — только у TaskUpdateRequest, здесь не участвует).
+// start_date, duration_days, plate_number, equipment_id} (version — только у
+// TaskUpdateRequest, здесь не участвует).
 func FuzzTaskInputValidate(f *testing.F) {
-	f.Add("Заказ", validUUID, validUUID, "", "", "А123ВС 77", validUUID, false)
-	f.Add("", "", "", "\x00", "2026-02-30", "", "", true)
-	f.Add(strings.Repeat("я", 250), "not-a-uuid", "not-a-uuid", "bad", "bad-date", "А*1", "nope", false)
-	f.Add(strings.Repeat("a", 201), validUUID, validUUID, validUUID, "2026-01-15", strings.Repeat("Б", 30), "\x00", true)
+	f.Add("Заказ", validUUID, validUUID, "", "2026-10-15", 1, "А123ВС 77", validUUID, false)
+	f.Add("", "", "", "\x00", "2026-02-30", 0, "", "", true)
+	f.Add(strings.Repeat("я", 250), "not-a-uuid", "not-a-uuid", "bad", "bad-date", -5, "А*1", "nope", false)
+	f.Add(strings.Repeat("a", 201), validUUID, validUUID, validUUID, "0000-01-15", 61, strings.Repeat("Б", 30), "\x00", true)
 
-	allowed := map[string]bool{"title": true, "client_id": true, "column_id": true, "assignee_id": true, "due_date": true,
-		"plate_number": true, "equipment_id": true}
+	allowed := map[string]bool{"title": true, "client_id": true, "column_id": true, "assignee_id": true,
+		"start_date": true, "duration_days": true, "plate_number": true, "equipment_id": true}
 
 	// one-car-order: клиент и автомобиль — только в TaskCreateRequest (prepare), не в шапке.
-	f.Fuzz(func(t *testing.T, title, clientID, columnID, assigneeID, dueDate, plate, equipmentID string, isPaid bool) {
+	f.Fuzz(func(t *testing.T, title, clientID, columnID, assigneeID, startDate string, durationDays int, plate, equipmentID string, isPaid bool) {
 		in := TaskCreateRequest{
 			TaskHeader: TaskHeader{
 				Title: title, ColumnID: columnID,
-				AssigneeID: &assigneeID, DueDate: &dueDate, IsPaid: &isPaid,
+				AssigneeID: &assigneeID, StartDate: &startDate, DurationDays: &durationDays, IsPaid: &isPaid,
 			},
 			ClientID: clientID, PlateNumber: plate, EquipmentID: equipmentID,
 		}

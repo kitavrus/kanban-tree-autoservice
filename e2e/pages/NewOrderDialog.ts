@@ -27,12 +27,21 @@ export class NewOrderDialog {
   readonly plateSuggestions: Locator;
   readonly plateSuggestion: Locator;
   readonly clientNewAction: Locator;
-  readonly due: Locator;
+  readonly start: Locator;
+  readonly duration: Locator;
+  readonly plannedEnd: Locator;
+  readonly startError: Locator;
+  readonly durationError: Locator;
   readonly capacity: Locator;
   readonly capacityWarning: Locator;
 
   constructor(readonly page: Page) {
-    this.due = page.getByTestId('task-due');
+    // План работ (order-start-duration): «Начать с» + «Дней на работу», подсказка планового окончания.
+    this.start = page.getByTestId('task-start');
+    this.duration = page.getByTestId('task-duration');
+    this.plannedEnd = page.getByTestId('task-planned-end');
+    this.startError = page.getByTestId('task-start-error');
+    this.durationError = page.getByTestId('task-duration-error');
     this.capacity = page.getByTestId('task-capacity');
     this.capacityWarning = page.getByTestId('task-capacity-warning');
     this.plate = page.getByTestId('task-plate');

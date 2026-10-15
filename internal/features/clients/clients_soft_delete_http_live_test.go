@@ -22,6 +22,14 @@ import (
 // «Удалённые», служебная уборка, SSR-формы удаления и гонки §3. Сьюта — ClientsLiveSuite
 // (§TD-8: боевой бинарь, реальный логин); заказы создаются через API того же сервера.
 
+// taskPlan — тело POST /api/v1/tasks с планом работ (order-start-duration: start_date и
+// duration_days обязательны) — начало сегодня, 1 день.
+func taskPlan(m map[string]any) map[string]any {
+	m["start_date"] = time.Now().Format(time.DateOnly)
+	m["duration_days"] = 1
+	return m
+}
+
 // ---- wire-типы (§TD-6.2) ----
 
 type sdDetails struct {
@@ -191,8 +199,8 @@ func (s *ClientsLiveSuite) apiTask(b *testutil.Browser, clientID, title string, 
 	if len(unitID) > 0 {
 		st, raw = s.carTask(b, unitID[0], title)
 	} else {
-		st, raw = b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": clientID, "title": title, "column_id": s.columnID(),
-			"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
+		st, raw = b.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{"client_id": clientID, "title": title, "column_id": s.columnID(),
+			"plate_number": uniquePlate(), "new_equipment": map[string]any{}}))
 	}
 	s.Require().Equal(http.StatusCreated, st, string(raw))
 	var out struct {
@@ -207,8 +215,8 @@ func (s *ClientsLiveSuite) apiTask(b *testutil.Browser, clientID, title string, 
 // госномер берётся из справочника (и у удалённого автомобиля). Ответ — как есть.
 func (s *ClientsLiveSuite) carTask(b *testutil.Browser, unitID, title string) (int, []byte) {
 	plate := s.sdScalar(`SELECT plate_number FROM equipment WHERE id = $1::uuid`, unitID)
-	return b.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
-		"title": title, "column_id": s.columnID(), "plate_number": plate, "equipment_id": unitID})
+	return b.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{
+		"title": title, "column_id": s.columnID(), "plate_number": plate, "equipment_id": unitID}))
 }
 
 func (s *ClientsLiveSuite) taskCard(taskID int64) sdCardDTO {
@@ -460,16 +468,16 @@ func (s *ClientsLiveSuite) TestTS025_DeletedNotSelectable() {
 	s.mustDeleteUnit(dropped, "Списана")
 	s.mustDeleteClient(gone.ID, "Закрылся")
 
-	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": gone.ID, "title": "Заказ удалённого", "column_id": s.columnID(),
-		"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{"client_id": gone.ID, "title": "Заказ удалённого", "column_id": s.columnID(),
+		"plate_number": uniquePlate(), "new_equipment": map[string]any{}}))
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("not_found", s.fields(raw)["client_id"])
 	s.Equal("0", s.sdScalar(`SELECT count(*)::text FROM tasks WHERE client_id = $1::uuid`, gone.ID), "заказ не создан")
 
 	// клиента заказа не сменить вовсе (one-car-order): client_id в PUT — неизвестное поле → 400.
 	st, raw = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", task.ID), map[string]any{
-		"title": task.Title, "client_id": gone.ID, "column_id": task.ColumnID, "assignee_id": nil, "due_date": nil,
-		"is_paid": false, "version": task.Version})
+		"title": task.Title, "client_id": gone.ID, "column_id": task.ColumnID, "assignee_id": nil,
+		"is_paid": false, "version": task.Version, "start_date": time.Now().Format(time.DateOnly), "duration_days": 1})
 	s.Equal(http.StatusBadRequest, st, string(raw))
 	s.Equal("BAD_REQUEST", s.sdErr(raw).Code)
 	s.Equal(live.ID, s.sdScalar(`SELECT client_id::text FROM tasks WHERE id = $1`, task.ID), "клиент заказа не сменился")
@@ -563,8 +571,8 @@ func (s *ClientsLiveSuite) TestTS026_CardMarks() {
 	// §8.3 п.3: заказ удалённого клиента правится как обычно.
 	cur := s.taskCard(task.ID).Task
 	st, raw := s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", task.ID), map[string]any{
-		"title": "SD-026 переименован " + m, "column_id": cur.ColumnID, "assignee_id": nil, "due_date": nil,
-		"is_paid": false, "version": cur.Version})
+		"title": "SD-026 переименован " + m, "column_id": cur.ColumnID, "assignee_id": nil,
+		"is_paid": false, "version": cur.Version, "start_date": time.Now().Format(time.DateOnly), "duration_days": 1})
 	s.Require().Equal(http.StatusOK, st, string(raw))
 
 	// DS-016: заказ восстанавливается и с удалёнными клиентом и автомобилем — с предупреждениями.
@@ -895,8 +903,8 @@ func (s *ClientsLiveSuite) TestRace_TaskCreateWaitsForClientDelete() {
 	column := s.columnID()
 
 	res := s.race(s.holdClientDelete(c.ID), func() (int, []byte) {
-		return s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{"client_id": c.ID, "title": "Заказ гонки " + m, "column_id": column,
-			"plate_number": uniquePlate(), "new_equipment": map[string]any{}})
+		return s.admin.Do(http.MethodPost, "/api/v1/tasks", taskPlan(map[string]any{"client_id": c.ID, "title": "Заказ гонки " + m, "column_id": column,
+			"plate_number": uniquePlate(), "new_equipment": map[string]any{}}))
 	})
 	s.Require().Equal(http.StatusBadRequest, res.status, string(res.raw))
 	s.Equal("not_found", s.fields(res.raw)["client_id"])

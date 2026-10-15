@@ -89,14 +89,15 @@ type errDTO struct {
 	} `json:"details"`
 }
 
-// insertTask — заказ с явным моментом приёмки (Asia/Almaty — пояс seed-пользователя).
-func (s *CalendarLiveSuite) insertTask(title, columnID, createdAt string, due, finishedAt *string) int64 {
+// insertTask — заказ с планом работ start (YYYY-MM-DD) на days дней; finishedAt — момент выдачи
+// (день выдачи считается в поясе seed-пользователя Asia/Almaty).
+func (s *CalendarLiveSuite) insertTask(title, columnID, start string, days int, finishedAt *string) int64 {
 	var id int64
 	s.Require().NoError(s.Pool.QueryRow(context.Background(), `
 		WITH car AS (INSERT INTO equipment (client_id, plate_number) VALUES ($2, 'К 001') RETURNING id)
-		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by, created_at, due_date, finished_at)
-		VALUES ($1, $2, (SELECT id FROM car), $3, 1, $4, $5::timestamptz, $6::date, $7::timestamptz) RETURNING id`,
-		columnID, s.clientID, title, s.adminID, createdAt, due, finishedAt).Scan(&id))
+		INSERT INTO tasks (column_id, client_id, car_id, title, position, created_by, start_date, duration_days, finished_at)
+		VALUES ($1, $2, (SELECT id FROM car), $3, 1, $4, $5::date, $6, $7::timestamptz) RETURNING id`,
+		columnID, s.clientID, title, s.adminID, start, days, finishedAt).Scan(&id))
 	return id
 }
 
@@ -175,17 +176,24 @@ func (s *CalendarLiveSuite) TestCalendar_RequiresAuth() {
 	s.Equal(http.StatusUnauthorized, code)
 }
 
+// TestCalendar_OccupancyByDay — order-start-duration: машина занимает место с start_date по
+// плановое окончание (start_date + duration_days − 1); выданная — по день выдачи (в поясе
+// пользователя); не выданная с прошедшим планом — бессрочно; будущее начало — только с него.
 func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
-	// Приёмка 2031-03-02 09:00 Алматы; срок 2031-03-04 — в будущем относительно «сегодня».
-	withDue := s.insertTask("CAL А001АА", s.workColumnID, "2031-03-02T09:00:00+05:00", strp("2031-03-04"), nil)
-	// Выдан 2031-03-03 (финальная колонка, finished_at задан явно).
-	finished := s.insertTask("CAL В002ВВ", s.finalColumnID, "2031-03-01T10:00:00+05:00", nil, strp("2031-03-03T18:00:00+05:00"))
-	// Без срока — бессрочно с 2031-03-05.
-	open := s.insertTask("CAL С003СС", s.workColumnID, "2031-03-05T12:00:00+05:00", nil, nil)
-	// Приёмка 2031-03-01 00:30 по Алматы = 2031-02-28 19:30 UTC — день берётся в поясе пользователя.
-	tzEdge := s.insertTask("CAL Е004ЕЕ", s.finalColumnID, "2031-03-01T00:30:00+05:00", nil, strp("2031-03-01T20:00:00+05:00"))
+	// План 2031-03-02, 3 дня → 02..04.
+	planned := s.insertTask("CAL А001АА", s.workColumnID, "2031-03-02", 3, nil)
+	// План 01..05, выдан 2031-03-03 (финальная колонка) — место по день выдачи.
+	finished := s.insertTask("CAL В002ВВ", s.finalColumnID, "2031-03-01", 5, strp("2031-03-03T18:00:00+05:00"))
+	// Начало в будущем 2031-03-05, 2 дня → только 05..06.
+	future := s.insertTask("CAL С003СС", s.workColumnID, "2031-03-05", 2, nil)
+	// Выдан 2031-03-02 00:30 по Алматы = 2031-03-01 19:30 UTC — день выдачи в поясе пользователя.
+	tzEdge := s.insertTask("CAL Е004ЕЕ", s.finalColumnID, "2031-03-01", 1, strp("2031-03-02T00:30:00+05:00"))
+	// План давно прошёл, машина не выдана — бессрочно, во всех днях окна.
+	open := s.insertTask("CAL М006ММ", s.workColumnID, "2020-01-10", 2, nil)
+	// Выдан 2031-03-04 — раньше плановой даты начала 2031-03-06: занят только день начала.
+	early := s.insertTask("CAL Р007РР", s.finalColumnID, "2031-03-06", 2, strp("2031-03-04T12:00:00+05:00"))
 	// Удалённый заказ не учитывается.
-	deleted := s.insertTask("CAL Х005ХХ", s.workColumnID, "2031-03-02T09:00:00+05:00", nil, nil)
+	deleted := s.insertTask("CAL Х005ХХ", s.workColumnID, "2031-03-02", 3, nil)
 	_, err := s.Pool.Exec(context.Background(),
 		`UPDATE tasks SET deleted_at = now(), deleted_by = $2, delete_reason = 'тест' WHERE id = $1`, deleted, s.adminID)
 	s.Require().NoError(err)
@@ -195,15 +203,16 @@ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
 	s.Equal("2031-02-28", cal.From)
 
 	want := map[string][]int64{
-		"2031-02-28": {},
-		"2031-03-01": {finished, tzEdge},
-		"2031-03-02": {finished, withDue},
-		"2031-03-03": {finished, withDue},
-		"2031-03-04": {withDue},
-		"2031-03-05": {open},
+		"2031-02-28": {open},
+		"2031-03-01": {finished, tzEdge, open},
+		"2031-03-02": {finished, planned, tzEdge, open},
+		"2031-03-03": {finished, planned, open},
+		"2031-03-04": {planned, open},
+		"2031-03-05": {future, open},
+		"2031-03-06": {future, early, open},
 		"2031-03-07": {open},
 	}
-	mine := map[int64]bool{withDue: true, finished: true, open: true, tzEdge: true, deleted: true}
+	mine := map[int64]bool{planned: true, finished: true, future: true, open: true, tzEdge: true, early: true, deleted: true}
 	for _, d := range cal.Days {
 		exp, ok := want[d.Date]
 		if !ok {
@@ -227,16 +236,60 @@ func (s *CalendarLiveSuite) TestCalendar_OccupancyByDay() {
 	s.NotContains(byID, deleted)
 	s.True(byID[finished].IsFinished)
 	s.Equal("2031-03-03", *byID[finished].EndDate)
+	s.Equal("2031-03-05", *byID[finished].DueDate, "due_date — плановое окончание")
 	s.True(byID[open].OpenEnded)
 	s.Nil(byID[open].EndDate)
-	s.Equal("CAL Клиент", byID[withDue].ClientName)
-	s.Equal("2031-03-02", byID[withDue].StartDate)
-	s.Equal("2031-03-01", byID[tzEdge].StartDate)
+	s.Equal("2020-01-11", *byID[open].DueDate)
+	s.Equal("CAL Клиент", byID[planned].ClientName)
+	s.Equal("2031-03-02", byID[planned].StartDate)
+	s.Equal("2031-03-04", *byID[planned].EndDate)
+	s.Equal("2031-03-04", *byID[planned].DueDate)
+	s.Equal("2031-03-06", *byID[future].EndDate)
+	s.Equal("2031-03-02", *byID[tzEdge].EndDate, "день выдачи — по Алматы")
+	s.Equal("2031-03-06", *byID[early].EndDate, "конец не раньше начала")
+}
+
+// TestCalendar_PlanFromAPI — сквозь API заказов: POST с будущим «Начать с» и 3 днями занимает
+// место ровно эти 3 дня; PUT меняет начало и дни — календарь пересчитан.
+func (s *CalendarLiveSuite) TestCalendar_PlanFromAPI() {
+	code, body := s.admin.Do(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"client_id": s.clientID, "column_id": s.workColumnID, "plate_number": "КАЛ 018", "new_equipment": map[string]any{},
+		"start_date": "2031-06-10", "duration_days": 3,
+	})
+	s.Require().Equal(http.StatusCreated, code, string(body))
+	var created struct {
+		Task struct {
+			ID      int64  `json:"id"`
+			Title   string `json:"title"`
+			Version int64  `json:"version"`
+		} `json:"task"`
+	}
+	s.Require().NoError(json.Unmarshal(body, &created))
+	id := created.Task.ID
+
+	daysOf := func() []string {
+		cal := s.getCalendar(s.admin, "2031-06-08", "2031-06-14")
+		var out []string
+		for _, d := range cal.Days {
+			if contains(d.TaskIDs, id) {
+				out = append(out, d.Date)
+			}
+		}
+		return out
+	}
+	s.Equal([]string{"2031-06-10", "2031-06-11", "2031-06-12"}, daysOf())
+
+	code, body = s.admin.Do(http.MethodPut, fmt.Sprintf("/api/v1/tasks/%d", id), map[string]any{
+		"title": created.Task.Title, "column_id": s.workColumnID, "assignee_id": nil, "is_paid": false,
+		"start_date": "2031-06-12", "duration_days": 2, "version": created.Task.Version,
+	})
+	s.Require().Equal(http.StatusOK, code, string(body))
+	s.Equal([]string{"2031-06-12", "2031-06-13"}, daysOf())
 }
 
 func (s *CalendarLiveSuite) TestFinishedAtTrigger() {
 	ctx := context.Background()
-	id := s.insertTask("CAL trigger", s.workColumnID, "2031-04-01T09:00:00+05:00", nil, nil)
+	id := s.insertTask("CAL trigger", s.workColumnID, "2031-04-01", 1, nil)
 	var finished *string
 	read := func() {
 		s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT finished_at::text FROM tasks WHERE id = $1`, id).Scan(&finished))
@@ -256,7 +309,7 @@ func (s *CalendarLiveSuite) TestFinishedAtTrigger() {
 }
 
 func (s *CalendarLiveSuite) TestSSR_Page() {
-	id := s.insertTask("CAL ssr К777КК", s.workColumnID, "2031-05-03T09:00:00+05:00", strp("2031-05-04"), nil)
+	id := s.insertTask("CAL ssr К777КК", s.workColumnID, "2031-05-03", 2, nil)
 	for _, b := range []*testutil.Browser{s.admin, s.executor} {
 		code, body := b.Do(http.MethodGet, "/calendar?month=2031-05&day=2031-05-03", nil)
 		s.Require().Equal(http.StatusOK, code)
@@ -267,6 +320,8 @@ func (s *CalendarLiveSuite) TestSSR_Page() {
 		s.Contains(page, `data-testid="cal-gantt"`, "диаграмма Ганта выбранного дня")
 		s.Contains(page, `data-testid="cal-gantt-row" data-task-id="`+fmt.Sprint(id)+`" data-col="8" data-span="2" data-days="2"`, "03..04 мая со шкалой с 26 апреля")
 		s.Contains(page, "CAL ssr К777КК")
+		s.Contains(page, `title="Плановое окончание" data-testid="cal-gantt-due"`, "отметка планового окончания 04.05")
+		s.Contains(page, `data-testid="cal-day-add" data-start="2031-05-03"`, "новый заказ с началом в выбранный день")
 		s.Contains(page, `href="/calendar"`, "пункт сайдбара")
 	}
 	_, adminPage := s.admin.Do(http.MethodGet, "/calendar", nil)

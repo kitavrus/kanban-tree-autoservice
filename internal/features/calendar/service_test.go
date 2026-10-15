@@ -31,13 +31,13 @@ func occupied(resp *CalendarResponse) map[string]int {
 func TestBuild_Spans(t *testing.T) {
 	today := day("2026-10-15")
 	rows := []orderRow{
-		// выдан: 10..12
-		{ID: 1, StartDate: "2026-10-10", FinishedOn: strp("2026-10-12")},
-		// в работе со сроком в будущем: 14..16
+		// выдан: 10..12 (плановое окончание 11 — выдан позже, место до выдачи)
+		{ID: 1, StartDate: "2026-10-10", DueDate: strp("2026-10-11"), FinishedOn: strp("2026-10-12")},
+		// в работе, плановое окончание в будущем: 14..16
 		{ID: 2, StartDate: "2026-10-14", DueDate: strp("2026-10-16")},
-		// в работе без срока: с 13 бессрочно
-		{ID: 3, StartDate: "2026-10-13"},
-		// в работе, срок прошёл: с 11 бессрочно
+		// начало в будущем: только 17..18 (3 дня, хвост за окном)
+		{ID: 3, StartDate: "2026-10-17", DueDate: strp("2026-10-19")},
+		// в работе, плановое окончание прошло: с 11 бессрочно
 		{ID: 4, StartDate: "2026-10-11", DueDate: strp("2026-10-12")},
 	}
 	resp := build(rows, 5, today, day("2026-10-09"), day("2026-10-18"))
@@ -47,10 +47,10 @@ func TestBuild_Spans(t *testing.T) {
 	assert.Equal(t, 1, occ["2026-10-10"])
 	assert.Equal(t, 2, occ["2026-10-11"]) // 1, 4
 	assert.Equal(t, 2, occ["2026-10-12"]) // 1, 4
-	assert.Equal(t, 2, occ["2026-10-13"]) // 3, 4
-	assert.Equal(t, 3, occ["2026-10-14"]) // 2, 3, 4
-	assert.Equal(t, 3, occ["2026-10-16"])
-	assert.Equal(t, 2, occ["2026-10-17"]) // 3, 4 бессрочные
+	assert.Equal(t, 1, occ["2026-10-13"]) // 4
+	assert.Equal(t, 2, occ["2026-10-14"]) // 2, 4
+	assert.Equal(t, 2, occ["2026-10-16"]) // 2, 4
+	assert.Equal(t, 2, occ["2026-10-17"]) // 3, 4 — 3 занимает место только с начала
 	assert.Equal(t, 2, occ["2026-10-18"])
 	assert.Len(t, resp.Days, 10)
 	assert.Equal(t, "2026-10-15", resp.Today)
@@ -62,15 +62,56 @@ func TestBuild_Spans(t *testing.T) {
 	assert.True(t, byID[1].IsFinished)
 	assert.Equal(t, "2026-10-12", *byID[1].EndDate)
 	assert.Equal(t, "2026-10-16", *byID[2].EndDate)
-	assert.True(t, byID[3].OpenEnded)
-	assert.Nil(t, byID[3].EndDate)
+	assert.False(t, byID[3].OpenEnded)
+	assert.Equal(t, "2026-10-19", *byID[3].EndDate, "конец — плановое окончание, даже за окном")
 	assert.True(t, byID[4].OpenEnded)
+	assert.Nil(t, byID[4].EndDate)
+}
+
+// TestBuild_PlanRules — order-start-duration: интервал start_date..плановое окончание; выданный —
+// по день выдачи (раньше плана — короче, позже — дольше); выданный раньше даты начала — один
+// день начала; не выданный с прошедшим планом — бессрочно; однодневный заказ сегодня — сегодня.
+func TestBuild_PlanRules(t *testing.T) {
+	today := day("2026-10-15")
+	rows := []orderRow{
+		{ID: 1, StartDate: "2026-10-15", DueDate: strp("2026-10-15")},                                 // 1 день, сегодня
+		{ID: 2, StartDate: "2026-10-14", DueDate: strp("2026-10-20"), FinishedOn: strp("2026-10-15")}, // выдан раньше плана
+		{ID: 3, StartDate: "2026-10-20", DueDate: strp("2026-10-21"), FinishedOn: strp("2026-10-16")}, // выдан до начала
+		{ID: 4, StartDate: "2026-10-13", DueDate: strp("2026-10-14")},                                 // план прошёл вчера
+		{ID: 5, StartDate: "2026-10-16", DueDate: strp("2026-10-18")},                                 // будущее начало, 3 дня
+		{ID: 6, StartDate: "2026-10-10", DueDate: strp("2026-10-12"), FinishedOn: strp("2026-10-13")}, // выдан до окна
+	}
+	resp := build(rows, 5, today, day("2026-10-14"), day("2026-10-22"))
+
+	ids := map[string][]int64{}
+	for _, d := range resp.Days {
+		ids[d.Date] = d.TaskIDs
+	}
+	assert.Equal(t, []int64{2, 4}, ids["2026-10-14"])
+	assert.Equal(t, []int64{1, 2, 4}, ids["2026-10-15"])
+	assert.Equal(t, []int64{4, 5}, ids["2026-10-16"])
+	assert.Equal(t, []int64{4, 5}, ids["2026-10-18"])
+	assert.Equal(t, []int64{3, 4}, ids["2026-10-20"], "выдан до начала — занят только день начала")
+	assert.Equal(t, []int64{4}, ids["2026-10-21"])
+	assert.Equal(t, []int64{4}, ids["2026-10-22"], "просроченный — бессрочно")
+
+	byID := map[int64]Order{}
+	for _, o := range resp.Orders {
+		byID[o.ID] = o
+	}
+	assert.NotContains(t, byID, int64(6), "выдан до окна — не в orders")
+	assert.Equal(t, "2026-10-15", *byID[1].EndDate)
+	assert.Equal(t, "2026-10-15", *byID[2].EndDate)
+	assert.Equal(t, "2026-10-20", *byID[3].EndDate, "конец не раньше начала")
+	assert.True(t, byID[4].OpenEnded)
+	assert.Equal(t, "2026-10-18", *byID[5].EndDate)
+	assert.Equal(t, "2026-10-14", *byID[4].DueDate, "due_date в ответе — плановое окончание")
 }
 
 func TestBuild_FreeAndOverload(t *testing.T) {
 	var rows []orderRow
 	for i := int64(1); i <= 7; i++ {
-		rows = append(rows, orderRow{ID: i, StartDate: "2026-10-01"})
+		rows = append(rows, orderRow{ID: i, StartDate: "2026-10-01", DueDate: strp("2026-10-02")})
 	}
 	resp := build(rows, 5, day("2026-10-01"), day("2026-10-01"), day("2026-10-01"))
 	require.Len(t, resp.Days, 1)

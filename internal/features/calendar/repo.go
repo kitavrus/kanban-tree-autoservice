@@ -14,32 +14,33 @@ type Repo struct {
 
 func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
 
-// orderRow — заказ с датами в поясе пользователя (YYYY-MM-DD).
+// orderRow — заказ с датами (YYYY-MM-DD): план — календарные даты заказа, день выдачи — в
+// поясе пользователя.
 type orderRow struct {
 	ID          int64
 	Title       string
 	ClientName  string
 	ColumnName  string
 	ColumnColor string
-	StartDate   string
-	DueDate     *string
+	StartDate   string  // tasks.start_date — начало работ
+	DueDate     *string // tasks.due_date — плановое окончание (start_date + duration_days − 1)
 	FinishedOn  *string // день выдачи; nil — не выдан
 }
 
-// Orders — действующие заказы, принятые не позже to и не выданные раньше from.
+// Orders — действующие заказы, начатые не позже to и не выданные раньше from.
 func (r *Repo) Orders(ctx context.Context, tz, from, to string) ([]orderRow, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT t.id, t.title, cl.company_name, c.name, c.color,
-		       (t.created_at AT TIME ZONE $1)::date::text,
+		       t.start_date::text,
 		       t.due_date::text,
 		       CASE WHEN c.is_final THEN (COALESCE(t.finished_at, t.updated_at) AT TIME ZONE $1)::date::text END
 		  FROM tasks t
 		  JOIN columns c  ON c.id = t.column_id
 		  JOIN clients cl ON cl.id = t.client_id
 		 WHERE t.deleted_at IS NULL
-		   AND (t.created_at AT TIME ZONE $1)::date <= $3::date
+		   AND t.start_date <= $3::date
 		   AND (NOT c.is_final OR (COALESCE(t.finished_at, t.updated_at) AT TIME ZONE $1)::date >= $2::date)
-		 ORDER BY t.created_at, t.id`, tz, from, to)
+		 ORDER BY t.start_date, t.id`, tz, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("calendar orders: %w", err)
 	}

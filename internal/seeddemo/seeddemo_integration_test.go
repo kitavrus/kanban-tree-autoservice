@@ -177,6 +177,22 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 		WHERE t.deleted_at IS NULL`).Scan(&tasksWithEquipment))
 	s.Equal(15, tasksWithEquipment, "у каждого заказа есть автомобиль клиента")
 
+	// order-start-duration: у демо-заказов реалистичный план — 1..11 дней, часть начинается в
+	// будущем, часть уже просрочена (не выдана, плановое окончание прошло), есть однодневные с
+	// окончанием сегодня; due_date — плановое окончание.
+	var futureStart, overdueOpen, endsToday, badPlan int
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE t.start_date > current_date),
+		       count(*) FILTER (WHERE NOT c.is_final AND t.due_date < current_date),
+		       count(*) FILTER (WHERE t.due_date = current_date),
+		       count(*) FILTER (WHERE t.duration_days NOT BETWEEN 1 AND 11 OR t.due_date <> t.start_date + t.duration_days - 1)
+		FROM tasks t JOIN columns c ON c.id = t.column_id
+		WHERE t.deleted_at IS NULL`).Scan(&futureStart, &overdueOpen, &endsToday, &badPlan))
+	s.Equal(2, futureStart, "заказы с началом в будущем (Приёмка, Согласование)")
+	s.Equal(2, overdueOpen, "просроченные невыданные")
+	s.Equal(2, endsToday, "плановое окончание сегодня")
+	s.Zero(badPlan)
+
 	var movementsTotal int
 	s.Require().NoError(s.Pool.QueryRow(ctx, `SELECT count(*) FROM stock_movements`).Scan(&movementsTotal))
 	s.Positive(movementsTotal, "должны быть проведённые списания/начальные остатки")

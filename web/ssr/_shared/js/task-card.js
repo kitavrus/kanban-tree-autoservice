@@ -32,7 +32,7 @@
   var card = null;           // последний известный OrderCardResponse (или null — новый заказ)
   var taskId = null;         // null — режим «новый заказ»
   var defaultColumnId = null;
-  var defaultDueDate = '';      // срок нового заказа по умолчанию (календарь: выбранный день)
+  var defaultStartDate = '';    // «Начать с» нового заказа (календарь: выбранный день; иначе сегодня)
   var saving = false;        // защита от двойного submit шапки
   var headerDirty = false;   // есть несохранённая правка шапки — renderAll не трогает поля шапки
   // upload (фаза 7) — идущая загрузка вложения {gen, name, percent} либо null; переживает
@@ -171,11 +171,11 @@
   }
 
   // ---------- открытие/закрытие ----------
-  // opts (только новый заказ): {dueDate: 'YYYY-MM-DD'} — срок по умолчанию.
+  // opts (только новый заказ): {startDate: 'YYYY-MM-DD'} — «Начать с» по умолчанию (иначе сегодня).
   function open(id, defColId, opts) {
     taskId = id || null;
     defaultColumnId = defColId || null;
-    defaultDueDate = (!id && opts && opts.dueDate) || '';
+    defaultStartDate = (!id && opts && opts.startDate) || '';
     card = null;
     rowQueue = {};
     eqHistory = {};
@@ -248,9 +248,12 @@
     resetCar();
     $('#task-column').value = defaultColumnId || (data.columns[0] && data.columns[0].id) || '';
     $('#task-assignee').value = '';
-    $('#task-due').value = '';
+    // План работ: у нового заказа — начало сегодня (или выбранный в календаре день), 1 день;
+    // у существующего поля заполнит renderAll после загрузки карточки.
+    $('#task-start').value = taskId ? '' : (defaultStartDate || KT.time.today());
+    $('#task-duration').value = taskId ? '' : '1';
+    updatePlannedEnd();
     resetCapacity(!taskId);
-    if (defaultDueDate) { $('#task-due').value = defaultDueDate; checkDueCapacity(); }
     $('#task-description').value = '';
     var paid = $('#task-paid');
     paid.checked = false;
@@ -357,7 +360,9 @@
       if (document.activeElement !== $('#task-client')) $('#task-client').value = t.client_id;
       if (document.activeElement !== $('#task-column')) $('#task-column').value = t.column_id;
       if (document.activeElement !== $('#task-assignee')) $('#task-assignee').value = t.assignee_id || '';
-      if (document.activeElement !== $('#task-due')) $('#task-due').value = t.due_date || '';
+      if (document.activeElement !== $('#task-start')) $('#task-start').value = t.start_date || '';
+      if (document.activeElement !== $('#task-duration')) $('#task-duration').value = t.duration_days ? String(t.duration_days) : '';
+      updatePlannedEnd();
       if (document.activeElement !== $('#task-description')) $('#task-description').value = descriptionHtmlToText(t.description_html);
       var paid = $('#task-paid');
       paid.checked = !!t.is_paid;
@@ -1130,17 +1135,17 @@
 
   // ==================================================================
   // Загрузка сервиса в диалоге «Новый заказ» (GET /api/v1/calendar, internal/features/calendar):
-  // «Сегодня в ремонте X из N, свободно K» и предупреждение, если от сегодня до выбранного
-  // срока есть дни без свободных мест (free == 0). Только информация — сохранение не блокирует.
-  // «Сегодня» — дата в поясе пользователя (KT.time.today), как и у сервера (пояс зрителя).
+  // «Сегодня (или DD.MM.YYYY — день начала) в ремонте X из N, свободно K» и предупреждение, если
+  // в плановые дни заказа (с «Начать с» по начало + «Дней на работу» − 1; прошедшие дни не
+  // проверяются) есть дни без свободных мест (free == 0). Только информация — сохранение не
+  // блокирует. «Сегодня» — дата в поясе пользователя (KT.time.today), как и у сервера.
   // ==================================================================
 
   var CAPACITY_SPAN = 62;       // предел окна GET /calendar (calendar.maxSpanDays)
-  var CAPACITY_HORIZON = 366;   // дальше года вперёд не проверяем
   var CAPACITY_DAYS_SHOWN = 5;  // сколько занятых дней перечислять в предупреждении
-  // Ответы устаревших запросов (другое открытие / другой срок) отбрасываются: todaySeq —
-  // строка «сегодня», dueSeq — предупреждение по сроку (счётчики раздельные: срок по умолчанию
-  // проверяется сразу при открытии, параллельно со строкой «сегодня»).
+  // Ответы устаревших запросов (другое открытие / другой план) отбрасываются: todaySeq —
+  // строка загрузки дня начала, dueSeq — предупреждение по плановым дням (счётчики раздельные:
+  // план по умолчанию проверяется сразу при открытии, параллельно со строкой загрузки).
   var todaySeq = 0;
   var dueSeq = 0;
 
@@ -1151,8 +1156,26 @@
     return KT.api.get('/api/v1/calendar?from=' + from + '&to=' + to);
   }
 
-  // resetCapacity — состояние блока при открытии карточки: у нового заказа — загрузка сегодня,
-  // у существующего блок скрыт.
+  var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  // plan — план работ из полей формы: {start, days, end}; end (плановое окончание) — '' при
+  // неполном/некорректном плане. days — целое 1..60 либо NaN.
+  function plan() {
+    var start = $('#task-start').value;
+    var raw = String($('#task-duration').value).trim();
+    var days = raw === '' ? NaN : Number(raw);
+    var ok = DATE_RE.test(start) && Number.isInteger(days) && days >= 1 && days <= 60;
+    return { start: start, days: days, raw: raw, end: ok ? KT.time.addDays(start, days - 1) : '' };
+  }
+
+  // updatePlannedEnd — подсказка «Плановое окончание: DD.MM.YYYY» под полями плана.
+  function updatePlannedEnd() {
+    var p = plan();
+    $('#task-planned-end').textContent = p.end ? 'Плановое окончание: ' + ymdText(p.end) : '';
+  }
+
+  // resetCapacity — состояние блока при открытии карточки: у нового заказа — загрузка дня начала
+  // и проверка плановых дней, у существующего блок скрыт.
   function resetCapacity(isNew) {
     todaySeq++;
     dueSeq++;
@@ -1160,12 +1183,23 @@
     $('#task-capacity').textContent = '';
     hideCapacityWarning();
     if (!isNew) return;
+    refreshStartLoad();
+    checkPlanCapacity();
+  }
+
+  // refreshStartLoad — «в ремонте X из N» на день начала (без даты начала — на сегодня).
+  function refreshStartLoad() {
+    if (taskId) return;
+    todaySeq++;
     var seq = todaySeq;
     var today = KT.time.today();
-    calendarWindow(today, today).then(function (r) {
+    var start = $('#task-start').value;
+    var day = DATE_RE.test(start) ? start : today;
+    var label = day === today ? 'Сегодня' : ymdText(day);
+    calendarWindow(day, day).then(function (r) {
       if (seq !== todaySeq) return;
       var d = (r.days || [])[0] || { occupied: 0, free: r.capacity };
-      $('#task-capacity').textContent = 'Сегодня в ремонте ' + d.occupied + ' из ' + r.capacity + ', свободно ' + d.free;
+      $('#task-capacity').textContent = label + ' в ремонте ' + d.occupied + ' из ' + r.capacity + ', свободно ' + d.free;
       $('#task-capacity').dataset.free = String(d.free);
     }).catch(function () {
       if (seq === todaySeq) $('#task-capacity').textContent = 'Не удалось загрузить загрузку сервиса';
@@ -1178,22 +1212,22 @@
     w.textContent = '';
   }
 
-  // checkDueCapacity — срок изменён: дни от сегодня до срока (включительно) без свободных мест.
-  // Окно API ограничено CAPACITY_SPAN днями — длинный период запрашивается кусками.
-  function checkDueCapacity() {
+  // checkPlanCapacity — план изменён: плановые дни (с max(начало, сегодня) по плановое окончание
+  // включительно) без свободных мест. Окно API ограничено CAPACITY_SPAN днями (план — не больше
+  // 60 дней, но запросы режутся кусками на случай расширения границы).
+  function checkPlanCapacity() {
     if (taskId) return;
     dueSeq++;
     var seq = dueSeq;
     hideCapacityWarning();
     var today = KT.time.today();
-    var due = $('#task-due').value;
-    if (!due || due < today) return;
-    var last = KT.time.addDays(today, CAPACITY_HORIZON - 1);
-    if (due < last) last = due;
+    var p = plan();
+    if (!p.end || p.end < today) return;
+    var first = p.start < today ? today : p.start;
     var reqs = [];
-    for (var from = today; from <= last; from = KT.time.addDays(from, CAPACITY_SPAN)) {
+    for (var from = first; from <= p.end; from = KT.time.addDays(from, CAPACITY_SPAN)) {
       var to = KT.time.addDays(from, CAPACITY_SPAN - 1);
-      reqs.push(calendarWindow(from, to < last ? to : last));
+      reqs.push(calendarWindow(from, to < p.end ? to : p.end));
     }
     Promise.all(reqs).then(function (rs) {
       if (seq !== dueSeq) return;
@@ -1203,9 +1237,21 @@
       var shown = full.slice(0, CAPACITY_DAYS_SHOWN).map(ymdText).join(', ');
       if (full.length > CAPACITY_DAYS_SHOWN) shown += ' и ещё ' + (full.length - CAPACITY_DAYS_SHOWN);
       var w = $('#task-capacity-warning');
-      w.textContent = '⚠ До срока нет свободных мест: ' + shown + '. Заказ можно сохранить, но сервис будет перегружен.';
+      w.textContent = '⚠ В плановые дни нет свободных мест: ' + shown + '. Заказ можно сохранить, но сервис будет перегружен.';
       w.classList.remove('d-none');
     }).catch(function () { /* предупреждение необязательно — без него заказ сохраняется как обычно */ });
+  }
+
+  // planPayload — поля плана для POST/PUT /api/v1/tasks и локальные ошибки (пустая дата,
+  // дни не целое 1..60) — те же коды, что у сервера (tasks_validate.go).
+  function planPayload() {
+    var p = plan();
+    var errs = [];
+    if (!p.start) errs.push({ name: 'start_date', message: 'required' });
+    else if (!DATE_RE.test(p.start)) errs.push({ name: 'start_date', message: 'invalid_date' });
+    if (p.raw === '') errs.push({ name: 'duration_days', message: 'required' });
+    else if (!Number.isInteger(p.days) || p.days < 1 || p.days > 60) errs.push({ name: 'duration_days', message: 'out_of_range' });
+    return { start_date: p.start || null, duration_days: Number.isInteger(p.days) ? p.days : null, errors: errs };
   }
 
   // ==================================================================
@@ -1240,11 +1286,19 @@
     archived: 'Тип в архиве — выберите другой',
     conflict: 'Противоречивые данные',
     plate_mismatch: 'Госномер не совпадает с найденным автомобилем — проверьте номер',
-    foreign_client: 'Автомобиль принадлежит другому клиенту'
+    foreign_client: 'Автомобиль принадлежит другому клиенту',
+    invalid_date: 'Неверная дата'
+  };
+
+  // PLAN_ERROR_TEXT — out_of_range полей плана работ (границы — tasks_validate.go).
+  var PLAN_ERROR_TEXT = {
+    start_date: 'Дата вне допустимого диапазона (2000–2099)',
+    duration_days: 'От 1 до 60 дней'
   };
 
   function fieldText(f) {
     if (f.name === 'plate_number' && PLATE_ERROR_TEXT[f.message]) return PLATE_ERROR_TEXT[f.message];
+    if (f.message === 'out_of_range' && PLAN_ERROR_TEXT[f.name]) return PLAN_ERROR_TEXT[f.name];
     return FIELD_ERROR_TEXT[f.message] || f.message;
   }
 
@@ -1492,16 +1546,21 @@
 
   // newOrderPayload — тело POST /api/v1/tasks нового заказа; null — локальная ошибка (показана).
   function newOrderPayload() {
-    var due = $('#task-due').value;
+    var pl = planPayload();
     var assignee = $('#task-assignee').value;
     var body = {
       plate_number: plateTidy($('#task-plate').value),
       column_id: $('#task-column').value,
       assignee_id: assignee || null,
-      due_date: due || null,
+      start_date: pl.start_date,
+      duration_days: pl.duration_days,
       is_paid: $('#task-paid').checked,
       description: $('#task-description').value
     };
+    if (pl.errors.length) {
+      showFieldErrors(pl.errors);
+      return null;
+    }
     if (carMode()) {
       var chosen = chosenCar();
       if (!chosen) {
@@ -1597,18 +1656,29 @@
   // Шапка заказа (AC-001/AC-002/AC-003/AC-004/AC-017)
   // ==================================================================
 
+  // headerPayload — тело PUT /api/v1/tasks/:id (полная замена шапки, план работ обязателен);
+  // null — локальная ошибка плана (показана под полями).
   function headerPayload() {
-    var due = $('#task-due').value;
+    var pl = planPayload();
+    if (pl.errors.length) {
+      showFieldErrors(pl.errors);
+      return null;
+    }
     var assignee = $('#task-assignee').value;
     return {
       title: $('#task-title').value.trim(),
       column_id: $('#task-column').value,
       assignee_id: assignee || null,
-      due_date: due || null,
+      start_date: pl.start_date,
+      duration_days: pl.duration_days,
       is_paid: $('#task-paid').checked,
       description: $('#task-description').value
     };
   }
+
+  // PLAN_FIELDS — поля плана работ: их ошибки показываются под полями и в карточке
+  // существующего заказа (остальные ошибки правки шапки — в шапке, как прежде).
+  var PLAN_FIELDS = { start_date: true, duration_days: true };
 
   function showHeaderError(msg) {
     var el = $('#task-error');
@@ -1625,10 +1695,24 @@
     ['#task-title', '#task-description'].forEach(function (sel) {
       var el = $(sel); if (el) el.addEventListener('input', function () { headerDirty = true; });
     });
-    ['#task-client', '#task-column', '#task-assignee', '#task-due', '#task-paid'].forEach(function (sel) {
+    ['#task-client', '#task-column', '#task-assignee', '#task-start', '#task-duration', '#task-paid'].forEach(function (sel) {
       var el = $(sel); if (el) el.addEventListener('change', function () { headerDirty = true; });
     });
-    $('#task-due').addEventListener('change', checkDueCapacity);
+    // План работ: подсказка планового окончания — на каждый ввод; загрузка дня начала и
+    // предупреждение по плановым дням — по change (дата выбрана / число дней введено).
+    $('#task-duration').addEventListener('input', function () {
+      headerDirty = true;
+      clearFieldError('duration_days');
+      updatePlannedEnd();
+    });
+    $('#task-start').addEventListener('input', function () { clearFieldError('start_date'); updatePlannedEnd(); });
+    $('#task-start').addEventListener('change', function () {
+      clearFieldError('start_date');
+      updatePlannedEnd();
+      refreshStartLoad();
+      checkPlanCapacity();
+    });
+    $('#task-duration').addEventListener('change', function () { updatePlannedEnd(); checkPlanCapacity(); });
 
     $('#task-save-btn').addEventListener('click', function () {
       if (saving) return;
@@ -1642,8 +1726,12 @@
       var req;
       if (taskId) {
         var payload = headerPayload();
-        payload.version = card ? card.task.version : null;
-        req = KT.api.put('/api/v1/tasks/' + taskId, payload);
+        if (!payload) {
+          req = Promise.reject({ local: true });
+        } else {
+          payload.version = card ? card.task.version : null;
+          req = KT.api.put('/api/v1/tasks/' + taskId, payload);
+        }
       } else {
         // новый заказ: дождаться поиска по ТЕКУЩЕМУ госномеру (debounce мог не сработать),
         // затем один атомарный POST. null — локальная ошибка формы уже показана.
@@ -1675,9 +1763,12 @@
           return;
         }
         if (err && err.fields && err.fields.length) {
-          // правка шапки существующего заказа: клиента в теле нет (one-car-order) — все ошибки
-          // полей показываются в шапке.
-          showHeaderError(err.fields.map(function (f) { return f.message; }).join('; '));
+          // правка шапки существующего заказа: клиента в теле нет (one-car-order) — ошибки
+          // плана работ под его полями, остальные — в шапке.
+          var planErrs = err.fields.filter(function (f) { return PLAN_FIELDS[f.name]; });
+          var rest = err.fields.filter(function (f) { return !PLAN_FIELDS[f.name]; });
+          if (planErrs.length) showFieldErrors(planErrs);
+          if (rest.length) showHeaderError(rest.map(function (f) { return f.message; }).join('; '));
           return;
         }
         showHeaderError((err && err.message) || 'Не удалось сохранить заказ');
