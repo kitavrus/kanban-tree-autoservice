@@ -239,33 +239,35 @@ test.describe('Закупки по дефициту', () => {
     await expect(sup.notFound).toContainText('Заказ не найден');
   });
 
-  for (const vp of [{ w: 360, h: 640 }, { w: 768, h: 1024 }, { w: 1280, h: 800 }]) {
-    for (const theme of ['light', 'dark'] as const) {
-      test(`TS-021: кабинет на ${vp.w}px, тема ${theme} (DS-031)`, async ({ po, uniq }, testInfo) => {
-        const acc = await po.supplier(uniq('Поставщик'), true);
-        const long = await po.product(uniq('Очень длинное название запчасти для проверки переноса строк в карточке кабинета поставщика'));
-        const p = await po.product(uniq('короткое'));
-        let o = await po.create(po.admin, { supplier_id: acc.supplier.id, note: 'Примечание', items: [{ product_id: long.id, qty: '6' }, { product_id: p.id, qty: '1' }] });
-        o = await po.admin.send(o);
+  test.describe('TS-021: кабинет поставщика — адаптив и темы (DS-031)', () => {
+    for (const vp of [{ w: 360, h: 640 }, { w: 768, h: 1024 }, { w: 1280, h: 800 }]) {
+      for (const theme of ['light', 'dark'] as const) {
+        test(`TS-021: кабинет на ${vp.w}px, тема ${theme} (DS-031)`, async ({ po, uniq }, testInfo) => {
+          const acc = await po.supplier(uniq('Поставщик'), true);
+          const long = await po.product(uniq('Очень длинное название запчасти для проверки переноса строк в карточке кабинета поставщика'));
+          const p = await po.product(uniq('короткое'));
+          let o = await po.create(po.admin, { supplier_id: acc.supplier.id, note: 'Примечание', items: [{ product_id: long.id, qty: '6' }, { product_id: p.id, qty: '1' }] });
+          o = await po.admin.send(o);
 
-        const sp = await po.pageAs(acc.login, acc.password);
-        await sp.addInitScript((t) => { try { localStorage.setItem('kt-theme', t); } catch { /* приватный режим */ } }, theme);
-        await sp.setViewportSize({ width: vp.w, height: vp.h });
-        const sup = new PurchaseOrdersPage(sp);
-        await sup.gotoSupplierOrder(o.id);
-        await expect(sup.supplierItems).toHaveCount(2);
-        await expect(sp.locator('html')).toHaveAttribute('data-bs-theme', theme);
-        const qty = sup.supplierItem(long.name).getByTestId('so-item-qty');
-        await expect(qty).toHaveAttribute('inputmode', 'decimal');
-        await expect(sup.supplierItem(long.name).getByTestId('so-item-price')).toHaveAttribute('inputmode', 'decimal');
-        await expect(sup.supplierReady).toBeVisible();
-        await expect(sup.supplierTotal).toBeInViewport();
-        const overflow = await sp.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-        expect(overflow, 'нет горизонтального скролла').toBeLessThanOrEqual(0);
-        await testInfo.attach(`cabinet-${vp.w}-${theme}`, { body: await sp.screenshot({ fullPage: true }), contentType: 'image/png' });
-      });
+          const sp = await po.pageAs(acc.login, acc.password);
+          await sp.addInitScript((t) => { try { localStorage.setItem('kt-theme', t); } catch { /* приватный режим */ } }, theme);
+          await sp.setViewportSize({ width: vp.w, height: vp.h });
+          const sup = new PurchaseOrdersPage(sp);
+          await sup.gotoSupplierOrder(o.id);
+          await expect(sup.supplierItems).toHaveCount(2);
+          await expect(sp.locator('html')).toHaveAttribute('data-bs-theme', theme);
+          const qty = sup.supplierItem(long.name).getByTestId('so-item-qty');
+          await expect(qty).toHaveAttribute('inputmode', 'decimal');
+          await expect(sup.supplierItem(long.name).getByTestId('so-item-price')).toHaveAttribute('inputmode', 'decimal');
+          await expect(sup.supplierReady).toBeVisible();
+          await expect(sup.supplierTotal).toBeInViewport();
+          const overflow = await sp.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+          expect(overflow, 'нет горизонтального скролла').toBeLessThanOrEqual(0);
+          await testInfo.attach(`cabinet-${vp.w}-${theme}`, { body: await sp.screenshot({ fullPage: true }), contentType: 'image/png' });
+        });
+      }
     }
-  }
+  });
 
   test('TS-022: экраны «Закупки» на 360px без выхода за край (DS-031)', async ({ adminPage: page, po, uniq }) => {
     const acc = await po.supplier(uniq('Поставщик с очень длинным названием организации для проверки кнопок'), false);

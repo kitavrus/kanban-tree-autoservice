@@ -1,0 +1,5 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/artifact_lint.py --e2e-drift /Users/igorpotema/mycode/kanban-tree-autoservice/docs/features/purchase-orders/draft-spec.md /Users/igorpotema/mycode/kanban-tree-autoservice/e2e --spec-glob purchase-orders*.spec.ts
+(exit 1)
+
+e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 13 id, code: 12 в 1 файлах, проблем: 1)
+  DRIFT: TS-021 есть в draft-spec.md, теста test('TS-021: …') нет (сценарий без теста)

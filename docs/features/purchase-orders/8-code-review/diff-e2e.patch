@@ -1,0 +1,818 @@
+diff --git a/e2e/fixtures/auth.ts b/e2e/fixtures/auth.ts
+index 291ec6b..0b408b7 100644
+--- a/e2e/fixtures/auth.ts
++++ b/e2e/fixtures/auth.ts
+@@ -28,11 +28,13 @@ export function todayYmd(tz = 'Asia/Almaty'): string {
+   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+ }
+ 
+-export type Role = 'admin' | 'executor';
++// supplier — учётка поставщика (purchase-orders DS-007, TS-F3): обязателен supplier_id.
++export type Role = 'admin' | 'executor' | 'supplier';
+ // timezone — часовой пояс IANA (user-timezone DS-031/DS-056): не передан при создании → Asia/Almaty,
+ // не передан при правке → не меняется (internal/features/users/dto.go, §TD-6.2).
+-export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean; timezone?: string };
+-export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean; timezone: string };
++// supplier_id — поставщик учётки роли supplier, у прочих ролей null (purchase-orders §6.17).
++export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean; timezone?: string; supplier_id?: string | null };
++export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean; timezone: string; supplier_id: string | null; supplier_name: string };
+ /** GET /api/v1/auth/me и ответ входа (internal/features/auth/dto.go). */
+ export type Me = { id: string; login: string; name: string; role: Role; timezone: string };
+ /** PUT /api/v1/users/me/timezone — тело и ответ (internal/features/users/dto.go). */
+diff --git a/e2e/fixtures/board-types.ts b/e2e/fixtures/board-types.ts
+index 9290249..a9585e3 100644
+--- a/e2e/fixtures/board-types.ts
++++ b/e2e/fixtures/board-types.ts
+@@ -153,14 +153,14 @@ export type PartnerError = {
+   message: string;
+ };
+ /** Виды служебной уборки, подключённые на стенде (части 1–6 мастер-спеки soft-delete). */
+-export type PurgeKind = 'tasks' | 'columns' | 'clients' | 'equipment' | CatalogKind | PartnerKind;
++export type PurgeKind = 'tasks' | 'columns' | 'clients' | 'equipment' | CatalogKind | PartnerKind | 'purchase-orders';
+ /** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
+ export type PurgeResponse = { id: string };
+ 
+ // ---- раздел «Удалённые» (internal/features/softdelete/dto.go, §6.3, §6.4) ----
+ export type DeletedKind =
+   | 'tasks' | 'columns' | 'clients' | 'equipment' | 'products' | 'services'
+-  | 'catalog-categories' | 'suppliers';
++  | 'catalog-categories' | 'suppliers' | 'purchase-orders';
+ export type DeletedItem = {
+   kind: DeletedKind;
+   id: string;
+diff --git a/e2e/fixtures/purchase-orders.ts b/e2e/fixtures/purchase-orders.ts
+new file mode 100644
+index 0000000..3d7fc75
+--- /dev/null
++++ b/e2e/fixtures/purchase-orders.ts
+@@ -0,0 +1,211 @@
++import { expect, request, type APIRequestContext, type Page } from '@playwright/test';
++import { BASE_URL, loginContext, type NewUser, type Product, type Supplier } from './auth';
++import { test as base } from './test';
++
++// Фикстуры закупок по дефициту (docs/features/purchase-orders/draft-spec.md §11 TS-F1…TS-F3):
++// wire-типы — зеркало internal/features/purchase-orders/models/dto (§TD-6.2: JSON snake_case,
++// числа numeric — строки), клиент API от имени любого пользователя, детерминированный сид
++// (поставщик с учёткой, поставщик без кабинета, запчасти «ниже минимума»/без дефицита) и уборка:
++// закупки теста стираются служебной уборкой ДО запчастей и поставщиков (они держат их FK), учётки
++// поставщиков переводятся в неактивных исполнителей (пользователи не удаляются, ADR-007) — иначе
++// поставщик не убирается.
++
++// ---- wire-типы (models/dto) ----
++export type PoStatus = 'draft' | 'sent' | 'ready' | 'picked_up' | 'cancelled';
++export type PoReason = 'for_orders' | 'below_min' | 'manual';
++export type PoItemRequest = { id?: string | null; product_id: string; qty: string; reason?: PoReason };
++export type PoCreateRequest = { supplier_id: string | null; note?: string; items: PoItemRequest[] };
++export type PoUpdateRequest = { version: number; note: string; items: PoItemRequest[] };
++export type PoVersionRequest = { version: number };
++export type PoReasonRequest = { version: number; reason: string };
++export type PoOrderItem = {
++  id: string; product_id: string; name: string; sku: string; unit: string; qty: string; reason: PoReason;
++  supplier_qty: string | null; supplier_price: string | null; supplier_note: string; line_amount: string | null;
++  has_discrepancy: boolean; customer_changed: boolean; version: number;
++};
++export type PoOrder = {
++  id: string; number: number; number_display: string; status: PoStatus; version: number; supplier_id: string | null;
++  recipient_name: string; recipient_phone: string; supplier_has_login: boolean; note: string; can_edit: boolean;
++  created_by_name: string; created_at: string; sent_at: string | null; ready_at: string | null; picked_up_at: string | null;
++  cancelled_at: string | null; cancel_reason: string | null; items: PoOrderItem[]; total_amount: string | null;
++};
++export type PoAnswerRequest = { version: number; supplier_qty: string | null; supplier_price?: string | null; supplier_note?: string };
++export type PoSupplierItem = {
++  id: string; name: string; sku: string; unit: string; qty: string; supplier_qty: string | null; supplier_price: string | null;
++  supplier_note: string; line_amount: string | null; customer_changed: boolean; version: number;
++};
++export type PoSupplierOrder = {
++  id: string; number_display: string; status: PoStatus; sent_at: string | null; note: string; note_changed: boolean;
++  firm_name: string; firm_phone: string; can_answer: boolean; items: PoSupplierItem[]; total_amount: string | null;
++};
++export type PoError = { code: string; message: string; details?: { fields?: Array<{ name: string; message: string }>; item_ids?: string[]; numbers?: string[] } };
++
++/** JSON API закупок от имени одного пользователя (своя cookie-сессия + CSRF). */
++export class PoApi {
++  private constructor(private readonly ctx: APIRequestContext) {}
++
++  static async login(login: string, password: string): Promise<PoApi> {
++    const ctx = await request.newContext({ baseURL: BASE_URL });
++    const api = new PoApi(ctx);
++    const res = await ctx.post('/api/v1/auth/login', { data: { login, password }, headers: await api.headers() });
++    expect(res.status(), `вход ${login}: ${await res.text()}`).toBe(200);
++    return api;
++  }
++
++  private async headers() {
++    let c = (await this.ctx.storageState()).cookies.find((x) => x.name === 'kt_csrf');
++    if (!c) {
++      await this.ctx.get('/login');
++      c = (await this.ctx.storageState()).cookies.find((x) => x.name === 'kt_csrf');
++    }
++    return { 'X-Csrf-Token': c?.value ?? '' };
++  }
++
++  async raw(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, data?: object): Promise<{ status: number; body: unknown }> {
++    const res = await this.ctx.fetch(url, { method, data, headers: method === 'GET' ? {} : await this.headers() });
++    const text = await res.text();
++    let body: unknown = text;
++    try { body = JSON.parse(text); } catch { /* не JSON */ }
++    return { status: res.status(), body };
++  }
++
++  async create(body: PoCreateRequest): Promise<PoOrder> {
++    const r = await this.raw('POST', '/api/v1/purchase-orders', body);
++    expect(r.status, `создание закупки: ${JSON.stringify(r.body)}`).toBe(201);
++    return r.body as PoOrder;
++  }
++
++  async get(id: string): Promise<PoOrder> {
++    const r = await this.raw('GET', `/api/v1/purchase-orders/${id}`);
++    expect(r.status, `закупка ${id}: ${JSON.stringify(r.body)}`).toBe(200);
++    return r.body as PoOrder;
++  }
++
++  async update(id: string, body: PoUpdateRequest): Promise<PoOrder> {
++    const r = await this.raw('PUT', `/api/v1/purchase-orders/${id}`, body);
++    expect(r.status, `правка закупки: ${JSON.stringify(r.body)}`).toBe(200);
++    return r.body as PoOrder;
++  }
++
++  async act(id: string, action: 'send' | 'recall' | 'pick-up', version: number): Promise<{ status: number; body: unknown }> {
++    const body: PoVersionRequest = { version };
++    return this.raw('POST', `/api/v1/purchase-orders/${id}/${action}`, body);
++  }
++
++  async send(o: PoOrder): Promise<PoOrder> {
++    const r = await this.act(o.id, 'send', o.version);
++    expect(r.status, `отправка: ${JSON.stringify(r.body)}`).toBe(200);
++    return r.body as PoOrder;
++  }
++
++  async cancel(id: string, body: PoReasonRequest): Promise<{ status: number; body: unknown }> {
++    return this.raw('POST', `/api/v1/purchase-orders/${id}/cancel`, body);
++  }
++
++  async remove(id: string, body: PoReasonRequest): Promise<{ status: number; body: unknown }> {
++    return this.raw('DELETE', `/api/v1/purchase-orders/${id}`, body);
++  }
++
++  // ---- кабинет поставщика ----
++  async supplierGet(id: string): Promise<PoSupplierOrder> {
++    const r = await this.raw('GET', `/api/v1/supplier/purchase-orders/${id}`);
++    expect(r.status, `кабинет ${id}: ${JSON.stringify(r.body)}`).toBe(200);
++    return r.body as PoSupplierOrder;
++  }
++
++  async answer(orderId: string, itemId: string, body: PoAnswerRequest): Promise<void> {
++    const r = await this.raw('PUT', `/api/v1/supplier/purchase-orders/${orderId}/items/${itemId}`, body);
++    expect(r.status, `ответ поставщика: ${JSON.stringify(r.body)}`).toBe(200);
++  }
++
++  async ready(orderId: string): Promise<void> {
++    const r = await this.raw('POST', `/api/v1/supplier/purchase-orders/${orderId}/ready`);
++    expect(r.status, `«Собрано»: ${JSON.stringify(r.body)}`).toBe(200);
++  }
++
++  async purge(id: string): Promise<number> {
++    return (await this.raw('DELETE', `/api/v1/test/purge/purchase-orders/${id}`)).status;
++  }
++
++  async dispose() { await this.ctx.dispose(); }
++}
++
++export type SupplierAccount = { supplier: Supplier; login: string; password: string; userId: string };
++
++/** Набор фикстур закупок одного теста. */
++export type PoKit = {
++  /** API от имени админа прогона. */
++  admin: PoApi;
++  /** API от имени произвольного пользователя (закрывается в teardown). */
++  as: (login: string, password: string) => Promise<PoApi>;
++  /** Поставщик (TS-F1): withLogin — с активной учёткой supplier. */
++  supplier: (name: string, withLogin: boolean) => Promise<SupplierAccount>;
++  /** Запчасть: по умолчанию «ниже минимума» (stock 0, min 1) — попадает в дефицит. */
++  product: (name: string, p?: { stock?: number; min_stock?: number }) => Promise<Product>;
++  /** Закупку создал экран — зарегистрировать для уборки. */
++  track: (orderId: string) => void;
++  /** Создать закупку через API (уборка автоматическая). */
++  create: (api: PoApi, body: PoCreateRequest) => Promise<PoOrder>;
++  /** Вкладка отдельного браузерного контекста, вошедшая как login (поставщик рядом с админом). */
++  pageAs: (login: string, password: string) => Promise<Page>;
++  /** Учётку поставщика создал экран «Пользователи» — зарегистрировать для уборки по логину. */
++  trackSupplierLogin: (login: string) => void;
++};
++
++export const test = base.extend<{ po: PoKit }>({
++  // Зависит от _cleanup — снимается РАНЬШЕ него: закупки уходят до запчастей и поставщиков.
++  po: async ({ adminApi, runAdmin, uniq, _cleanup, browser }, use) => {
++    void _cleanup;
++    const orders: string[] = [];
++    const apis: PoApi[] = [];
++    const accounts: Array<{ userId: string; login: string }> = [];
++    const pages: Page[] = [];
++    const admin = await PoApi.login(runAdmin.login, runAdmin.password);
++    apis.push(admin);
++    const kit: PoKit = {
++      admin,
++      as: async (login, password) => { const a = await PoApi.login(login, password); apis.push(a); return a; },
++      supplier: async (name, withLogin) => {
++        const supplier = await adminApi.createSupplier({ name, phone: '+7 701 555 00 11' });
++        if (!withLogin) return { supplier, login: '', password: '', userId: '' };
++        const login = uniq('sup');
++        const nu: NewUser = { login, name: `Продавец ${name}`, role: 'supplier', password: 'password1', supplier_id: supplier.id };
++        const u = await adminApi.createUser(nu);
++        accounts.push({ userId: u.id, login });
++        return { supplier, login, password: 'password1', userId: u.id };
++      },
++      product: (name, p = {}) => adminApi.createProduct({ name, sku: name.slice(-12), unit: 'шт', stock: p.stock ?? 0, min_stock: p.min_stock ?? 1 }),
++      track: (id) => { orders.push(id); },
++      create: async (api, body) => { const o = await api.create(body); orders.push(o.id); return o; },
++      trackSupplierLogin: (login) => { accounts.push({ userId: '', login }); },
++      pageAs: async (login, password) => {
++        const ctx = await browser.newContext();
++        await loginContext(ctx, login, password);
++        const p = await ctx.newPage();
++        pages.push(p);
++        return p;
++      },
++    };
++    await use(kit);
++
++    for (const p of pages) await p.context().close();
++    for (const id of orders) {
++      const st = await admin.purge(id).catch(() => 0);
++      if (st !== 200 && st !== 404) console.warn(`уборка: закупка ${id} — статус ${st}`);
++    }
++    // Учётки поставщиков не удаляются (ADR-007): снять привязку, чтобы поставщик убрался.
++    for (const a of accounts) {
++      if (!a.userId) {
++        const r = await admin.raw('GET', `/api/v1/users?q=${encodeURIComponent(a.login)}`);
++        const found = (r.body as { items?: Array<{ id: string; login: string }> }).items?.find((u) => u.login === a.login);
++        if (!found) continue;
++        a.userId = found.id;
++      }
++      await adminApi.updateUser(a.userId, { login: a.login, name: 'Бывший поставщик', role: 'executor', supplier_id: null, is_active: false })
++        .catch((e) => console.warn(`уборка: учётка ${a.login}: ${e instanceof Error ? e.message : String(e)}`));
++    }
++    for (const a of apis) await a.dispose();
++  },
++});
++
++export { expect };
+diff --git a/e2e/pages/PurchaseOrdersPage.ts b/e2e/pages/PurchaseOrdersPage.ts
+new file mode 100644
+index 0000000..3470bf6
+--- /dev/null
++++ b/e2e/pages/PurchaseOrdersPage.ts
+@@ -0,0 +1,104 @@
++import { expect, type Locator, type Page } from '@playwright/test';
++
++// POM закупок (docs/features/purchase-orders/draft-spec.md §8.1–§8.3) и кабинета поставщика
++// (§8.6–§8.7). testid-контракт — web/ssr/purchase-orders/templates + js/purchases.js,
++// js/supplier-orders.js.
++export class PurchaseOrdersPage {
++  constructor(readonly page: Page) {}
++
++  // ---- §8.1 список ----
++  async gotoList(query = '') {
++    await this.page.goto(`/purchases${query}`);
++    await expect(this.page.locator('.app-title')).toHaveText('Закупки');
++  }
++  get statusFilter(): Locator { return this.page.getByTestId('po-filter-status'); }
++  get rows(): Locator { return this.page.getByTestId('po-row'); }
++  row(orderId: string): Locator { return this.page.locator(`[data-testid="po-row"][data-id="${orderId}"]`); }
++  get newButton(): Locator { return this.page.getByTestId('po-new'); }
++
++  // ---- §8.2 новый заказ ----
++  async gotoNew() {
++    await this.page.goto('/purchases/new');
++    await expect(this.page.locator('.app-title')).toHaveText('Новый заказ');
++  }
++  get recipient(): Locator { return this.page.getByTestId('po-recipient'); }
++  get note(): Locator { return this.page.getByTestId('po-note'); }
++  toggle(reason: 'for_orders' | 'below_min'): Locator { return this.page.getByTestId(`po-toggle-${reason}`); }
++  line(productId: string): Locator { return this.page.locator(`[data-testid="po-line"][data-product-id="${productId}"]`); }
++  lineCheck(productId: string): Locator { return this.line(productId).getByTestId('po-line-check'); }
++  lineQty(productId: string): Locator { return this.line(productId).getByTestId('po-line-qty'); }
++  lineHint(productId: string): Locator { return this.line(productId).getByTestId('po-line-open-hint'); }
++  get saveDraft(): Locator { return this.page.getByTestId('po-save-draft'); }
++  get itemsError(): Locator { return this.page.getByTestId('po-error-items'); }
++
++  /** Снять все галочки дефицита (оба переключателя типа) — на общем стенде дефицит не только наш. */
++  async uncheckAll() {
++    for (const r of ['for_orders', 'below_min'] as const) {
++      if (await this.toggle(r).isChecked()) await this.toggle(r).uncheck();
++    }
++  }
++
++  /** Поиск «Добавить запчасть» и выбор пункта. */
++  async addProduct(name: string) {
++    await this.page.getByTestId('po-add-product').fill(name);
++    await this.page.getByTestId('po-add-option').filter({ hasText: name }).first().click();
++  }
++
++  /** Сохранить черновик → карточка; id заказа из адреса. */
++  async saveAndOpen(): Promise<string> {
++    await this.saveDraft.click();
++    await this.page.waitForURL(/\/purchases\/[0-9a-f-]{36}/);
++    return new URL(this.page.url()).pathname.split('/').pop()!;
++  }
++
++  // ---- §8.3 карточка ----
++  async gotoView(orderId: string) {
++    await this.page.goto(`/purchases/${orderId}`);
++    await expect(this.number).not.toBeEmpty();
++  }
++  get number(): Locator { return this.page.getByTestId('po-number'); }
++  get status(): Locator { return this.page.getByTestId('po-status'); }
++  get cancelReason(): Locator { return this.page.getByTestId('po-cancel-reason'); }
++  get items(): Locator { return this.page.getByTestId('po-item'); }
++  item(productId: string): Locator { return this.page.locator(`[data-testid="po-item"][data-product-id="${productId}"]`); }
++  itemQty(productId: string): Locator { return this.item(productId).getByTestId('po-item-qty'); }
++  get total(): Locator { return this.page.getByTestId('po-total'); }
++  button(name: 'save' | 'send' | 'recall' | 'pickup' | 'cancel' | 'delete' | 'print'): Locator {
++    return this.page.getByTestId(`po-${name}`);
++  }
++  get toast(): Locator { return this.page.getByTestId('toast'); }
++  get toastError(): Locator { return this.page.getByTestId('toast-error'); }
++
++  /** Подтверждение KT.uiDialog («Забрали»/«Собрано»). */
++  async confirm() { await this.page.getByTestId('ui-dialog-ok').click(); }
++
++  get reasonInput(): Locator { return this.page.getByTestId('po-reason-input'); }
++  get reasonOk(): Locator { return this.page.getByTestId('po-reason-ok'); }
++
++  // ---- §8.6–§8.7 кабинет поставщика ----
++  async gotoSupplierList() {
++    await this.page.goto('/supplier/orders');
++    await expect(this.page.getByTestId('so-list-root')).toBeVisible();
++  }
++  supplierCard(orderId: string): Locator { return this.page.locator(`[data-testid="so-card"][data-id="${orderId}"]`); }
++  async gotoSupplierOrder(orderId: string) {
++    await this.page.goto(`/supplier/orders/${orderId}`);
++  }
++  get supplierStatus(): Locator { return this.page.getByTestId('so-status'); }
++  get supplierItems(): Locator { return this.page.getByTestId('so-item'); }
++  /** Карточка строки кабинета по названию запчасти. */
++  supplierItem(name: string): Locator { return this.supplierItems.filter({ hasText: name }); }
++  get supplierReady(): Locator { return this.page.getByTestId('so-ready'); }
++  get supplierTotal(): Locator { return this.page.getByTestId('so-total'); }
++  get supplierNote(): Locator { return this.page.getByTestId('so-note'); }
++  get notFound(): Locator { return this.page.getByTestId('so-not-found'); }
++
++  /** Ответ по строке кабинета: поля сохраняются по уходу из поля (DS-063). */
++  async answer(name: string, a: { qty?: string; price?: string; note?: string }) {
++    const card = this.supplierItem(name);
++    if (a.qty !== undefined) { await card.getByTestId('so-item-qty').fill(a.qty); await card.getByTestId('so-item-qty').blur(); }
++    if (a.price !== undefined) { await card.getByTestId('so-item-price').fill(a.price); await card.getByTestId('so-item-price').blur(); }
++    if (a.note !== undefined) { await card.getByTestId('so-item-note').fill(a.note); await card.getByTestId('so-item-note').blur(); }
++    await expect(card.getByTestId('so-item-state')).toHaveText('Сохранено ✓');
++  }
++}
+diff --git a/e2e/pages/UsersPage.ts b/e2e/pages/UsersPage.ts
+index 1d9bf3b..496fd85 100644
+--- a/e2e/pages/UsersPage.ts
++++ b/e2e/pages/UsersPage.ts
+@@ -58,16 +58,22 @@ export class UsersPage {
+     return this.page.locator(`[data-testid="user-row"][data-login="${login}"]`);
+   }
+ 
+-  fieldError(field: 'name' | 'login' | 'role' | 'phone' | 'password' | 'timezone'): Locator {
++  fieldError(field: 'name' | 'login' | 'role' | 'phone' | 'password' | 'timezone' | 'supplier_id'): Locator {
+     return this.page.getByTestId(`error-${field}`);
+   }
+ 
+   /** Выбор роли в комбобоксе (D6). */
+-  async chooseRole(label: 'Исполнитель' | 'Администратор') {
++  async chooseRole(label: 'Исполнитель' | 'Администратор' | 'Поставщик') {
+     await this.role.click();
+     await this.page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: label }).click();
+   }
+ 
++  /** «Поставщик» учётки роли supplier (purchase-orders §8.5): нативный select, виден только у
++   *  роли «Поставщик». */
++  get supplier(): Locator {
++    return this.page.getByTestId('user-supplier');
++  }
++
+   /** Выбор пояса в комбобоксе по подписи («Москва (UTC+3)»). */
+   async chooseTimezone(label: string) {
+     await this.timezone.click();
+diff --git a/e2e/tests/purchase-orders.spec.ts b/e2e/tests/purchase-orders.spec.ts
+new file mode 100644
+index 0000000..09c0632
+--- /dev/null
++++ b/e2e/tests/purchase-orders.spec.ts
+@@ -0,0 +1,414 @@
++import { test, expect, type PoOrder, type PoError } from '../fixtures/purchase-orders';
++import { PurchaseOrdersPage } from '../pages/PurchaseOrdersPage';
++import { UsersPage } from '../pages/UsersPage';
++import { SuppliersPage } from '../pages/SuppliersPage';
++import { DeletedPage } from '../pages/DeletedPage';
++
++// Закупки по дефициту (docs/features/purchase-orders/draft-spec.md §11, TS-014…TS-026):
++// экраны «Закупки» (§8.1–§8.4), «Пользователи» (§8.5), кабинет поставщика (§8.6–§8.7),
++// «Поставщики» и «Удалённые». Данные — фикстура po (TS-F1…TS-F3), уборка автоматическая.
++
++const isConflict = (status: number) => status === 409;
++
++test.describe('Закупки по дефициту', () => {
++  test('TS-014: полный круг закупки у поставщика (DS-011, DS-008)', async ({ adminPage: page, po, uniq }) => {
++    const acc = await po.supplier(uniq('АвтоДеталь Плюс'), true);
++    const p1 = await po.product(uniq('колодки'), { stock: 0, min_stock: 5 });
++    const p2 = await po.product(uniq('фильтр'), { stock: 0, min_stock: 5 });
++    const p3 = await po.product(uniq('ремень'), { stock: 0, min_stock: 5 });
++    const ui = new PurchaseOrdersPage(page);
++
++    // admin → «Новый заказ» → поставщик → три наши строки, одну галочку снять → черновик.
++    await ui.gotoNew();
++    await ui.recipient.selectOption(acc.supplier.id);
++    await ui.uncheckAll();
++    for (const p of [p1, p2, p3]) {
++      await expect(ui.lineQty(p.id)).toHaveValue('5');
++      await ui.lineCheck(p.id).check();
++    }
++    await ui.lineCheck(p3.id).uncheck();
++    const id = await ui.saveAndOpen();
++    po.track(id);
++    await expect(ui.status).toHaveText('Черновик');
++    await expect(ui.items).toHaveCount(2);
++    await expect(ui.toast.last()).toContainText('создан');
++
++    await ui.button('send').click();
++    await expect(ui.status).toHaveText('Отправлен');
++
++    // поставщик: одна строка «Соберу» меньше просимого; «Собрано» с пустой строкой — отказ.
++    const sp = await po.pageAs(acc.login, acc.password);
++    const sup = new PurchaseOrdersPage(sp);
++    await sup.gotoSupplierList();
++    await sup.supplierCard(id).click();
++    await expect(sup.supplierItems).toHaveCount(2);
++    await sup.answer(p1.name, { qty: '3', price: '100' });
++    await sup.supplierReady.click();
++    await sup.confirm();
++    await expect(sp.getByTestId('toast-error').last()).toHaveText('Заполните «Соберу» во всех строках');
++    await expect(sup.supplierItem(p2.name)).toHaveClass(/so-missing/);
++    await expect(sup.supplierStatus).toHaveText('Новый');
++
++    await sup.answer(p2.name, { qty: '5', price: '10' });
++    await sup.supplierReady.click();
++    await sup.confirm();
++    await expect(sup.supplierStatus).toHaveText('Собран');
++    await expect(sup.supplierReady).toBeHidden();
++
++    // admin: расхождение подсвечено, сумма верна → «Забрали».
++    await ui.gotoView(id);
++    await expect(ui.status).toHaveText('Собран');
++    await expect(ui.item(p1.id)).toHaveAttribute('data-discrepancy', 'true');
++    await expect(ui.item(p2.id)).not.toHaveAttribute('data-discrepancy', 'true');
++    await expect(ui.total).toHaveText('Итого: 350.00');
++    await ui.button('pickup').click();
++    await ui.confirm();
++    await expect(ui.status).toHaveText('Забрали');
++    await expect(ui.button('save')).toHaveCount(0);
++
++    // остаток запчасти не изменился (DS-010)
++    const stock = await po.admin.raw('GET', `/api/v1/products?q=${encodeURIComponent(p1.name)}`);
++    expect((stock.body as { items: Array<{ id: string; stock: number }> }).items.find((x) => x.id === p1.id)?.stock).toBe(0);
++  });
++
++  test('TS-015: Базар — без отправки, печать с ☐, «Забрали» (DS-058)', async ({ adminPage: page, po, uniq }) => {
++    const p = await po.product(uniq('масло'), { stock: 0, min_stock: 2 });
++    const ui = new PurchaseOrdersPage(page);
++    await ui.gotoNew();
++    await ui.recipient.selectOption('bazaar');
++    await ui.uncheckAll();
++    await ui.lineCheck(p.id).check();
++    const id = await ui.saveAndOpen();
++    po.track(id);
++    await expect(page.getByTestId('po-recipient')).toContainText('Базар');
++    await expect(ui.button('send')).toHaveCount(0);
++    await expect(ui.button('pickup')).toBeVisible();
++
++    const [download] = await Promise.all([page.waitForEvent('download'), ui.button('print').click()]);
++    expect(download.suggestedFilename()).toMatch(/^З-\d{4,}\.pdf$/);
++
++    // негатив: send через API → 409 NO_SUPPLIER
++    const o = await po.admin.get(id);
++    const r = await po.admin.act(id, 'send', o.version);
++    expect(r.status).toBe(409);
++    expect((r.body as PoError).code).toBe('PURCHASE_ORDER_NO_SUPPLIER');
++
++    await ui.button('pickup').click();
++    await ui.confirm();
++    await expect(ui.status).toHaveText('Забрали');
++  });
++
++  test('TS-016: правка отправленного заказа — «Изменено заказчиком» (DS-034, DS-048)', async ({ adminPage: page, po, uniq, allowHttpErrors }) => {
++    allowHttpErrors((url, st) => url.includes('/api/v1/purchase-orders/') && isConflict(st));
++    const acc = await po.supplier(uniq('Поставщик'), true);
++    const p1 = await po.product(uniq('диск'));
++    const p2 = await po.product(uniq('колодка'));
++    let o = await po.create(po.admin, { supplier_id: acc.supplier.id, note: 'старое', items: [{ product_id: p1.id, qty: '4' }, { product_id: p2.id, qty: '2' }] });
++    o = await po.admin.send(o);
++    const supApi = await po.as(acc.login, acc.password);
++    for (const it of o.items) await supApi.answer(o.id, it.id, { version: it.version, supplier_qty: it.qty, supplier_price: '50' });
++
++    const ui = new PurchaseOrdersPage(page);
++    await ui.gotoView(o.id);
++    await ui.itemQty(p1.id).fill('7');
++    await ui.page.getByTestId('po-note').fill('Забрать до 18:00');
++    await ui.button('save').click();
++    await expect(ui.toast.last()).toHaveText('Сохранено');
++
++    const sp = await po.pageAs(acc.login, acc.password);
++    const sup = new PurchaseOrdersPage(sp);
++    await sup.gotoSupplierList();
++    await expect(sup.supplierCard(o.id).getByTestId('so-card-changed')).toBeVisible();
++    await sup.supplierCard(o.id).click();
++    await expect(sp.getByTestId('so-note-changed')).toBeVisible();
++    await expect(sp.getByTestId('so-note')).toContainText('Забрать до 18:00');
++    const changed = sup.supplierItem(p1.name);
++    await expect(changed.getByTestId('so-item-changed')).toBeVisible();
++    await expect(changed.getByTestId('so-item-qty')).toHaveValue('');
++    await expect(sup.supplierItem(p2.name).getByTestId('so-item-changed')).toBeHidden();
++    await expect(sup.supplierItem(p2.name).getByTestId('so-item-qty')).toHaveValue('2');
++
++    // после ответа метка снимается
++    await sup.answer(p1.name, { qty: '7', price: '50' });
++    await expect(changed.getByTestId('so-item-changed')).toBeHidden();
++
++    // негатив: поставщик отметил «Собрано», мы правим — отказ
++    await supApi.ready(o.id);
++    await ui.itemQty(p2.id).fill('3');
++    await ui.button('save').click();
++    await expect(ui.toastError.last()).toHaveText('Поставщик уже собрал заказ — правка недоступна');
++  });
++
++  test('TS-017: отозвать и отправить снова — ответы на месте (DS-035)', async ({ adminPage: page, po, uniq, allowHttpErrors }) => {
++    allowHttpErrors((url, st) => url.includes('/api/v1/purchase-orders/') && isConflict(st));
++    const acc = await po.supplier(uniq('Поставщик'), true);
++    const p = await po.product(uniq('свеча'));
++    let o = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: p.id, qty: '4' }] });
++    o = await po.admin.send(o);
++    const supApi = await po.as(acc.login, acc.password);
++    await supApi.answer(o.id, o.items[0].id, { version: o.items[0].version, supplier_qty: '4', supplier_price: '700' });
++
++    const ui = new PurchaseOrdersPage(page);
++    await ui.gotoView(o.id);
++    await ui.button('recall').click();
++    await expect(ui.status).toHaveText('Черновик');
++    await expect(ui.item(p.id).getByTestId('po-item-supplier-qty')).toHaveText('4');
++
++    const sp = await po.pageAs(acc.login, acc.password);
++    const sup = new PurchaseOrdersPage(sp);
++    await sup.gotoSupplierList();
++    await expect(sup.supplierCard(o.id)).toHaveCount(0);
++
++    await ui.button('send').click();
++    await expect(ui.status).toHaveText('Отправлен');
++    const again = await supApi.supplierGet(o.id);
++    expect(again.items[0].supplier_qty).toBe('4.000');
++    expect(again.items[0].supplier_price).toBe('700.00');
++
++    // негатив: «Отозвать» после «Собрано»
++    await supApi.ready(o.id);
++    await ui.button('recall').click();
++    await expect(ui.toastError.last()).toHaveText('Поставщик уже собрал заказ — отозвать нельзя');
++  });
++
++  test('TS-018: отмена с причиной — у поставщика заказа нет (DS-036, DS-041)', async ({ adminPage: page, po, uniq }) => {
++    const acc = await po.supplier(uniq('Поставщик'), true);
++    const p = await po.product(uniq('лампа'));
++    let o = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: p.id, qty: '1' }] });
++    o = await po.admin.send(o);
++
++    const ui = new PurchaseOrdersPage(page);
++    await ui.gotoView(o.id);
++    await ui.button('cancel').click();
++    await expect(ui.reasonOk).toBeDisabled();
++    await ui.reasonInput.fill('   ');
++    await expect(ui.reasonOk).toBeDisabled();
++    await ui.reasonInput.fill('Нашли у другого поставщика дешевле');
++    await expect(ui.reasonOk).toBeEnabled();
++    await ui.reasonOk.click();
++    await expect(ui.status).toHaveText('Отменён');
++    await expect(ui.cancelReason).toContainText('Нашли у другого поставщика дешевле');
++
++    const sp = await po.pageAs(acc.login, acc.password);
++    const sup = new PurchaseOrdersPage(sp);
++    await sup.gotoSupplierList();
++    await expect(sup.supplierCard(o.id)).toHaveCount(0);
++    await sup.gotoSupplierOrder(o.id);
++    await expect(sup.notFound).toContainText('Заказ не найден');
++  });
++
++  test('TS-019: подсказка «уже в открытом заказе» (DS-004, DS-049)', async ({ adminPage: page, po, uniq }) => {
++    const acc = await po.supplier(uniq('Поставщик'), false);
++    const inSent = await po.product(uniq('открытый'), { stock: 0, min_stock: 3 });
++    const inDraft = await po.product(uniq('черновой'), { stock: 0, min_stock: 3 });
++    let sent = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: inSent.id, qty: '5' }] });
++    sent = await po.admin.send(sent);
++    await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: inDraft.id, qty: '2' }] });
++
++    const ui = new PurchaseOrdersPage(page);
++    await ui.gotoNew();
++    await expect(ui.lineHint(inSent.id)).toHaveText(`уже в открытом заказе ${sent.number_display} — 5 шт`);
++    await expect(ui.lineHint(inSent.id).getByRole('link')).toHaveAttribute('href', `/purchases/${sent.id}`);
++    await expect(ui.lineCheck(inSent.id)).not.toBeChecked();
++    await expect(ui.lineQty(inSent.id)).toHaveValue('3'); // без вычета открытого заказа
++    // негатив: только черновик — подсказки нет, галочка стоит
++    await expect(ui.lineHint(inDraft.id)).toHaveCount(0);
++    await expect(ui.lineCheck(inDraft.id)).toBeChecked();
++  });
++
++  test('TS-020: поставщик заперт в кабинете (DS-017, DS-018)', async ({ po, uniq }) => {
++    const acc = await po.supplier(uniq('Поставщик'), true);
++    const other = await po.supplier(uniq('Чужой'), true);
++    const p = await po.product(uniq('чужое'));
++    let foreign = await po.create(po.admin, { supplier_id: other.supplier.id, items: [{ product_id: p.id, qty: '1' }] });
++    foreign = await po.admin.send(foreign);
++
++    const sp = await po.pageAs(acc.login, acc.password);
++    await sp.goto('/');
++    await expect(sp).toHaveURL(/\/supplier\/orders$/);
++    const nav = sp.getByTestId('sidebar').locator('.app-nav-link');
++    await expect(nav).toHaveCount(1);
++    await expect(nav).toContainText('Заказы');
++    for (const path of ['/stock', '/clients', '/purchases', '/users']) {
++      await sp.goto(path);
++      await expect(sp, path).toHaveURL(/\/supplier\/orders$/);
++    }
++    // негатив: чужой заказ по URL
++    const sup = new PurchaseOrdersPage(sp);
++    await sup.gotoSupplierOrder(foreign.id);
++    await expect(sup.notFound).toContainText('Заказ не найден');
++  });
++
++  for (const vp of [{ w: 360, h: 640 }, { w: 768, h: 1024 }, { w: 1280, h: 800 }]) {
++    for (const theme of ['light', 'dark'] as const) {
++      test(`TS-021: кабинет на ${vp.w}px, тема ${theme} (DS-031)`, async ({ po, uniq }, testInfo) => {
++        const acc = await po.supplier(uniq('Поставщик'), true);
++        const long = await po.product(uniq('Очень длинное название запчасти для проверки переноса строк в карточке кабинета поставщика'));
++        const p = await po.product(uniq('короткое'));
++        let o = await po.create(po.admin, { supplier_id: acc.supplier.id, note: 'Примечание', items: [{ product_id: long.id, qty: '6' }, { product_id: p.id, qty: '1' }] });
++        o = await po.admin.send(o);
++
++        const sp = await po.pageAs(acc.login, acc.password);
++        await sp.addInitScript((t) => { try { localStorage.setItem('kt-theme', t); } catch { /* приватный режим */ } }, theme);
++        await sp.setViewportSize({ width: vp.w, height: vp.h });
++        const sup = new PurchaseOrdersPage(sp);
++        await sup.gotoSupplierOrder(o.id);
++        await expect(sup.supplierItems).toHaveCount(2);
++        await expect(sp.locator('html')).toHaveAttribute('data-bs-theme', theme);
++        const qty = sup.supplierItem(long.name).getByTestId('so-item-qty');
++        await expect(qty).toHaveAttribute('inputmode', 'decimal');
++        await expect(sup.supplierItem(long.name).getByTestId('so-item-price')).toHaveAttribute('inputmode', 'decimal');
++        await expect(sup.supplierReady).toBeVisible();
++        await expect(sup.supplierTotal).toBeInViewport();
++        const overflow = await sp.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
++        expect(overflow, 'нет горизонтального скролла').toBeLessThanOrEqual(0);
++        await testInfo.attach(`cabinet-${vp.w}-${theme}`, { body: await sp.screenshot({ fullPage: true }), contentType: 'image/png' });
++      });
++    }
++  }
++
++  test('TS-022: экраны «Закупки» на 360px без выхода за край (DS-031)', async ({ adminPage: page, po, uniq }) => {
++    const acc = await po.supplier(uniq('Поставщик с очень длинным названием организации для проверки кнопок'), false);
++    const p = await po.product(uniq('узкий'));
++    const o = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: p.id, qty: '1' }] });
++    await page.setViewportSize({ width: 360, height: 740 });
++    const ui = new PurchaseOrdersPage(page);
++    const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
++
++    await ui.gotoList();
++    await expect(ui.row(o.id)).toBeAttached();
++    expect(await overflow(), 'список').toBeLessThanOrEqual(0);
++    await ui.gotoNew();
++    await expect(ui.saveDraft).toBeVisible();
++    expect(await overflow(), 'новый заказ').toBeLessThanOrEqual(0);
++    await ui.gotoView(o.id);
++    await expect(ui.button('send')).toBeVisible();
++    expect(await overflow(), 'карточка').toBeLessThanOrEqual(0);
++    const box = await ui.button('send').boundingBox();
++    expect(box && box.x + box.width).toBeLessThanOrEqual(360);
++  });
++
++  test('TS-023: учётка поставщика на экране «Пользователи» (DS-025, DS-044)', async ({ adminPage: page, po, uniq, makeUser, allowHttpErrors }) => {
++    allowHttpErrors((url, st) => st === 422 && /\/users(\?|$)/.test(url));
++    const acc = await po.supplier(uniq('АвтоДеталь'), false);
++    const users = new UsersPage(page);
++    const login = uniq('sup-ui');
++    po.trackSupplierLogin(login);
++    await users.gotoNew();
++    await expect(users.supplier).toBeHidden();
++    await users.fill({ name: 'Продавец Ерлан', login, password: 'secret123' });
++    await users.chooseRole('Поставщик');
++    await expect(users.supplier).toBeVisible();
++    await users.save.click();
++    await expect(users.fieldError('supplier_id')).toHaveText('Выберите поставщика');
++    await users.supplier.selectOption(acc.supplier.id);
++    await users.password.fill('secret123');
++    await users.save.click();
++    await expect(page).toHaveURL(/\/users\?flash=created/);
++    await expect(users.row(login)).toContainText(`Поставщик (${acc.supplier.name})`);
++
++    const sp = await po.pageAs(login, 'secret123');
++    await sp.goto('/');
++    await expect(sp).toHaveURL(/\/supplier\/orders$/);
++
++    // негатив: executor открывает /users → 403-страница
++    const ex = await makeUser({ login: uniq('exec') });
++    const ep = await po.pageAs(ex.login, ex.password);
++    const resp = await ep.goto('/users');
++    expect(resp?.status()).toBe(403);
++  });
++
++  test('TS-024: executor видит только свои заказы (DS-051, DS-060, DS-078)', async ({ page, po, uniq, makeUser, loginAs, runAdmin, allowHttpErrors }) => {
++    allowHttpErrors((url, st) => st === 404 && url.includes('/purchases/'));
++    const ex = await makeUser({ login: uniq('exec') });
++    const exApi = await po.as(ex.login, ex.password);
++    const acc = await po.supplier(uniq('Поставщик'), false);
++    const pAdmin = await po.product(uniq('админский'), { stock: 0, min_stock: 2 });
++    const pMine = await po.product(uniq('свой'), { stock: 0, min_stock: 2 });
++    let adminOrder = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: pAdmin.id, qty: '2' }] });
++    adminOrder = await po.admin.send(adminOrder);
++    let mine: PoOrder = await po.create(exApi, { supplier_id: acc.supplier.id, items: [{ product_id: pMine.id, qty: '2' }] });
++    mine = await exApi.send(mine);
++
++    await loginAs(page, ex.login, ex.password);
++    const ui = new PurchaseOrdersPage(page);
++    await ui.gotoList();
++    await expect(ui.row(mine.id)).toBeVisible();
++    await expect(ui.row(adminOrder.id)).toHaveCount(0);
++    const resp = await page.goto(`/purchases/${adminOrder.id}`);
++    expect(resp?.status()).toBe(404);
++
++    await ui.gotoNew();
++    await expect(ui.lineHint(pAdmin.id)).toHaveCount(0);
++    await expect(ui.lineCheck(pAdmin.id)).toBeChecked();
++    await expect(ui.lineHint(pMine.id)).toContainText(mine.number_display);
++    await expect(ui.lineCheck(pMine.id)).not.toBeChecked();
++
++    // admin на том же экране видит подсказки по обоим заказам
++    const ap = await po.pageAs(runAdmin.login, runAdmin.password);
++    const adm = new PurchaseOrdersPage(ap);
++    await adm.gotoNew();
++    await expect(adm.lineHint(pAdmin.id)).toContainText(adminOrder.number_display);
++    await expect(adm.lineHint(pMine.id)).toContainText(mine.number_display);
++
++    // негатив: прямой POST cancel чужого → 404
++    const r = await exApi.cancel(adminOrder.id, { version: adminOrder.version, reason: 'чужой' });
++    expect(r.status).toBe(404);
++    expect((r.body as PoError).code).toBe('PURCHASE_ORDER_NOT_FOUND');
++  });
++
++  test('TS-025: архив поставщика с открытым заказом (DS-043)', async ({ adminPage: page, po, uniq, allowHttpErrors }) => {
++    allowHttpErrors((url, st) => url.includes('/api/v1/suppliers/') && isConflict(st));
++    const acc = await po.supplier(uniq('Архивируемый'), false);
++    const p = await po.product(uniq('деталь'));
++    let o = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: p.id, qty: '1' }] });
++    o = await po.admin.send(o);
++
++    const sup = new SuppliersPage(page);
++    await sup.goto();
++    await sup.searchFor(acc.supplier.name);
++    await sup.openRow(acc.supplier.name);
++    await sup.toggleActive.click();
++    await expect(sup.toastError.last()).toHaveText(`У поставщика есть незакрытые закупки: ${o.number_display}`);
++
++    // негатив: после «Забрали» (у поставщика нет входа — прямо из sent) архив проходит
++    const r = await po.admin.act(o.id, 'pick-up', o.version);
++    expect(r.status).toBe(200);
++    await sup.goto();
++    await sup.searchFor(acc.supplier.name);
++    await sup.openRow(acc.supplier.name);
++    await sup.toggleActive.click();
++    await sup.expectSaved();
++  });
++
++  test('TS-026: удаление и восстановление черновика (DS-037, DS-072)', async ({ adminPage: page, po, uniq }) => {
++    const acc = await po.supplier(uniq('Поставщик'), false);
++    const p = await po.product(uniq('удаляемая'));
++    const draft = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: p.id, qty: '1' }] });
++    const ui = new PurchaseOrdersPage(page);
++    await ui.gotoView(draft.id);
++    await ui.button('delete').click();
++    await ui.reasonInput.fill('Создан по ошибке');
++    await ui.reasonOk.click();
++    await expect(page).toHaveURL(/\/purchases$/);
++    await expect(ui.toast.last()).toContainText('Черновик удалён');
++    await expect(ui.row(draft.id)).toHaveCount(0);
++
++    const del = new DeletedPage(page);
++    await del.goto('kind=purchase-orders');
++    await expect(del.rowTitle(draft.id)).toHaveText(draft.number_display);
++    await expect(del.rowReason(draft.id)).toContainText('Создан по ошибке');
++    await del.restore(draft.id);
++    await expect(del.row(draft.id)).toHaveCount(0);
++    await ui.gotoList();
++    await expect(ui.row(draft.id)).toBeVisible();
++
++    // негатив: у отправленного заказа кнопки «Удалить» нет, API → 409
++    const sent = await po.admin.send(await po.admin.get(draft.id));
++    await ui.gotoView(sent.id);
++    await expect(ui.button('delete')).toHaveCount(0);
++    const r = await po.admin.remove(sent.id, { version: sent.version, reason: 'нельзя' });
++    expect(r.status).toBe(409);
++    expect((r.body as PoError).code).toBe('PURCHASE_ORDER_INVALID_STATUS');
++  });
++});

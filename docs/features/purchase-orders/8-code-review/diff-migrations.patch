@@ -1,0 +1,103 @@
+diff --git a/migrations/0019_add_purchase_orders.down.sql b/migrations/0019_add_purchase_orders.down.sql
+new file mode 100644
+index 0000000..a769afb
+--- /dev/null
++++ b/migrations/0019_add_purchase_orders.down.sql
+@@ -0,0 +1,12 @@
++-- Закупки по дефициту: откат 0019 (MVP, DS-030 — учётки поставщиков удаляются вместе с ролью).
++DROP TABLE IF EXISTS purchase_order_items;
++DROP TABLE IF EXISTS purchase_orders;
++DROP SEQUENCE IF EXISTS purchase_orders_number_seq;
++
++DELETE FROM users WHERE role = 'supplier';
++DROP INDEX IF EXISTS users_supplier_id_idx;
++ALTER TABLE users
++    DROP CONSTRAINT IF EXISTS users_supplier_chk,
++    DROP COLUMN IF EXISTS supplier_id,
++    DROP CONSTRAINT users_role_check;
++ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'executor'));
+diff --git a/migrations/0019_add_purchase_orders.up.sql b/migrations/0019_add_purchase_orders.up.sql
+new file mode 100644
+index 0000000..03ad556
+--- /dev/null
++++ b/migrations/0019_add_purchase_orders.up.sql
+@@ -0,0 +1,79 @@
++-- Закупки по дефициту (docs/features/purchase-orders/draft-spec.md §4.1–§4.3).
++-- MVP (DS-030): без переходного периода.
++
++-- §4.3: роль supplier + привязка учётки к поставщику (DS-007).
++ALTER TABLE users DROP CONSTRAINT users_role_check;
++ALTER TABLE users
++    ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'executor', 'supplier')),
++    ADD COLUMN supplier_id uuid NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
++    ADD CONSTRAINT users_supplier_chk CHECK ((role = 'supplier') = (supplier_id IS NOT NULL));
++CREATE INDEX users_supplier_id_idx ON users (supplier_id) WHERE supplier_id IS NOT NULL;
++
++-- §4.1: шапка закупки. Номер — sequence без переиспользования (DS-015).
++CREATE SEQUENCE purchase_orders_number_seq;
++
++CREATE TABLE purchase_orders (
++    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++    number          bigint NOT NULL DEFAULT nextval('purchase_orders_number_seq'),
++    supplier_id     uuid NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
++    status          text NOT NULL DEFAULT 'draft',
++    note            text NOT NULL DEFAULT '' CHECK (char_length(note) <= 1000),
++    note_changed_at timestamptz NULL,
++    version         bigint NOT NULL DEFAULT 1,
++    created_by      uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
++    created_at      timestamptz NOT NULL DEFAULT now(),
++    updated_at      timestamptz NOT NULL DEFAULT now(),
++    sent_by         uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    sent_at         timestamptz NULL,
++    ready_by        uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    ready_at        timestamptz NULL,
++    picked_up_by    uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    picked_up_at    timestamptz NULL,
++    cancelled_by    uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    cancelled_at    timestamptz NULL,
++    cancel_reason   text NULL,
++    deleted_at      timestamptz NULL,
++    deleted_by      uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    delete_reason   text NULL,
++    CONSTRAINT purchase_orders_status_chk
++        CHECK (status IN ('draft', 'sent', 'ready', 'picked_up', 'cancelled')),
++    CONSTRAINT purchase_orders_cancel_chk CHECK (
++        (status = 'cancelled') = (cancelled_at IS NOT NULL AND cancelled_by IS NOT NULL
++            AND cancel_reason IS NOT NULL AND char_length(btrim(cancel_reason)) BETWEEN 1 AND 500)),
++    CONSTRAINT purchase_orders_deleted_chk CHECK (
++        (deleted_at IS NULL AND deleted_by IS NULL AND delete_reason IS NULL)
++        OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL AND delete_reason IS NOT NULL
++            AND char_length(btrim(delete_reason)) BETWEEN 1 AND 500 AND status = 'draft')),
++    CONSTRAINT purchase_orders_bazaar_chk CHECK (supplier_id IS NOT NULL OR status NOT IN ('sent', 'ready'))
++);
++ALTER SEQUENCE purchase_orders_number_seq OWNED BY purchase_orders.number;
++
++CREATE UNIQUE INDEX purchase_orders_number_uq ON purchase_orders (number);
++CREATE INDEX purchase_orders_status_idx ON purchase_orders (status, created_at DESC) WHERE deleted_at IS NULL;
++CREATE INDEX purchase_orders_supplier_idx ON purchase_orders (supplier_id, status) WHERE deleted_at IS NULL;
++CREATE INDEX purchase_orders_created_by_idx ON purchase_orders (created_by, created_at DESC) WHERE deleted_at IS NULL;
++CREATE INDEX purchase_orders_deleted_at_idx ON purchase_orders (deleted_at DESC, id) WHERE deleted_at IS NOT NULL;
++
++-- §4.2: строки заказа.
++CREATE TABLE purchase_order_items (
++    id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++    order_id             uuid NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
++    product_id           uuid NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
++    position             integer NOT NULL DEFAULT 0,
++    qty                  numeric(12,3) NOT NULL CHECK (qty > 0),
++    reason               text NOT NULL DEFAULT 'manual'
++        CHECK (reason IN ('for_orders', 'below_min', 'manual')),
++    name                 text NOT NULL,
++    sku                  text NOT NULL DEFAULT '',
++    unit                 text NOT NULL DEFAULT '',
++    supplier_qty         numeric(12,3) NULL CHECK (supplier_qty IS NULL OR supplier_qty >= 0),
++    supplier_price       numeric(12,2) NULL CHECK (supplier_price IS NULL OR supplier_price >= 0),
++    supplier_note        text NOT NULL DEFAULT '' CHECK (char_length(supplier_note) <= 500),
++    supplier_answered_by uuid NULL REFERENCES users(id) ON DELETE RESTRICT,
++    supplier_answered_at timestamptz NULL,
++    customer_changed_at  timestamptz NULL,
++    version              bigint NOT NULL DEFAULT 1
++);
++CREATE UNIQUE INDEX purchase_order_items_order_product_uq ON purchase_order_items (order_id, product_id);
++CREATE INDEX purchase_order_items_order_idx ON purchase_order_items (order_id, position);
++CREATE INDEX purchase_order_items_product_idx ON purchase_order_items (product_id);

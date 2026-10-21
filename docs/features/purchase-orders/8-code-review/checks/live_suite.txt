@@ -1,0 +1,4 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/live_suite_check.py --feature purchase-orders --repo /Users/igorpotema/mycode/kanban-tree-autoservice
+(exit 0)
+
+live-suite purchase-orders: PASS

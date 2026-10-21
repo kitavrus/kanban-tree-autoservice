@@ -18,6 +18,14 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/server"
 )
 
+// @title           Kanban-tree API
+// @version         1.0
+// @description     JSON API (CLAUDE.md §API-1: kebab-URL, snake_case JSON, списки {items,total,limit,offset}).
+// @description     Аннотированы эндпоинты закупок по дефициту и кабинета поставщика (purchase-orders).
+// @BasePath        /api/v1
+// @securityDefinitions.apikey CookieSession
+// @in              cookie
+// @name            sid
 func main() {
 	// --check-config ОБЯЗАТЕЛЕН (контракт infra-bootstrap): образ проверяет env
 	// своим кодом и выходит 0/1, не поднимая БД/Redis/портов.

@@ -43,3 +43,10 @@
 - [x] integration: purchase-orders/..., users, auth, suppliers, softdelete, server, board — все ok
 - [x] playwright --list — 18 тестов; tsc --noEmit чисто
 - [x] ИСПОЛНИТЕЛЬ ЗАВЕРШИЛ
+
+## FIX-LOOP 1
+- [x] e2e_drift: цикл TS-021 обёрнут в test.describe('TS-021: …') — id читается статически
+- [x] fuzz: 3-design/design-e2e-strategy.md со строкой **pw-fuzz:**; e2e/tests/fuzz/purchase-orders_fuzz.spec.ts (--list ok)
+- [x] Go-fuzz: validators/validators_fuzz_test.go — FuzzParseQty, FuzzValidateAnswer, FuzzValidateCreate, FuzzValidateReason по 10s — PASS
+- [x] swagger: swag-аннотации только у 15 новых эндпоинтов + шапка в cmd/server/main.go; make swagger → docs/swagger/{docs.go,swagger.json,swagger.yaml} (12 путей); go.mod += github.com/swaggo/swag v1.16.4
+- [x] self-check: go build ok; go vet ok; go test ./... 21 ok/0 fail; integration purchase-orders/... ok; playwright --list 22 теста; tsc чисто

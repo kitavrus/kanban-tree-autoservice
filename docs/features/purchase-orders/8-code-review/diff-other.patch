@@ -1,0 +1,1209 @@
+diff --git a/.claude/scaffold-layout.json b/.claude/scaffold-layout.json
+new file mode 100644
+index 0000000..0288726
+--- /dev/null
++++ b/.claude/scaffold-layout.json
+@@ -0,0 +1,9 @@
++{
++  "backend_feature_root": "internal/features/{feature}",
++  "migrations_dir": "migrations",
++  "frontend_feature_root": "frontend/src/features/{feature}",
++  "e2e_dir": "e2e",
++  "errorspkg_dir": "pkg/errorspkg",
++  "frontend_list_component": "components/{Entity}List.vue",
++  "frontend_form_component": "components/{Entity}Form.vue"
++}
+diff --git a/web/ssr/_layout/templates/layouts/base.html b/web/ssr/_layout/templates/layouts/base.html
+index 3281b54..3a5c34d 100644
+--- a/web/ssr/_layout/templates/layouts/base.html
++++ b/web/ssr/_layout/templates/layouts/base.html
+@@ -33,7 +33,7 @@
+       {{ if .Shell.User.Name }}
+       <div class="d-flex align-items-center gap-2">
+         <span class="app-avatar">{{ initials .Shell.User.Name }}</span>
+-        <div><b>{{ .Shell.User.Name }}</b><div class="text-body-secondary small">{{ if .Shell.IsAdmin }}Администратор{{ else }}Исполнитель{{ end }}</div></div>
++        <div><b>{{ .Shell.User.Name }}</b><div class="text-body-secondary small">{{ if .Shell.IsAdmin }}Администратор{{ else if .Shell.IsSupplier }}Поставщик{{ else }}Исполнитель{{ end }}</div></div>
+       </div>
+       <div>
+         <label for="app-timezone" class="form-label small text-body-secondary mb-1">Часовой пояс</label>
+diff --git a/web/ssr/_shared/app.css b/web/ssr/_shared/app.css
+index 5481e50..8e8ed1c 100644
+--- a/web/ssr/_shared/app.css
++++ b/web/ssr/_shared/app.css
+@@ -433,3 +433,19 @@ body { background: var(--bs-body-bg); }
+   .cal-cell { min-height: 58px; padding: 4px; }
+   .cal-note { display: none; }
+ }
++
++/* ---- Закупки (purchase-orders §8.1–§8.3, §8.6–§8.7) ---- */
++.mw-1100 { max-width: 1100px; }
++/* Расхождение «Соберёт» ≠ «Просим» — жёлтая подсветка строки (§8.3). */
++.po-discrepancy > td { background: var(--bs-warning-bg-subtle) !important; }
++.po-qty { max-width: 8rem; }
++.po-hint { font-size: .825rem; color: var(--bs-secondary-color); }
++/* Кабинет поставщика: телефон в первую очередь (DS-031) — крупные поля, итог и «Собрано»
++   закреплены внизу экрана. Карточки строк не шире экрана: длинные названия переносятся. */
++.so-root { max-width: 860px; min-width: 0; }
++.so-item { overflow-wrap: anywhere; }
++.so-item.so-missing { border-color: var(--bs-danger) !important; }
++.so-item .form-control { min-height: 44px; font-size: 1rem; }
++.so-note-changed { background: var(--bs-warning-bg-subtle); }
++.so-footer { position: sticky; bottom: 0; z-index: 5; background: var(--bs-body-bg); border-top: 1px solid var(--bs-border-color); padding: .75rem 0; margin-top: .75rem; }
++.so-card { cursor: pointer; overflow-wrap: anywhere; }
+diff --git a/web/ssr/_shared/js/deleted.js b/web/ssr/_shared/js/deleted.js
+index dd22add..ac22e96 100644
+--- a/web/ssr/_shared/js/deleted.js
++++ b/web/ssr/_shared/js/deleted.js
+@@ -76,6 +76,14 @@
+       kind: 'catalog-categories', label: 'Категории', countKey: 'catalog_categories',
+       restoreUrl: function (id) { return '/api/v1/catalog-categories/' + encodeURIComponent(id) + '/restore'; },
+       notFound: 'Категория не найдена', confirmText: archivedConfirm
++    },
++    {
++      // purchase-orders (DS-037, DS-072): удалённые черновики закупок; восстановленный
++      // черновик снова в списке «Закупки», ссылка «Открыть» — его карточка.
++      kind: 'purchase-orders', label: 'Закупки', countKey: 'purchase_orders',
++      restoreUrl: function (id) { return '/api/v1/purchase-orders/' + encodeURIComponent(id) + '/restore'; },
++      notFound: 'Заказ не найден',
++      openLink: function (id) { return { href: '/purchases/' + encodeURIComponent(id), text: 'Открыть заказ' }; }
+     }
+   ];
+ 
+diff --git a/web/ssr/_shared/js/purchases.js b/web/ssr/_shared/js/purchases.js
+new file mode 100644
+index 0000000..1f5f77e
+--- /dev/null
++++ b/web/ssr/_shared/js/purchases.js
+@@ -0,0 +1,573 @@
++/* Закупки по дефициту (docs/features/purchase-orders/draft-spec.md §8.1–§8.3): список,
++   «Новый заказ» и карточка поверх JSON API /api/v1/purchase-orders (KT.api). Страница
++   выбирается атрибутом data-po-page корневого элемента. Ошибки: поле — текст под полем,
++   глобальные (409, сеть) — тост вверху справа (KT.uiToast), подтверждения — модальные окна
++   (UI-конвенции DS-073). Время — в поясе пользователя (KT.time). */
++(function () {
++  'use strict';
++  var KT = window.KT || {};
++  var API = '/api/v1/purchase-orders';
++
++  var STATUS = {
++    draft: { t: 'Черновик', c: 'text-bg-secondary' },
++    sent: { t: 'Отправлен', c: 'text-bg-primary' },
++    ready: { t: 'Собран', c: 'text-bg-info' },
++    picked_up: { t: 'Забрали', c: 'text-bg-success' },
++    cancelled: { t: 'Отменён', c: 'text-bg-dark' }
++  };
++  var REASON = {
++    for_orders: { t: 'Не хватает под заказы', c: 'text-bg-danger' },
++    below_min: { t: 'Ниже минимума', c: 'text-bg-warning' },
++    manual: { t: 'Вручную', c: 'text-bg-light border' }
++  };
++  // Коды ошибок полей → текст (validators.Message на сервере даёт тот же текст в message).
++  var FIELD_TEXT = {
++    items: { required: 'Отметьте хотя бы одну строку', too_many: 'Не больше 200 строк в заказе' },
++    qty: 'Количество от 0.001 до 99 999.999',
++    product_id: 'Запчасть недоступна',
++    supplier_id: 'Поставщик недоступен',
++    note: 'Не больше 1000 символов',
++    reason: 'Причина — от 1 до 500 символов'
++  };
++
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function el(tag, cls, text) {
++    var n = document.createElement(tag);
++    if (cls) n.className = cls;
++    if (text != null) n.textContent = text;
++    return n;
++  }
++  function esc(s) {
++    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
++      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
++    });
++  }
++  function dt(iso) { return iso ? KT.time.fmtDateTime(iso) : ''; }
++  function toast(msg, isError) { KT.uiToast(msg, isError); }
++  function failure(err, fallback) {
++    if (err instanceof KT.ApiError) toast(err.message || fallback, true);
++    else toast('Нет связи — повторите', true);
++  }
++  function badge(map, key, testid) {
++    var b = el('span', 'badge ' + ((map[key] && map[key].c) || 'text-bg-secondary'), (map[key] && map[key].t) || key);
++    if (testid) b.setAttribute('data-testid', testid);
++    return b;
++  }
++  // Количество: «4.000» → «4», «2.500» → «2.5» (на экране; на wire остаётся строка).
++  function num(s) {
++    if (s == null || s === '') return '';
++    var v = String(s);
++    return v.indexOf('.') >= 0 ? v.replace(/0+$/, '').replace(/\.$/, '') : v;
++  }
++  function fieldBase(name) { var m = /^items\[(\d+)\]\.(.+)$/.exec(name); return m ? { index: +m[1], name: m[2] } : null; }
++
++  /* Окно с причиной (отмена §8.3 п.5, удаление п.6): кнопка неактивна, пока причина пуста;
++     400 reason — текст под полем, окно открыто; иное — закрыть и отдать ошибку. */
++  function reasonModal(opts) {
++    return new Promise(function (resolve) {
++      var root = el('div', 'modal fade');
++      root.tabIndex = -1;
++      root.setAttribute('data-testid', 'po-reason-dialog');
++      root.innerHTML = '<div class="modal-dialog modal-dialog-centered"><div class="modal-content">' +
++        '<div class="modal-header"><h2 class="modal-title fs-5"></h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button></div>' +
++        '<div class="modal-body"><p class="po-reason-text"></p><label class="form-label" for="po-reason-input">Причина *</label>' +
++        '<textarea id="po-reason-input" class="form-control" rows="3" maxlength="500" data-testid="po-reason-input"></textarea>' +
++        '<div class="invalid-feedback d-block" data-testid="po-reason-error"></div></div>' +
++        '<div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" data-testid="po-reason-cancel">Назад</button>' +
++        '<button type="button" class="btn btn-danger" disabled data-testid="po-reason-ok"></button></div></div></div>';
++      $('.modal-title', root).textContent = opts.title;
++      $('.po-reason-text', root).textContent = opts.text || '';
++      var ok = $('[data-testid="po-reason-ok"]', root);
++      ok.textContent = opts.ok;
++      var ta = $('textarea', root), errEl = $('[data-testid="po-reason-error"]', root);
++      ta.addEventListener('input', function () { ok.disabled = ta.value.trim() === ''; errEl.textContent = ''; ta.classList.remove('is-invalid'); });
++      document.body.append(root);
++      var modal = new bootstrap.Modal(root);
++      var outcome = null;
++      ok.addEventListener('click', function () {
++        ok.disabled = true;
++        opts.submit(ta.value).then(function (resp) {
++          outcome = { result: resp };
++          modal.hide();
++        }).catch(function (err) {
++          ok.disabled = false;
++          if (err instanceof KT.ApiError && err.status === 400) {
++            var f = (err.fields || []).filter(function (x) { return x.name === 'reason'; })[0];
++            if (f) { errEl.textContent = FIELD_TEXT.reason; ta.classList.add('is-invalid'); return; }
++          }
++          outcome = { error: err };
++          modal.hide();
++        });
++      });
++      root.addEventListener('shown.bs.modal', function () { ta.focus(); });
++      root.addEventListener('hidden.bs.modal', function () { modal.dispose(); root.remove(); resolve(outcome); });
++      modal.show();
++    });
++  }
++
++  /* Поиск запчасти «Добавить запчасть» (§8.2 п.1): GET /api/v1/products?q=…, от 2 символов. */
++  function productSearch(input, onPick) {
++    KT.autocomplete(input, {
++      min: 2, delay: 300, testid: 'po-add-list', optionTestid: 'po-add-option',
++      fetch: function (q) {
++        return KT.api.get('/api/v1/products?q=' + encodeURIComponent(q.trim()) + '&limit=20&offset=0').then(function (r) {
++          return (r.items || []).map(function (p) {
++            return { html: esc(p.name) + (p.sku ? ' <span class="text-body-secondary small">' + esc(p.sku) + '</span>' : ''), item: p };
++          });
++        }).catch(function (err) { toast('Поиск недоступен', true); throw err; });
++      },
++      onSelect: function (p) { input.value = ''; onPick(p); }
++    });
++  }
++
++  // ======================= §8.1 список =======================
++  function initList(root) {
++    var LIMIT = 50;
++    var params = new URLSearchParams(location.search);
++    var state = { status: params.get('status') || '', offset: Math.max(0, parseInt(params.get('offset'), 10) || 0) };
++    var sel = $('#po-status');
++    sel.value = state.status;
++    if (params.get('toast') === 'deleted') {
++      toast('Черновик удалён — восстановить можно в «Удалённых»');
++      params.delete('toast');
++      history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
++    }
++    sel.addEventListener('change', function () { state.status = sel.value; state.offset = 0; load(); });
++    $('#po-prev').addEventListener('click', function () { state.offset = Math.max(0, state.offset - LIMIT); load(); });
++    $('#po-next').addEventListener('click', function () { state.offset += LIMIT; load(); });
++
++    function syncUrl() {
++      var p = new URLSearchParams();
++      if (state.status) p.set('status', state.status);
++      if (state.offset) p.set('offset', state.offset);
++      history.replaceState(null, '', '/purchases' + (p.toString() ? '?' + p : ''));
++    }
++    function load() {
++      syncUrl();
++      var q = '?limit=' + LIMIT + '&offset=' + state.offset + (state.status ? '&status=' + encodeURIComponent(state.status) : '');
++      KT.api.get(API + q).then(render).catch(function (err) {
++        if (err instanceof KT.ApiError && err.status === 400) {
++          toast('Неизвестный статус', true);
++          state.status = ''; sel.value = ''; state.offset = 0;
++          load();
++          return;
++        }
++        toast('Не удалось загрузить список', true);
++      });
++    }
++    function render(resp) {
++      var body = $('#po-tbody');
++      body.textContent = '';
++      (resp.items || []).forEach(function (o) {
++        var tr = el('tr');
++        tr.setAttribute('data-testid', 'po-row');
++        tr.dataset.id = o.id;
++        tr.style.cursor = 'pointer';
++        var a = el('a', 'fw-semibold', o.number_display);
++        a.href = '/purchases/' + encodeURIComponent(o.id);
++        a.setAttribute('data-testid', 'po-row-number');
++        var cells = [a, el('span', 'text-break', o.recipient_name), badge(STATUS, o.status, 'po-row-status'),
++          String(o.items_count), o.total_amount || '', null, dt(o.sent_at), dt(o.picked_up_at)];
++        cells.forEach(function (c, i) {
++          var td = el('td', (i === 3 || i === 4) ? 'text-end' : '');
++          if (i === 5) {
++            td.append(el('div', null, dt(o.created_at)), el('div', 'small text-body-secondary', o.created_by_name));
++          } else if (c instanceof Node) td.append(c);
++          else td.textContent = c;
++          if (i === 1) td.setAttribute('data-testid', 'po-row-recipient');
++          if (i === 4) td.setAttribute('data-testid', 'po-row-total');
++          tr.append(td);
++        });
++        tr.addEventListener('click', function (e) { if (!e.target.closest('a')) location.href = a.href; });
++        body.append(tr);
++      });
++      var empty = !resp.items || resp.items.length === 0;
++      $('#po-table-wrap').classList.toggle('d-none', empty);
++      $('#po-empty').classList.toggle('d-none', !empty || !!state.status);
++      $('#po-total').textContent = 'Всего: ' + resp.total;
++      $('#po-prev').classList.toggle('d-none', state.offset === 0);
++      $('#po-next').classList.toggle('d-none', state.offset + LIMIT >= resp.total);
++    }
++    load();
++  }
++
++  // ======================= §8.2 новый заказ =======================
++  function initNew(root) {
++    var lines = []; // {product_id,name,sku,unit,stock,min_stock,pending,reason,tasks,in_open_orders,checked,qty}
++    var body = $('#po-lines-body');
++    var saving = false;
++
++    function lineOf(pid) { for (var i = 0; i < lines.length; i++) if (lines[i].product_id === pid) return lines[i]; return null; }
++    function clearErrors() {
++      ['#po-supplier-error', '#po-note-error', '#po-items-error'].forEach(function (s) { $(s).textContent = ''; });
++      body.querySelectorAll('.is-invalid').forEach(function (n) { n.classList.remove('is-invalid'); });
++      body.querySelectorAll('[data-line-error]').forEach(function (n) { n.textContent = ''; });
++      body.querySelectorAll('tr.table-danger').forEach(function (n) { n.classList.remove('table-danger'); });
++    }
++    function render() {
++      body.textContent = '';
++      lines.forEach(function (l) {
++        var tr = el('tr');
++        tr.setAttribute('data-testid', 'po-line');
++        tr.dataset.productId = l.product_id;
++        var cb = el('input', 'form-check-input');
++        cb.type = 'checkbox';
++        cb.checked = l.checked;
++        cb.setAttribute('aria-label', 'Заказать ' + l.name);
++        cb.setAttribute('data-testid', 'po-line-check');
++        cb.addEventListener('change', function () { l.checked = cb.checked; });
++        var td0 = el('td'); td0.append(cb);
++
++        var td1 = el('td', 'text-break');
++        td1.append(el('div', 'fw-semibold', l.name));
++        if (l.sku) td1.append(el('div', 'small text-body-secondary', l.sku));
++        (l.in_open_orders || []).forEach(function (o) {
++          var hint = el('div', 'po-hint');
++          hint.setAttribute('data-testid', 'po-line-open-hint');
++          hint.append('уже в открытом заказе ');
++          var a = el('a', null, o.number_display);
++          a.href = '/purchases/' + encodeURIComponent(o.id);
++          hint.append(a, ' — ' + num(o.qty) + ' ' + (l.unit || 'шт.'));
++          td1.append(hint);
++        });
++        var td2 = el('td', 'text-end', l.stock == null ? '' : num(l.stock));
++        var td3 = el('td', 'text-end', l.min_stock == null ? '' : num(l.min_stock));
++        var td4 = el('td');
++        if (l.pending != null) td4.append(el('span', null, num(l.pending)));
++        (l.tasks || []).forEach(function (t) {
++          var a = el('a', 'd-block small', '#' + t.id + ' ' + t.title);
++          a.href = '/?task=' + encodeURIComponent(t.id);
++          td4.append(a);
++        });
++        var td5 = el('td'); td5.append(badge(REASON, l.reason, 'po-line-reason'));
++        var td6 = el('td');
++        var qty = el('input', 'form-control form-control-sm po-qty');
++        qty.type = 'text';
++        qty.inputMode = 'decimal';
++        qty.value = num(l.qty);
++        qty.setAttribute('aria-label', 'К заказу');
++        qty.setAttribute('data-testid', 'po-line-qty');
++        qty.addEventListener('input', function () { l.qty = qty.value.trim().replace(',', '.'); });
++        var qerr = el('div', 'invalid-feedback d-block');
++        qerr.setAttribute('data-line-error', '');
++        qerr.setAttribute('data-testid', 'po-line-error');
++        td6.append(qty, qerr);
++        l.qtyInput = qty; l.row = tr; l.errEl = qerr;
++        [td0, td1, td2, td3, td4, td5, td6].forEach(function (td) { tr.append(td); });
++        body.append(tr);
++      });
++      $('#po-lines-empty').classList.toggle('d-none', lines.length > 0);
++      $('#po-lines-wrap').classList.toggle('d-none', lines.length === 0);
++    }
++    ['for_orders', 'below_min'].forEach(function (r) {
++      var t = $('#po-toggle-' + r);
++      t.addEventListener('change', function () {
++        lines.forEach(function (l) { if (l.reason === r) l.checked = t.checked; });
++        render();
++      });
++    });
++    productSearch($('#po-add'), function (p) {
++      var ex = lineOf(p.id);
++      if (ex) { ex.qtyInput.focus(); ex.qtyInput.select(); return; }
++      lines.push({ product_id: p.id, name: p.name, sku: p.sku, unit: p.unit, reason: 'manual', checked: true, qty: '1', tasks: [], in_open_orders: [] });
++      render();
++    });
++    KT.api.get(API + '/suggestions').then(function (resp) {
++      lines = (resp.items || []).map(function (s) {
++        return { product_id: s.product_id, name: s.name, sku: s.sku, unit: s.unit, stock: s.stock, min_stock: s.min_stock,
++          pending: s.pending, reason: s.reason, tasks: s.tasks, in_open_orders: s.in_open_orders, checked: s.checked, qty: s.to_order };
++      });
++      render();
++    }).catch(function () { render(); toast('Не удалось рассчитать дефицит', true); });
++
++    $('#po-save-draft').addEventListener('click', function () {
++      if (saving) return;
++      clearErrors();
++      var sup = $('#po-supplier').value;
++      if (!sup) { $('#po-supplier-error').textContent = 'Выберите получателя'; return; }
++      var picked = lines.filter(function (l) { return l.checked; });
++      if (picked.length === 0) { $('#po-items-error').textContent = FIELD_TEXT.items.required; return; }
++      var body = {
++        supplier_id: sup === 'bazaar' ? null : sup,
++        note: $('#po-note').value,
++        items: picked.map(function (l) { return { product_id: l.product_id, qty: String(l.qty), reason: l.reason }; })
++      };
++      saving = true;
++      var btn = $('#po-save-draft');
++      btn.disabled = true;
++      KT.api.post(API, body).then(function (o) {
++        location.href = '/purchases/' + encodeURIComponent(o.id) + '?created=' + encodeURIComponent(o.number_display);
++      }).catch(function (err) {
++        saving = false;
++        btn.disabled = false;
++        if (!(err instanceof KT.ApiError) || err.status !== 400 || !(err.fields || []).length) { failure(err, 'Не удалось сохранить'); return; }
++        err.fields.forEach(function (f) {
++          var it = fieldBase(f.name);
++          if (it) {
++            var l = picked[it.index];
++            if (!l) return;
++            if (it.name === 'qty') { l.qtyInput.classList.add('is-invalid'); l.errEl.textContent = FIELD_TEXT.qty; }
++            else { l.row.classList.add('table-danger'); l.errEl.textContent = FIELD_TEXT.product_id; }
++            return;
++          }
++          if (f.name === 'supplier_id') $('#po-supplier-error').textContent = FIELD_TEXT.supplier_id;
++          else if (f.name === 'note') $('#po-note-error').textContent = FIELD_TEXT.note;
++          else if (f.name === 'items') $('#po-items-error').textContent = FIELD_TEXT.items[f.message] || err.message;
++          else toast(err.message, true);
++        });
++      });
++    });
++  }
++
++  // ======================= §8.3 карточка =======================
++  function initView(root) {
++    var id = root.dataset.poId;
++    var isAdmin = root.dataset.isAdmin === 'true';
++    var order = null, items = [], dirty = false, busy = false;
++
++    var params = new URLSearchParams(location.search);
++    if (params.get('created')) {
++      toast('Черновик ' + params.get('created') + ' создан');
++      history.replaceState(null, '', location.pathname);
++    }
++    window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
++
++    function markDirty() { dirty = true; }
++    function load() {
++      return KT.api.get(API + '/' + encodeURIComponent(id)).then(function (o) { show(o); }).catch(function (err) {
++        if (err instanceof KT.ApiError && err.status === 404) { dirty = false; location.reload(); return; }
++        failure(err, 'Не удалось загрузить заказ');
++      });
++    }
++    function show(o) {
++      order = o;
++      dirty = false;
++      items = o.items.map(function (it) { return Object.assign({}, it); });
++      $('#po-number').textContent = o.number_display;
++      var b = $('#po-status-badge');
++      b.className = 'badge ' + STATUS[o.status].c;
++      b.textContent = STATUS[o.status].t;
++      b.dataset.status = o.status;
++      $('#po-recipient').textContent = o.recipient_name;
++      $('#po-recipient-phone').textContent = o.recipient_phone || '';
++      var d = ['Создан ' + dt(o.created_at) + ' — ' + o.created_by_name];
++      if (o.sent_at) d.push('Отправлен ' + dt(o.sent_at));
++      if (o.ready_at) d.push('Собран ' + dt(o.ready_at));
++      if (o.picked_up_at) d.push('Забрали ' + dt(o.picked_up_at));
++      if (o.cancelled_at) d.push('Отменён ' + dt(o.cancelled_at));
++      $('#po-dates').textContent = d.join(' · ');
++      var cr = $('#po-cancel-reason');
++      cr.classList.toggle('d-none', !o.cancel_reason);
++      cr.textContent = o.cancel_reason ? 'Причина отмены: ' + o.cancel_reason : '';
++      var note = $('#po-note');
++      note.value = o.note;
++      note.readOnly = !o.can_edit;
++      note.oninput = markDirty;
++      $('#po-add-wrap').classList.toggle('d-none', !o.can_edit);
++      renderItems();
++      renderButtons();
++    }
++    function answered() { return items.some(function (it) { return it.supplier_qty != null; }); }
++    function renderItems() {
++      var head = $('#po-items-head');
++      var showAnswers = answered();
++      var cols = ['№', 'Запчасть', 'Тип', 'Просим'];
++      if (showAnswers) cols = cols.concat(['Соберёт', 'Цена', 'Сумма', 'Комментарий']);
++      if (order.can_edit) cols.push('');
++      head.textContent = '';
++      cols.forEach(function (c) { head.append(el('th', null, c)); });
++      var body = $('#po-items-body');
++      body.textContent = '';
++      items.forEach(function (it, i) {
++        var tr = el('tr', it.has_discrepancy ? 'po-discrepancy' : '');
++        tr.setAttribute('data-testid', 'po-item');
++        tr.dataset.productId = it.product_id;
++        if (it.has_discrepancy) tr.dataset.discrepancy = 'true';
++        tr.append(el('td', null, String(i + 1)));
++        var name = el('td', 'text-break');
++        name.append(el('div', 'fw-semibold', it.name));
++        name.append(el('div', 'small text-body-secondary', [it.sku, it.unit].filter(Boolean).join(' · ')));
++        if (it.customer_changed) name.append(el('span', 'badge text-bg-warning', 'Изменено'));
++        tr.append(name);
++        var tdr = el('td'); tdr.append(badge(REASON, it.reason)); tr.append(tdr);
++        var tdq = el('td');
++        if (order.can_edit) {
++          var q = el('input', 'form-control form-control-sm po-qty');
++          q.type = 'text'; q.inputMode = 'decimal'; q.value = num(it.qty);
++          q.setAttribute('aria-label', 'Просим');
++          q.setAttribute('data-testid', 'po-item-qty');
++          q.addEventListener('input', function () { it.qty = q.value.trim().replace(',', '.'); markDirty(); });
++          var qe = el('div', 'invalid-feedback d-block');
++          qe.setAttribute('data-testid', 'po-item-error');
++          it.qtyInput = q; it.errEl = qe; it.row = tr;
++          tdq.append(q, qe);
++        } else {
++          tdq.textContent = num(it.qty);
++          tdq.setAttribute('data-testid', 'po-item-qty-text');
++        }
++        tr.append(tdq);
++        if (showAnswers) {
++          var sq = el('td', null, num(it.supplier_qty)); sq.setAttribute('data-testid', 'po-item-supplier-qty');
++          var sp = el('td', null, it.supplier_price || ''); sp.setAttribute('data-testid', 'po-item-supplier-price');
++          var la = el('td', null, it.line_amount || ''); la.setAttribute('data-testid', 'po-item-line-amount');
++          var sn = el('td', 'text-break small', it.supplier_note || ''); sn.setAttribute('data-testid', 'po-item-supplier-note');
++          tr.append(sq, sp, la, sn);
++        }
++        if (order.can_edit) {
++          var tdx = el('td');
++          var x = el('button', 'btn btn-sm btn-outline-danger', '×');
++          x.type = 'button';
++          x.setAttribute('aria-label', 'Удалить строку');
++          x.setAttribute('data-testid', 'po-item-remove');
++          x.addEventListener('click', function () { items.splice(items.indexOf(it), 1); markDirty(); renderItems(); });
++          tdx.append(x);
++          tr.append(tdx);
++        }
++        body.append(tr);
++      });
++      $('#po-total').textContent = order.total_amount ? 'Итого: ' + order.total_amount : '';
++    }
++    function button(text, cls, testid, fn) {
++      var b = el('button', 'btn ' + cls, text);
++      b.type = 'button';
++      b.setAttribute('data-testid', testid);
++      b.addEventListener('click', function () { if (!busy) fn(b); });
++      return b;
++    }
++    function renderButtons() {
++      var box = $('#po-buttons');
++      box.textContent = '';
++      var o = order, bazaar = !o.supplier_id;
++      var add = function (b) { box.append(b); };
++      if (o.status === 'draft') {
++        add(button('Сохранить', 'btn-outline-primary', 'po-save', function () { save().catch(function () {}); }));
++        if (!bazaar) add(button('Отправить поставщику', 'btn-primary', 'po-send', send));
++        if (bazaar) add(button('Забрали', 'btn-outline-success', 'po-pickup', pickUp));
++        add(button('Отменить', 'btn-outline-secondary', 'po-cancel', cancel));
++        if (isAdmin) add(button('Удалить', 'btn-outline-danger', 'po-delete', del));
++      } else if (o.status === 'sent') {
++        add(button('Сохранить', 'btn-outline-primary', 'po-save', function () { save().catch(function () {}); }));
++        add(button('Отозвать', 'btn-outline-secondary', 'po-recall', recall));
++        if (!o.supplier_has_login) add(button('Забрали', 'btn-outline-success', 'po-pickup', pickUp));
++        add(button('Отменить', 'btn-outline-secondary', 'po-cancel', cancel));
++      } else if (o.status === 'ready') {
++        add(button('Забрали', 'btn-success', 'po-pickup', pickUp));
++        add(button('Отменить', 'btn-outline-secondary', 'po-cancel', cancel));
++      }
++    }
++    function clearErrors() {
++      $('#po-note-error').textContent = '';
++      $('#po-items-error').textContent = '';
++      items.forEach(function (it) {
++        if (it.qtyInput) it.qtyInput.classList.remove('is-invalid');
++        if (it.errEl) it.errEl.textContent = '';
++        if (it.row) it.row.classList.remove('table-danger');
++      });
++    }
++    // conflict — 409/404 действия: тост; статус/версия — перечитать карточку.
++    function conflict(err, fallback) {
++      if (err instanceof KT.ApiError && err.status === 404) { dirty = false; location.reload(); return; }
++      failure(err, fallback);
++      if (err instanceof KT.ApiError && err.status === 409) {
++        if (err.code === 'PURCHASE_ORDER_VERSION_CONFLICT') showReload();
++        else load();
++      }
++    }
++    function showReload() {
++      if ($('#po-reload')) return;
++      var a = el('div', 'alert alert-warning d-flex align-items-center gap-2 mt-2');
++      a.id = 'po-reload';
++      a.append(el('span', null, 'Заказ изменился, обновите страницу'));
++      var b = el('button', 'btn btn-sm btn-warning ms-auto', 'Обновить');
++      b.type = 'button';
++      b.setAttribute('data-testid', 'po-reload');
++      b.addEventListener('click', function () { a.remove(); load(); });
++      a.append(b);
++      root.prepend(a);
++    }
++    function run(btn, p) {
++      busy = true;
++      if (btn) btn.disabled = true;
++      return p.then(function (r) { busy = false; if (btn) btn.disabled = false; return r; },
++        function (e) { busy = false; if (btn) btn.disabled = false; throw e; });
++    }
++    function save() {
++      clearErrors();
++      var body = {
++        version: order.version,
++        note: $('#po-note').value,
++        items: items.map(function (it) { return { id: it.id || null, product_id: it.product_id, qty: String(it.qty), reason: it.reason }; })
++      };
++      if (body.items.length === 0) { $('#po-items-error').textContent = 'Добавьте хотя бы одну строку'; return Promise.reject(null); }
++      return run(null, KT.api.put(API + '/' + encodeURIComponent(id), body)).then(function (o) {
++        show(o);
++        toast('Сохранено');
++        return o;
++      }).catch(function (err) {
++        if (err instanceof KT.ApiError && err.status === 400 && (err.fields || []).length) {
++          err.fields.forEach(function (f) {
++            var fi = fieldBase(f.name);
++            var it = fi && items[fi.index];
++            if (it && it.errEl) {
++              if (fi.name === 'qty') { it.qtyInput.classList.add('is-invalid'); it.errEl.textContent = FIELD_TEXT.qty; }
++              else { it.row.classList.add('table-danger'); it.errEl.textContent = err.message; }
++            } else if (f.name === 'note') $('#po-note-error').textContent = FIELD_TEXT.note;
++            else $('#po-items-error').textContent = err.message;
++          });
++        } else if (err) conflict(err, 'Не удалось сохранить');
++        throw null;
++      });
++    }
++    function transition(btn, path, okText) {
++      var go = function () {
++        return run(btn, KT.api.post(API + '/' + encodeURIComponent(id) + '/' + path, { version: order.version })).then(function (o) {
++          show(o);
++          toast(okText);
++        }).catch(function (err) { conflict(err, 'Не удалось выполнить действие'); });
++      };
++      return dirty ? save().then(go, function () {}) : go();
++    }
++    function send(btn) { transition(btn, 'send', 'Отправлено поставщику'); }
++    function recall(btn) { transition(btn, 'recall', 'Заказ отозван'); }
++    function pickUp(btn) {
++      KT.uiDialog({ title: 'Забрали', text: 'Отметить, что забрали? Остатки не изменятся — приход введите как обычно', ok: 'Да' }).then(function (yes) {
++        if (yes) transition(btn, 'pick-up', 'Заказ закрыт');
++      });
++    }
++    function cancel() {
++      reasonModal({ title: 'Отменить заказ', text: order.number_display, ok: 'Отменить заказ', submit: function (reason) {
++        return KT.api.post(API + '/' + encodeURIComponent(id) + '/cancel', { version: order.version, reason: reason });
++      } }).then(function (out) {
++        if (!out) return;
++        if (out.error) { conflict(out.error, 'Не удалось отменить'); return; }
++        show(out.result);
++        toast('Заказ отменён');
++      });
++    }
++    function del() {
++      reasonModal({ title: 'Удалить черновик', text: order.number_display, ok: 'Удалить', submit: function (reason) {
++        return KT.api.delWith(API + '/' + encodeURIComponent(id), { version: order.version, reason: reason });
++      } }).then(function (out) {
++        if (!out) return;
++        if (out.error) { conflict(out.error, 'Не удалось удалить'); return; }
++        dirty = false;
++        location.href = '/purchases?toast=deleted';
++      });
++    }
++    productSearch($('#po-add'), function (p) {
++      for (var i = 0; i < items.length; i++) {
++        if (items[i].product_id === p.id) { if (items[i].qtyInput) { items[i].qtyInput.focus(); items[i].qtyInput.select(); } return; }
++      }
++      items.push({ id: null, product_id: p.id, name: p.name, sku: p.sku, unit: p.unit, qty: '1', reason: 'manual' });
++      markDirty();
++      renderItems();
++    });
++    load();
++  }
++
++  document.addEventListener('DOMContentLoaded', function () {
++    var root = document.querySelector('[data-po-page]');
++    if (!root) return;
++    ({ list: initList, 'new': initNew, view: initView })[root.dataset.poPage](root);
++  });
++})();
+diff --git a/web/ssr/_shared/js/supplier-orders.js b/web/ssr/_shared/js/supplier-orders.js
+new file mode 100644
+index 0000000..7390fed
+--- /dev/null
++++ b/web/ssr/_shared/js/supplier-orders.js
+@@ -0,0 +1,273 @@
++/* Кабинет поставщика (docs/features/purchase-orders/draft-spec.md §8.6–§8.7) поверх
++   /api/v1/supplier/purchase-orders. Телефон в первую очередь: карточки, крупные поля,
++   числовая клавиатура (inputmode=decimal). Ответ по строке сохраняется отдельно — по уходу
++   из изменённого поля (DS-063); «Собрано» — после подтверждения. */
++(function () {
++  'use strict';
++  var KT = window.KT || {};
++  var API = '/api/v1/supplier/purchase-orders';
++  var STATUS = {
++    sent: { t: 'Новый', c: 'text-bg-primary' },
++    ready: { t: 'Собран', c: 'text-bg-info' },
++    picked_up: { t: 'Забрали', c: 'text-bg-success' }
++  };
++  var FIELD_TEXT = {
++    supplier_qty: 'Количество от 0 до 99 999.999',
++    supplier_price: 'Цена от 0 до 9 999 999.99',
++    supplier_note: 'Комментарий — не больше 500 символов'
++  };
++
++  function $(sel, root) { return (root || document).querySelector(sel); }
++  function el(tag, cls, text) {
++    var n = document.createElement(tag);
++    if (cls) n.className = cls;
++    if (text != null) n.textContent = text;
++    return n;
++  }
++  function num(s) {
++    if (s == null || s === '') return '';
++    var v = String(s);
++    return v.indexOf('.') >= 0 ? v.replace(/0+$/, '').replace(/\.$/, '') : v;
++  }
++  function toast(msg, isError) { KT.uiToast(msg, isError); }
++  function setBadge(b, status) {
++    var s = STATUS[status] || { t: status, c: 'text-bg-secondary' };
++    b.className = 'badge ' + s.c;
++    b.textContent = s.t;
++    b.dataset.status = status;
++  }
++  function toList(msg) {
++    if (msg) { try { sessionStorage.setItem('so-toast', msg); } catch (e) { /* приватный режим */ } }
++    location.href = '/supplier/orders';
++  }
++
++  // ======================= §8.6 список =======================
++  function initList() {
++    var status = new URLSearchParams(location.search).get('status') || '';
++    try {
++      var t = sessionStorage.getItem('so-toast');
++      if (t) { sessionStorage.removeItem('so-toast'); toast(t, true); }
++    } catch (e) { /* приватный режим */ }
++    document.querySelectorAll('#so-tabs [data-status]').forEach(function (b) {
++      b.addEventListener('click', function () { status = b.dataset.status; load(); });
++    });
++    function load() {
++      document.querySelectorAll('#so-tabs [data-status]').forEach(function (b) {
++        b.classList.toggle('active', b.dataset.status === status);
++      });
++      history.replaceState(null, '', '/supplier/orders' + (status ? '?status=' + status : ''));
++      KT.api.get(API + '?limit=50&offset=0' + (status ? '&status=' + encodeURIComponent(status) : '')).then(render).catch(function (err) {
++        if (err instanceof KT.ApiError && err.status === 400) { toast('Неизвестный статус', true); status = ''; load(); return; }
++        toast('Не удалось загрузить', true);
++      });
++    }
++    function render(resp) {
++      var box = $('#so-cards');
++      box.textContent = '';
++      (resp.items || []).forEach(function (o) {
++        var col = el('div', 'col-12 col-md-6');
++        var card = el('a', 'card so-card text-reset text-decoration-none h-100');
++        card.href = '/supplier/orders/' + encodeURIComponent(o.id);
++        card.setAttribute('data-testid', 'so-card');
++        card.dataset.id = o.id;
++        var bodyEl = el('div', 'card-body');
++        var top = el('div', 'd-flex flex-wrap align-items-center gap-2 mb-1');
++        top.append(el('span', 'fw-semibold fs-5', o.number_display));
++        var b = el('span'); setBadge(b, o.status); b.setAttribute('data-testid', 'so-card-status'); top.append(b);
++        if (o.is_changed) {
++          var ch = el('span', 'badge text-bg-warning', 'Изменён');
++          ch.setAttribute('data-testid', 'so-card-changed');
++          top.append(ch);
++        }
++        bodyEl.append(top);
++        bodyEl.append(el('div', 'small text-body-secondary', o.sent_at ? KT.time.fmtDateTime(o.sent_at) : ''));
++        var meta = el('div', 'd-flex flex-wrap gap-2 mt-1');
++        var ans = el('span', null, 'отвечено ' + o.answered_count + ' из ' + o.items_count);
++        ans.setAttribute('data-testid', 'so-card-answered');
++        meta.append(ans);
++        if (o.total_amount) meta.append(el('span', 'ms-auto fw-semibold', o.total_amount));
++        bodyEl.append(meta);
++        card.append(bodyEl);
++        col.append(card);
++        box.append(col);
++      });
++      $('#so-empty').classList.toggle('d-none', (resp.items || []).length > 0);
++    }
++    load();
++  }
++
++  // ======================= §8.7 карточка =======================
++  function initView(root) {
++    var id = root.dataset.soId;
++    var order = null;
++    var inflight = [];
++
++    function load() {
++      return KT.api.get(API + '/' + encodeURIComponent(id)).then(show).catch(function (err) {
++        if (err instanceof KT.ApiError && err.status === 404) { toList('Заказ отозван заказчиком'); return; }
++        toast('Не удалось загрузить', true);
++      });
++    }
++    function show(o) {
++      order = o;
++      $('#so-number').textContent = o.number_display;
++      setBadge($('#so-status'), o.status);
++      $('#so-sent').textContent = o.sent_at ? 'Отправлен ' + KT.time.fmtDateTime(o.sent_at) : '';
++      var note = $('#so-note');
++      note.classList.toggle('d-none', !o.note);
++      note.classList.toggle('so-note-changed', o.note_changed);
++      $('#so-note-changed').classList.toggle('d-none', !o.note_changed);
++      $('#so-note-text').textContent = o.note;
++      var box = $('#so-items');
++      box.textContent = '';
++      o.items.forEach(function (it) { box.append(itemCard(it)); });
++      $('#so-total').textContent = o.total_amount || '—';
++      $('#so-ready').classList.toggle('d-none', !o.can_answer);
++    }
++    function field(label, testid, value, opts) {
++      var wrap = el('div', opts.col);
++      var id2 = 'so-f-' + Math.random().toString(36).slice(2);
++      var l = el('label', 'form-label small mb-1', label);
++      l.htmlFor = id2;
++      var inp = el('input', 'form-control');
++      inp.id = id2;
++      inp.type = 'text';
++      if (opts.decimal) inp.inputMode = 'decimal';
++      if (opts.max) inp.maxLength = opts.max;
++      inp.value = value;
++      inp.readOnly = !order.can_answer;
++      inp.setAttribute('data-testid', testid);
++      var err = el('div', 'invalid-feedback d-block');
++      err.setAttribute('data-testid', testid + '-error');
++      wrap.append(l, inp, err);
++      return { wrap: wrap, input: inp, err: err };
++    }
++    function itemCard(it) {
++      var card = el('div', 'card so-item mb-2');
++      card.setAttribute('data-testid', 'so-item');
++      card.dataset.itemId = it.id;
++      var body = el('div', 'card-body');
++      var head = el('div', 'd-flex flex-wrap align-items-start gap-2');
++      var title = el('div', 'flex-grow-1');
++      title.append(el('div', 'fw-semibold', it.name));
++      if (it.sku) title.append(el('div', 'small text-body-secondary', it.sku));
++      var asked = el('div', null, 'Просят: ' + num(it.qty) + ' ' + (it.unit || 'шт'));
++      asked.setAttribute('data-testid', 'so-item-asked');
++      title.append(asked);
++      head.append(title);
++      var changed = el('span', 'badge text-bg-warning' + (it.customer_changed ? '' : ' d-none'), 'Изменено заказчиком');
++      changed.setAttribute('data-testid', 'so-item-changed');
++      head.append(changed);
++      body.append(head);
++
++      var row = el('div', 'row g-2 mt-1');
++      var q = field('Соберу, шт.', 'so-item-qty', num(it.supplier_qty), { col: 'col-6 col-md-3', decimal: true });
++      var p = field('Цена за ед.', 'so-item-price', it.supplier_price || '', { col: 'col-6 col-md-3', decimal: true });
++      var n = field('Комментарий', 'so-item-note', it.supplier_note || '', { col: 'col-12 col-md-6', max: 500 });
++      row.append(q.wrap, p.wrap, n.wrap);
++      body.append(row);
++
++      var foot = el('div', 'd-flex flex-wrap align-items-center gap-2 mt-2');
++      var amount = el('span', 'fw-semibold', it.line_amount ? 'Сумма: ' + it.line_amount : '');
++      amount.setAttribute('data-testid', 'so-item-amount');
++      var state = el('span', 'small ms-auto', '');
++      state.setAttribute('data-testid', 'so-item-state');
++      foot.append(amount, state);
++      body.append(foot);
++      card.append(body);
++
++      var cur = { version: it.version };
++      function discrepancy() {
++        var v = q.input.value.trim().replace(',', '.');
++        card.classList.toggle('border-warning', v !== '' && parseFloat(v) !== parseFloat(it.qty));
++      }
++      discrepancy();
++      function save() {
++        [q, p, n].forEach(function (f) { f.err.textContent = ''; f.input.classList.remove('is-invalid'); });
++        card.classList.remove('so-missing');
++        var val = function (f) { var v = f.input.value.trim().replace(',', '.'); return v === '' ? null : v; };
++        var payload = { version: cur.version, supplier_qty: val(q), supplier_price: val(p), supplier_note: n.input.value };
++        [q, p, n].forEach(function (f) { f.input.disabled = true; });
++        state.className = 'small ms-auto text-body-secondary';
++        state.textContent = 'Сохраняю…';
++        var pr = KT.api.put(API + '/' + encodeURIComponent(id) + '/items/' + encodeURIComponent(it.id), payload).then(function (r) {
++          cur.version = r.version;
++          amount.textContent = r.line_amount ? 'Сумма: ' + r.line_amount : '';
++          $('#so-total').textContent = r.total_amount || '—';
++          changed.classList.toggle('d-none', !r.customer_changed);
++          state.className = 'small ms-auto text-success';
++          state.textContent = 'Сохранено ✓';
++        }).catch(function (err) {
++          if (!(err instanceof KT.ApiError)) {
++            state.className = 'small ms-auto text-danger';
++            state.textContent = 'Не сохранено — повторить';
++            state.style.cursor = 'pointer';
++            state.onclick = save;
++            return;
++          }
++          state.textContent = '';
++          if (err.status === 400) {
++            (err.fields || []).forEach(function (f) {
++              var t = f.name === 'supplier_qty' ? q : f.name === 'supplier_price' ? p : f.name === 'supplier_note' ? n : null;
++              if (t) { t.err.textContent = FIELD_TEXT[f.name]; t.input.classList.add('is-invalid'); }
++            });
++            return;
++          }
++          if (err.status === 404 || (err.status === 409 && /отозван/.test(err.message))) { toList('Заказ отозван заказчиком'); return; }
++          toast(err.message, true);
++          load();
++        }).then(function () {
++          [q, p, n].forEach(function (f) { f.input.disabled = !order.can_answer; });
++        });
++        inflight.push(pr);
++        return pr;
++      }
++      [q, p, n].forEach(function (f) {
++        f.input.addEventListener('change', save);
++        f.input.addEventListener('input', discrepancy);
++      });
++      return card;
++    }
++
++    $('#so-ready').addEventListener('click', function () {
++      var btn = this;
++      Promise.all(inflight).then(function () {
++        return KT.uiDialog({ title: 'Собрано', text: 'Отметить «Собрано»? После этого изменить ответ нельзя', ok: 'Да' });
++      }).then(function (yes) {
++        if (!yes) return;
++        btn.disabled = true;
++        KT.api.post(API + '/' + encodeURIComponent(id) + '/ready', {}).then(function (o) {
++          btn.disabled = false;
++          show(o);
++          toast('Отмечено «Собрано»');
++        }).catch(function (err) {
++          btn.disabled = false;
++          if (!(err instanceof KT.ApiError)) { toast('Нет связи — повторите', true); return; }
++          if (err.status === 404) { toList('Заказ отозван заказчиком'); return; }
++          toast(err.message, true);
++          if (err.code === 'PURCHASE_ORDER_ITEMS_INCOMPLETE') {
++            var ids = (err.details && err.details.item_ids) || [];
++            var noPrice = /цену/i.test(err.message);
++            ids.forEach(function (iid) {
++              var card = document.querySelector('[data-testid="so-item"][data-item-id="' + iid + '"]');
++              if (!card) return;
++              card.classList.add('so-missing');
++              var t = card.querySelector('[data-testid="' + (noPrice ? 'so-item-price' : 'so-item-qty') + '-error"]');
++              if (t) t.textContent = noPrice ? 'Укажите цену' : 'Заполните';
++            });
++            return;
++          }
++          load();
++        });
++      });
++    });
++    load();
++  }
++
++  document.addEventListener('DOMContentLoaded', function () {
++    var root = document.querySelector('[data-so-page]');
++    if (!root) return;
++    if (root.dataset.soPage === 'list') initList(root);
++    else initView(root);
++  });
++})();
+diff --git a/web/ssr/purchase-orders/templates/pages/list.html b/web/ssr/purchase-orders/templates/pages/list.html
+new file mode 100644
+index 0000000..dcf2f8c
+--- /dev/null
++++ b/web/ssr/purchase-orders/templates/pages/list.html
+@@ -0,0 +1,34 @@
++{{ define "actions" }}<a href="/purchases/new" class="btn btn-primary ms-auto" data-testid="po-new">Новый заказ</a>{{ end }}
++
++{{ define "content" }}
++<!-- §8.1 «Закупки»: список рисует /assets/ssr-shared/js/purchases.js поверх GET /api/v1/purchase-orders. -->
++<div id="po-list" data-po-page="list" data-testid="po-list-root">
++  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
++    <label for="po-status" class="visually-hidden">Статус</label>
++    <select id="po-status" class="form-select" style="max-width:240px" data-native data-testid="po-filter-status">
++      <option value="">Все</option>
++      {{ range .Statuses }}<option value="{{ .Value }}">{{ .Title }}</option>
++      {{ end }}
++    </select>
++  </div>
++  <div class="table-responsive d-none" id="po-table-wrap">
++    <table class="table table-hover align-middle" data-testid="po-table">
++      <thead><tr><th>Номер</th><th>Получатель</th><th>Статус</th><th class="text-end">Строк</th><th class="text-end">Сумма</th><th>Создан</th><th>Отправлен</th><th>Забрали</th></tr></thead>
++      <tbody id="po-tbody"></tbody>
++    </table>
++  </div>
++  <div class="empty-state d-none" id="po-empty" data-testid="po-empty">
++    <div class="mb-3">Закупок пока нет</div>
++    <a href="/purchases/new" class="btn btn-primary">Новый заказ</a>
++  </div>
++  <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
++    <span class="text-body-secondary small" id="po-total" data-testid="po-total"></span>
++    <div class="ms-auto d-flex gap-2" id="po-pager">
++      <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="po-prev" data-testid="po-prev">← Назад</button>
++      <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="po-next" data-testid="po-next">Вперёд →</button>
++    </div>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}<script src="/assets/ssr-shared/js/purchases.js"></script>{{ end }}
+diff --git a/web/ssr/purchase-orders/templates/pages/new.html b/web/ssr/purchase-orders/templates/pages/new.html
+new file mode 100644
+index 0000000..090c4d9
+--- /dev/null
++++ b/web/ssr/purchase-orders/templates/pages/new.html
+@@ -0,0 +1,51 @@
++{{ define "content" }}
++<!-- §8.2 «Новый заказ»: получатели — из SSR, дефицит — GET /api/v1/purchase-orders/suggestions
++     (purchases.js); «Сохранить черновик» — POST /api/v1/purchase-orders. -->
++<div id="po-new" class="mw-1100" data-po-page="new" data-testid="po-new-root">
++  <div class="row g-3 mb-3">
++    <div class="col-md-5">
++      <label for="po-supplier" class="form-label">Получатель *</label>
++      <select id="po-supplier" class="form-select" data-native data-testid="po-recipient">
++        <option value="" selected disabled>— выберите —</option>
++        <option value="bazaar">{{ .Bazaar }}</option>
++        {{ range .Suppliers }}<option value="{{ .ID }}">{{ .Name }}</option>
++        {{ end }}
++      </select>
++      <div class="invalid-feedback d-block" id="po-supplier-error" data-testid="po-error-supplier_id"></div>
++    </div>
++    <div class="col-md-7">
++      <label for="po-note" class="form-label">Примечание</label>
++      <textarea id="po-note" class="form-control" rows="2" maxlength="1000" data-testid="po-note"></textarea>
++      <div class="invalid-feedback d-block" id="po-note-error" data-testid="po-error-note"></div>
++    </div>
++  </div>
++  <div class="d-flex flex-wrap gap-3 mb-2">
++    <div class="form-check form-switch">
++      <input class="form-check-input" type="checkbox" role="switch" id="po-toggle-for_orders" checked data-testid="po-toggle-for_orders">
++      <label class="form-check-label" for="po-toggle-for_orders">Под заказы</label>
++    </div>
++    <div class="form-check form-switch">
++      <input class="form-check-input" type="checkbox" role="switch" id="po-toggle-below_min" checked data-testid="po-toggle-below_min">
++      <label class="form-check-label" for="po-toggle-below_min">Ниже минимума</label>
++    </div>
++  </div>
++  <div class="table-responsive" id="po-lines-wrap">
++    <table class="table align-middle" data-testid="po-lines">
++      <thead><tr><th style="width:2.5rem"></th><th>Запчасть</th><th class="text-end">Остаток</th><th class="text-end">Минимум</th><th>Под заказы</th><th>Тип</th><th style="width:9rem">К заказу</th></tr></thead>
++      <tbody id="po-lines-body"></tbody>
++    </table>
++  </div>
++  <div class="empty-state d-none mb-3" id="po-lines-empty" data-testid="po-suggestions-empty">Дефицита нет — добавьте запчасти вручную</div>
++  <div class="mb-3" style="max-width:420px">
++    <label for="po-add" class="form-label">Добавить запчасть</label>
++    <input type="search" id="po-add" class="form-control" placeholder="Название или артикул" autocomplete="off" data-testid="po-add-product">
++  </div>
++  <div class="invalid-feedback d-block mb-2" id="po-items-error" data-testid="po-error-items"></div>
++  <div class="d-flex flex-wrap gap-2">
++    <a href="/purchases" class="btn btn-outline-secondary" data-testid="po-cancel-new">Отмена</a>
++    <button type="button" class="btn btn-primary ms-auto" id="po-save-draft" data-testid="po-save-draft">Сохранить черновик</button>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}<script src="/assets/ssr-shared/js/purchases.js"></script>{{ end }}
+diff --git a/web/ssr/purchase-orders/templates/pages/supplier-list.html b/web/ssr/purchase-orders/templates/pages/supplier-list.html
+new file mode 100644
+index 0000000..4be23ab
+--- /dev/null
++++ b/web/ssr/purchase-orders/templates/pages/supplier-list.html
+@@ -0,0 +1,24 @@
++{{ define "content" }}
++<!-- §8.6 Кабинет поставщика: список (supplier-orders.js поверх GET /api/v1/supplier/purchase-orders).
++     Телефон в первую очередь: карточки, на широком экране — те же карточки сеткой. -->
++<div id="so-list" class="so-root" data-so-page="list" data-testid="so-list-root">
++  {{ template "so-firm" . }}
++  <ul class="nav nav-pills flex-nowrap overflow-auto mb-3" id="so-tabs" role="tablist" data-testid="so-tabs">
++    <li class="nav-item"><button type="button" class="nav-link active" data-status="" data-testid="so-tab-all">Все</button></li>
++    <li class="nav-item"><button type="button" class="nav-link" data-status="sent" data-testid="so-tab-sent">Новые</button></li>
++    <li class="nav-item"><button type="button" class="nav-link" data-status="ready" data-testid="so-tab-ready">Собраны</button></li>
++    <li class="nav-item"><button type="button" class="nav-link" data-status="picked_up" data-testid="so-tab-picked_up">Забрали</button></li>
++  </ul>
++  <div class="row g-2" id="so-cards" data-testid="so-cards"></div>
++  <div class="empty-state d-none" id="so-empty" data-testid="so-empty">Новых заказов нет</div>
++</div>
++{{ end }}
++
++{{ define "so-firm" }}{{ if or .FirmName .FirmPhone }}
++<div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="so-firm">
++  <div class="fw-semibold text-break">{{ .FirmName }}</div>
++  {{ if .FirmPhone }}<a class="btn btn-sm btn-outline-success ms-auto" href="tel:{{ .FirmPhone }}" data-testid="so-call">📞 Позвонить</a>{{ end }}
++</div>
++{{ end }}{{ end }}
++
++{{ define "scripts" }}<script src="/assets/ssr-shared/js/supplier-orders.js"></script>{{ end }}
+diff --git a/web/ssr/purchase-orders/templates/pages/supplier-view.html b/web/ssr/purchase-orders/templates/pages/supplier-view.html
+new file mode 100644
+index 0000000..d881374
+--- /dev/null
++++ b/web/ssr/purchase-orders/templates/pages/supplier-view.html
+@@ -0,0 +1,36 @@
++{{ define "content" }}
++<!-- §8.7 Кабинет поставщика: карточка (supplier-orders.js). Ответ сохраняется построчно по blur
++     (DS-063); итог и «Собрано» закреплены внизу на телефоне. -->
++{{ if .ID }}
++<div id="so-view" class="so-root so-view" data-so-page="view" data-so-id="{{ .ID }}" data-testid="so-view-root">
++  <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
++    <h2 class="h4 mb-0" id="so-number" data-testid="so-number"></h2>
++    <span class="badge" id="so-status" data-testid="so-status"></span>
++  </div>
++  <div class="small text-body-secondary mb-2" id="so-sent" data-testid="so-sent"></div>
++  <div class="small mb-3 text-break" data-testid="so-firm">{{ .FirmName }}{{ if .FirmPhone }} · <a href="tel:{{ .FirmPhone }}">{{ .FirmPhone }}</a>{{ end }}</div>
++  <div class="card mb-3 d-none" id="so-note" data-testid="so-note">
++    <div class="card-body py-2">
++      <span class="badge text-bg-warning d-none" id="so-note-changed" data-testid="so-note-changed">Изменено</span>
++      <div class="text-break" id="so-note-text"></div>
++    </div>
++  </div>
++  <div id="so-items" data-testid="so-items"></div>
++  <div class="so-footer" id="so-footer">
++    <div class="d-flex align-items-center gap-2 mb-2">
++      <span class="text-body-secondary">Итого:</span>
++      <span class="fw-semibold" id="so-total" data-testid="so-total">—</span>
++      <a class="btn btn-sm btn-outline-secondary ms-auto" href="/supplier/orders/{{ .ID }}/print" data-testid="so-print">Печать</a>
++    </div>
++    <button type="button" class="btn btn-primary btn-lg w-100 d-none" id="so-ready" data-testid="so-ready">Собрано, можно забирать</button>
++  </div>
++</div>
++{{ else }}
++<div class="empty-state" data-testid="so-not-found">
++  <div class="mb-3">Заказ не найден</div>
++  <a href="/supplier/orders" class="btn btn-outline-secondary" data-testid="so-back">К списку</a>
++</div>
++{{ end }}
++{{ end }}
++
++{{ define "scripts" }}{{ if .ID }}<script src="/assets/ssr-shared/js/supplier-orders.js"></script>{{ end }}{{ end }}
+diff --git a/web/ssr/purchase-orders/templates/pages/view.html b/web/ssr/purchase-orders/templates/pages/view.html
+new file mode 100644
+index 0000000..295fb79
+--- /dev/null
++++ b/web/ssr/purchase-orders/templates/pages/view.html
+@@ -0,0 +1,40 @@
++{{ define "content" }}
++<!-- §8.3 «Карточка заказа»: данные — GET /api/v1/purchase-orders/:id, кнопки по статусу
++     (purchases.js). -->
++<div id="po-view" class="mw-1100" data-po-page="view" data-po-id="{{ .ID }}" data-is-admin="{{ .IsAdmin }}" data-testid="po-view-root">
++  <div class="card mb-3">
++    <div class="card-body">
++      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
++        <h2 class="h4 mb-0" id="po-number" data-testid="po-number"></h2>
++        <span class="badge" id="po-status-badge" data-testid="po-status"></span>
++      </div>
++      <div class="text-break" data-testid="po-recipient"><span id="po-recipient"></span> <span class="text-body-secondary" id="po-recipient-phone"></span></div>
++      <div class="small text-body-secondary" id="po-dates" data-testid="po-dates"></div>
++      <div class="alert alert-secondary py-2 mt-2 mb-0 d-none" id="po-cancel-reason" data-testid="po-cancel-reason"></div>
++    </div>
++  </div>
++  <div class="mb-3">
++    <label for="po-note" class="form-label">Примечание</label>
++    <textarea id="po-note" class="form-control" rows="2" maxlength="1000" data-testid="po-note"></textarea>
++    <div class="invalid-feedback d-block" id="po-note-error" data-testid="po-error-note"></div>
++  </div>
++  <div class="table-responsive">
++    <table class="table align-middle" data-testid="po-items">
++      <thead><tr id="po-items-head"></tr></thead>
++      <tbody id="po-items-body"></tbody>
++    </table>
++  </div>
++  <div class="text-end fw-semibold mb-3" id="po-total" data-testid="po-total"></div>
++  <div class="mb-3 d-none" style="max-width:420px" id="po-add-wrap">
++    <label for="po-add" class="form-label">Добавить запчасть</label>
++    <input type="search" id="po-add" class="form-control" placeholder="Название или артикул" autocomplete="off" data-testid="po-add-product">
++  </div>
++  <div class="invalid-feedback d-block mb-2" id="po-items-error" data-testid="po-error-items"></div>
++  <div class="d-flex flex-wrap gap-2" id="po-actions">
++    <a class="btn btn-outline-secondary" id="po-print" href="/purchases/{{ .ID }}/print" data-testid="po-print">Печать</a>
++    <div class="ms-auto d-flex flex-wrap gap-2" id="po-buttons"></div>
++  </div>
++</div>
++{{ end }}
++
++{{ define "scripts" }}<script src="/assets/ssr-shared/js/purchases.js"></script>{{ end }}
+diff --git a/web/ssr/users/templates/pages/form.html b/web/ssr/users/templates/pages/form.html
+index 3162b4a..ed8d65e 100644
+--- a/web/ssr/users/templates/pages/form.html
++++ b/web/ssr/users/templates/pages/form.html
+@@ -19,10 +19,23 @@
+         <select id="role" name="role" class="form-select{{ if index .Errors "role" }} is-invalid{{ end }}" data-testid="role">
+           <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
+           <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
++          <option value="supplier"{{ if eq .Role "supplier" }} selected{{ end }}>Поставщик</option>
+         </select>
+         {{ with index .Errors "role" }}<div class="invalid-feedback d-block" data-testid="error-role">{{ . }}</div>{{ end }}
+       </div>
+     </div>
++    <!-- Поставщик (purchase-orders §8.5): виден и обязателен только у роли «Поставщик». -->
++    <div class="row g-3 mb-3" data-supplier-row{{ if ne .Role "supplier" }} hidden{{ end }}>
++      <div class="col-sm-6">
++        <label for="supplier_id" class="form-label">Поставщик *</label>
++        <select id="supplier_id" name="supplier_id" class="form-select{{ if index .Errors "supplier_id" }} is-invalid{{ end }}" data-native data-testid="user-supplier">
++          <option value="">— выберите —</option>
++          {{ range .Suppliers }}<option value="{{ .ID }}"{{ if eq .ID $.SupplierID }} selected{{ end }}>{{ .Name }}</option>
++          {{ end }}
++        </select>
++        {{ with index .Errors "supplier_id" }}<div class="invalid-feedback d-block" data-testid="error-supplier_id">{{ . }}</div>{{ end }}
++      </div>
++    </div>
+     <div class="row g-3 mb-3">
+       <div class="col-sm-6">
+         <label for="phone" class="form-label">Телефон</label>
+@@ -55,4 +68,15 @@
+     </div>
+   </div>
+ </form>
++<script>
++(function () {
++  var role = document.getElementById('role');
++  var row = document.querySelector('[data-supplier-row]');
++  if (!role || !row) return;
++  role.addEventListener('change', function () {
++    row.hidden = role.value !== 'supplier';
++    if (row.hidden) document.getElementById('supplier_id').value = '';
++  });
++})();
++</script>
+ {{ end }}
+diff --git a/web/ssr/users/templates/pages/list.html b/web/ssr/users/templates/pages/list.html
+index c1866a2..b5d8431 100644
+--- a/web/ssr/users/templates/pages/list.html
++++ b/web/ssr/users/templates/pages/list.html
+@@ -7,6 +7,7 @@
+     <option value="">Все роли</option>
+     <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
+     <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
++    <option value="supplier"{{ if eq .Role "supplier" }} selected{{ end }}>Поставщик</option>
+   </select>
+   <select class="form-select" style="max-width:200px" name="status" aria-label="Статус" data-testid="filter-status" onchange="this.form.submit()">
+     <option value="">Любой статус</option>
+@@ -31,7 +32,7 @@
+         </div>
+       </td>
+       <td>{{ .Login }}</td>
+-      <td>{{ if eq .Role "admin" }}Администратор{{ else }}Исполнитель{{ end }}</td>
++      <td>{{ if eq .Role "admin" }}Администратор{{ else if eq .Role "supplier" }}Поставщик ({{ .SupplierName }}){{ else }}Исполнитель{{ end }}</td>
+       <td class="d-none d-md-table-cell">{{ .Phone }}</td>
+       <td class="text-end" data-testid="user-active-tasks">{{ with .ActiveTasks }}{{ . }}{{ else }}0{{ end }}</td>
+     </tr>
