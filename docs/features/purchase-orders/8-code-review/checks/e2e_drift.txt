@@ -1,14 +1,5 @@
 $ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/artifact_lint.py --e2e-drift /Users/igorpotema/mycode/kanban-tree-autoservice/docs/features/purchase-orders/3-design/design-e2e-strategy.md /Users/igorpotema/mycode/kanban-tree-autoservice/e2e --draft-spec /Users/igorpotema/mycode/kanban-tree-autoservice/docs/features/purchase-orders/draft-spec.md --spec-glob purchase-orders*.spec.ts
 (exit 1)
 
-e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 2 id, code: 12 в 2 файлах, проблем: 10)
-  DRIFT: test('TS-015…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-016…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-017…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-018…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-019…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-020…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-022…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-023…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-024…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
-  DRIFT: test('TS-025…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)
+e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 13 id, code: 12 в 2 файлах, проблем: 1)
+  DRIFT: TS-021 есть в design-e2e-strategy.md, теста test('TS-021: …') нет (сценарий без теста)

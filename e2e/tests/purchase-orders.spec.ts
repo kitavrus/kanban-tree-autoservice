@@ -242,7 +242,7 @@ test.describe('Закупки по дефициту', () => {
   test.describe('TS-021: кабинет поставщика — адаптив и темы (DS-031)', () => {
     for (const vp of [{ w: 360, h: 640 }, { w: 768, h: 1024 }, { w: 1280, h: 800 }]) {
       for (const theme of ['light', 'dark'] as const) {
-        test(`TS-021: кабинет на ${vp.w}px, тема ${theme} (DS-031)`, async ({ po, uniq }, testInfo) => {
+        test('TS-021: кабинет на ' + vp.w + 'px, тема ' + theme + ' (DS-031)', async ({ po, uniq }, testInfo) => {
           const acc = await po.supplier(uniq('Поставщик'), true);
           const long = await po.product(uniq('Очень длинное название запчасти для проверки переноса строк в карточке кабинета поставщика'));
           const p = await po.product(uniq('короткое'));

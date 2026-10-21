@@ -1,5 +1,5 @@
 # Review Bundle: purchase-orders — CHECKS-FAILED
-**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 40053c7 | **Generated:** 2026-10-22 01:59 | diff: 122 files changed, 23444 insertions(+), 66 deletions(-)
+**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** d3e09c0 | **Generated:** 2026-10-22 01:59 | diff: 122 files changed, 23464 insertions(+), 66 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -11,12 +11,12 @@
 | api_conventions | ✅ | 0 | — |
 | contract | ✅ | 0 | — |
 | date_bound | ✅ | 0 | — |
-| fuzz_verdict | ❌ | 1 | FUZZ-VERDICT FAIL SPEC-MISSING: вердикт `да` (3-design/design-e2e-strategy.md:8), а frontend/e2e/fuzz/purchase-orders_fuzz.spec.ts отсутствует — owner frontend-dev (шаблон templates/qa-fuzz-playwright.md), `--list` в гейте фазы |
+| fuzz_verdict | ❌ | 1 | FUZZ-VERDICT FAIL SPEC-MISSING: вердикт `да` (3-design/design-e2e-strategy.md:26), а frontend/e2e/fuzz/purchase-orders_fuzz.spec.ts отсутствует — owner frontend-dev (шаблон templates/qa-fuzz-playwright.md), `--list` в гейте фазы |
 | live_suite | ✅ | 0 | — |
 | fixture_sync | ✅ | 0 | — |
 | e2e_mode | ✅ | 0 | — |
 | rule_usage | ✅ | 0 | — |
-| e2e_drift | ❌ | 1 | e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 2 id, code: 12 в 2 файлах, проблем: 10)<br>DRIFT: test('TS-015…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-016…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-017…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-018…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-019…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-020…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-022…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота) |
+| e2e_drift | ❌ | 1 | e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 13 id, code: 12 в 2 файлах, проблем: 1)<br>DRIFT: TS-021 есть в design-e2e-strategy.md, теста test('TS-021: …') нет (сценарий без теста) |
 
 ## Diff по линзам
 | Линза | Файлов | Patch |
@@ -350,7 +350,7 @@
 - draft-spec-decisions.md — 8KB
 - 7-executing/scaffold-errors-snippet.md — 7KB
 - 0-setup/light-progress.md — 3KB
-- 3-design/design-e2e-strategy.md — 1KB
+- 3-design/design-e2e-strategy.md — 2KB
 - 0-setup/pipeline-state.md — 0KB
 - 3-design/design-errors.md — 0KB
 - 3-design/design-frontend-architecture.md — 0KB
