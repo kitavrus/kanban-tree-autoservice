@@ -1,5 +1,5 @@
 # Review Bundle: purchase-orders — CHECKS-FAILED
-**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 6c112b1 | **Generated:** 2026-10-22 02:12 | diff: 125 files changed, 23485 insertions(+), 67 deletions(-)
+**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 11f5d93 | **Generated:** 2026-10-22 02:22 | diff: 127 files changed, 23890 insertions(+), 73 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -21,7 +21,7 @@
 ## Diff по линзам
 | Линза | Файлов | Patch |
 |---|---|---|
-| backend | 51 | 8-code-review/diff-backend.patch |
+| backend | 53 | 8-code-review/diff-backend.patch |
 | e2e | 8 | 8-code-review/diff-e2e.patch |
 | migrations | 2 | 8-code-review/diff-migrations.patch |
 | other | 13 | 8-code-review/diff-other.patch |
@@ -44,6 +44,7 @@
 - `A` internal/features/purchase-orders/handler/render_test.go
 - `A` internal/features/purchase-orders/handler/ssr.go
 - `A` internal/features/purchase-orders/mappers/mappers.go
+- `A` internal/features/purchase-orders/models/dto/enums_test.go
 - `A` internal/features/purchase-orders/models/dto/purchase_orders_dto.go
 - `A` internal/features/purchase-orders/models/dto/supplier_dto.go
 - `A` internal/features/purchase-orders/models/purchase_order_items.go
@@ -62,6 +63,7 @@
 - `M` internal/features/softdelete/reason_test.go
 - `M` internal/features/softdelete/softdelete_http_live_test.go
 - `A` internal/features/suppliers/open_purchases.go
+- `M` internal/features/suppliers/repo.go
 - `M` internal/features/suppliers/service.go
 - `M` internal/features/suppliers/soft_delete.go
 - `M` internal/features/users/dto.go
@@ -350,9 +352,10 @@
 - 0-setup/passport.md — 22KB
 - 7-executing/scaffold-manifest.json — 15KB
 - 0-setup/idioms.md — 14KB
+- 8-code-review/output.md — 9KB
 - draft-spec-decisions.md — 8KB
 - 7-executing/scaffold-errors-snippet.md — 7KB
-- 0-setup/light-progress.md — 4KB
+- 0-setup/light-progress.md — 5KB
 - 3-design/design-e2e-strategy.md — 2KB
 - 0-setup/pipeline-state.md — 0KB
 - 3-design/design-errors.md — 0KB
@@ -360,7 +363,6 @@
 - 6-plan/code-plan.md — 0KB
 - 3-design/design-go-layers.md — 0KB
 - 3-design/design-tests.md — 0KB
-- 8-code-review/output.md — 0KB
 - 9-validation/output.md — 0KB
 - 3-design/design-sql.md — 0KB
 - 1-research/output.md — 0KB

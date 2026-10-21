@@ -1013,10 +1013,10 @@ index 0000000..e4d53ba
 +}
 diff --git a/internal/features/purchase-orders/handler/purchase_orders_http_live_test.go b/internal/features/purchase-orders/handler/purchase_orders_http_live_test.go
 new file mode 100644
-index 0000000..b4bf795
+index 0000000..8586f99
 --- /dev/null
 +++ b/internal/features/purchase-orders/handler/purchase_orders_http_live_test.go
-@@ -0,0 +1,988 @@
+@@ -0,0 +1,1151 @@
 +//go:build integration
 +
 +package handler_test
@@ -1030,6 +1030,7 @@ index 0000000..b4bf795
 +	"strings"
 +	"sync"
 +	"testing"
++	"time"
 +
 +	"github.com/google/uuid"
 +	"github.com/stretchr/testify/suite"
@@ -2005,6 +2006,168 @@ index 0000000..b4bf795
 +	s.Equal(404, st)
 +	s.Contains(string(raw), "Заказ не найден")
 +}
++
++// ---- FIX-LOOP 3: DS-045 и инвариант DS-043 ----
++
++// DS-045: учётку поставщика, ушедшего в архив, можно заблокировать (проверка доступности
++// поставщика — только при смене роли/поставщика); следующий запрос учётки → 401.
++func (s *PurchaseOrdersLiveSuite) TestBlockAccountOfArchivedSupplier() {
++	sup := s.newSupplier("Уходящий " + mark())
++	login := "po-arch-" + mark()
++	body := map[string]any{"login": login, "name": "Продавец", "password": "secret123", "role": "supplier",
++		"supplier_id": sup, "is_active": true, "timezone": "Asia/Almaty", "phone": ""}
++	st, raw := s.admin.Do(http.MethodPost, "/api/v1/users", body)
++	s.Require().Equal(201, st, string(raw))
++	var u struct {
++		ID string `json:"id"`
++	}
++	s.Require().NoError(json.Unmarshal(raw, &u))
++	b := s.NewBrowser()
++	b.Login(login, "secret123")
++
++	archive := map[string]any{"name": "Уходящий " + mark(), "contact_name": "", "phone": "", "address": "", "note": "", "is_active": false}
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/suppliers/"+sup, archive)
++	s.Require().Equal(200, st, string(raw))
++
++	delete(body, "password")
++	body["name"] = "Переименован"
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
++	s.Equal(200, st, "правка прочих полей при неизменном поставщике: %s", raw)
++	body["is_active"] = false
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
++	s.Require().Equal(200, st, "блокировка учётки архивного поставщика: %s", raw)
++	st, _ = b.Do(http.MethodGet, spAPI, nil)
++	s.Equal(401, st, "сессия оборвана")
++
++	// Привязать учётку к архивному поставщику заново — по-прежнему нельзя (смена supplier_id).
++	other := s.newSupplier("Другой " + mark())
++	body["supplier_id"] = other
++	st, _ = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
++	s.Equal(200, st)
++	body["supplier_id"] = sup
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
++	s.Equal(400, st, string(raw))
++	s.Equal("unavailable", s.field(raw)["supplier_id"])
++}
++
++// DS-043 (а): восстановить удалённый черновик архивного поставщика нельзя — 409
++// PURCHASE_ORDER_SUPPLIER_UNAVAILABLE; черновик остаётся удалённым.
++func (s *PurchaseOrdersLiveSuite) TestRestoreDraftOfArchivedSupplier() {
++	sup := s.newSupplier("Архив-восст " + mark())
++	o := s.mustCreate(s.admin, &sup, line(s.product("В", "0", "0"), "1"))
++	st, raw := s.admin.Do(http.MethodDelete, poAPI+"/"+o.ID, dto.ReasonRequest{Version: o.Version, Reason: ptr("ошибка")})
++	s.Require().Equal(204, st, string(raw))
++	archive := map[string]any{"name": "Архив-восст " + mark(), "contact_name": "", "phone": "", "address": "", "note": "", "is_active": false}
++	st, raw = s.admin.Do(http.MethodPut, "/api/v1/suppliers/"+sup, archive)
++	s.Require().Equal(200, st, "удалённый черновик архиву не мешает: %s", raw)
++
++	st, raw = s.admin.Do(http.MethodPost, poAPI+"/"+o.ID+"/restore", nil)
++	s.expectErr(st, raw, 409, "PURCHASE_ORDER_SUPPLIER_UNAVAILABLE", "Поставщик недоступен — восстановить черновик нельзя")
++	s.Equal("true", s.scalar(`SELECT (deleted_at IS NOT NULL)::text FROM purchase_orders WHERE id = $1::uuid`, o.ID))
++
++	// Мягко удалённый поставщик — так же.
++	sup2 := s.newSupplier("Удалён-восст " + mark())
++	o2 := s.mustCreate(s.admin, &sup2, line(s.product("В2", "0", "0"), "1"))
++	st, _ = s.admin.Do(http.MethodDelete, poAPI+"/"+o2.ID, dto.ReasonRequest{Version: o2.Version, Reason: ptr("ошибка")})
++	s.Require().Equal(204, st)
++	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/suppliers/"+sup2, map[string]string{"reason": "закрыт"})
++	s.Require().Equal(200, st, string(raw))
++	st, raw = s.admin.Do(http.MethodPost, poAPI+"/"+o2.ID+"/restore", nil)
++	s.expectErr(st, raw, 409, "PURCHASE_ORDER_SUPPLIER_UNAVAILABLE", "")
++}
++
++// DS-043 (б): отправить черновик архивному/удалённому поставщику нельзя — 400 supplier_id:
++// unavailable, как при создании (§6.2). Черновик у архивного поставщика сделан в обход API
++// (архив через API при черновике запрещён).
++func (s *PurchaseOrdersLiveSuite) TestSendToArchivedSupplier() {
++	sup := s.newSupplier("Архив-отпр " + mark())
++	o := s.mustCreate(s.admin, &sup, line(s.product("О", "0", "0"), "1"))
++	s.exec(`UPDATE suppliers SET is_active = false WHERE id = $1::uuid`, sup)
++	st, _, raw := s.act(s.admin, o.ID, "send", o.Version)
++	s.Equal(400, st, string(raw))
++	s.Equal("unavailable", s.field(raw)["supplier_id"])
++	s.Equal("Поставщик недоступен", s.err(raw).Message)
++	s.Equal("draft", s.get(s.admin, o.ID).Status)
++
++	s.exec(`UPDATE suppliers SET is_active = true, deleted_at = now(), deleted_by = $2::uuid, delete_reason = 'x' WHERE id = $1::uuid`, sup, s.adminID)
++	st, _, raw = s.act(s.admin, o.ID, "send", o.Version)
++	s.Equal(400, st, string(raw))
++}
++
++func (s *PurchaseOrdersLiveSuite) lockWaiters() int {
++	var n int
++	s.Require().NoError(s.Pool.QueryRow(context.Background(),
++		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&n))
++	return n
++}
++
++// race — запрос req уходит, пока тест держит блокировку в tx; по pg_stat_activity тест
++// дожидается, что запрос встал в ожидание, затем выполняет finish (фиксация tx). Без sleep.
++func (s *PurchaseOrdersLiveSuite) race(finish func(), req func() (int, []byte)) (int, []byte) {
++	base := s.lockWaiters()
++	type res struct {
++		st  int
++		raw []byte
++	}
++	done := make(chan res, 1)
++	go func() { st, raw := req(); done <- res{st, raw} }()
++	s.Require().Eventually(func() bool { return s.lockWaiters() > base }, 10*time.Second, 20*time.Millisecond, "запрос ждёт блокировку")
++	select {
++	case r := <-done:
++		s.FailNow("запрос не дождался блокировки", "%d %s", r.st, r.raw)
++	default:
++	}
++	finish()
++	r := <-done
++	return r.st, r.raw
++}
++
++// DS-043 (в), сериализация: архив поставщика идёт (строка поставщика FOR UPDATE, is_active=false,
++// tx не зафиксирована) — создание закупки ждёт блокировку и после фиксации получает 400 «Поставщик
++// недоступен».
++func (s *PurchaseOrdersLiveSuite) TestRace_CreateWaitsForArchive() {
++	ctx := context.Background()
++	sup := s.newSupplier("Гонка-архив " + mark())
++	p := s.product("Г", "0", "0")
++	tx, err := s.Pool.Begin(ctx)
++	s.Require().NoError(err)
++	defer func() { _ = tx.Rollback(ctx) }()
++	_, err = tx.Exec(ctx, `SELECT 1 FROM suppliers WHERE id = $1::uuid FOR UPDATE`, sup)
++	s.Require().NoError(err)
++	_, err = tx.Exec(ctx, `UPDATE suppliers SET is_active = false WHERE id = $1::uuid`, sup)
++	s.Require().NoError(err)
++
++	st, raw := s.race(func() { s.Require().NoError(tx.Commit(ctx)) }, func() (int, []byte) {
++		st, _, raw := s.create(s.admin, &sup, line(p, "1"))
++		return st, raw
++	})
++	s.Equal(400, st, string(raw))
++	s.Equal("unavailable", s.field(raw)["supplier_id"])
++	s.Equal("0", s.scalar(`SELECT count(*)::text FROM purchase_orders WHERE supplier_id = $1::uuid`, sup))
++}
++
++// DS-043 (в), сериализация в обратную сторону: создание закупки идёт (строка поставщика FOR SHARE,
++// черновик вставлен, tx не зафиксирована) — архив поставщика ждёт блокировку и после фиксации
++// получает 409 SUPPLIER_HAS_OPEN_PURCHASES; поставщик остаётся активным.
++func (s *PurchaseOrdersLiveSuite) TestRace_ArchiveWaitsForCreate() {
++	ctx := context.Background()
++	sup := s.newSupplier("Гонка-создание " + mark())
++	tx, err := s.Pool.Begin(ctx)
++	s.Require().NoError(err)
++	defer func() { _ = tx.Rollback(ctx) }()
++	_, err = tx.Exec(ctx, `SELECT 1 FROM suppliers WHERE id = $1::uuid FOR SHARE`, sup)
++	s.Require().NoError(err)
++	var number int64
++	s.Require().NoError(tx.QueryRow(ctx, `INSERT INTO purchase_orders (supplier_id, created_by) VALUES ($1::uuid, $2::uuid) RETURNING number`,
++		sup, s.adminID).Scan(&number))
++
++	archive := map[string]any{"name": "Гонка-создание " + mark(), "contact_name": "", "phone": "", "address": "", "note": "", "is_active": false}
++	st, raw := s.race(func() { s.Require().NoError(tx.Commit(ctx)) }, func() (int, []byte) {
++		return s.admin.Do(http.MethodPut, "/api/v1/suppliers/"+sup, archive)
++	})
++	s.expectErr(st, raw, 409, "SUPPLIER_HAS_OPEN_PURCHASES", fmt.Sprintf("У поставщика есть незакрытые закупки: З-%04d", number))
++	s.Equal("true", s.scalar(`SELECT is_active::text FROM suppliers WHERE id = $1::uuid`, sup))
++}
 diff --git a/internal/features/purchase-orders/handler/render_test.go b/internal/features/purchase-orders/handler/render_test.go
 new file mode 100644
 index 0000000..a25bb23
@@ -2344,9 +2507,52 @@ index 0000000..cc78068
 +	}
 +	return out
 +}
+diff --git a/internal/features/purchase-orders/models/dto/enums_test.go b/internal/features/purchase-orders/models/dto/enums_test.go
+new file mode 100644
+index 0000000..24769b5
+--- /dev/null
++++ b/internal/features/purchase-orders/models/dto/enums_test.go
+@@ -0,0 +1,37 @@
++package dto_test
++
++import (
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++
++	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/constants"
++	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/models/dto"
++)
++
++// swag-теги enums на полях DTO совпадают с источником правды constants (Sec 15.1): новый статус
++// или источник строки без правки тега роняет тест.
++func TestSwagEnumsMatchConstants(t *testing.T) {
++	cases := []struct {
++		typ   any
++		field string
++		want  []string
++	}{
++		{dto.ListItem{}, "Status", constants.Statuses},
++		{dto.Order{}, "Status", constants.Statuses},
++		{dto.SupplierListItem{}, "Status", constants.SupplierStatuses},
++		{dto.SupplierOrder{}, "Status", constants.SupplierStatuses},
++		{dto.ItemRequest{}, "Reason", constants.Reasons},
++		{dto.OrderItem{}, "Reason", constants.Reasons},
++		{dto.Suggestion{}, "Reason", []string{constants.ReasonForOrders, constants.ReasonBelowMin}},
++	}
++	for _, c := range cases {
++		f, ok := reflect.TypeOf(c.typ).FieldByName(c.field)
++		if !assert.True(t, ok, "%T.%s", c.typ, c.field) {
++			continue
++		}
++		assert.Equal(t, c.want, strings.Split(f.Tag.Get("enums"), ","), "%T.%s", c.typ, c.field)
++	}
++}
 diff --git a/internal/features/purchase-orders/models/dto/purchase_orders_dto.go b/internal/features/purchase-orders/models/dto/purchase_orders_dto.go
 new file mode 100644
-index 0000000..d7ceeb0
+index 0000000..3e8e5ed
 --- /dev/null
 +++ b/internal/features/purchase-orders/models/dto/purchase_orders_dto.go
 @@ -0,0 +1,173 @@
@@ -2394,7 +2600,7 @@ index 0000000..d7ceeb0
 +	ID        *string `json:"id"`
 +	ProductID string  `json:"product_id"`
 +	Qty       Num     `json:"qty"`
-+	Reason    string  `json:"reason"`
++	Reason    string  `json:"reason" enums:"for_orders,below_min,manual"`
 +}
 +
 +// CreateRequest — POST /api/v1/purchase-orders (§6.2). SupplierID nil — «Базар».
@@ -2431,7 +2637,7 @@ index 0000000..d7ceeb0
 +	NumberDisplay string     `json:"number_display"`
 +	SupplierID    *string    `json:"supplier_id"`
 +	RecipientName string     `json:"recipient_name"`
-+	Status        string     `json:"status"`
++	Status        string     `json:"status" enums:"draft,sent,ready,picked_up,cancelled"`
 +	ItemsCount    int        `json:"items_count"`
 +	TotalAmount   *string    `json:"total_amount"`
 +	CreatedByName string     `json:"created_by_name"`
@@ -2456,7 +2662,7 @@ index 0000000..d7ceeb0
 +	Sku             string  `json:"sku"`
 +	Unit            string  `json:"unit"`
 +	Qty             string  `json:"qty"`
-+	Reason          string  `json:"reason"`
++	Reason          string  `json:"reason" enums:"for_orders,below_min,manual"`
 +	SupplierQty     *string `json:"supplier_qty"`
 +	SupplierPrice   *string `json:"supplier_price"`
 +	SupplierNote    string  `json:"supplier_note"`
@@ -2471,7 +2677,7 @@ index 0000000..d7ceeb0
 +	ID               string      `json:"id"`
 +	Number           int64       `json:"number"`
 +	NumberDisplay    string      `json:"number_display"`
-+	Status           string      `json:"status"`
++	Status           string      `json:"status" enums:"draft,sent,ready,picked_up,cancelled"`
 +	Version          int64       `json:"version"`
 +	SupplierID       *string     `json:"supplier_id"`
 +	RecipientName    string      `json:"recipient_name"`
@@ -2511,7 +2717,7 @@ index 0000000..d7ceeb0
 +	MinStock     string           `json:"min_stock"`
 +	Pending      string           `json:"pending"`
 +	ToOrder      string           `json:"to_order"`
-+	Reason       string           `json:"reason"`
++	Reason       string           `json:"reason" enums:"for_orders,below_min"`
 +	Tasks        []SuggestionTask `json:"tasks"`
 +	InOpenOrders []OpenOrderRef   `json:"in_open_orders"`
 +	Checked      bool             `json:"checked"`
@@ -2525,7 +2731,7 @@ index 0000000..d7ceeb0
 +}
 diff --git a/internal/features/purchase-orders/models/dto/supplier_dto.go b/internal/features/purchase-orders/models/dto/supplier_dto.go
 new file mode 100644
-index 0000000..f881032
+index 0000000..758c674
 --- /dev/null
 +++ b/internal/features/purchase-orders/models/dto/supplier_dto.go
 @@ -0,0 +1,70 @@
@@ -2549,7 +2755,7 @@ index 0000000..f881032
 +type SupplierListItem struct {
 +	ID            string     `json:"id"`
 +	NumberDisplay string     `json:"number_display"`
-+	Status        string     `json:"status"`
++	Status        string     `json:"status" enums:"sent,ready,picked_up"`
 +	SentAt        *time.Time `json:"sent_at"`
 +	ItemsCount    int        `json:"items_count"`
 +	AnsweredCount int        `json:"answered_count"`
@@ -2583,7 +2789,7 @@ index 0000000..f881032
 +type SupplierOrder struct {
 +	ID            string         `json:"id"`
 +	NumberDisplay string         `json:"number_display"`
-+	Status        string         `json:"status"`
++	Status        string         `json:"status" enums:"sent,ready,picked_up"`
 +	SentAt        *time.Time     `json:"sent_at"`
 +	Note          string         `json:"note"`
 +	NoteChanged   bool           `json:"note_changed"`
@@ -2670,10 +2876,10 @@ index 0000000..502ecd5
 +}
 diff --git a/internal/features/purchase-orders/models/purchase_orders.go b/internal/features/purchase-orders/models/purchase_orders.go
 new file mode 100644
-index 0000000..dc4d8ba
+index 0000000..d95cfa0
 --- /dev/null
 +++ b/internal/features/purchase-orders/models/purchase_orders.go
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,87 @@
 +// Package models — строки БД закупок (§4.1–§4.2) в том виде, в каком их читает repository.
 +// Числа numeric — строки (::text из БД, без потери точности); суммы вычисляются в SQL
 +// (DS-071) и не хранятся.
@@ -2726,6 +2932,9 @@ index 0000000..dc4d8ba
 +	SentAt           *time.Time
 +	ItemsCount       int
 +	SupplierHasLogin bool
++	// SupplierAvailable — поставщик активен и не удалён (строка поставщика взята FOR SHARE в той
++	// же транзакции, DS-043); у Базара — true.
++	SupplierAvailable bool
 +}
 +
 +// IsBazaar — заказ без поставщика (DS-006).
@@ -2857,10 +3066,10 @@ index 0000000..874e0bc
 +}
 diff --git a/internal/features/purchase-orders/repository/queries.go b/internal/features/purchase-orders/repository/queries.go
 new file mode 100644
-index 0000000..c26c4c2
+index 0000000..37a43d9
 --- /dev/null
 +++ b/internal/features/purchase-orders/repository/queries.go
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,191 @@
 +package repository
 +
 +// SQL закупок (§4–§6). Числа numeric читаются ::text (без потери точности); суммы строк —
@@ -2949,6 +3158,10 @@ index 0000000..c26c4c2
 +const productsSQL = `
 +SELECT id::text, name, sku, unit FROM products
 +WHERE id = ANY($1::uuid[]) AND is_active AND deleted_at IS NULL`
++
++// supplierLockSQL — строка поставщика FOR SHARE + «активен и не удалён» (DS-043).
++const supplierLockSQL = `
++SELECT is_active AND deleted_at IS NULL FROM suppliers WHERE id = $1::uuid FOR SHARE`
 +
 +const supplierAvailableSQL = `
 +SELECT 1 FROM suppliers WHERE id = $1::uuid AND is_active AND deleted_at IS NULL FOR SHARE`
@@ -3050,10 +3263,10 @@ index 0000000..c26c4c2
 +ORDER BY o.number`
 diff --git a/internal/features/purchase-orders/repository/repository.go b/internal/features/purchase-orders/repository/repository.go
 new file mode 100644
-index 0000000..294521d
+index 0000000..e5db1da
 --- /dev/null
 +++ b/internal/features/purchase-orders/repository/repository.go
-@@ -0,0 +1,625 @@
+@@ -0,0 +1,659 @@
 +// Package repository — доступ к purchase_orders / purchase_order_items (pgx/v5).
 +//
 +// Конкурентность (§3, DS-032): каждая правка и каждый переход читают шапку заказа под
@@ -3249,7 +3462,26 @@ index 0000000..294521d
 +	if err != nil {
 +		return h, fmt.Errorf("purchase-orders lock: %w", err)
 +	}
-+	return h, nil
++	h.SupplierAvailable, err = lockSupplier(ctx, tx, h.SupplierID)
++	return h, err
++}
++
++// lockSupplier — строка поставщика FOR SHARE до конца транзакции + «активен и не удалён»
++// (DS-043): архив/удаление поставщика (suppliers, FOR UPDATE) ждёт эту транзакцию либо она —
++// его, и видит уже архивного. nil (Базар) — доступен.
++func lockSupplier(ctx context.Context, tx pgx.Tx, supplierID *string) (bool, error) {
++	if supplierID == nil {
++		return true, nil
++	}
++	var ok bool
++	err := tx.QueryRow(ctx, supplierLockSQL, *supplierID).Scan(&ok)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return false, nil
++	}
++	if err != nil {
++		return false, fmt.Errorf("purchase-orders supplier lock: %w", err)
++	}
++	return ok, nil
 +}
 +
 +const (
@@ -3460,24 +3692,39 @@ index 0000000..294521d
 +	return r.transition(ctx, id, check, stmt{softDeleteSQL, []any{id, actorID, reason}})
 +}
 +
-+// Restore — восстановление из раздела «Удалённые» (DS-072).
++// ErrRestoreSupplierUnavailable — восстановление черновика архивного/удалённого поставщика
++// вернуло бы ему незакрытую закупку (DS-043).
++var ErrRestoreSupplierUnavailable = errors.New("purchase-orders: restore supplier unavailable")
++
++// Restore — восстановление из раздела «Удалённые» (DS-072): строка заказа FOR UPDATE, строка
++// поставщика FOR SHARE и проверка «активен и не удалён» в одной транзакции (DS-043).
 +func (r *Repository) Restore(ctx context.Context, id string) error {
-+	tag, err := r.pool.Exec(ctx, restoreSQL, id)
-+	if err != nil {
-+		return fmt.Errorf("purchase-orders restore: %w", err)
-+	}
-+	if tag.RowsAffected() > 0 {
++	return r.inTx(ctx, func(tx pgx.Tx) error {
++		var supplierID *string
++		var deleted bool
++		err := tx.QueryRow(ctx, `SELECT supplier_id::text, deleted_at IS NOT NULL FROM purchase_orders
++			WHERE id = $1::uuid FOR UPDATE`, id).Scan(&supplierID, &deleted)
++		if errors.Is(err, pgx.ErrNoRows) {
++			return ErrNotFound
++		}
++		if err != nil {
++			return fmt.Errorf("purchase-orders restore: %w", err)
++		}
++		if !deleted {
++			return ErrNotDeleted
++		}
++		ok, err := lockSupplier(ctx, tx, supplierID)
++		if err != nil {
++			return err
++		}
++		if !ok {
++			return ErrRestoreSupplierUnavailable
++		}
++		if _, err := tx.Exec(ctx, restoreSQL, id); err != nil {
++			return fmt.Errorf("purchase-orders restore: %w", err)
++		}
 +		return nil
-+	}
-+	var one int
-+	err = r.pool.QueryRow(ctx, `SELECT 1 FROM purchase_orders WHERE id = $1::uuid`, id).Scan(&one)
-+	if errors.Is(err, pgx.ErrNoRows) {
-+		return ErrNotFound
-+	}
-+	if err != nil {
-+		return err
-+	}
-+	return ErrNotDeleted
++	})
 +}
 +
 +// Purge — физическое удаление (служебная уборка автотестов, soft-delete-core DS-027);
@@ -3681,10 +3928,10 @@ index 0000000..294521d
 +}
 diff --git a/internal/features/purchase-orders/service/checks_test.go b/internal/features/purchase-orders/service/checks_test.go
 new file mode 100644
-index 0000000..202042f
+index 0000000..33d61e7
 --- /dev/null
 +++ b/internal/features/purchase-orders/service/checks_test.go
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,172 @@
 +package service
 +
 +import (
@@ -3706,7 +3953,7 @@ index 0000000..202042f
 +
 +func head(status string, opts ...func(*models.Head)) models.Head {
 +	sup := supplier
-+	h := models.Head{ID: "o", Status: status, Version: 5, CreatedBy: execA.ID, SupplierID: &sup, ItemsCount: 2}
++	h := models.Head{ID: "o", Status: status, Version: 5, CreatedBy: execA.ID, SupplierID: &sup, ItemsCount: 2, SupplierAvailable: true}
 +	for _, o := range opts {
 +		o(&h)
 +	}
@@ -3716,6 +3963,7 @@ index 0000000..202042f
 +func bazaar(h *models.Head)   { h.SupplierID = nil }
 +func empty(h *models.Head)    { h.ItemsCount = 0 }
 +func hasLogin(h *models.Head) { h.SupplierHasLogin = true }
++func archived(h *models.Head) { h.SupplierAvailable = false }
 +
 +// TS-003 (DS-011, DS-012, DS-042, DS-075): матрица переходов §5 на уровне правил — каждый
 +// разрешённый переход проходит, каждый запрещённый даёт свой 409.
@@ -3844,12 +4092,24 @@ index 0000000..202042f
 +	assert.Error(t, supplierOnly(Actor{Role: RoleSupplier}), "supplier без привязки")
 +	assert.NoError(t, supplierOnly(Actor{Role: RoleSupplier, SupplierID: "x"}))
 +}
++
++// DS-043: отправка черновика архивному/удалённому поставщику — 400 supplier_id: unavailable,
++// как при создании (§6.2).
++func TestSendCheck_SupplierUnavailable(t *testing.T) {
++	err := SendCheck(admin, 5)(head("draft", archived))
++	app, ok := err.(*errorspkg.AppError)
++	if assert.True(t, ok) {
++		assert.Equal(t, "VALIDATION", app.Code)
++		assert.Equal(t, "supplier_id", app.Fields[0].Name)
++		assert.Equal(t, "Поставщик недоступен", app.Message)
++	}
++}
 diff --git a/internal/features/purchase-orders/service/service.go b/internal/features/purchase-orders/service/service.go
 new file mode 100644
-index 0000000..3d3bc7a
+index 0000000..69443e0
 --- /dev/null
 +++ b/internal/features/purchase-orders/service/service.go
-@@ -0,0 +1,644 @@
+@@ -0,0 +1,651 @@
 +// Package service — бизнес-правила закупок (§4–§6): права по ролям (DS-050, DS-051, DS-060),
 +// матрица переходов §5, сброс ответов при правке (DS-034, DS-048), «Собрано» (DS-038).
 +// Проверки выполняются ВНУТРИ транзакции repository над заблокированной шапкой заказа.
@@ -3871,14 +4131,15 @@ index 0000000..3d3bc7a
 +	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/repository"
 +	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/validators"
 +	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
++	"github.com/kitavrus/kanban-tree/internal/server/middleware"
 +	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 +)
 +
-+// Роли (internal/server/middleware: RoleAdmin/RoleExecutor/RoleSupplier).
++// Роли — единый источник internal/server/middleware (без дублирования строк).
 +const (
-+	RoleAdmin    = "admin"
-+	RoleExecutor = "executor"
-+	RoleSupplier = "supplier"
++	RoleAdmin    = middleware.RoleAdmin
++	RoleExecutor = middleware.RoleExecutor
++	RoleSupplier = middleware.RoleSupplier
 +)
 +
 +// Actor — кто делает запрос (только из сессии, DS-053).
@@ -4127,6 +4388,10 @@ index 0000000..3d3bc7a
 +		if h.ItemsCount == 0 {
 +			return errorspkg.ErrPurchaseOrderEmpty
 +		}
++		// Поставщик ушёл в архив/удалён — тот же отказ, что при создании (§6.2, DS-043).
++		if !h.SupplierAvailable {
++			return validators.Error([]errorspkg.Field{{Name: "supplier_id", Message: validators.MsgUnavailable}})
++		}
 +		return nil
 +	}
 +}
@@ -4295,6 +4560,8 @@ index 0000000..3d3bc7a
 +	switch {
 +	case errors.Is(err, repository.ErrNotDeleted):
 +		return softdelete.ErrNotDeleted
++	case errors.Is(err, repository.ErrRestoreSupplierUnavailable):
++		return errorspkg.ErrPurchaseOrderRestoreSupplierUnavailable
 +	case err != nil:
 +		return mapNotFound(err)
 +	}
@@ -5172,7 +5439,7 @@ index 81212f6..73def4f 100644
  // IsKind — v входит в реестр.
 diff --git a/internal/features/softdelete/purchase_orders_source.go b/internal/features/softdelete/purchase_orders_source.go
 new file mode 100644
-index 0000000..f7d6306
+index 0000000..d3d7864
 --- /dev/null
 +++ b/internal/features/softdelete/purchase_orders_source.go
 @@ -0,0 +1,70 @@
@@ -5203,7 +5470,7 @@ index 0000000..f7d6306
 +LEFT JOIN suppliers s ON s.id = r.supplier_id
 +JOIN users u ON u.id = r.deleted_by
 +WHERE r.deleted_at IS NOT NULL
-+  AND ($1::text IS NULL OR coalesce(s.name, 'Базар') ILIKE '%' || $1 || '%' ESCAPE '\'
++  AND ($1::text IS NULL OR coalesce(s.name, 'Базар (сами)') ILIKE '%' || $1 || '%' ESCAPE '\'
 +       OR r.delete_reason ILIKE '%' || $1 || '%' ESCAPE '\'
 +       OR r.number = $2::bigint)
 +  AND ($3::timestamptz IS NULL OR r.deleted_at >= $3)
@@ -5288,24 +5555,48 @@ index 0c15f51..a7075af 100644
  		n, ok := sum.Counts[k.CountKey()]
 diff --git a/internal/features/suppliers/open_purchases.go b/internal/features/suppliers/open_purchases.go
 new file mode 100644
-index 0000000..39a2d36
+index 0000000..ccb633b
 --- /dev/null
 +++ b/internal/features/suppliers/open_purchases.go
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,61 @@
 +package suppliers
 +
 +import (
 +	"context"
 +
++	"github.com/jackc/pgx/v5"
++
 +	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/constants"
 +	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 +)
 +
-+// CheckNoOpenPurchases — у поставщика нет незакрытых закупок (draft/sent/ready, не удалённых):
-+// иначе 409 SUPPLIER_HAS_OPEN_PURCHASES с номерами (purchase-orders §6.18, DS-043). Удалённые
-+// черновики не мешают.
-+func (r *Repo) CheckNoOpenPurchases(ctx context.Context, id string) error {
-+	rows, err := r.pool.Query(ctx, `
++// Инвариант DS-043 (purchase-orders §6.18): у архивного/удалённого поставщика нет незакрытых
++// закупок. Архив и удаление идут в ОДНОЙ транзакции: строка поставщика блокируется FOR UPDATE,
++// затем проверяются закупки. Создание, восстановление и отправка закупки берут строку поставщика
++// FOR SHARE и проверяют «активен и не удалён» — гонка «создать закупку ↔ архивировать» исключена:
++// кто первый взял блокировку, тот и прав, второй видит результат первого.
++
++// inTx — fn в транзакции; ошибка fn — откат.
++func (r *Repo) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
++	tx, err := r.pool.Begin(ctx)
++	if err != nil {
++		return err
++	}
++	defer func() { _ = tx.Rollback(ctx) }()
++	if err := fn(tx); err != nil {
++		return err
++	}
++	return tx.Commit(ctx)
++}
++
++// lockNoOpenPurchases — блокирует строку поставщика (FOR UPDATE) и проверяет, что у него нет
++// незакрытых закупок (draft/sent/ready, не удалённых): иначе 409 SUPPLIER_HAS_OPEN_PURCHASES с
++// номерами. Поставщика нет — без ошибки (следующий UPDATE вернёт «не найден»).
++func lockNoOpenPurchases(ctx context.Context, tx pgx.Tx, id string) error {
++	if _, err := tx.Exec(ctx, `SELECT 1 FROM suppliers WHERE id = $1::uuid FOR UPDATE`, id); err != nil {
++		return err
++	}
++	rows, err := tx.Query(ctx, `
 +SELECT number FROM purchase_orders
 +WHERE supplier_id = $1::uuid AND deleted_at IS NULL AND status = ANY($2::text[])
 +ORDER BY number`, id, constants.OpenStatuses)
@@ -5329,38 +5620,83 @@ index 0000000..39a2d36
 +	}
 +	return nil
 +}
+diff --git a/internal/features/suppliers/repo.go b/internal/features/suppliers/repo.go
+index 440075a..76aeee0 100644
+--- a/internal/features/suppliers/repo.go
++++ b/internal/features/suppliers/repo.go
+@@ -104,12 +104,25 @@ func (r *Repo) Create(ctx context.Context, in Input) (*Supplier, error) {
+ 
+ // Update — все поля + is_active, last-write-wins (DS-043); ErrNoRows → ErrNotFound
+ // (сервис маппит); удалённый поставщик для правки не существует (soft-delete DS-026).
++//
++// Архив (is_active=false) — в одной транзакции с проверкой незакрытых закупок под блокировкой
++// строки поставщика (purchase-orders DS-043, open_purchases.go).
+ func (r *Repo) Update(ctx context.Context, id string, in Input) (*Supplier, error) {
+-	s, err := scan(r.pool.QueryRow(ctx,
+-		`UPDATE suppliers SET name = $2, contact_name = $3, phone = $4, address = $5, note = $6,
+-		        is_active = $7, updated_at = now()
+-		 WHERE id = $1::uuid AND deleted_at IS NULL RETURNING `+columns,
+-		id, in.Name, in.ContactName, in.Phone, in.Address, in.Note, in.IsActive))
++	var s *Supplier
++	err := r.inTx(ctx, func(tx pgx.Tx) error {
++		if !in.IsActive {
++			if err := lockNoOpenPurchases(ctx, tx, id); err != nil {
++				return err
++			}
++		}
++		var err error
++		s, err = scan(tx.QueryRow(ctx,
++			`UPDATE suppliers SET name = $2, contact_name = $3, phone = $4, address = $5, note = $6,
++			        is_active = $7, updated_at = now()
++			 WHERE id = $1::uuid AND deleted_at IS NULL RETURNING `+columns,
++			id, in.Name, in.ContactName, in.Phone, in.Address, in.Note, in.IsActive))
++		return err
++	})
+ 	if err != nil {
+ 		return nil, mapNameConflict(err)
+ 	}
 diff --git a/internal/features/suppliers/service.go b/internal/features/suppliers/service.go
-index 085b89d..fa7e5e2 100644
+index 085b89d..34cb69c 100644
 --- a/internal/features/suppliers/service.go
 +++ b/internal/features/suppliers/service.go
-@@ -96,6 +96,12 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*SupplierRes
+@@ -96,6 +96,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*SupplierRes
  	if f := in.validate(); len(f) > 0 {
  		return nil, errorspkg.Validation(f...)
  	}
-+	// Архив поставщика с незакрытыми закупками запрещён (purchase-orders §6.18, DS-043).
-+	if !in.IsActive {
-+		if err := s.repo.CheckNoOpenPurchases(ctx, id); err != nil {
-+			return nil, err
-+		}
-+	}
++	// Архив с незакрытыми закупками — 409 из repo.Update (DS-043, одна транзакция).
  	sup, err := s.repo.Update(ctx, id, in)
  	if err != nil {
  		return nil, mapErr(err)
 diff --git a/internal/features/suppliers/soft_delete.go b/internal/features/suppliers/soft_delete.go
-index 437c69e..984be9a 100644
+index 437c69e..082c1d5 100644
 --- a/internal/features/suppliers/soft_delete.go
 +++ b/internal/features/suppliers/soft_delete.go
-@@ -104,6 +104,10 @@ func (s *Service) Delete(ctx context.Context, a Actor, id string, in softdelete.
- 	if len(fields) > 0 {
- 		return nil, errorspkg.Validation(fields...)
- 	}
-+	// Удаление поставщика с незакрытыми закупками запрещено (purchase-orders §6.18, DS-043).
-+	if err := s.repo.CheckNoOpenPurchases(ctx, id); err != nil {
-+		return nil, err
-+	}
- 	at, err := s.repo.SoftDelete(ctx, id, a.ID, reason)
- 	if errors.Is(err, ErrNotFound) {
- 		return nil, ErrSupplierNotFound
+@@ -8,6 +8,7 @@ import (
+ 
+ 	"github.com/gofiber/fiber/v3"
+ 	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgconn"
+ 
+ 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
+@@ -45,10 +46,16 @@ var (
+ // ErrNotFound (второй одновременный запрос — тоже, DS-024). is_active не меняется.
+ func (r *Repo) SoftDelete(ctx context.Context, id, userID, reason string) (time.Time, error) {
+ 	var at time.Time
+-	err := r.pool.QueryRow(ctx, `
++	// Проверка незакрытых закупок — в той же транзакции под FOR UPDATE строки (DS-043).
++	err := r.inTx(ctx, func(tx pgx.Tx) error {
++		if err := lockNoOpenPurchases(ctx, tx, id); err != nil {
++			return err
++		}
++		return tx.QueryRow(ctx, `
+ UPDATE suppliers SET deleted_at = now(), deleted_by = $2::uuid, delete_reason = $3, updated_at = now()
+ WHERE id = $1::uuid AND deleted_at IS NULL
+ RETURNING deleted_at`, id, userID, reason).Scan(&at)
++	})
+ 	return at.UTC(), err
+ }
+ 
 diff --git a/internal/features/users/dto.go b/internal/features/users/dto.go
 index f1d8487..8878246 100644
 --- a/internal/features/users/dto.go
@@ -5572,7 +5908,7 @@ index b83d6b8..b31f614 100644
 +	return out, rows.Err()
 +}
 diff --git a/internal/features/users/service.go b/internal/features/users/service.go
-index 28b99db..90de790 100644
+index 28b99db..26bdbce 100644
 --- a/internal/features/users/service.go
 +++ b/internal/features/users/service.go
 @@ -75,7 +75,7 @@ func (s *Service) List(ctx context.Context, q ListQuery) (*ListResponse, error)
@@ -5594,17 +5930,22 @@ index 28b99db..90de790 100644
  	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
  	if err != nil {
  		return nil, err
-@@ -147,6 +150,9 @@ func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input)
- 	if f := in.validate(false); len(f) > 0 {
- 		return nil, errorspkg.Validation(f...)
- 	}
-+	if err := s.checkSupplier(ctx, in); err != nil {
-+		return nil, err
-+	}
- 	var hash *string
- 	if in.Password != "" {
- 		h, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
-@@ -219,7 +225,34 @@ func (s *Service) SetTimezone(ctx context.Context, userID, tz string) (*Timezone
+@@ -160,6 +163,14 @@ func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input)
+ 		if id == actor.UserID && !in.IsActive {
+ 			return ErrSelfBlock
+ 		}
++		// Доступность поставщика проверяется, только когда учётка СТАНОВИТСЯ supplier или
++		// меняется её поставщик (purchase-orders §6.17). Учётку поставщика, уже ушедшего в архив
++		// или удалённого, можно заблокировать и править прочие поля — отзыв доступа (DS-045).
++		if in.Role == RoleSupplier && (before.Role != RoleSupplier || before.SupplierID != in.SupplierID) {
++			if err := s.checkSupplier(ctx, in); err != nil {
++				return err
++			}
++		}
+ 		wasActiveAdmin := before.Role == RoleAdmin && before.IsActive
+ 		staysActiveAdmin := in.Role == RoleAdmin && in.IsActive
+ 		if wasActiveAdmin && !staysActiveAdmin && otherAdmins == 0 {
+@@ -219,7 +230,34 @@ func (s *Service) SetTimezone(ctx context.Context, userID, tz string) (*Timezone
  	return &TimezoneResponse{Timezone: tz}, nil
  }
  
@@ -5728,7 +6069,7 @@ index 7a4d9bb..08fa446 100644
  		if code == msgRequired {
  			return "Выберите часовой пояс"
 diff --git a/internal/features/users/validate.go b/internal/features/users/validate.go
-index d9ed32f..a22b837 100644
+index d9ed32f..e2fd823 100644
 --- a/internal/features/users/validate.go
 +++ b/internal/features/users/validate.go
 @@ -5,6 +5,8 @@ import (
@@ -5778,7 +6119,7 @@ index d9ed32f..a22b837 100644
  	in.Name = strings.TrimSpace(in.Name)
  	in.Role = strings.TrimSpace(in.Role)
  	in.Phone = strings.TrimSpace(in.Phone)
-+	in.SupplierID = strings.TrimSpace(in.SupplierID)
++	in.SupplierID = strings.ToLower(strings.TrimSpace(in.SupplierID))
  	return in
  }
  
@@ -6157,10 +6498,10 @@ index 40ba9cb..3192e4d 100644
 +}
 diff --git a/pkg/errorspkg/purchase_orders.go b/pkg/errorspkg/purchase_orders.go
 new file mode 100644
-index 0000000..c434dbf
+index 0000000..498495f
 --- /dev/null
 +++ b/pkg/errorspkg/purchase_orders.go
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,82 @@
 +package errorspkg
 +
 +import (
@@ -6183,6 +6524,7 @@ index 0000000..c434dbf
 +	CodePurchaseOrderItemsIncomplete = "PURCHASE_ORDER_ITEMS_INCOMPLETE"
 +	CodePurchaseItemVersionConflict  = "PURCHASE_ITEM_VERSION_CONFLICT"
 +	CodeSupplierHasOpenPurchases     = "SUPPLIER_HAS_OPEN_PURCHASES"
++	CodePurchaseSupplierUnavailable  = "PURCHASE_ORDER_SUPPLIER_UNAVAILABLE"
 +)
 +
 +func conflict(code, msg string) *AppError { return New(code, http.StatusConflict, msg) }
@@ -6229,8 +6571,11 @@ index 0000000..c434dbf
 +	ErrPurchaseOrderNotReadyWait      = conflict(CodePurchaseOrderNotReady, "Дождитесь отметки поставщика «Собрано»")
 +	ErrPurchaseOrderNotReadySendFirst = conflict(CodePurchaseOrderNotReady, "Сначала отправьте заказ поставщику")
 +	// «Собрано» с неполными строками (§6.15): details.item_ids — строки без ответа/цены.
-+	ErrPurchaseOrderItemsNoQty   = conflict(CodePurchaseOrderItemsIncomplete, "Заполните «Соберу» во всех строках")
-+	ErrPurchaseOrderItemsNoPrice = conflict(CodePurchaseOrderItemsIncomplete, "Укажите цену у строк, которые соберёте")
++	ErrPurchaseOrderItemsNoQty = conflict(CodePurchaseOrderItemsIncomplete, "Заполните «Соберу» во всех строках")
++	// Восстановление черновика архивного/удалённого поставщика (DS-043, DS-072): вернуло бы
++	// такому поставщику незакрытую закупку.
++	ErrPurchaseOrderRestoreSupplierUnavailable = conflict(CodePurchaseSupplierUnavailable, "Поставщик недоступен — восстановить черновик нельзя")
++	ErrPurchaseOrderItemsNoPrice               = conflict(CodePurchaseOrderItemsIncomplete, "Укажите цену у строк, которые соберёте")
 +)
 +
 +// SupplierHasOpenPurchases — 409 архива/удаления поставщика с незакрытыми закупками
