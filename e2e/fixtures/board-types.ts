@@ -153,14 +153,14 @@ export type PartnerError = {
   message: string;
 };
 /** Виды служебной уборки, подключённые на стенде (части 1–6 мастер-спеки soft-delete). */
-export type PurgeKind = 'tasks' | 'columns' | 'clients' | 'equipment' | CatalogKind | PartnerKind;
+export type PurgeKind = 'tasks' | 'columns' | 'clients' | 'equipment' | CatalogKind | PartnerKind | 'purchase-orders';
 /** 200 DELETE /api/v1/test/purge/:kind/:id (soft-delete-core §6.5, служебная уборка). */
 export type PurgeResponse = { id: string };
 
 // ---- раздел «Удалённые» (internal/features/softdelete/dto.go, §6.3, §6.4) ----
 export type DeletedKind =
   | 'tasks' | 'columns' | 'clients' | 'equipment' | 'products' | 'services'
-  | 'catalog-categories' | 'suppliers';
+  | 'catalog-categories' | 'suppliers' | 'purchase-orders';
 export type DeletedItem = {
   kind: DeletedKind;
   id: string;

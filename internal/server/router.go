@@ -21,6 +21,9 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/features/catalog"
 	"github.com/kitavrus/kanban-tree/internal/features/clients"
 	"github.com/kitavrus/kanban-tree/internal/features/executorpayouts"
+	pohandler "github.com/kitavrus/kanban-tree/internal/features/purchase-orders/handler"
+	porepo "github.com/kitavrus/kanban-tree/internal/features/purchase-orders/repository"
+	poservice "github.com/kitavrus/kanban-tree/internal/features/purchase-orders/service"
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
 	"github.com/kitavrus/kanban-tree/internal/features/suppliers"
 	"github.com/kitavrus/kanban-tree/internal/features/users"
@@ -122,7 +125,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	boardSubtaskLogRepo := board.NewSubtaskLogRepo(pool)
 
 	// Пункты сайдбара — только реализованные разделы (растёт по фазам plan.md §6).
-	shell := ssr.NewShellBuilder("/", "/stock", "/users", "/catalog", "/clients", "/suppliers", "/executor-payouts", "/calendar", "/deleted").WithBadges(boardStockSvc)
+	shell := ssr.NewShellBuilder("/", "/stock", "/purchases", "/users", "/catalog", "/clients", "/suppliers", "/executor-payouts", "/calendar", "/deleted").WithBadges(boardStockSvc)
 
 	sharedR, err := ssr.NewRenderer(ssr.SharedRoot)
 	if err != nil {
@@ -165,6 +168,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 	if err != nil {
 		return nil, err
 	}
+	purchasesR, err := ssr.NewRenderer(pohandler.Root, ssr.SharedRoot)
+	if err != nil {
+		return nil, err
+	}
 
 	api := app.Group("/api/v1")
 	auth.Register(app, api, auth.NewHandler(authSvc, guard, authR, shell), guard)
@@ -201,8 +208,15 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 		Register(softdelete.KindServices, softdelete.NewServicesSource(pool)).
 		Register(softdelete.KindCatalogCategories, softdelete.NewCatalogCategoriesSource(pool)).
 		// Часть 6 (soft-delete-suppliers) — поставщики.
-		Register(softdelete.KindSuppliers, softdelete.NewSuppliersSource(pool))
+		Register(softdelete.KindSuppliers, softdelete.NewSuppliersSource(pool)).
+		// purchase-orders (DS-072) — удалённые черновики закупок.
+		Register(softdelete.KindPurchaseOrders, softdelete.NewPurchaseOrdersSource(pool))
 	softdelete.Register(app, api, guard, softdelete.NewHandler(deletedSvc), softdelete.NewSSR(deletedR, shell, status))
+
+	// Закупки по дефициту (purchase-orders): наши экраны /purchases (admin, executor) и кабинет
+	// поставщика /supplier/orders (supplier).
+	poSvc := poservice.New(porepo.New(pool), cfg.Firm)
+	pohandler.Register(app, api, guard, pohandler.NewHandler(poSvc), pohandler.NewSSR(poSvc, purchasesR, shell, status))
 
 	// board — доска заказов занимает корень «/» (ADR-100, снимает home) + «/stock» +
 	// печать актов (фаза 04) — один CardService на JSON API и SSR-печать (Re-fetch-after-write
@@ -228,7 +242,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, rdb *redis
 			WithPurger(string(softdelete.KindServices), catSvcSvc.Purge).
 			WithPurger(string(softdelete.KindCatalogCategories), catCatSvc.Purge).
 			// Служебная уборка вида поставщик (soft-delete-suppliers DS-027).
-			WithPurger(string(softdelete.KindSuppliers), suppliersSvc.Purge),
+			WithPurger(string(softdelete.KindSuppliers), suppliersSvc.Purge).
+			// Служебная уборка закупок (purchase-orders).
+			WithPurger(string(softdelete.KindPurchaseOrders), poSvc.Purge),
 		Assignees:   board.NewAssigneesHandler(pool),
 		Stock:       board.NewStockHandler(boardStockSvc),
 		Card:        board.NewCardHandler(boardCardSvc),

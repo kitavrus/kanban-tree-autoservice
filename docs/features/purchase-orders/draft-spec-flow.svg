@@ -1,0 +1,64 @@
+<svg width="680" height="800" viewBox="0 0 680 800" xmlns="http://www.w3.org/2000/svg" role="img" font-family="Helvetica Neue, Arial, sans-serif">
+<title>Сценарий закупки по дефициту</title>
+<desc>Сотрудник формирует заказ по дефициту, отправляет поставщику; поставщик в кабинете заполняет строки и нажимает Собрано; сотрудник видит ответ и нажимает Забрали. Ошибочная ветка: правка после Собрано → 409.</desc>
+<rect x="0" y="0" width="680" height="800" fill="#ffffff"/>
+<rect x="7" y="16" width="156" height="36" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1.5"/>
+<text x="85" y="39" text-anchor="middle" font-size="12" font-weight="600" fill="#2C2C2A" textLength="123" lengthAdjust="spacingAndGlyphs">Мы (admin/executor)</text>
+<line x1="85" y1="52" x2="85" y2="745" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="3,4"/>
+<rect x="177" y="16" width="156" height="36" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1.5"/>
+<text x="255" y="39" text-anchor="middle" font-size="12" font-weight="600" fill="#04342C" textLength="104" lengthAdjust="spacingAndGlyphs">Экраны §8.1–§8.4</text>
+<line x1="255" y1="52" x2="255" y2="745" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="3,4"/>
+<rect x="347" y="16" width="156" height="36" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.5"/>
+<text x="425" y="39" text-anchor="middle" font-size="12" font-weight="600" fill="#26215C" textLength="39" lengthAdjust="spacingAndGlyphs">API §6</text>
+<line x1="425" y1="52" x2="425" y2="745" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="3,4"/>
+<rect x="517" y="16" width="156" height="36" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1.5"/>
+<text x="595" y="39" text-anchor="middle" font-size="12" font-weight="600" fill="#042C53" textLength="110" lengthAdjust="spacingAndGlyphs">Кабинет §8.6–§8.7</text>
+<line x1="595" y1="52" x2="595" y2="745" stroke="#B4B2A9" stroke-width="1" stroke-dasharray="3,4"/>
+<line x1="85" y1="80" x2="247" y2="80" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="255,80 246,75 246,85" fill="#5F5E5A"/>
+<text x="91" y="75" font-size="10.5" fill="#444441" textLength="142" lengthAdjust="spacingAndGlyphs">«Новый заказ», получатель</text>
+<line x1="255" y1="110" x2="417" y2="110" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,110 416,105 416,115" fill="#5F5E5A"/>
+<text x="261" y="105" font-size="10.5" fill="#444441" textLength="255" lengthAdjust="spacingAndGlyphs">GET /api/v1/purchase-orders/suggestions §6.10</text>
+<line x1="425" y1="140" x2="263" y2="140" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="255,140 264,135 264,145" fill="#5F5E5A"/>
+<text x="261" y="135" font-size="10.5" fill="#444441" textLength="181" lengthAdjust="spacingAndGlyphs">строки дефицита + «уже в З-0012»</text>
+<line x1="255" y1="170" x2="417" y2="170" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,170 416,165 416,175" fill="#5F5E5A"/>
+<text x="261" y="165" font-size="10.5" fill="#444441" textLength="244" lengthAdjust="spacingAndGlyphs">POST /api/v1/purchase-orders §6.2 (галочки)</text>
+<line x1="425" y1="200" x2="263" y2="200" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="255,200 264,195 264,205" fill="#5F5E5A"/>
+<text x="261" y="195" font-size="10.5" fill="#444441" textLength="181" lengthAdjust="spacingAndGlyphs">201 draft З-0013 → карточка §8.3</text>
+<line x1="85" y1="230" x2="247" y2="230" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="255,230 246,225 246,235" fill="#5F5E5A"/>
+<text x="91" y="225" font-size="10.5" fill="#444441" textLength="125" lengthAdjust="spacingAndGlyphs">«Отправить поставщику»</text>
+<line x1="255" y1="260" x2="417" y2="260" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,260 416,255 416,265" fill="#5F5E5A"/>
+<text x="261" y="255" font-size="10.5" fill="#444441" textLength="170" lengthAdjust="spacingAndGlyphs">POST …/:id/send §6.6 {version}</text>
+<line x1="425" y1="290" x2="263" y2="290" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="255,290 264,285 264,295" fill="#5F5E5A"/>
+<text x="261" y="285" font-size="10.5" fill="#444441" textLength="45" lengthAdjust="spacingAndGlyphs">200 sent</text>
+<text x="595" y="322" text-anchor="middle" font-size="10.5" fill="#185FA5" textLength="102" lengthAdjust="spacingAndGlyphs">поставщик входит →</text>
+<line x1="595" y1="342" x2="433" y2="342" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,342 434,337 434,347" fill="#5F5E5A"/>
+<text x="431" y="337" font-size="10.5" fill="#444441" textLength="136" lengthAdjust="spacingAndGlyphs">GET supplier/…/:id §6.13</text>
+<line x1="425" y1="372" x2="587" y2="372" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="595,372 586,367 586,377" fill="#5F5E5A"/>
+<text x="431" y="367" font-size="10.5" fill="#444441" textLength="119" lengthAdjust="spacingAndGlyphs">строки без reason/цен</text>
+<line x1="595" y1="410" x2="433" y2="410" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,410 434,405 434,415" fill="#5F5E5A"/>
+<text x="431" y="405" font-size="10.5" fill="#444441" textLength="147" lengthAdjust="spacingAndGlyphs">PUT …/items/:item_id §6.14</text>
+<line x1="425" y1="440" x2="587" y2="440" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="595,440 586,435 586,445" fill="#5F5E5A"/>
+<text x="431" y="435" font-size="10.5" fill="#444441" textLength="130" lengthAdjust="spacingAndGlyphs">200 строка / 409 версия</text>
+<rect x="415" y="382" width="230" height="70" rx="4" fill="none" stroke="#534AB7" stroke-width="1" stroke-dasharray="6,3"/>
+<text x="419" y="378" font-size="10" fill="#534AB7" textLength="81" lengthAdjust="spacingAndGlyphs">цикл по строкам</text>
+<line x1="595" y1="470" x2="433" y2="470" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,470 434,465 434,475" fill="#5F5E5A"/>
+<text x="431" y="465" font-size="10.5" fill="#444441" textLength="125" lengthAdjust="spacingAndGlyphs">POST …/:id/ready §6.15</text>
+<line x1="425" y1="500" x2="587" y2="500" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="595,500 586,495 586,505" fill="#5F5E5A"/>
+<text x="431" y="495" font-size="10.5" fill="#444441" textLength="125" lengthAdjust="spacingAndGlyphs">200 ready / 400 не все</text>
+<line x1="255" y1="536" x2="417" y2="536" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,536 416,531 416,541" fill="#5F5E5A"/>
+<text x="261" y="531" font-size="10.5" fill="#444441" textLength="204" lengthAdjust="spacingAndGlyphs">GET /api/v1/purchase-orders/:id §6.3</text>
+<line x1="425" y1="566" x2="263" y2="566" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="255,566 264,561 264,571" fill="#5F5E5A"/>
+<text x="261" y="561" font-size="10.5" fill="#444441" textLength="164" lengthAdjust="spacingAndGlyphs">ответ поставщика, расхождения</text>
+<line x1="85" y1="596" x2="247" y2="596" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="255,596 246,591 246,601" fill="#5F5E5A"/>
+<text x="91" y="591" font-size="10.5" fill="#444441" textLength="51" lengthAdjust="spacingAndGlyphs">«Забрали»</text>
+<line x1="255" y1="626" x2="417" y2="626" stroke="#5F5E5A" stroke-width="1.5"/><polygon points="425,626 416,621 416,631" fill="#5F5E5A"/>
+<text x="261" y="621" font-size="10.5" fill="#444441" textLength="187" lengthAdjust="spacingAndGlyphs">POST …/:id/pick-up §6.8 {version}</text>
+<line x1="425" y1="656" x2="263" y2="656" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="255,656 264,651 264,661" fill="#5F5E5A"/>
+<text x="261" y="651" font-size="10.5" fill="#444441" textLength="193" lengthAdjust="spacingAndGlyphs">200 picked_up (остатки не трогаем)</text>
+<line x1="255" y1="686" x2="417" y2="686" stroke="#B42318" stroke-width="1.5"/><polygon points="425,686 416,681 416,691" fill="#B42318"/>
+<text x="261" y="681" font-size="10.5" fill="#B42318" textLength="147" lengthAdjust="spacingAndGlyphs">PUT …/:id §6.4 после ready</text>
+<line x1="425" y1="716" x2="263" y2="716" stroke="#B42318" stroke-width="1.5" stroke-dasharray="5,4"/><polygon points="255,716 264,711 264,721" fill="#B42318"/>
+<text x="261" y="711" font-size="10.5" fill="#B42318" textLength="198" lengthAdjust="spacingAndGlyphs">409 PURCHASE_ORDER_READ_ONLY → тост</text>
+<line x1="20" y1="760" x2="660" y2="760" stroke="#D3D1C7" stroke-width="1"/>
+<text x="20" y="780" font-size="11" fill="#444441" textLength="451" lengthAdjust="spacingAndGlyphs">Сплошная — запрос, пунктир — ответ, красным — ошибочная ветка, рамка — цикл.</text>
+</svg>

@@ -20,15 +20,7 @@ import (
 // входит; с ненулевым — входит строкой с is_deleted = true (остаток, появившийся после
 // удаления, не теряется из вида). $FORCE — товар, строка которого нужна независимо от
 // остатка: ответ ручной корректировки, обнулившей остаток удалённого товара.
-const stockPendingCTETemplate = `
-WITH pending AS (
-    SELECT sp.product_id, sum(sp.qty) AS qty
-    FROM subtask_products sp
-    JOIN subtasks s ON s.id = sp.subtask_id
-    JOIN tasks t    ON t.id = s.task_id
-    JOIN columns c  ON c.id = t.column_id
-    WHERE NOT c.consumes_stock AND NOT c.is_final AND t.deleted_at IS NULL
-    GROUP BY sp.product_id),
+const stockPendingCTETemplate = PendingCTE + `,
 rows AS (
     SELECT p.id, p.deleted_at IS NOT NULL AS is_deleted, p.name, p.unit, p.box, p.place,
            p.stock, p.min_stock,
@@ -41,6 +33,32 @@ rows AS (
     WHERE (p.deleted_at IS NULL AND p.is_active)
        OR (p.deleted_at IS NOT NULL AND (p.stock <> 0$FORCE)))
 `
+
+// PendingCTE — «WITH pending AS (…)»: потребность в товаре ещё не взятых в работу заказов
+// (колонка не consumes_stock и не финальная, заказ не удалён). Единый источник расчёта для
+// «Остатков» и подсказки дефицита закупок (purchase-orders §6.10, DS-064); экспортирован
+// без изменения поведения /stock (DS-005).
+const PendingCTE = `
+WITH pending AS (
+    SELECT sp.product_id, sum(sp.qty) AS qty
+    FROM subtask_products sp
+    JOIN subtasks s ON s.id = sp.subtask_id
+    JOIN tasks t    ON t.id = s.task_id
+    JOIN columns c  ON c.id = t.column_id
+    WHERE NOT c.consumes_stock AND NOT c.is_final AND t.deleted_at IS NULL
+    GROUP BY sp.product_id)`
+
+// PendingTasksSQL — заказы клиентов, дающие pending по товарам $1 (uuid[]): тот же фильтр,
+// что у PendingCTE (purchase-orders §6.10 items[].tasks[]).
+const PendingTasksSQL = `
+SELECT DISTINCT sp.product_id::text, t.id, t.title
+FROM subtask_products sp
+JOIN subtasks s ON s.id = sp.subtask_id
+JOIN tasks t    ON t.id = s.task_id
+JOIN columns c  ON c.id = t.column_id
+WHERE NOT c.consumes_stock AND NOT c.is_final AND t.deleted_at IS NULL
+  AND sp.product_id = ANY($1::uuid[])
+ORDER BY 1, 3, 2`
 
 // stockPendingSQL — CTE с принудительно включённым товаром force (SQL-параметр «$1::uuid»)
 // либо без него ("").

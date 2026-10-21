@@ -58,14 +58,20 @@ export class UsersPage {
     return this.page.locator(`[data-testid="user-row"][data-login="${login}"]`);
   }
 
-  fieldError(field: 'name' | 'login' | 'role' | 'phone' | 'password' | 'timezone'): Locator {
+  fieldError(field: 'name' | 'login' | 'role' | 'phone' | 'password' | 'timezone' | 'supplier_id'): Locator {
     return this.page.getByTestId(`error-${field}`);
   }
 
   /** Выбор роли в комбобоксе (D6). */
-  async chooseRole(label: 'Исполнитель' | 'Администратор') {
+  async chooseRole(label: 'Исполнитель' | 'Администратор' | 'Поставщик') {
     await this.role.click();
     await this.page.getByTestId('combobox-dropdown').locator('.cb-opt', { hasText: label }).click();
+  }
+
+  /** «Поставщик» учётки роли supplier (purchase-orders §8.5): нативный select, виден только у
+   *  роли «Поставщик». */
+  get supplier(): Locator {
+    return this.page.getByTestId('user-supplier');
   }
 
   /** Выбор пояса в комбобоксе по подписи («Москва (UTC+3)»). */

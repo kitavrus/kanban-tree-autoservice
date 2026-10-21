@@ -50,7 +50,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	active := req.IsActive == nil || *req.IsActive
 	resp, err := h.svc.Create(c.Context(), Input{
 		Login: req.Login, Name: req.Name, Role: req.Role, Phone: req.Phone, Password: req.Password, IsActive: active,
-		Timezone: req.Timezone,
+		Timezone: req.Timezone, SupplierID: deref(req.SupplierID),
 	})
 	if err != nil {
 		return err
@@ -69,7 +69,7 @@ func (h *Handler) Update(c fiber.Ctx) error {
 	}
 	resp, err := h.svc.Update(c.Context(), actorOf(c), c.Params("id"), Input{
 		Login: req.Login, Name: req.Name, Role: req.Role, Phone: req.Phone, Password: req.Password, IsActive: *req.IsActive,
-		Timezone: req.Timezone,
+		Timezone: req.Timezone, SupplierID: deref(req.SupplierID),
 	})
 	if err != nil {
 		return err
@@ -105,4 +105,12 @@ func parseBoolPtr(raw string) *bool {
 		return &v
 	}
 	return nil
+}
+
+// deref — supplier_id из тела: null/не передан → "" (purchase-orders §6.17).
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -25,6 +26,11 @@ const (
 
 	RoleAdmin    = ssr.RoleAdmin
 	RoleExecutor = "executor"
+	// RoleSupplier — учётка поставщика (purchase-orders DS-007): видит только свой кабинет.
+	RoleSupplier = ssr.RoleSupplier
+
+	// SupplierHome — куда SSR-guard отправляет поставщика с любого чужого раздела (DS-018).
+	SupplierHome = "/supplier/orders"
 )
 
 // Principal — кто делает запрос: читается из БД на каждом запросе, поэтому смена
@@ -37,9 +43,36 @@ type Principal struct {
 	IsActive bool
 	// Timezone — часовой пояс пользователя (IANA, DS-031): по нему показывается время.
 	Timezone string
+	// SupplierID — поставщик учётки роли supplier (purchase-orders DS-053): кабинет берёт
+	// поставщика только отсюда, никогда из запроса. "" у admin/executor.
+	SupplierID string
 }
 
 func (p *Principal) IsAdmin() bool { return p.Role == RoleAdmin }
+
+// IsSupplier — учётка поставщика (purchase-orders DS-007).
+func (p *Principal) IsSupplier() bool { return p.Role == RoleSupplier }
+
+// SupplierSSRAllowed — страница, открытая роли supplier (DS-053): только кабинет /supplier/*.
+func SupplierSSRAllowed(path string) bool {
+	return path == "/supplier" || strings.HasPrefix(path, "/supplier/")
+}
+
+// supplierAPIAllowed — JSON API, открытый роли supplier («по умолчанию запрещено», DS-053):
+// кабинет /api/v1/supplier/*, выход, свой профиль и смена своего часового пояса.
+func supplierAPIAllowed(method, path string) bool {
+	switch {
+	case strings.HasPrefix(path, "/api/v1/supplier/"):
+		return true
+	case method == fiber.MethodPost && path == "/api/v1/auth/logout":
+		return true
+	case method == fiber.MethodGet && path == "/api/v1/auth/me":
+		return true
+	case method == fiber.MethodPut && path == "/api/v1/users/me/timezone":
+		return true
+	}
+	return false
+}
 
 // PrincipalLoader — пользователь по id; (nil, nil) — пользователя нет.
 type PrincipalLoader func(ctx context.Context, id string) (*Principal, error)
@@ -101,6 +134,11 @@ func (a *Auth) RequireAPI() fiber.Handler {
 		if p == nil {
 			return errorspkg.Unauthorized("no session")
 		}
+		// Поставщик: всё вне allow-list — 403 (DS-017, DS-053). Правило в общем guard'е,
+		// поэтому любой новый раздел закрыт для поставщика автоматически.
+		if p.IsSupplier() && !supplierAPIAllowed(c.Method(), c.Path()) {
+			return errorspkg.Forbidden("Нет доступа")
+		}
 		return c.Next()
 	}
 }
@@ -127,6 +165,10 @@ func (a *Auth) RequireSSR() fiber.Handler {
 		if p == nil {
 			return c.Redirect().Status(fiber.StatusFound).To("/login?redirect=" + url.QueryEscape(c.OriginalURL()))
 		}
+		// Поставщик заперт в кабинете (DS-017, DS-018): любая иная страница → /supplier/orders.
+		if p.IsSupplier() && !SupplierSSRAllowed(c.Path()) {
+			return c.Redirect().Status(fiber.StatusFound).To(SupplierHome)
+		}
 		return c.Next()
 	}
 }
@@ -142,6 +184,35 @@ func RequireAdmin(forbidden fiber.Handler) fiber.Handler {
 			return forbidden(c)
 		}
 		return errorspkg.Forbidden("admin only")
+	}
+}
+
+// RequireSupplier — только роль supplier с привязкой к поставщику (после RequireAPI/
+// RequireSSR; DS-053). Иначе — forbidden (страница 403) либо 403 JSON «Раздел только для
+// поставщиков».
+func RequireSupplier(forbidden fiber.Handler) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if p := CurrentPrincipal(c); p != nil && p.IsSupplier() && p.SupplierID != "" {
+			return c.Next()
+		}
+		if forbidden != nil {
+			return forbidden(c)
+		}
+		return errorspkg.Forbidden("Раздел только для поставщиков")
+	}
+}
+
+// RequireStaff — admin или executor (закупки §6.1–§6.11): supplier уже отсечён общим
+// guard'ом, правило здесь — защитный дубль для роутов вне /api/v1.
+func RequireStaff(forbidden fiber.Handler) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if p := CurrentPrincipal(c); p != nil && (p.Role == RoleAdmin || p.Role == RoleExecutor) {
+			return c.Next()
+		}
+		if forbidden != nil {
+			return forbidden(c)
+		}
+		return errorspkg.Forbidden("Нет доступа")
 	}
 }
 

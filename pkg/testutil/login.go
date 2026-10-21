@@ -140,3 +140,17 @@ func (s *BaseSuite) SeedUser(login, password, name, role string, active bool) st
 	require.NoError(s.T(), err)
 	return id
 }
+
+// SeedSupplierUser — учётка роли supplier, привязанная к поставщику supplierID (purchase-orders
+// DS-007, TS-F3): CHECK users_supplier_chk требует supplier_id у этой роли.
+func (s *BaseSuite) SeedSupplierUser(login, password, name, supplierID string, active bool) string {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	require.NoError(s.T(), err)
+	var id string
+	err = s.Pool.QueryRow(context.Background(),
+		`INSERT INTO users (login, password_hash, name, role, is_active, supplier_id)
+		 VALUES ($1, $2, $3, 'supplier', $4, $5::uuid) RETURNING id`,
+		login, string(hash), name, active, supplierID).Scan(&id)
+	require.NoError(s.T(), err)
+	return id
+}

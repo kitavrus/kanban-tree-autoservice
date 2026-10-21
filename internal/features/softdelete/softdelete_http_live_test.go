@@ -639,7 +639,7 @@ func (s *SoftDeleteLiveSuite) TestTS011_Summary() {
 	s.deleted(s.admin, c, "Заказ 2 "+mark, "Причина "+mark, "")
 
 	sum := summary()
-	s.Len(sum.Counts, 8)
+	s.Len(sum.Counts, len(softdelete.Kinds)) // 9 видов: + purchase-orders (DS-072)
 	s.Equal(before+2, sum.Counts["tasks"])
 	for _, k := range softdelete.Kinds {
 		n, ok := sum.Counts[k.CountKey()]

@@ -1,0 +1,932 @@
+# draft-spec.md → draft-spec.html: карта пунктов p-N (генерится md2html.py, руками не править)
+# формат: p-N<TAB>секция<TAB>строка MD<TAB>текст пункта
+p-1	§1	14	Сотрудник открывает «Новый заказ», выбирает получателя (поставщик или «Базар»), видит строки дефицита с галочками и коли
+p-2	§1	15	Сотрудник отправляет заказ поставщику. При необходимости правит отправленный заказ или отзывает его в черновик (§8.3, DS
+p-3	§1	16	Поставщик входит под своим логином и видит заказы своего поставщика. По каждой строке ставит «Соберу, шт.», цену и комме
+p-4	§1	17	Сотрудник видит ответ: суммы, расхождения подсвечены. После того как забрали, нажимает «Забрали», и заказ закрывается. О
+p-5	§1	18	Печать заказа в PDF (как акт выдачи): нам — с галочками для базара или с ценами после ответа, поставщику — свой экземпля
+p-6	§1	19	Админ создаёт учётку поставщика на экране «Пользователи»: роль «Поставщик» + привязка к записи справочника suppliers (§8
+p-7	§1	22	Статусы: draft → sent → ready → picked_up; cancelled из draft/sent/ready. У «Базара» короткий путь draft → picked_up. У 
+p-8	§1	23	Количество «к заказу» по запчасти = max(0, pending + min_stock − stock). Признак строки for_orders, если pending > stock
+p-9	§1	24	Подсказка «уже в открытом заказе З-0012 — 5 шт.» учитывает только заказы в sent и ready. Галочка у такой строки по умолч
+p-10	§1	25	Правка строки в sent (количество или запчасть, добавление строки) сбрасывает ответ поставщика по ЭТОЙ строке и ставит у 
+p-11	§1	26	После ready строки только для чтения. Поставщик не может отменить своё «Собрано» (DS-038, DS-039).
+p-12	§1	27	Executor видит в списке, открывает, печатает и меняет ТОЛЬКО свои заказы (created_by = он); чужой id → 404, как у постав
+p-13	§1	28	Подсказка «уже в открытом заказе» на экране «Новый заказ»: у admin учитывает все открытые заказы (sent/ready), у executo
+p-14	§1	29	Время: храним в UTC (timestamptz), показываем в поясе смотрящего (timezone пользователя, по умолчанию Asia/Almaty). Филь
+p-15	§1	30	Конкурентный доступ по операциям:
+p-16	§1	31	правка черновика или отправленного заказа и все переходы статусов — оптимистичная блокировка по version заказа, устаревш
+p-17	§1	32	ответ поставщика по строке — своя version строки, второй сохраняющий → 409;
+p-18	§1	33	«Собрано» и «Отозвать» одновременно — выигрывает первый, второй получает 409 (DS-032).
+p-19	§1	36	Новые таблицы purchase_orders и purchase_order_items (строки, ON DELETE CASCADE). В users добавляются роль supplier и su
+p-20	§1	37	API закупок для нас (§6.1–§6.11) и API кабинета поставщика (§6.12–§6.16) по CLAUDE.md §API-1. Учётки поставщиков — через
+p-21	§1	38	Безопасность: правило «по умолчанию запрещено» для роли supplier в RequireAPI/RequireSSR. Поставщику открыты только /sup
+p-22	§1	39	Расчёт дефицита переиспользует CTE pending из internal/features/board/stock_repo.go. Страница /stock не меняется (DS-005
+p-23	§1	40	Черновик — новый вид «Закупки» в разделе «Удалённые» (internal/features/softdelete) (DS-037, DS-072).
+p-24	§1	43	Сайдбар сотрудника → пункт «Закупки» (обе роли) → список /purchases с фильтром по статусу (§8.1).
+p-25	§1	44	«Новый заказ» /purchases/new: выбор получателя → таблица дефицита с галочками и количеством → поиск «Добавить запчасть» 
+p-26	§1	45	Карточка /purchases/:id: строки, колонки ответа поставщика, кнопки по статусу («Отправить поставщику», «Сохранить», «Ото
+p-27	§1	46	PDF-форма заказа (§8.4).
+p-28	§1	47	«Пользователи»: в форме роль «Поставщик» + выпадающий список поставщиков (§8.5).
+p-29	§1	48	Кабинет поставщика, удобный с телефона: свой упрощённый сайдбар, список /supplier/orders, карточка /supplier/orders/:id 
+p-30	§1	51	«Забрали» → приход на склад фактического количества: решено не делать, приход вводят как сейчас (DS-010, DS-028).
+p-31	§1	52	Изменения страницы «Остатки» /stock (отметка «заказано» и т.п.): решено не трогать (DS-005).
+p-32	§1	53	Уведомления поставщику и нам (Telegram, ссылка в WhatsApp): позже (DS-028).
+p-33	§1	54	Кнопка «Дозаказать недостающее» в карточке заказа клиента: позже (DS-028).
+p-34	§1	55	Основной поставщик у запчасти и история закупочных цен: позже, связи «запчасть ↔ поставщик» нет (DS-028).
+p-35	§1	56	Отдельный журнал изменений «было → стало»: решено не вести, хватает полей «кто/когда» (DS-052).
+p-36	§2	64	Наша система → кабинет поставщика | исходящий (внутри системы) | заказ в sent/ready/picked_up: номер, дата отправки, при
+p-37	§2	65	Кабинет поставщика → наша система | входящий (внутри системы) | ответ по строке: supplier_qty, supplier_price, supplier_
+p-38	§2	70	Поставщики suppliers | ведёт admin в разделе «Поставщики» (существующий) | фича только читает; архив/удаление поставщика
+p-39	§2	71	Запчасти products | ведёт admin в каталоге (существующий) | фича только читает остатки, минимум и pending; снимок name/s
+p-40	§2	72	Реквизиты мастерской | env FIRM_NAME, FIRM_PHONE (internal/config/config.go, как в PDF акта выдачи) | при старте приложе
+p-41	§3	77	Правка заказа (§6.4) и переходы статусов (§6.6–§6.9):
+p-42	§3	78	механизм: UPDATE … WHERE id = :id AND version = :version AND status IN (…), затем version + 1;
+p-43	§3	79	конкурент: устаревшая версия → 409 PURCHASE_ORDER_VERSION_CONFLICT «Заказ изменился, обновите страницу».
+p-44	§3	80	Ответ поставщика по строке (§6.14):
+p-45	§3	81	механизм: version строки + guard по статусу заказа sent в одной транзакции;
+p-46	§3	82	конкурент: устаревшая версия строки → 409 PURCHASE_ITEM_VERSION_CONFLICT; заказ уже не sent → 409 PURCHASE_ORDER_READ_ON
+p-47	§3	83	«Собрано» (§6.15) против «Отозвать»/«Отменить»/правки (§6.7, §6.9, §6.4):
+p-48	§3	84	механизм: атомарный guard WHERE status = 'sent';
+p-49	§3	85	конкурент: выигрывает первый, второй → 409, экран перечитывается.
+p-50	§3	86	Правка строки в sent против одновременного ответа поставщика по той же строке:
+p-51	§3	87	механизм: сброс ответа и пометка «Изменено заказчиком» увеличивают version строки;
+p-52	§3	88	конкурент: поставщик со старой версией → 409, видит новую строку без ответа (DS-048).
+p-53	§3	89	Номер заказа: выдаёт sequence purchase_orders_number_seq, без гонок и без переиспользования (DS-015).
+p-54	§3	92	у заказа: created_by/created_at, sent_by/sent_at, ready_by/ready_at, picked_up_by/picked_up_at, cancelled_by/cancelled_a
+p-55	§3	93	у строки: supplier_answered_by/supplier_answered_at — кто из учёток поставщика ответил последним;
+p-56	§3	94	отдельного журнала «было → стало» нет; аудит чтения и печати не ведём.
+p-57	§3	97	хранение — UTC, все отметки времени timestamptz;
+p-58	§3	98	показ в списке, карточке, PDF и кабинете — в поясе смотрящего (timezone, по умолчанию Asia/Almaty; поставщик может смени
+p-59	§3	99	фильтров и отчётов по диапазонам дат нет;
+p-60	§3	100	источник времени — now() БД; порядок — number (sequence).
+p-61	§3	103	sent_at → ready_at → picked_up_at дают длительность «отправили → собрано → забрали»; отчётов и алертов в MVP нет (inferr
+p-62	§3	106	SSR, всё состояние на сервере. После перезагрузки страница перечитывает заказ. Несохранённый ввод в полях поставщика тер
+p-63	§3	109	slog с trace_id (as-is каркас); цены поставщика и комментарии в логи не пишем;
+p-64	§3	110	поставщик не видит reason строки, наши продажные цены (products.price), отменённые заказы и причины отмены (DS-041, DS-0
+p-65	§3	113	pkg/errorspkg: { "code", "message", "details" }; 400 → details.fields[] (проектный CLAUDE.md); 403 / 404 / 409 — по смыс
+p-66	§3	116	Поставщик открывает существующие разделы (/, /stock, /clients, /catalog/*, /suppliers, /users, /calendar, /executor-payo
+p-67	§3	117	Поставщик подставляет чужой id заказа или строки → 404 (DS-017).
+p-68	§3	118	Поставщик передаёт в body supplier_id/order_id → игнорируется, поставщик берётся из сессии (DS-053).
+p-69	§3	119	Executor открывает, печатает, правит или отменяет чужой заказ по id → 404 PURCHASE_ORDER_NOT_FOUND, как будто заказа нет
+p-70	§3	120	Executor пытается удалить черновик или выдать учётке роль supplier → 403 (DS-050, DS-044).
+p-71	§3	121	Дубли закупок: два исполнителя независимо заказывают одну запчасть — подсказка §6.10 у каждого видит только свои заказы.
+p-72	§3	124	формат ошибок — pkg/errorspkg, 400 details.fields[] (DS-065);
+p-73	§3	125	коды not found / forbidden / conflict → 404 / 403 / 409 (DS-065);
+p-74	§3	126	синхронная обработка, без очередей (DS-065);
+p-75	§3	127	миграции не применяются автоматически, только make migrate-up (DS-065).
+p-76	§4.1	138	id | uuid PK | no | gen_random_uuid() | авто | surrogate key | DS-015
+p-77	§4.1	139	number | bigint | no | nextval('purchase_orders_number_seq') | авто | сквозной номер, показывается как «З-» + номер, доп
+p-78	§4.1	140	supplier_id | uuid | yes | null | условно | FK → suppliers(id) ON DELETE RESTRICT; NULL = «Базар, покупаем сами». Задаёт
+p-79	§4.1	141	status | text | no | 'draft' | авто | CHECK: draft / sent / ready / picked_up / cancelled (§5) | DS-011
+p-80	§4.1	142	note | text | no | '' | нет | примечание к заказу, 0–1000 символов, видно поставщику | DS-047, DS-046
+p-81	§4.1	143	note_changed_at | timestamptz | yes | null | авто | когда примечание правили в sent; > sent_at → у поставщика пометка «И
+p-82	§4.1	144	version | bigint | no | 1 | авто | оптимистичная блокировка, +1 на каждую правку и каждый переход | DS-032
+p-83	§4.1	145	created_by | uuid | no | — | авто | FK → users(id) ON DELETE RESTRICT; из сессии; владелец заказа: executor видит и меня
+p-84	§4.1	146	created_at | timestamptz | no | now() | авто | когда создан | DS-052
+p-85	§4.1	147	updated_at | timestamptz | no | now() | авто | последняя правка | DS-052
+p-86	§4.1	148	sent_by | uuid | yes | null | авто | FK → users(id) ON DELETE RESTRICT; кто последним нажал «Отправить» | DS-052
+p-87	§4.1	149	sent_at | timestamptz | yes | null | авто | последняя отправка (повторная после «Отозвать» перезаписывает); дата у поста
+p-88	§4.1	150	ready_by | uuid | yes | null | авто | FK → users(id) ON DELETE RESTRICT; учётка поставщика, нажавшая «Собрано» | DS-052
+p-89	§4.1	151	ready_at | timestamptz | yes | null | авто | когда поставщик нажал «Собрано» | DS-052
+p-90	§4.1	152	picked_up_by | uuid | yes | null | авто | FK → users(id) ON DELETE RESTRICT; кто нажал «Забрали» | DS-052
+p-91	§4.1	153	picked_up_at | timestamptz | yes | null | авто | когда закрыт «Забрали» | DS-052
+p-92	§4.1	154	cancelled_by | uuid | yes | null | авто | FK → users(id) ON DELETE RESTRICT; кто отменил | DS-052
+p-93	§4.1	155	cancelled_at | timestamptz | yes | null | авто | когда отменён | DS-052
+p-94	§4.1	156	cancel_reason | text | yes | null | условно | обязательна при отмене, 1–500 символов после trim; видна только нам | DS-0
+p-95	§4.1	157	deleted_at | timestamptz | yes | null | авто | мягкое удаление (только черновик, admin) | DS-037
+p-96	§4.1	158	deleted_by | uuid | yes | null | авто | FK → users(id) ON DELETE RESTRICT | DS-037
+p-97	§4.1	159	delete_reason | text | yes | null | условно | 1–500 символов, как у остальных видов раздела «Удалённые» | DS-037, DS-072
+p-98	§4.1	162	PK: id
+p-99	§4.1	163	UNIQUE: number (purchase_orders_number_uq)
+p-100	§4.1	164	Индексы:
+p-101	§4.1	165	purchase_orders_status_idx (status, created_at DESC) WHERE deleted_at IS NULL — список §6.1 с фильтром по статусу;
+p-102	§4.1	166	purchase_orders_supplier_idx (supplier_id, status) WHERE deleted_at IS NULL — кабинет §6.12 и проверка «незакрытые закуп
+p-103	§4.1	167	purchase_orders_deleted_at_idx (deleted_at DESC, id) WHERE deleted_at IS NOT NULL — вкладка раздела «Удалённые».
+p-104	§4.1	168	CHECK:
+p-105	§4.1	169	purchase_orders_status_chk — статус из списка выше;
+p-106	§4.1	170	purchase_orders_cancel_chk — (status = 'cancelled') ⇔ (cancelled_at, cancelled_by, cancel_reason заданы);
+p-107	§4.1	171	purchase_orders_deleted_chk — тройка deleted_at/deleted_by/delete_reason задана целиком или пуста; удалённым может быть 
+p-108	§4.1	172	purchase_orders_bazaar_chk — при supplier_id IS NULL статус не sent/ready.
+p-109	§4.1	175	N→1 suppliers — ON DELETE RESTRICT (у поставщика только мягкое удаление)
+p-110	§4.1	176	N→1 users (created_by, sent_by, ready_by, picked_up_by, cancelled_by, deleted_by) — ON DELETE RESTRICT (пользователи не 
+p-111	§4.1	177	1→N purchase_order_items — ON DELETE CASCADE (строки живут только с заказом)
+p-112	§4.1	180	Создание (§6.2): admin/executor; status='draft', number из sequence, created_by из сессии, строки — в той же транзакции.
+p-113	§4.1	181	Изменение (§6.4): в draft и sent, admin — любой заказ, executor — только свой (чужой → 404); version + 1. В sent правка 
+p-114	§4.1	182	Удаление (§6.5): только admin, только draft, мягкое (deleted_at/deleted_by/delete_reason). Восстановление и окончательно
+p-115	§4.1	183	Переходы статусов: §5.
+p-116	§4.1	186	у «Базара» нет sent/ready → CHECK purchase_orders_bazaar_chk + guard §6.6 → DS-011, DS-077
+p-117	§4.1	187	отправить и забрать можно только непустой заказ → guard EXISTS items в транзакции перехода → DS-076
+p-118	§4.1	188	не больше 200 строк → проверка в сервисе в транзакции правки → DS-047
+p-119	§4.1	189	number уникален и не переиспользуется → sequence + UNIQUE → DS-015
+p-120	§4.2	196	id | uuid PK | no | gen_random_uuid() | авто | surrogate key | DS-022
+p-121	§4.2	197	order_id | uuid | no | — | авто | FK → purchase_orders(id) ON DELETE CASCADE; из URL | DS-070
+p-122	§4.2	198	product_id | uuid | no | — | да | FK → products(id) ON DELETE RESTRICT; при добавлении — только активная, не удалённая з
+p-123	§4.2	199	position | integer | no | 0 | авто | порядок строк в заказе (порядок массива items в запросе) | DS-022
+p-124	§4.2	200	qty | numeric(12,3) | no | — | да | сколько просим: > 0 и ≤ 99999.999, до 3 знаков после запятой | DS-029, DS-047
+p-125	§4.2	201	reason | text | no | 'manual' | авто | CHECK: for_orders (не хватает под принятые заказы) / below_min (остаток уйдёт ниж
+p-126	§4.2	202	name | text | no | — | авто | снимок products.name при добавлении строки, обновляется при каждой отправке (§6.6) | DS-02
+p-127	§4.2	203	sku | text | no | '' | авто | снимок products.sku при добавлении строки, обновляется при каждой отправке (§6.6) | DS-021
+p-128	§4.2	204	unit | text | no | '' | авто | снимок products.unit при добавлении строки, обновляется при каждой отправке (§6.6) | DS-0
+p-129	§4.2	205	supplier_qty | numeric(12,3) | yes | null | условно | «Соберу, шт.»: 0–99999.999 (0 = нет); больше qty можно, строка под
+p-130	§4.2	206	supplier_price | numeric(12,2) | yes | null | условно | «Цена за ед.»: 0–9999999.99; обязательна для «Собрано», если sup
+p-131	§4.2	207	supplier_note | text | no | '' | нет | комментарий поставщика (замена, срок): 0–500 символов | DS-008, DS-047
+p-132	§4.2	208	supplier_answered_by | uuid | yes | null | авто | FK → users(id) ON DELETE RESTRICT; учётка поставщика, сохранившая отве
+p-133	§4.2	209	supplier_answered_at | timestamptz | yes | null | авто | когда ответ сохранён последним | DS-052
+p-134	§4.2	210	customer_changed_at | timestamptz | yes | null | авто | когда мы изменили или добавили строку после первой отправки; зад
+p-135	§4.2	211	version | bigint | no | 1 | авто | оптимистичная блокировка строки (ответ поставщика, сброс нашей правкой) | DS-032
+p-136	§4.2	214	PK: id
+p-137	§4.2	215	UNIQUE: (order_id, product_id) — purchase_order_items_order_product_uq: дубль запчасти запрещён, при добавлении количест
+p-138	§4.2	216	Индексы:
+p-139	§4.2	217	purchase_order_items_order_idx (order_id, position) — строки карточки;
+p-140	§4.2	218	purchase_order_items_product_idx (product_id) — подсказка «уже в открытом заказе» §6.10 и RESTRICT-проверка удаления зап
+p-141	§4.2	219	CHECK: qty > 0; supplier_qty IS NULL OR ≥ 0; supplier_price IS NULL OR ≥ 0; reason из списка; длина supplier_note ≤ 500.
+p-142	§4.2	222	N→1 purchase_orders — ON DELETE CASCADE
+p-143	§4.2	223	N→1 products — ON DELETE RESTRICT
+p-144	§4.2	224	N→1 users (supplier_answered_by) — ON DELETE RESTRICT
+p-145	§4.2	227	Создание: вместе с заказом (§6.2) или правкой (§6.4); снимок name/sku/unit; если заказ уже отправлялся (sent_at IS NOT N
+p-146	§4.2	228	Изменение нами (§6.4, draft/sent): смена qty → сброс supplier_qty, supplier_price в NULL и supplier_note в '' и customer
+p-147	§4.2	229	Изменение поставщиком (§6.14, только sent): supplier_qty, supplier_price, supplier_note, supplier_answered_by, supplier_
+p-148	§4.2	230	Удаление нами (§6.4, draft/sent): hard delete строки; у поставщика строка просто исчезает (DS-034).
+p-149	§4.2	231	При «Отозвать» ответы сохраняются; при повторной отправке сохраняются у неизменённых строк (DS-035).
+p-150	§4.2	234	одна запчасть — одна строка в заказе → UNIQUE purchase_order_items_order_product_uq → DS-047
+p-151	§4.2	235	поставщик пишет только в sent → guard по статусу заказа в транзакции §6.14 → DS-020
+p-152	§4.2	236	«Собрано» только если все supplier_qty заданы и у строк с supplier_qty > 0 задана supplier_price → проверка в транзакции
+p-153	§4.2	237	сумма строки = supplier_qty × supplier_price (округление до 0.01); сумма заказа = Σ сумм строк с ценой; вычисляется, не 
+p-154	§4.3	244	id | uuid PK | no | gen_random_uuid() | авто | as-is | DS-007
+p-155	§4.3	245	login | text | no | — | да | as-is; уникален по lower(login) | DS-007
+p-156	§4.3	246	password_hash | text | no | — | авто | as-is; из пароля формы | DS-007
+p-157	§4.3	247	name | text | no | '' | нет | as-is; для поставщика — имя продавца | DS-007
+p-158	§4.3	248	is_active | boolean | no | true | нет | as-is; false → сессия обрывается на следующем запросе (internal/server/middlewar
+p-159	§4.3	249	version | bigint | no | 1 | авто | as-is, оптимистичная блокировка формы пользователя | DS-007
+p-160	§4.3	250	created_at | timestamptz | no | now() | авто | as-is | DS-007
+p-161	§4.3	251	updated_at | timestamptz | no | now() | авто | as-is | DS-007
+p-162	§4.3	252	role | text | no | 'executor' | да | CHECK расширяется: admin / executor / supplier (новое значение). Выдаёт роль только
+p-163	§4.3	253	phone | text | no | '' | нет | as-is | DS-007
+p-164	§4.3	254	timezone | text | no | 'Asia/Almaty' | нет | as-is, 1–64 символа; у поставщика по умолчанию тоже Asia/Almaty, может смен
+p-165	§4.3	255	supplier_id (to-be DS-007) | uuid | yes | null | условно | FK → suppliers(id) ON DELETE RESTRICT; обязателен при role = 
+p-166	§4.3	258	PK: id
+p-167	§4.3	259	UNIQUE: users_login_lower_uq (as-is)
+p-168	§4.3	260	Индексы: users_supplier_id_idx (supplier_id) WHERE supplier_id IS NOT NULL — проверка «у поставщика есть активный вход» 
+p-169	§4.3	261	CHECK: users_supplier_chk — (role = 'supplier') ⇔ (supplier_id IS NOT NULL) (DS-007)
+p-170	§4.3	264	N→1 suppliers (supplier_id) — ON DELETE RESTRICT
+p-171	§4.3	267	Создание и изменение: только admin на экране «Пользователи» (§6.17). Смена роли на или с supplier допустима при соблюден
+p-172	§4.3	268	Удаление: нет (as-is ADR-007, только блокировка is_active).
+p-173	§5	276	— | draft | «Сохранить черновик» §6.2 | admin, executor | — | number, created_by, created_at
+p-174	§5	277	draft | sent | «Отправить поставщику» §6.6 | admin; executor — только свой (чужой → 404) | WHERE status='draft' AND vers
+p-175	§5	278	sent | draft | «Отозвать» §6.7 | admin; executor — только свой (чужой → 404) | WHERE status='sent' AND version=:v; однов
+p-176	§5	279	sent | ready | «Собрано, можно забирать» §6.15 | supplier своего поставщика | WHERE status='sent'; все строки отвечены (
+p-177	§5	280	ready | picked_up | «Забрали» §6.8 | admin; executor — только свой (чужой → 404) | WHERE status='ready' AND version=:v |
+p-178	§5	281	draft | picked_up | «Забрали» §6.8 (Базар) | admin; executor — только свой (чужой → 404) | WHERE status='draft' AND supp
+p-179	§5	282	sent | picked_up | «Забрали» §6.8 (у поставщика нет входа) | admin; executor — только свой (чужой → 404) | WHERE status=
+p-180	§5	283	draft, sent, ready | cancelled | «Отменить» + причина §6.9 | admin; executor — только свой (чужой → 404) | WHERE status 
+p-181	§5	284	picked_up, cancelled | — | любое действие кроме чтения и печати | — | → 409 PURCHASE_ORDER_INVALID_STATUS | —
+p-182	§6.1	295	Назначение: список закупок (экран §8.1)
+p-183	§6.1	296	Authz: admin — все заказы; executor — только свои (сервер добавляет фильтр created_by = текущий пользователь, из сессии,
+p-184	§6.1	297	Идемпотентность/повтор: чтение
+p-185	§6.1	298	Side effects: нет
+p-186	§6.1	304	status | query | text | нет | один из draft/sent/ready/picked_up/cancelled; иное → 400
+p-187	§6.1	305	limit | query | int | нет | 1–100, по умолчанию 50; иное → 400
+p-188	§6.1	306	offset | query | int | нет | ≥ 0, по умолчанию 0
+p-189	§6.1	312	items[].id | uuid | id заказа
+p-190	§6.1	313	items[].number | int | номер
+p-191	§6.1	314	items[].number_display | string | «З-0012»
+p-192	§6.1	315	items[].supplier_id | uuid|null | null = Базар
+p-193	§6.1	316	items[].recipient_name | string | название поставщика или «Базар (сами)»
+p-194	§6.1	317	items[].status | string | slug статуса §5
+p-195	§6.1	318	items[].items_count | int | строк
+p-196	§6.1	319	items[].total_amount | string|null | сумма по ответу поставщика; null — цен нет
+p-197	§6.1	320	items[].created_by_name | string | автор
+p-198	§6.1	321	items[].created_at | string | ISO-8601 UTC
+p-199	§6.1	322	items[].sent_at | string|null | ISO-8601 UTC
+p-200	§6.1	323	items[].picked_up_at | string|null | ISO-8601 UTC
+p-201	§6.1	324	total | int | всего под фильтром
+p-202	§6.1	325	limit | int | эхо
+p-203	§6.1	326	offset | int | эхо
+p-204	§6.1	334	400 VALIDATION | status вне списка | «Неизвестный статус»
+p-205	§6.1	335	400 VALIDATION | limit вне 1–100 или offset < 0 | «Некорректная пагинация»
+p-206	§6.1	336	401 UNAUTHORIZED | нет сессии | — (редирект на вход)
+p-207	§6.1	337	403 FORBIDDEN | роль supplier | «Нет доступа»
+p-208	§6.2	365	Назначение: создать черновик (экран §8.2 «Сохранить черновик»)
+p-209	§6.2	366	Authz: admin, executor
+p-210	§6.2	367	Идемпотентность/повтор: повторная отправка создаст второй черновик; кнопка блокируется до ответа (UI), лишний черновик у
+p-211	§6.2	368	Side effects: INSERT purchase_orders + purchase_order_items в одной транзакции
+p-212	§6.2	374	supplier_id | body | uuid|null | да (ключ) | null = Базар; иначе существующий, активный и не удалённый поставщик, иначе 
+p-213	§6.2	375	note | body | string | нет | 0–1000 символов
+p-214	§6.2	376	items | body | array | да | 1–200 элементов; пусто → 400 «Добавьте хотя бы одну строку»
+p-215	§6.2	377	items[].product_id | body | uuid | да | активная, не удалённая запчасть, иначе 400; повтор product_id в массиве → количе
+p-216	§6.2	378	items[].qty | body | string (numeric) | да | > 0 и ≤ 99999.999, до 3 знаков
+p-217	§6.2	379	items[].reason | body | string | нет | for_orders/below_min/manual, по умолчанию manual
+p-218	§6.2	387	400 VALIDATION | items пуст | «Добавьте хотя бы одну строку»
+p-219	§6.2	388	400 VALIDATION | строк > 200 | «Не больше 200 строк в заказе»
+p-220	§6.2	389	400 VALIDATION | qty ≤ 0, > 99999.999 или больше 3 знаков | «Количество от 0.001 до 99 999.999»
+p-221	§6.2	390	400 VALIDATION | запчасть не найдена, в архиве или удалена | «Запчасть недоступна»
+p-222	§6.2	391	400 VALIDATION | поставщик не найден, в архиве или удалён | «Поставщик недоступен»
+p-223	§6.2	392	400 VALIDATION | note > 1000 | «Примечание — не больше 1000 символов»
+p-224	§6.2	393	400 VALIDATION | reason вне списка | «Неизвестный источник строки»
+p-225	§6.2	394	403 FORBIDDEN | роль supplier | «Нет доступа»
+p-226	§6.3	424	Назначение: карточка заказа (§8.3)
+p-227	§6.3	425	Authz: admin — любой заказ; executor — только свой, чужой → 404 PURCHASE_ORDER_NOT_FOUND (DS-060); supplier → 403
+p-228	§6.3	426	Идемпотентность/повтор: чтение
+p-229	§6.3	427	Side effects: нет
+p-230	§6.3	433	id | path | uuid | да | не uuid → 404
+p-231	§6.3	439	id | uuid | id
+p-232	§6.3	440	number | int | номер
+p-233	§6.3	441	number_display | string | «З-0013»
+p-234	§6.3	442	status | string | §5
+p-235	§6.3	443	version | int | для правок и переходов
+p-236	§6.3	444	supplier_id | uuid|null | null = Базар
+p-237	§6.3	445	recipient_name | string | поставщик или «Базар (сами)»
+p-238	§6.3	446	recipient_phone | string | телефон поставщика (suppliers.phone), '' у Базара
+p-239	§6.3	447	supplier_has_login | bool | есть активный вход поставщика (влияет на «Забрали» из sent)
+p-240	§6.3	448	note | string | примечание
+p-241	§6.3	449	can_edit | bool | заказ можно править: статус draft/sent (чужие заказы executor'у не отдаются вовсе)
+p-242	§6.3	450	created_by_name | string | автор
+p-243	§6.3	451	created_at | string | UTC
+p-244	§6.3	452	sent_at | string|null | UTC
+p-245	§6.3	453	ready_at | string|null | UTC
+p-246	§6.3	454	picked_up_at | string|null | UTC
+p-247	§6.3	455	cancelled_at | string|null | UTC
+p-248	§6.3	456	cancel_reason | string|null | причина отмены
+p-249	§6.3	457	items[].id | uuid | строка
+p-250	§6.3	458	items[].product_id | uuid | запчасть
+p-251	§6.3	459	items[].name | string | снимок
+p-252	§6.3	460	items[].sku | string | снимок
+p-253	§6.3	461	items[].unit | string | снимок
+p-254	§6.3	462	items[].qty | string | сколько просим
+p-255	§6.3	463	items[].reason | string | for_orders/below_min/manual
+p-256	§6.3	464	items[].supplier_qty | string|null | ответ
+p-257	§6.3	465	items[].supplier_price | string|null | ответ
+p-258	§6.3	466	items[].supplier_note | string | ответ
+p-259	§6.3	467	items[].line_amount | string|null | supplier_qty × supplier_price
+p-260	§6.3	468	items[].has_discrepancy | bool | ответ задан и supplier_qty ≠ qty
+p-261	§6.3	469	items[].customer_changed | bool | пометка «Изменено заказчиком» действует
+p-262	§6.3	470	items[].version | int | версия строки
+p-263	§6.3	471	total_amount | string|null | сумма по строкам с ценой
+p-264	§6.3	477	404 PURCHASE_ORDER_NOT_FOUND | нет такого или удалён | «Заказ не найден»
+p-265	§6.3	478	404 PURCHASE_ORDER_NOT_FOUND | executor, заказ создан другим | «Заказ не найден»
+p-266	§6.3	479	403 FORBIDDEN | роль supplier | «Нет доступа»
+p-267	§6.4	507	Назначение: правка черновика или отправленного заказа: примечание и состав строк (§8.3 «Сохранить»)
+p-268	§6.4	508	Authz: admin — любой заказ; executor — только created_by = он, чужой → 404 PURCHASE_ORDER_NOT_FOUND (DS-060)
+p-269	§6.4	509	Идемпотентность/повтор: version — повтор со старой версией → 409
+p-270	§6.4	510	Side effects (одна транзакция):
+p-271	§6.4	511	UPDATE шапки;
+p-272	§6.4	512	строки сверяются с массивом items: новые — INSERT, отсутствующие — DELETE, изменённые — UPDATE;
+p-273	§6.4	513	в sent изменённые и новые строки сбрасывают ответ и получают customer_changed_at;
+p-274	§6.4	514	изменение note в sent ставит note_changed_at (DS-034, DS-048).
+p-275	§6.4	520	id | path | uuid | да | не найден → 404
+p-276	§6.4	521	version | body | int | да | ≥ 1; ≠ текущей → 409
+p-277	§6.4	522	note | body | string | да | 0–1000 символов
+p-278	§6.4	523	items | body | array | да | 1–200 элементов
+p-279	§6.4	524	items[].id | body | uuid|null | нет | id существующей строки этого заказа; null — новая строка; чужой id → 400
+p-280	§6.4	525	items[].product_id | body | uuid | да | у новой строки — активная, не удалённая запчасть; у существующей не меняется (за
+p-281	§6.4	526	items[].qty | body | string (numeric) | да | > 0 и ≤ 99999.999, до 3 знаков
+p-282	§6.4	527	items[].reason | body | string | нет | for_orders/below_min/manual; у новой строки по умолчанию manual
+p-283	§6.4	535	400 VALIDATION | поля как в §6.2, плюс чужой items[].id | по полю
+p-284	§6.4	536	404 PURCHASE_ORDER_NOT_FOUND | executor, заказ создан другим | «Заказ не найден»
+p-285	§6.4	537	404 PURCHASE_ORDER_NOT_FOUND | нет или удалён | «Заказ не найден»
+p-286	§6.4	538	409 PURCHASE_ORDER_VERSION_CONFLICT | устаревшая version | «Заказ изменился, обновите страницу»
+p-287	§6.4	539	409 PURCHASE_ORDER_READ_ONLY | статус ready | «Поставщик уже собрал заказ — правка недоступна»
+p-288	§6.4	540	409 PURCHASE_ORDER_READ_ONLY | статус picked_up | «Заказ закрыт — правка недоступна»
+p-289	§6.4	541	409 PURCHASE_ORDER_READ_ONLY | статус cancelled | «Заказ отменён — правка недоступна»
+p-290	§6.5	565	Назначение: мягко удалить черновик (§8.3 «Удалить»)
+p-291	§6.5	566	Authz: только admin (executor → 403)
+p-292	§6.5	567	Идемпотентность/повтор: повтор по удалённому → 404
+p-293	§6.5	568	Side effects: UPDATE deleted_at, deleted_by, delete_reason; запись появляется в разделе «Удалённые» на вкладке «Закупки»
+p-294	§6.5	574	id | path | uuid | да | —
+p-295	§6.5	575	version | body | int | да | ≠ текущей → 409
+p-296	§6.5	576	reason | body | string | да | 1–500 символов после trim
+p-297	§6.5	584	400 VALIDATION | reason пуст или > 500 | «Причина — от 1 до 500 символов»
+p-298	§6.5	585	403 FORBIDDEN | не admin | «Удалять может только администратор»
+p-299	§6.5	586	404 PURCHASE_ORDER_NOT_FOUND | нет или уже удалён | «Заказ не найден»
+p-300	§6.5	587	409 PURCHASE_ORDER_INVALID_STATUS | статус не draft | «Удалить можно только черновик»
+p-301	§6.5	588	409 PURCHASE_ORDER_VERSION_CONFLICT | устаревшая версия | «Заказ изменился, обновите страницу»
+p-302	§6.6	609	Назначение: отправить поставщику (draft → sent), в том числе повторно после «Отозвать»
+p-303	§6.6	610	Authz: admin; executor — только свой, чужой → 404 (DS-060)
+p-304	§6.6	611	Идемпотентность/повтор: guard по version и статусу; повтор → 409
+p-305	§6.6	612	Side effects: status, sent_by, sent_at, обновление снимка name/sku/unit строк; ответы у неизменённых строк сохраняются (
+p-306	§6.6	618	id | path | uuid | да | —
+p-307	§6.6	619	version | body | int | да | ≠ текущей → 409
+p-308	§6.6	627	404 PURCHASE_ORDER_NOT_FOUND | executor, заказ создан другим | «Заказ не найден»
+p-309	§6.6	628	404 PURCHASE_ORDER_NOT_FOUND | нет или удалён | «Заказ не найден»
+p-310	§6.6	629	409 PURCHASE_ORDER_NO_SUPPLIER | заказ «Базар» | «Список на базар не отправляется — отметьте «Забрали»»
+p-311	§6.6	630	409 PURCHASE_ORDER_EMPTY | нет строк | «Добавьте хотя бы одну строку»
+p-312	§6.6	631	409 PURCHASE_ORDER_INVALID_STATUS | статус sent | «Заказ уже отправлен»
+p-313	§6.6	632	409 PURCHASE_ORDER_INVALID_STATUS | статус ready/picked_up/cancelled | «Отправить можно только черновик»
+p-314	§6.6	633	409 PURCHASE_ORDER_VERSION_CONFLICT | устаревшая версия | «Заказ изменился, обновите страницу»
+p-315	§6.7	655	Назначение: отозвать (sent → draft)
+p-316	§6.7	656	Authz: admin; executor — только свой
+p-317	§6.7	657	Идемпотентность/повтор: guard по версии и статусу
+p-318	§6.7	658	Side effects: status='draft'; ответы поставщика сохраняются; заказ пропадает из кабинета (DS-035)
+p-319	§6.7	664	id | path | uuid | да | —
+p-320	§6.7	665	version | body | int | да | ≠ текущей → 409
+p-321	§6.7	673	404 PURCHASE_ORDER_NOT_FOUND | executor, заказ создан другим | «Заказ не найден»
+p-322	§6.7	674	404 PURCHASE_ORDER_NOT_FOUND | нет | «Заказ не найден»
+p-323	§6.7	675	409 PURCHASE_ORDER_INVALID_STATUS | статус ready (поставщик успел нажать «Собрано») | «Поставщик уже собрал заказ — отоз
+p-324	§6.7	676	409 PURCHASE_ORDER_INVALID_STATUS | статус draft/picked_up/cancelled | «Отозвать можно только отправленный заказ»
+p-325	§6.7	677	409 PURCHASE_ORDER_VERSION_CONFLICT | устаревшая версия | «Заказ изменился, обновите страницу»
+p-326	§6.8	698	Назначение: «Забрали» — закрыть заказ (ready → picked_up; Базар draft → picked_up; поставщик без активного входа sent → 
+p-327	§6.8	699	Authz: admin; executor — только свой
+p-328	§6.8	700	Идемпотентность/повтор: guard по версии и статусу
+p-329	§6.8	701	Side effects: picked_up_by, picked_up_at; остатки products.stock НЕ меняются (DS-010)
+p-330	§6.8	707	id | path | uuid | да | —
+p-331	§6.8	708	version | body | int | да | ≠ текущей → 409
+p-332	§6.8	716	404 PURCHASE_ORDER_NOT_FOUND | executor, заказ создан другим | «Заказ не найден»
+p-333	§6.8	717	404 PURCHASE_ORDER_NOT_FOUND | нет | «Заказ не найден»
+p-334	§6.8	718	409 PURCHASE_ORDER_NOT_READY | sent, у поставщика есть активный вход | «Дождитесь отметки поставщика «Собрано»»
+p-335	§6.8	719	409 PURCHASE_ORDER_NOT_READY | draft у заказа поставщику | «Сначала отправьте заказ поставщику»
+p-336	§6.8	720	409 PURCHASE_ORDER_EMPTY | Базар без строк | «Добавьте хотя бы одну строку»
+p-337	§6.8	721	409 PURCHASE_ORDER_INVALID_STATUS | picked_up | «Заказ уже закрыт»
+p-338	§6.8	722	409 PURCHASE_ORDER_INVALID_STATUS | cancelled | «Заказ отменён»
+p-339	§6.8	723	409 PURCHASE_ORDER_VERSION_CONFLICT | устаревшая версия | «Заказ изменился, обновите страницу»
+p-340	§6.9	745	Назначение: отменить с причиной (draft/sent/ready → cancelled)
+p-341	§6.9	746	Authz: admin; executor — только свой
+p-342	§6.9	747	Идемпотентность/повтор: guard по версии и статусу
+p-343	§6.9	748	Side effects: cancelled_by, cancelled_at, cancel_reason; заказ скрывается из кабинета поставщика; причину видим только м
+p-344	§6.9	754	id | path | uuid | да | —
+p-345	§6.9	755	version | body | int | да | ≠ текущей → 409
+p-346	§6.9	756	reason | body | string | да | 1–500 символов после trim
+p-347	§6.9	764	400 VALIDATION | reason пуст или > 500 | «Причина — от 1 до 500 символов»
+p-348	§6.9	765	404 PURCHASE_ORDER_NOT_FOUND | executor, заказ создан другим | «Заказ не найден»
+p-349	§6.9	766	404 PURCHASE_ORDER_NOT_FOUND | нет | «Заказ не найден»
+p-350	§6.9	767	409 PURCHASE_ORDER_INVALID_STATUS | picked_up | «Заказ уже закрыт — отмена недоступна»
+p-351	§6.9	768	409 PURCHASE_ORDER_INVALID_STATUS | cancelled | «Заказ уже отменён»
+p-352	§6.9	769	409 PURCHASE_ORDER_VERSION_CONFLICT | устаревшая версия | «Заказ изменился, обновите страницу»
+p-353	§6.10	792	Назначение: строки дефицита для экрана «Новый заказ» (§8.2)
+p-354	§6.10	793	Authz: admin, executor; supplier → 403
+p-355	§6.10	794	Идемпотентность/повтор: чтение
+p-356	§6.10	795	Side effects: нет
+p-357	§6.10	796	Расчёт:
+p-358	§6.10	797	по активным, не удалённым запчастям: to_order = max(0, pending + min_stock − stock), где pending — CTE из internal/featu
+p-359	§6.10	798	в ответ попадают строки с to_order > 0;
+p-360	§6.10	799	reason = for_orders, если pending > stock, иначе below_min;
+p-361	§6.10	800	in_open_orders — заказы в sent/ready (не удалённые) с этой запчастью: у admin — все, у executor — только с created_by = 
+p-362	§6.10	801	checked = false, если in_open_orders не пуст, иначе true (DS-003, DS-004, DS-049, DS-064).
+p-363	§6.10	807	reason | query | string | нет | for_orders/below_min; иное → 400
+p-364	§6.10	808	limit | query | int | нет | 1–500, по умолчанию 500
+p-365	§6.10	809	offset | query | int | нет | ≥ 0
+p-366	§6.10	815	items[].product_id | uuid | запчасть
+p-367	§6.10	816	items[].name | string | название
+p-368	§6.10	817	items[].sku | string | артикул
+p-369	§6.10	818	items[].unit | string | единица
+p-370	§6.10	819	items[].stock | string | остаток
+p-371	§6.10	820	items[].min_stock | string | минимум
+p-372	§6.10	821	items[].pending | string | нужно под принятые заказы
+p-373	§6.10	822	items[].to_order | string | предлагаемое количество
+p-374	§6.10	823	items[].reason | string | for_orders/below_min
+p-375	§6.10	824	items[].tasks[] | array | { id, title } заказов клиентов, где нужна запчасть (только для for_orders)
+p-376	§6.10	825	items[].in_open_orders[] | array | { id, number_display, qty } — «уже в открытом заказе»; набор заказов зависит от роли 
+p-377	§6.10	826	items[].checked | bool | галочка по умолчанию
+p-378	§6.10	827	total | int | всего
+p-379	§6.10	828	limit | int | эхо
+p-380	§6.10	829	offset | int | эхо
+p-381	§6.10	837	400 VALIDATION | reason вне списка | «Неизвестный тип строки»
+p-382	§6.10	838	403 FORBIDDEN | supplier | «Нет доступа»
+p-383	§6.11	864	Назначение: PDF заказа для нас (§8.4), тем же способом, что акт выдачи (internal/features/board/print_pdf.go)
+p-384	§6.11	865	Authz: admin — любой заказ; executor — только свой, чужой → 404-страница (DS-060); RequireSSR + запрет supplier; любой с
+p-385	§6.11	866	Идемпотентность/повтор: чтение
+p-386	§6.11	867	Side effects: нет; Content-Type: application/pdf, Content-Disposition: attachment; filename="З-0013.pdf"
+p-387	§6.11	868	Содержимое:
+p-388	§6.11	869	шапка: номер, дата (в поясе смотрящего), получатель, телефон, реквизиты мастерской (FIRM_NAME/FIRM_PHONE);
+p-389	§6.11	870	таблица: №, Запчасть, Артикул, Кол-во, Ед.; у «Базара» — колонка ☐, после ответа поставщика — «Соберёт», «Цена», «Сумма»
+p-390	§6.11	871	подпись.
+p-391	§6.11	877	id | path | uuid | да | нет/удалён → 404-страница
+p-392	§6.11	885	302 | без сессии | редирект на /login
+p-393	§6.11	886	302 | роль supplier | редирект на /supplier/orders
+p-394	§6.11	887	404 | заказа нет или executor открывает чужой | страница «Не найдено»
+p-395	§6.12	906	Назначение: список заказов в кабинете поставщика (§8.6)
+p-396	§6.12	907	Authz: только роль supplier; поставщик — supplier_id из сессии; статусы sent, ready, picked_up; draft и cancelled не вид
+p-397	§6.12	908	Идемпотентность/повтор: чтение
+p-398	§6.12	909	Side effects: нет
+p-399	§6.12	915	status | query | string | нет | sent/ready/picked_up; иное → 400
+p-400	§6.12	916	limit | query | int | нет | 1–100, по умолчанию 50
+p-401	§6.12	917	offset | query | int | нет | ≥ 0
+p-402	§6.12	923	items[].id | uuid | заказ
+p-403	§6.12	924	items[].number_display | string | «З-0013»
+p-404	§6.12	925	items[].status | string | sent/ready/picked_up
+p-405	§6.12	926	items[].sent_at | string | UTC
+p-406	§6.12	927	items[].items_count | int | строк
+p-407	§6.12	928	items[].answered_count | int | строк с ответом
+p-408	§6.12	929	items[].total_amount | string|null | сумма по ответам
+p-409	§6.12	930	items[].is_changed | bool | «Изменён» — правка примечания или строк после отправки, на которую поставщик ещё не ответил
+p-410	§6.12	931	total | int | всего
+p-411	§6.12	932	limit | int | эхо
+p-412	§6.12	933	offset | int | эхо
+p-413	§6.12	941	400 VALIDATION | status вне списка | «Неизвестный статус»
+p-414	§6.12	942	403 FORBIDDEN | роль не supplier | «Раздел только для поставщиков»
+p-415	§6.13	963	Назначение: карточка заказа в кабинете (§8.7)
+p-416	§6.13	964	Authz: supplier; заказ чужого поставщика, draft, cancelled или удалённый → 404 (DS-017)
+p-417	§6.13	965	Идемпотентность/повтор: чтение
+p-418	§6.13	966	Side effects: нет
+p-419	§6.13	972	id | path | uuid | да | —
+p-420	§6.13	978	id | uuid | заказ
+p-421	§6.13	979	number_display | string | номер
+p-422	§6.13	980	status | string | статус
+p-423	§6.13	981	sent_at | string | дата отправки
+p-424	§6.13	982	note | string | примечание
+p-425	§6.13	983	note_changed | bool | примечание правили после отправки — подсветить
+p-426	§6.13	984	firm_name | string | FIRM_NAME
+p-427	§6.13	985	firm_phone | string | FIRM_PHONE
+p-428	§6.13	986	can_answer | bool | статус sent
+p-429	§6.13	987	items[].id | uuid | строка
+p-430	§6.13	988	items[].name | string | снимок
+p-431	§6.13	989	items[].sku | string | снимок
+p-432	§6.13	990	items[].unit | string | снимок
+p-433	§6.13	991	items[].qty | string | сколько просим
+p-434	§6.13	992	items[].supplier_qty | string|null | ответ
+p-435	§6.13	993	items[].supplier_price | string|null | ответ
+p-436	§6.13	994	items[].supplier_note | string | ответ
+p-437	§6.13	995	items[].line_amount | string|null | сумма строки
+p-438	§6.13	996	items[].customer_changed | bool | «Изменено заказчиком»
+p-439	§6.13	997	items[].version | int | версия строки
+p-440	§6.13	998	total_amount | string|null | итог
+p-441	§6.13	1006	403 FORBIDDEN | роль не supplier | «Раздел только для поставщиков»
+p-442	§6.13	1007	404 PURCHASE_ORDER_NOT_FOUND | чужой, черновик, отменён, удалён или нет | «Заказ не найден»
+p-443	§6.14	1032	Назначение: ответ поставщика по строке (§8.7)
+p-444	§6.14	1033	Authz: supplier своего поставщика; чужой заказ или строка → 404
+p-445	§6.14	1034	Идемпотентность/повтор: version строки; повтор с той же версией после успеха → 409 (UI перечитывает строку)
+p-446	§6.14	1035	Side effects: UPDATE строки (supplier_qty, supplier_price, supplier_note, supplier_answered_by, supplier_answered_at, ve
+p-447	§6.14	1041	id | path | uuid | да | заказ своего поставщика в sent
+p-448	§6.14	1042	item_id | path | uuid | да | строка этого заказа
+p-449	§6.14	1043	version | body | int | да | ≠ текущей версии строки → 409
+p-450	§6.14	1044	supplier_qty | body | string (numeric)|null | да (ключ) | 0–99999.999, до 3 знаков; null — ответа нет
+p-451	§6.14	1045	supplier_price | body | string (numeric)|null | нет | 0–9999999.99, до 2 знаков; для «Собрано» обязательна при supplier_
+p-452	§6.14	1046	supplier_note | body | string | нет | 0–500 символов
+p-453	§6.14	1054	400 VALIDATION | supplier_qty < 0, > 99999.999 или больше 3 знаков | «Количество от 0 до 99 999.999»
+p-454	§6.14	1055	400 VALIDATION | supplier_price < 0, > 9999999.99 или больше 2 знаков | «Цена от 0 до 9 999 999.99»
+p-455	§6.14	1056	400 VALIDATION | supplier_note > 500 | «Комментарий — не больше 500 символов»
+p-456	§6.14	1057	403 FORBIDDEN | не supplier | «Раздел только для поставщиков»
+p-457	§6.14	1058	404 PURCHASE_ORDER_NOT_FOUND | заказ или строка чужие или не найдены | «Заказ не найден»
+p-458	§6.14	1059	409 PURCHASE_ORDER_READ_ONLY | заказ ready | «Заказ уже отмечен «Собрано»»
+p-459	§6.14	1060	409 PURCHASE_ORDER_READ_ONLY | заказ picked_up | «Заказ уже забрали»
+p-460	§6.14	1061	409 PURCHASE_ORDER_READ_ONLY | заказ отозван или отменён (нет в кабинете) | «Заказ отозван заказчиком»
+p-461	§6.14	1062	409 PURCHASE_ITEM_VERSION_CONFLICT | устаревшая версия строки | «Строку изменили, обновите страницу»
+p-462	§6.15	1087	Назначение: «Собрано, можно забирать» (sent → ready)
+p-463	§6.15	1088	Authz: supplier своего поставщика
+p-464	§6.15	1089	Идемпотентность/повтор: guard WHERE status='sent'; повтор → 409
+p-465	§6.15	1090	Side effects: status='ready', ready_by, ready_at, version заказа + 1
+p-466	§6.15	1096	id | path | uuid | да | —
+p-467	§6.15	1104	403 FORBIDDEN | не supplier | «Раздел только для поставщиков»
+p-468	§6.15	1105	404 PURCHASE_ORDER_NOT_FOUND | чужой, отозван, отменён или нет | «Заказ не найден»
+p-469	§6.15	1106	409 PURCHASE_ORDER_ITEMS_INCOMPLETE | есть строки без «Соберу, шт.» | «Заполните «Соберу» во всех строках» (+ details.it
+p-470	§6.15	1107	409 PURCHASE_ORDER_ITEMS_INCOMPLETE | есть строки с количеством > 0 без цены | «Укажите цену у строк, которые соберёте» 
+p-471	§6.15	1108	409 PURCHASE_ORDER_INVALID_STATUS | уже ready | «Заказ уже отмечен «Собрано»»
+p-472	§6.15	1109	409 PURCHASE_ORDER_INVALID_STATUS | picked_up | «Заказ уже забрали»
+p-473	§6.16	1130	Назначение: PDF заказа для поставщика (§8.7 «Печать»): шапка (номер, дата отправки, реквизиты мастерской), таблица №/Зап
+p-474	§6.16	1131	Authz: supplier своего поставщика; видимые статусы (sent/ready/picked_up)
+p-475	§6.16	1132	Идемпотентность/повтор: чтение
+p-476	§6.16	1133	Side effects: нет
+p-477	§6.16	1139	id | path | uuid | да | чужой или не виден → 404-страница
+p-478	§6.16	1147	302 | без сессии | /login
+p-479	§6.16	1148	403 | роль не supplier | страница «Нет доступа»
+p-480	§6.16	1149	404 | чужой, черновик, отменён | страница «Не найдено»
+p-481	§6.17	1168	Назначение: создать или изменить учётку поставщика (§8.5)
+p-482	§6.17	1169	Authz: только admin (as-is)
+p-483	§6.17	1170	Идемпотентность/повтор: as-is (version пользователя)
+p-484	§6.17	1171	Side effects: as-is + поле supplier_id
+p-485	§6.17	1177	role | body | string | да | admin/executor/supplier; иное → 400
+p-486	§6.17	1178	supplier_id | body | uuid|null | условно | при role = supplier обязателен: существующий, активный, не удалённый поставщи
+p-487	§6.17	1186	400 VALIDATION | role=supplier без supplier_id | «Выберите поставщика»
+p-488	§6.17	1187	400 VALIDATION | поставщик в архиве, удалён или не найден | «Поставщик недоступен»
+p-489	§6.17	1188	400 VALIDATION | supplier_id у роли admin/executor | «Поставщик указывается только для роли «Поставщик»»
+p-490	§6.17	1189	403 FORBIDDEN | не admin | «Нет доступа» (as-is)
+p-491	§6.18	1212	Назначение: запрет архива и удаления поставщика с незакрытыми закупками
+p-492	§6.18	1213	Authz: as-is (admin)
+p-493	§6.18	1214	Идемпотентность/повтор: as-is
+p-494	§6.18	1215	Side effects: архивирование (PUT /api/v1/suppliers/:id с is_active=false) и мягкое удаление поставщика (существующий энд
+p-495	§6.18	1221	409 SUPPLIER_HAS_OPEN_PURCHASES | архив поставщика с незакрытыми закупками | «У поставщика есть незакрытые закупки: З-00
+p-496	§6.18	1222	409 SUPPLIER_HAS_OPEN_PURCHASES | удаление поставщика с незакрытыми закупками | «У поставщика есть незакрытые закупки: З
+p-497	§7	1242	§6.1 GET /api/v1/purchase-orders | §8.1
+p-498	§7	1243	§6.2 POST /api/v1/purchase-orders | §8.2
+p-499	§7	1244	§6.3 GET /api/v1/purchase-orders/:id | §8.3
+p-500	§7	1245	§6.4 PUT /api/v1/purchase-orders/:id | §8.3
+p-501	§7	1246	§6.5 DELETE /api/v1/purchase-orders/:id | §8.3 (admin); восстановление — раздел «Удалённые»
+p-502	§7	1247	§6.6–§6.9 send / recall / pick-up / cancel | §8.3
+p-503	§7	1248	§6.10 GET /api/v1/purchase-orders/suggestions | §8.2
+p-504	§7	1249	§6.11 GET /purchases/:id/print | §8.3 → §8.4
+p-505	§7	1250	§6.12 GET /api/v1/supplier/purchase-orders | §8.6
+p-506	§7	1251	§6.13–§6.15 (карточка, ответ по строке, «Собрано») | §8.7
+p-507	§7	1252	§6.16 GET /supplier/orders/:id/print | §8.7
+p-508	§7	1253	§6.17 users | §8.5
+p-509	§7	1254	§6.18 suppliers | существующий экран «Поставщики» (ошибка при архиве/удалении)
+p-510	§7	1255	GET /api/v1/products (as-is, ?q=) | §8.2, §8.3 — поиск «Добавить запчасть»
+p-511	§8	1261	Сайдбар сотрудника (admin, executor) → «Закупки» → список §8.1 → «Новый заказ» §8.2 / строка → карточка §8.3 → «Печать» 
+p-512	§8	1262	Сайдбар admin → «Пользователи» (as-is) → форма пользователя §8.5
+p-513	§8	1263	Сайдбар поставщика (упрощённый: «Заказы», «Выход») → список §8.6 → карточка §8.7
+p-514	§8.1	1270	Путь: сайдбар → «Закупки» (пункт после «Остатки»)
+p-515	§8.1	1271	URL: /purchases?status=
+p-516	§8.1	1272	Роли: admin (все заказы), executor (только свои, DS-060) · Устройство: десктоп (на ~360px — только проверка на выход за 
+p-517	§8.1	1273	При открытии: GET §6.1 → /api/v1/purchase-orders?status=&limit=50&offset=0
+p-518	§8.1	1274	200: таблица · Пусто: «Закупок пока нет» + кнопка «Новый заказ» · 4xx: тост «Не удалось загрузить список»
+p-519	§8.1	1277	Заголовок «Закупки» и справа основная кнопка «Новый заказ».
+p-520	§8.1	1278	Панель фильтров:
+p-521	§8.1	1281	Статус | дропдаун «Все / Черновик / Отправлен / Собран / Забрали / Отменён» | enum §5 | status | sent
+p-522	§8.1	1283	Таблица, колонки:
+p-523	§8.1	1284	Номер (number_display)
+p-524	§8.1	1285	Получатель (recipient_name)
+p-525	§8.1	1286	Статус — бейдж
+p-526	§8.1	1287	Строк (items_count)
+p-527	§8.1	1288	Сумма (total_amount, пусто если null)
+p-528	§8.1	1289	Создан (created_at, автор created_by_name)
+p-529	§8.1	1290	Отправлен (sent_at)
+p-530	§8.1	1291	Забрали (picked_up_at)
+p-531	§8.1	1292	Пагинация внизу (по 50).
+p-532	§8.1	1295	Фильтр по статусу
+p-533	§8.1	1296	Элемент: дропдаун в панели фильтров
+p-534	§8.1	1297	UI: перезагрузка списка, offset = 0
+p-535	§8.1	1298	Вызов: GET §6.1 → /api/v1/purchase-orders?status=sent&limit=50&offset=0
+p-536	§8.1	1299	200: { items, total } → строки таблицы, счётчик «Всего: N» под таблицей
+p-537	§8.1	1300	4xx (400 статус): тост «Неизвестный статус», фильтр сбрасывается
+p-538	§8.1	1301	Открыть заказ (строка таблицы)
+p-539	§8.1	1302	Элемент: строка таблицы
+p-540	§8.1	1303	UI: переход
+p-541	§8.1	1304	Вызов: — (переход на /purchases/:id)
+p-542	§8.1	1305	200: карточка §8.3
+p-543	§8.1	1306	4xx (404): страница «Не найдено»
+p-544	§8.1	1307	Новый заказ (кнопка)
+p-545	§8.1	1308	Элемент: основная кнопка справа вверху
+p-546	§8.1	1309	UI: переход
+p-547	§8.1	1310	Вызов: — (переход на /purchases/new)
+p-548	§8.1	1311	200: экран §8.2
+p-549	§8.1	1312	4xx: —
+p-550	§8.2	1319	Путь: §8.1 → «Новый заказ»
+p-551	§8.2	1320	URL: /purchases/new
+p-552	§8.2	1321	Роли: admin, executor · Устройство: десктоп
+p-553	§8.2	1322	При открытии: список поставщиков (активные, не удалённые) из SSR; GET §6.10 → /api/v1/purchase-orders/suggestions
+p-554	§8.2	1323	200: таблица дефицита · Пусто: «Дефицита нет — добавьте запчасти вручную» · 4xx: тост «Не удалось рассчитать дефицит»
+p-555	§8.2	1326	Заголовок «Новый заказ».
+p-556	§8.2	1327	Получатель (supplier_id) — дропдаун: «Базар (покупаем сами)» + поставщики по алфавиту; обязателен.
+p-557	§8.2	1328	Примечание (note) — textarea, до 1000 символов.
+p-558	§8.2	1329	Над таблицей — переключатели «Под заказы» / «Ниже минимума» (отметить или снять все галочки типа).
+p-559	§8.2	1330	Таблица дефицита, колонки:
+p-560	§8.2	1331	Галочка (checked)
+p-561	§8.2	1332	Запчасть (name, sku) и под названием серым — подсказка «уже в открытом заказе З-0012 — 5 шт.» (in_open_orders[]), номер 
+p-562	§8.2	1333	Остаток (stock)
+p-563	§8.2	1334	Минимум (min_stock)
+p-564	§8.2	1335	Под заказы (pending) — со ссылками на заказы клиентов (tasks[])
+p-565	§8.2	1336	Тип — бейдж «Не хватает под заказы» / «Ниже минимума» / «Вручную» (reason)
+p-566	§8.2	1337	К заказу (qty) — числовой инпут, по умолчанию to_order
+p-567	§8.2	1338	Поиск «Добавить запчасть» — текстовый инпут с выпадающим списком под таблицей.
+p-568	§8.2	1339	Внизу справа — основная кнопка «Сохранить черновик», слева — второстепенная «Отмена» (назад в §8.1).
+p-569	§8.2	1342	Поиск запчасти (текстовый инпут)
+p-570	§8.2	1343	Элемент: текстовый инпут под таблицей
+p-571	§8.2	1344	UI: debounce 300 мс, от 2 символов
+p-572	§8.2	1345	Вызов: GET (as-is) → /api/v1/products?q=фильтр&limit=20&offset=0
+p-573	§8.2	1346	200: { items: [{ id, name, sku, unit }] } → выпадающий список под инпутом; выбор добавляет строку reason=manual, qty=1, 
+p-574	§8.2	1347	4xx (сеть/500): тост «Поиск недоступен»
+p-575	§8.2	1348	Сохранить черновик (кнопка)
+p-576	§8.2	1349	Элемент: основная кнопка внизу справа
+p-577	§8.2	1350	UI: кнопка блокируется до ответа
+p-578	§8.2	1351	Вызов: POST §6.2 → /api/v1/purchase-orders, body: { supplier_id, note, items: [отмеченные строки {product_id, qty, reaso
+p-579	§8.2	1352	200: { id, number_display } → переход на карточку /purchases/:id, тост «Черновик З-0013 создан» вверху справа
+p-580	§8.2	1353	4xx (400 items пуст): под таблицей «Отметьте хотя бы одну строку»
+p-581	§8.2	1354	4xx (400 qty): под полем «К заказу» строки «Количество от 0.001 до 99 999.999»
+p-582	§8.2	1355	4xx (400 строк > 200): под таблицей «Не больше 200 строк в заказе»
+p-583	§8.2	1356	4xx (400 поставщик недоступен): под дропдауном получателя «Поставщик недоступен»
+p-584	§8.2	1357	4xx (400 запчасть недоступна): строка подсвечивается, под ней «Запчасть недоступна»
+p-585	§8.2	1358	4xx (400 note): под примечанием «Не больше 1000 символов»
+p-586	§8.3	1365	Путь: §8.1 → строка; §8.2 → «Сохранить черновик»
+p-587	§8.3	1366	URL: /purchases/:id
+p-588	§8.3	1367	Роли: admin — любой заказ; executor — только свой, чужой → страница «Не найдено» (DS-060) · Устройство: десктоп
+p-589	§8.3	1368	При открытии: GET §6.3 → /api/v1/purchase-orders/:id
+p-590	§8.3	1369	200: карточка · Пусто: — · 4xx (404): страница «Не найдено»
+p-591	§8.3	1372	Шапка: номер «З-0013», бейдж статуса, получатель и телефон, автор и даты (создан / отправлен / собран / забрали / отменё
+p-592	§8.3	1373	Примечание (note) — textarea (в draft/sent для владельца или admin), иначе текст.
+p-593	§8.3	1374	Таблица строк, колонки:
+p-594	§8.3	1375	№
+p-595	§8.3	1376	Запчасть (name, sku, unit)
+p-596	§8.3	1377	Тип (reason) — бейдж
+p-597	§8.3	1378	Просим (qty) — числовой инпут в draft/sent
+p-598	§8.3	1379	Соберёт (supplier_qty)
+p-599	§8.3	1380	Цена (supplier_price)
+p-600	§8.3	1381	Сумма (line_amount)
+p-601	§8.3	1382	Комментарий (supplier_note)
+p-602	§8.3	1383	Кнопка «×» удалить строку (в draft/sent)
+p-603	§8.3	1385	Итог total_amount под таблицей справа.
+p-604	§8.3	1386	Поиск «Добавить запчасть» (в draft/sent), как в §8.2.
+p-605	§8.3	1387	Панель кнопок внизу:
+p-606	§8.3	1388	слева — второстепенная «Печать»;
+p-607	§8.3	1389	справа, по статусу:
+p-608	§8.3	1390	draft: «Сохранить», основная «Отправить поставщику» (не у Базара), «Забрали» (только Базар), «Отменить», «Удалить» (admi
+p-609	§8.3	1391	sent: «Сохранить», «Отозвать», «Забрали» (только если supplier_has_login = false), «Отменить»;
+p-610	§8.3	1392	ready: основная «Забрали», «Отменить»;
+p-611	§8.3	1393	picked_up/cancelled: только «Печать».
+p-612	§8.3	1396	Сохранить (кнопка)
+p-613	§8.3	1397	Элемент: второстепенная кнопка внизу справа
+p-614	§8.3	1398	UI: блокировка кнопки до ответа
+p-615	§8.3	1399	Вызов: PUT §6.4 → /api/v1/purchase-orders/:id, body: { version, note, items }
+p-616	§8.3	1400	200: { order } → таблица перерисована; у изменённых строк в sent ответ поставщика очищен; тост «Сохранено» вверху справа
+p-617	§8.3	1401	4xx (409 версия): тост «Заказ изменился, обновите страницу» + кнопка «Обновить»
+p-618	§8.3	1402	4xx (409 ready): тост «Поставщик уже собрал заказ — правка недоступна», страница перечитывается
+p-619	§8.3	1403	4xx (409 picked_up): тост «Заказ закрыт — правка недоступна», страница перечитывается
+p-620	§8.3	1404	4xx (409 cancelled): тост «Заказ отменён — правка недоступна», страница перечитывается
+p-621	§8.3	1405	4xx (404): страница «Не найдено» (заказ удалён)
+p-622	§8.3	1406	4xx (400 поля): под полем строки или примечания
+p-623	§8.3	1407	Отправить поставщику (кнопка)
+p-624	§8.3	1408	Элемент: основная кнопка внизу справа (draft, не Базар)
+p-625	§8.3	1409	UI: блокировка; при несохранённых правках — сначала «Сохранить»
+p-626	§8.3	1410	Вызов: POST §6.6 → /api/v1/purchase-orders/:id/send, body: { version }
+p-627	§8.3	1411	200: { status: "sent" } → бейдж «Отправлен» в шапке, тост «Отправлено поставщику»
+p-628	§8.3	1412	4xx (409 пусто): тост «Добавьте хотя бы одну строку»
+p-629	§8.3	1413	4xx (409 версия): тост «Заказ изменился, обновите страницу»
+p-630	§8.3	1414	4xx (409 статус): тост «Заказ уже отправлен»
+p-631	§8.3	1415	4xx (404): страница «Не найдено» (заказ удалён)
+p-632	§8.3	1416	Отозвать (кнопка)
+p-633	§8.3	1417	Элемент: второстепенная кнопка (sent)
+p-634	§8.3	1418	UI: блокировка
+p-635	§8.3	1419	Вызов: POST §6.7 → /api/v1/purchase-orders/:id/recall, body: { version }
+p-636	§8.3	1420	200: { status: "draft" } → бейдж «Черновик», ответы поставщика остаются в колонках
+p-637	§8.3	1421	4xx (409 ready): тост «Поставщик уже собрал заказ — отозвать нельзя», страница перечитывается
+p-638	§8.3	1422	4xx (409 версия): тост «Заказ изменился, обновите страницу»
+p-639	§8.3	1423	Забрали (кнопка)
+p-640	§8.3	1424	Элемент: основная кнопка (ready), второстепенная (Базар draft, поставщик без входа sent)
+p-641	§8.3	1425	UI: модальное окно «Отметить, что забрали? Остатки не изменятся — приход введите как обычно» → «Да»
+p-642	§8.3	1426	Вызов: POST §6.8 → /api/v1/purchase-orders/:id/pick-up, body: { version }
+p-643	§8.3	1427	200: { status: "picked_up" } → бейдж «Забрали» в шапке, кнопки правки скрыты
+p-644	§8.3	1428	4xx (409 не готов): тост «Дождитесь отметки поставщика «Собрано»»
+p-645	§8.3	1429	4xx (409 пусто): тост «Добавьте хотя бы одну строку»
+p-646	§8.3	1430	4xx (409 picked_up): тост «Заказ уже закрыт»
+p-647	§8.3	1431	4xx (409 cancelled): тост «Заказ отменён»
+p-648	§8.3	1432	4xx (409 версия): тост «Заказ изменился, обновите страницу»
+p-649	§8.3	1433	Отменить (кнопка)
+p-650	§8.3	1434	Элемент: второстепенная кнопка → модальное окно с textarea «Причина» (обязательна, до 500)
+p-651	§8.3	1435	UI: «Отменить заказ» неактивна, пока причина пуста
+p-652	§8.3	1436	Вызов: POST §6.9 → /api/v1/purchase-orders/:id/cancel, body: { version, reason }
+p-653	§8.3	1437	200: { status: "cancelled", cancel_reason } → бейдж «Отменён», причина в шапке
+p-654	§8.3	1438	4xx (400 причина): под textarea «Причина — от 1 до 500 символов»
+p-655	§8.3	1439	4xx (409 picked_up): тост «Заказ уже закрыт — отмена недоступна»
+p-656	§8.3	1440	4xx (409 cancelled): тост «Заказ уже отменён»
+p-657	§8.3	1441	4xx (404): страница «Не найдено» (заказ удалён)
+p-658	§8.3	1442	Удалить (кнопка, admin, draft)
+p-659	§8.3	1443	Элемент: второстепенная кнопка (красный текст) → модальное окно с причиной
+p-660	§8.3	1444	UI: блокировка
+p-661	§8.3	1445	Вызов: DELETE §6.5 → /api/v1/purchase-orders/:id, body: { version, reason }
+p-662	§8.3	1446	200: 204 → переход в §8.1, тост «Черновик удалён — восстановить можно в «Удалённых»»
+p-663	§8.3	1447	4xx (409 статус): тост «Удалить можно только черновик»
+p-664	§8.3	1448	4xx (400 причина): под textarea «Причина — от 1 до 500 символов»
+p-665	§8.3	1449	Удалить строку (кнопка «×» в строке)
+p-666	§8.3	1450	Элемент: кнопка в строке таблицы
+p-667	§8.3	1451	UI: строка убирается локально, применяется по «Сохранить»
+p-668	§8.3	1452	Вызов: PUT §6.4 → /api/v1/purchase-orders/:id, body: { version, note, items без строки } (при «Сохранить»)
+p-669	§8.3	1453	200: строка исчезла
+p-670	§8.3	1454	4xx (409/400): как у «Сохранить»
+p-671	§8.3	1455	Печать (кнопка)
+p-672	§8.3	1456	Элемент: второстепенная кнопка внизу слева
+p-673	§8.3	1457	UI: скачивание файла
+p-674	§8.3	1458	Вызов: GET §6.11 → /purchases/:id/print
+p-675	§8.3	1459	200: PDF «З-0013.pdf»
+p-676	§8.3	1460	4xx (404): тост «Заказ не найден»
+p-677	§8.4	1467	Путь: §8.3 → «Печать»
+p-678	§8.4	1468	URL: /purchases/:id/print
+p-679	§8.4	1469	Роли: admin, executor · Устройство: A4
+p-680	§8.4	1470	При открытии: GET §6.11 → /purchases/:id/print
+p-681	§8.4	1471	200: PDF · Пусто: — · 4xx: 404-страница
+p-682	§8.4	1474	Реквизиты мастерской (FIRM_NAME, FIRM_PHONE).
+p-683	§8.4	1475	Заголовок «Заказ З-0013 от 22.10.2026».
+p-684	§8.4	1476	Получатель и телефон («Базар (покупаем сами)» без телефона).
+p-685	§8.4	1477	Таблица:
+p-686	§8.4	1478	№
+p-687	§8.4	1479	Запчасть
+p-688	§8.4	1480	Артикул
+p-689	§8.4	1481	Кол-во
+p-690	§8.4	1482	Ед.
+p-691	§8.4	1483	Базар: ☐ (галочка); поставщик после ответа: «Соберёт», «Цена», «Сумма»
+p-692	§8.4	1484	Итог (если есть цены).
+p-693	§8.4	1485	Примечание.
+p-694	§8.4	1486	Подпись «Принял ____».
+p-695	§8.4	1489	Скачать (открытие URL)
+p-696	§8.4	1490	Элемент: кнопка «Печать» §8.3
+p-697	§8.4	1491	UI: —
+p-698	§8.4	1492	Вызов: GET §6.11 → /purchases/:id/print
+p-699	§8.4	1493	200: PDF-файл
+p-700	§8.4	1494	4xx (404): страница «Не найдено»
+p-701	§8.5	1501	Путь: сайдбар admin → «Пользователи» → «Новый» / строка
+p-702	§8.5	1502	URL: /users/new, /users/:id
+p-703	§8.5	1503	Роли: admin · Устройство: десктоп
+p-704	§8.5	1504	При открытии: SSR формы (as-is) + список активных, не удалённых поставщиков
+p-705	§8.5	1505	200: форма · Пусто: — · 4xx: as-is
+p-706	§8.5	1508	Логин (login) — as-is
+p-707	§8.5	1509	Имя (name) — as-is
+p-708	§8.5	1510	Телефон (phone) — as-is
+p-709	§8.5	1511	Пароль (password) — as-is
+p-710	§8.5	1512	Роль (role) — дропдаун «Администратор / Исполнитель / Поставщик» (новое значение)
+p-711	§8.5	1513	Поставщик (supplier_id) — дропдаун, виден и обязателен только при роли «Поставщик» (новое поле)
+p-712	§8.5	1514	Часовой пояс (timezone) — as-is
+p-713	§8.5	1515	Активен (is_active) — as-is
+p-714	§8.5	1516	Внизу справа — основная кнопка «Сохранить»
+p-715	§8.5	1519	Выбор роли «Поставщик» (дропдаун)
+p-716	§8.5	1520	Элемент: дропдаун «Роль»
+p-717	§8.5	1521	UI: под ним появляется дропдаун «Поставщик»
+p-718	§8.5	1522	Вызов: —
+p-719	§8.5	1523	200: —
+p-720	§8.5	1524	4xx: —
+p-721	§8.5	1525	Сохранить (кнопка)
+p-722	§8.5	1526	Элемент: основная кнопка внизу справа
+p-723	§8.5	1527	UI: блокировка
+p-724	§8.5	1528	Вызов: POST §6.17 → /api/v1/users (SSR-форма POST /users), body: { …, role: "supplier", supplier_id }
+p-725	§8.5	1529	200: переход к списку пользователей, в строке роль «Поставщик (АвтоДеталь Плюс)»
+p-726	§8.5	1530	4xx (400 нет поставщика): под дропдауном «Выберите поставщика»
+p-727	§8.5	1531	4xx (400 поставщик недоступен): под дропдауном «Поставщик недоступен»
+p-728	§8.5	1532	4xx (400 поставщик у другой роли): под дропдауном «Поставщик указывается только для роли «Поставщик»»
+p-729	§8.5	1533	4xx (409 версия): as-is
+p-730	§8.6	1540	Путь: вход под учёткой поставщика → редирект; сайдбар поставщика → «Заказы»
+p-731	§8.6	1541	URL: /supplier/orders?status=
+p-732	§8.6	1542	Роли: supplier · Устройство: телефон в первую очередь (полный адаптив, DS-031), десктоп
+p-733	§8.6	1543	При открытии: GET §6.12 → /api/v1/supplier/purchase-orders?limit=50&offset=0
+p-734	§8.6	1544	200: карточки заказов · Пусто: «Новых заказов нет» · 4xx: тост «Не удалось загрузить»
+p-735	§8.6	1547	Шапка: имя мастерской и телефон (кнопка «Позвонить» tel:), меню «Заказы / Выход».
+p-736	§8.6	1548	Панель фильтров:
+p-737	§8.6	1551	Статус | табы «Все / Новые / Собраны / Забрали» | enum §5 (sent/ready/picked_up) | status | sent
+p-738	§8.6	1553	Список карточек (на телефоне карточки, на десктопе таблица): номер, бейдж статуса, «Изменён» (если is_changed), дата отп
+p-739	§8.6	1556	Таб статуса
+p-740	§8.6	1557	Элемент: табы над списком
+p-741	§8.6	1558	UI: перезагрузка списка
+p-742	§8.6	1559	Вызов: GET §6.12 → /api/v1/supplier/purchase-orders?status=ready&limit=50&offset=0
+p-743	§8.6	1560	200: { items } → карточки
+p-744	§8.6	1561	4xx (400): тост «Неизвестный статус»
+p-745	§8.6	1562	Открыть заказ (карточка)
+p-746	§8.6	1563	Элемент: карточка списка
+p-747	§8.6	1564	UI: переход
+p-748	§8.6	1565	Вызов: — (переход на /supplier/orders/:id)
+p-749	§8.6	1566	200: §8.7
+p-750	§8.6	1567	4xx (404): «Заказ не найден» (например, отозван)
+p-751	§8.7	1574	Путь: §8.6 → карточка
+p-752	§8.7	1575	URL: /supplier/orders/:id
+p-753	§8.7	1576	Роли: supplier своего поставщика · Устройство: телефон (крупные поля, числовая клавиатура inputmode="decimal"), десктоп
+p-754	§8.7	1577	При открытии: GET §6.13 → /api/v1/supplier/purchase-orders/:id
+p-755	§8.7	1578	200: строки · Пусто: — · 4xx (404): «Заказ не найден» + ссылка «К списку»
+p-756	§8.7	1581	Шапка: «З-0013», бейдж статуса, дата отправки, имя и телефон мастерской.
+p-757	§8.7	1582	Примечание заказчика (note); при note_changed — жёлтая подсветка и метка «Изменено».
+p-758	§8.7	1583	Строки (на телефоне — карточка на строку). Для каждой:
+p-759	§8.7	1584	Запчасть (name), артикул (sku), «Просят: 6 шт» (qty, unit)
+p-760	§8.7	1585	Метка «Изменено заказчиком» (customer_changed)
+p-761	§8.7	1586	Соберу, шт. (supplier_qty) — числовой инпут
+p-762	§8.7	1587	Цена за ед. (supplier_price) — числовой инпут
+p-763	§8.7	1588	Комментарий (supplier_note) — текстовый инпут, до 500
+p-764	§8.7	1589	Сумма строки (line_amount) — текст; при «Соберу» ≠ «Просят» — подсветка расхождения
+p-765	§8.7	1590	Индикатор «Сохранено ✓»
+p-766	§8.7	1591	Итог (total_amount) — закреплён внизу экрана на телефоне.
+p-767	§8.7	1592	Основная кнопка «Собрано, можно забирать» на всю ширину внизу (только sent); второстепенная «Печать».
+p-768	§8.7	1595	Сохранить ответ по строке (инпуты строки)
+p-769	§8.7	1596	Элемент: три поля строки (числовые инпуты и текстовый); сохранение по blur изменённого поля
+p-770	§8.7	1597	UI: поля строки блокируются до ответа, индикатор «Сохраняю…»
+p-771	§8.7	1598	Вызов: PUT §6.14 → /api/v1/supplier/purchase-orders/:id/items/:item_id, body: { version, supplier_qty, supplier_price, s
+p-772	§8.7	1599	200: { line_amount, version, total_amount } → сумма строки под полями, итог внизу, «Сохранено ✓» справа в строке, метка 
+p-773	§8.7	1600	4xx (400 количество): под полем «Соберу» «Количество от 0 до 99 999.999»
+p-774	§8.7	1601	4xx (400 цена): под полем «Цена» «Цена от 0 до 9 999 999.99»
+p-775	§8.7	1602	4xx (400 комментарий): под полем «Комментарий — не больше 500 символов»
+p-776	§8.7	1603	4xx (409 версия строки): тост «Строку изменили, обновите страницу», строка перечитывается
+p-777	§8.7	1604	4xx (409 ready): тост «Заказ уже отмечен «Собрано»», поля только для чтения
+p-778	§8.7	1605	4xx (409 picked_up): тост «Заказ уже забрали», поля только для чтения
+p-779	§8.7	1606	4xx (409 отозван/отменён): тост «Заказ отозван заказчиком», переход к списку
+p-780	§8.7	1607	Собрано, можно забирать (кнопка)
+p-781	§8.7	1608	Элемент: основная кнопка внизу на всю ширину
+p-782	§8.7	1609	UI: модальное окно «Отметить «Собрано»? После этого изменить ответ нельзя» → «Да»; блокировка
+p-783	§8.7	1610	Вызов: POST §6.15 → /api/v1/supplier/purchase-orders/:id/ready
+p-784	§8.7	1611	200: { status: "ready" } → бейдж «Собран» в шапке, поля только для чтения, кнопка скрыта
+p-785	§8.7	1612	4xx (409 не все строки): строки из details.item_ids подсвечены красным, под полем «Соберу» — «Заполните»; тост «Заполнит
+p-786	§8.7	1613	4xx (409 без цены): под полем «Цена» у строк из details.item_ids — «Укажите цену»
+p-787	§8.7	1614	4xx (409 статус): тост «Заказ уже отмечен «Собрано»»
+p-788	§8.7	1615	4xx (404): тост «Заказ отозван заказчиком», переход к списку
+p-789	§8.7	1616	Печать (кнопка)
+p-790	§8.7	1617	Элемент: второстепенная кнопка внизу
+p-791	§8.7	1618	UI: скачивание
+p-792	§8.7	1619	Вызов: GET §6.16 → /supplier/orders/:id/print
+p-793	§8.7	1620	200: PDF
+p-794	§8.7	1621	4xx (404): тост «Заказ не найден»
+p-795	§9	1628	DS-001 | Проект kanban-tree-autoservice, один склад: остаток и минимум в products (stock, min_stock) | план, согласован 
+p-796	§9	1629	DS-002 | Строки заказа из двух источников с галочками (for_orders, below_min) + ручные, всё правится | план, согласован 
+p-797	§9	1630	DS-003 | К заказу = max(0, pending + min_stock − stock); for_orders, если pending > stock, иначе below_min | план, согла
+p-798	§9	1631	DS-004 | Подсказка «уже в открытом заказе З-0012 — 5 шт.» на экране формирования, галочка снята | план, согласован 2026-
+p-799	§9	1632	DS-005 | Страницу «Остатки» /stock не трогаем | план, согласован 2026-10-22 | closed
+p-800	§9	1633	DS-006 | Один заказ — один получатель: поставщик или «Базар» (supplier_id NULL) | план, согласован 2026-10-22 | closed
+p-801	§9	1634	DS-007 | Кабинет поставщика: роль supplier + supplier_id в users, CHECK роль supplier ⇔ supplier_id задан | план, соглас
+p-802	§9	1635	DS-008 | Поставщик по строке: «Соберу» (0 = нет), цена за ед., комментарий; на заказ — «Собрано» | план, согласован 2026
+p-803	§9	1636	DS-009 | Сумму считает система: supplier_qty × supplier_price | план, согласован 2026-10-22 | closed
+p-804	§9	1637	DS-010 | «Забрали» только закрывает заказ, остатки не меняет | план, согласован 2026-10-22 | closed
+p-805	§9	1638	DS-011 | Статусы draft → sent → ready → picked_up; cancelled из draft/sent/ready; Базар draft → picked_up | план, соглас
+p-806	§9	1639	DS-012 | «Отозвать» sent → draft, пока не «Собрано» | план, согласован 2026-10-22 | closed
+p-807	§9	1640	DS-013 | Закупки создают и отправляют admin и executor; раздел виден обеим ролям | план, согласован 2026-10-22 | closed
+p-808	§9	1641	DS-014 | Печать — PDF, тем же способом, что акт выдачи (internal/features/board/print_pdf.go) | план, согласован 2026-10
+p-809	§9	1642	DS-015 | Номер сквозной, вид «З-0001» | план, согласован 2026-10-22 | closed
+p-810	§9	1643	DS-016 | Один этап MVP; порядок: таблицы+API → роль supplier и кабинет → наши экраны → PDF; демо после наших экранов | п
+p-811	§9	1644	DS-017 | Роль supplier явно запрещена на всех существующих страницах и API; свой guard; чужой id → 404; live-тесты на ка
+p-812	§9	1645	DS-018 | После входа поставщика — редирект на /supplier/orders, свой упрощённый сайдбар | план, согласован 2026-10-22 | 
+p-813	§9	1646	DS-019 | Поставщик видит заказы своего поставщика в sent/ready/picked_up | план, согласован 2026-10-22 | closed
+p-814	§9	1647	DS-020 | Поставщик правит строки только в sent; после ready и recall — только чтение | план, согласован 2026-10-22 | clo
+p-815	§9	1648	DS-021 | Снимок name/sku/unit в строке | план, согласован 2026-10-22 | closed
+p-816	§9	1649	DS-022 | reason строки: for_orders/below_min/manual | план, согласован 2026-10-22 | closed
+p-817	§9	1650	DS-023 | Наши экраны: /purchases, /purchases/new, /purchases/:id, печать | план, согласован 2026-10-22 | closed
+p-818	§9	1651	DS-024 | Кабинет: /supplier/orders, /supplier/orders/:id, удобный с телефона | план, согласован 2026-10-22 | closed
+p-819	§9	1652	DS-025 | «Пользователи»: роль «Поставщик» + привязка к записи справочника | план, согласован 2026-10-22 | closed
+p-820	§9	1653	DS-026 | Перечень API закупок и кабинета (§6), CLAUDE.md §API-1 | план, согласован 2026-10-22 | closed
+p-821	§9	1654	DS-027 | Список: номер, получатель, статус, строк, сумма, даты; фильтр по статусу | план, согласован 2026-10-22 | closed
+p-822	§9	1655	DS-028 | Потом: «Дозаказать недостающее», уведомления, приход по «Забрали», основной поставщик и история цен | план, сог
+p-823	§9	1656	DS-029 | qty numeric(12,3), supplier_price numeric(12,2) | план, согласован 2026-10-22 | closed
+p-824	§9	1657	DS-030 | Совместимость MVP: живых пользователей нет, без переходного периода и отката | батч 1 | closed
+p-825	§9	1658	DS-031 | UI-scope: swagger:yes; adaptive:full для кабинета, экраны «Закупки» — overflow-смок; themes:both | батч 1 | clo
+p-826	§9	1659	DS-032 | Конкурентность: version заказа + 409; своя version у строки поставщика; «Собрано» против «Отозвать» — выигрывае
+p-827	§9	1660	DS-033 | Время: UTC (timestamptz), показ в поясе смотрящего (по умолчанию Asia/Almaty, у поставщика тоже); фильтра по да
+p-828	§9	1661	DS-034 | Править строки можно и в sent; поставщик видит изменения сразу, ответ по изменённым строкам сбрасывается | батч
+p-829	§9	1662	DS-035 | При «Отозвать» и повторной отправке ответы сохраняются, у изменённых и добавленных строк сбрасываются; отозванн
+p-830	§9	1663	DS-036 | Отмена — обязательная причина 1–500 символов; отменённый заказ скрыт из кабинета | батч 2 | closed
+p-831	§9	1664	DS-037 | Удалять можно только черновик, мягко, в «Удалённые» с восстановлением | батч 2 | closed
+p-832	§9	1665	DS-038 | «Собрано» — только когда у всех строк задано «Соберу» (0 тоже ответ), цена обязательна при количестве > 0; отме
+p-833	§9	1666	DS-039 | После ready строки только для чтения | батч 3 | closed
+p-834	§9	1667	DS-040 | «Изменённая строка» = любая правка, включая примечание | батч 3 | superseded by DS-048
+p-835	§9	1668	DS-041 | Причину отмены видим только мы | батч 3 | closed
+p-836	§9	1669	DS-042 | Отправить поставщику без входа можно; если у поставщика нет активного входа, «Забрали» разрешено прямо из sent 
+p-837	§9	1670	DS-043 | Архив и удаление поставщика с незакрытыми закупками (draft/sent/ready) запрещены, ошибка перечисляет номера | б
+p-838	§9	1671	DS-044 | Несколько входов на поставщика; создаёт только admin на «Пользователи» | батч 3 | closed
+p-839	§9	1672	DS-045 | Блокировка входа поставщика сразу обрывает сессию (as-is internal/server/middleware/auth.go resolve) | батч 3 |
+p-840	§9	1673	DS-046 | Поставщик видит номер, дату отправки, примечание, имя и телефон мастерской (FIRM_NAME/FIRM_PHONE); reason и наш
+p-841	§9	1674	DS-047 | Валидации: qty > 0…99999.999 (3 знака); supplier_qty 0…99999.999, больше просимого можно; цена 0…9999999.99; ко
+p-842	§9	1675	DS-048 | Правка строки сбрасывает ответ только этой строки + метка «Изменено заказчиком»; правка примечания ответы не сб
+p-843	§9	1676	DS-049 | «Открытые» для подсказки — только sent и ready; количество без вычета, галочка снята | батч 4 | closed
+p-844	§9	1677	DS-050 | Отменить могут admin и executor; удаление черновика, восстановление и окончательное удаление — только admin | б
+p-845	§9	1678	DS-051 | Executor правит, отправляет, отзывает, отменяет и закрывает только свои заказы (created_by) | батч 4 | closed
+p-846	§9	1679	DS-052 | Аудит: у заказа кто/когда создал, отправил, собрал, забрал, отменил, удалил; у строки — кто из поставщика ответ
+p-847	§9	1680	DS-053 | Безопасность: роль supplier запрещена по умолчанию в RequireAPI/RequireSSR (API 403, SSR редирект на /supplier/
+p-848	§9	1681	DS-054 | Снимок name/sku/unit берётся при добавлении строки и обновляется при каждой отправке | inferred | closed
+p-849	§9	1682	DS-055 | Добавить в заказ можно только активную, не удалённую запчасть; ставшая архивной после добавления остаётся в зак
+p-850	§9	1683	DS-056 | number — bigint из sequence; показ «З-» + номер, дополненный нулями до 4 знаков | inferred | closed
+p-851	§9	1684	DS-057 | Список: сортировка created_at DESC; пагинация limit 1–100 (по умолчанию 50) / offset | inferred | closed
+p-852	§9	1685	DS-058 | Базар: только «Забрали» из draft или «Отменить»; полей поставщика нет; в PDF колонка ☐ | inferred | closed
+p-853	§9	1686	DS-059 | «Нет активного входа» проверяется в момент «Забрали»: нет пользователя с этим supplier_id, role = supplier и is
+p-854	§9	1687	DS-060 | Admin видит все заказы и делает с ними всё; executor видит в списке, открывает, печатает и меняет ТОЛЬКО свои (
+p-855	§9	1688	DS-062 | Защита от двойного создания — блокировка кнопки; лишний черновик удаляет admin; предупреждение о несохранённых 
+p-856	§9	1689	DS-063 | Ответ поставщика сохраняется построчно (blur поля) | inferred | closed
+p-857	§9	1690	DS-064 | Подсказка переиспользует CTE pending из internal/features/board/stock_repo.go; в ответе только строки с to_orde
+p-858	§9	1691	DS-065 | zap: ошибки pkg/errorspkg; 404/403/409; синхронно; миграции через make migrate-up | zap | closed
+p-859	§9	1692	DS-066 | PDF для поставщика — отдельный маршрут без reason и наших данных; наш PDF доступен в любом статусе | inferred |
+p-860	§9	1693	DS-067 | Кабинет: sent первыми, затем sent_at DESC | inferred | closed
+p-861	§9	1694	DS-068 | supplier_id заказа задаётся при создании и не меняется | inferred | closed
+p-862	§9	1695	DS-069 | Роль пользователя можно сменить на supplier и обратно при соблюдении CHECK | inferred | closed
+p-863	§9	1696	DS-070 | Строки → заказ ON DELETE CASCADE (окончательное удаление черновика удаляет строки) | inferred | closed
+p-864	§9	1697	DS-071 | Суммы вычисляются, не хранятся; итог — по строкам с ценой | inferred | closed
+p-865	§9	1698	DS-072 | Новый вид purchase-orders («Закупки») в разделе «Удалённые» (internal/features/softdelete/kinds.go), причина уд
+p-866	§9	1699	DS-073 | Пункт «Закупки» в сайдбаре сотрудника после «Остатки»; UI-конвенции фидбека — как в проекте | inferred | closed
+p-867	§9	1700	DS-075 | picked_up и cancelled терминальные: только чтение и печать | inferred | closed
+p-868	§9	1701	DS-076 | Отправить и забрать можно только непустой заказ | inferred | closed
+p-869	§9	1702	DS-077 | Заказ «Базар» нельзя отправить (409) | inferred | closed
+p-870	§9	1703	DS-078 | Подсказка «уже в открытом заказе» учитывает открытые заказы (sent/ready): admin — все, executor — только свои (
+p-871	§11	1713	TS-001. validateCreate/validateUpdate заказа: items пуст → 400; 201 строка → 400; qty 0, −1, 100000, 1.0001 → 400, 0.001
+p-872	§11	1714	TS-002. validateSupplierItem: supplier_qty −0.001 / 100000 / 4 знака → 400, 0 и больше qty → ok; supplier_price −1 / 100
+p-873	§11	1715	негатив: заказ в ready → 409 PURCHASE_ORDER_READ_ONLY
+p-874	§11	1716	TS-003. Матрица переходов §5 (repo-integration): каждый разрешённый переход → ok; каждый запрещённый (send из sent/ready
+p-875	§11	1717	негатив: send у Базара → 409 PURCHASE_ORDER_NO_SUPPLIER; send или pick-up пустого → 409 PURCHASE_ORDER_EMPTY
+p-876	§11	1718	TS-004. Конкурентность: два PUT §6.4 с одной version → один 200, второй 409; одновременные «Собрано» и «Отозвать» → ровн
+p-877	§11	1719	негатив: устаревшая версия на каждом переходе §6.6–§6.9 → 409 PURCHASE_ORDER_VERSION_CONFLICT
+p-878	§11	1720	TS-005. Сброс ответа: в sent смена qty строки → supplier_qty/supplier_price/supplier_note очищены, customer_changed_at з
+p-879	§11	1721	негатив: правка в ready → 409, ответы не тронуты
+p-880	§11	1722	TS-006. «Собрано»: строка без supplier_qty → 409 PURCHASE_ORDER_ITEMS_INCOMPLETE с details.item_ids; строка qty > 0 без 
+p-881	§11	1723	TS-007. Подсказка §6.10 на сидах: stock 1, min 2, pending 3 → to_order 4, for_orders; stock 3, min 5, pending 1 → 3, bel
+p-882	§11	1724	TS-008. Миграция: CHECK users_supplier_chk (role supplier без supplier_id → ошибка БД; executor с supplier_id → ошибка);
+p-883	§11	1725	TS-009. Live (§TD-8, pkg/testutil.LiveSuite): сессия supplier на КАЖДОМ существующем разделе — SSR /, /stock, /clients, 
+p-884	§11	1726	негатив: supplier А открывает заказ поставщика Б по id (§6.13, §6.14, §6.15, §6.16) → 404
+p-885	§11	1727	TS-010. Live: executor-А получает список §6.1 → только свои заказы (total не считает чужие); GET §6.3, PUT §6.4, POST §6
+p-886	§11	1728	негатив: подмена created_by в body игнорируется — автор берётся из сессии
+p-887	§11	1729	TS-011. Live: архив и мягкое удаление поставщика с заказом в draft/sent/ready → 409 SUPPLIER_HAS_OPEN_PURCHASES со списк
+p-888	§11	1730	TS-012. Live: users — создание учётки supplier без supplier_id → 400; с архивным поставщиком → 400; executor с supplier_
+p-889	§11	1731	TS-013. «Забрали» не меняет products.stock и не пишет stock_movements — DS-010
+p-890	§11	1734	TS-014. Полный круг закупки у поставщика — экраны §8.2, §8.3, §8.6, §8.7 — DS-011, DS-008
+p-891	§11	1735	шаги: admin → «Новый заказ» → поставщик → снять одну галочку → «Сохранить черновик» → «Отправить поставщику» → вход supp
+p-892	§11	1736	TS-015. Базар — экраны §8.2, §8.3, §8.4 — DS-058
+p-893	§11	1737	шаги: получатель «Базар» → сохранить → кнопки «Отправить» нет → «Печать» скачивает PDF с колонкой ☐ → «Забрали»; проверк
+p-894	§11	1738	TS-016. Правка отправленного заказа — экраны §8.3, §8.7 — DS-034, DS-048
+p-895	§11	1739	шаги: поставщик ответил по двум строкам → мы меняем количество одной и примечание → поставщик видит «Изменён», подсвечен
+p-896	§11	1740	TS-017. Отозвать и отправить снова — экраны §8.3, §8.6 — DS-035
+p-897	§11	1741	шаги: отправить → поставщик ответил → «Отозвать» → у поставщика заказа нет в списке → «Отправить» → ответы на месте; нег
+p-898	§11	1742	TS-018. Отмена с причиной — экраны §8.3, §8.6 — DS-036, DS-041
+p-899	§11	1743	шаги: «Отменить» → пустая причина (кнопка неактивна) → ввести причину → бейдж «Отменён» и причина в шапке; проверка: у п
+p-900	§11	1744	TS-019. Подсказка «уже в открытом заказе» — экран §8.2 — DS-004, DS-049
+p-901	§11	1745	шаги: запчасть в отправленном заказе З-0012 → «Новый заказ» → у строки подсказка «уже в открытом заказе З-0012 — N шт.»,
+p-902	§11	1746	TS-020. Поставщик заперт в кабинете — экраны §8.6, §8.7 — DS-017, DS-018
+p-903	§11	1747	шаги: вход supplier → редирект на /supplier/orders, сайдбар только «Заказы / Выход» → ввести в адресной строке /, /stock
+p-904	§11	1748	TS-021. Кабинет на телефоне — экран §8.7, вьюпорты 360×640 / 768 / 1280, светлая и тёмная темы — DS-031
+p-905	§11	1749	шаги: открыть карточку → поля доступны без горизонтального скролла, итог закреплён внизу, числовая клавиатура; проверка:
+p-906	§11	1750	TS-022. Экраны «Закупки» на узком экране — §8.1–§8.3, один вьюпорт ~360px — DS-031
+p-907	§11	1751	шаги: открыть список, новый заказ, карточку; проверка: нет горизонтального выхода страницы за край (таблица может скролл
+p-908	§11	1752	TS-023. Учётка поставщика — экран §8.5 — DS-025, DS-044
+p-909	§11	1753	шаги: admin → новый пользователь → роль «Поставщик» → появился дропдаун поставщика → сохранить без выбора → «Выберите по
+p-910	§11	1754	TS-024. Executor видит только свои заказы — экраны §8.1, §8.3, §8.2 — DS-051, DS-060, DS-078
+p-911	§11	1755	шаги: executor открывает «Закупки» → в списке только его заказы → вставляет в адресную строку URL заказа admin → страниц
+p-912	§11	1756	TS-025. Архив поставщика с открытым заказом — существующий экран «Поставщики» — DS-043
+p-913	§11	1757	шаги: снять «Активен» у поставщика с отправленным заказом → ошибка «У поставщика есть незакрытые закупки: З-…»; негатив:
+p-914	§11	1758	TS-026. Удаление и восстановление черновика — экраны §8.3 и «Удалённые» — DS-037, DS-072
+p-915	§11	1759	шаги: admin → «Удалить» с причиной → черновик на вкладке «Закупки» раздела «Удалённые» → «Восстановить» → снова в списке
+p-916	§11	1762	TS-F1. Сид e2e (e2e/fixtures + Go-сид live-тестов): поставщик «АвтоДеталь Плюс» с активной учёткой supplier, поставщик «
+p-917	§11	1763	TS-F2. Заказы-закупки в каждом статусе (draft / sent с частичным ответом / ready / picked_up / cancelled / удалённый dra
+p-918	§11	1764	TS-F3. Существующие хелперы входа e2e: добавить роль supplier; payload'ы хелперов типизировать wire-типами из src (§TD-6
+p-919	§11	1765	TS-F4. Существующие live-тесты, создающие пользователей (internal/features/users/*_live_test.go), и проверки роли (inter
+p-920	§11	1772	1 | SHARED-DEP | internal/server/middleware/auth.go:95 RequireAPI, :120 RequireSSR, :26–27 роли | константа RoleSupplier
+p-921	§11	1773	2 | ENUMERATION | internal/features/users/validate.go:14–15, :87, internal/features/users/service.go:78, internal/featur
+p-922	§11	1774	3 | FK | migrations/0002_users_roles.up.sql CHECK role IN ('admin','executor') | новая миграция 0019_purchase_orders: CH
+p-923	§11	1775	4 | FRONTEND | internal/ssr/shell.go:20–21, :89 (меню по ролям), web/ssr/_layout/templates/layouts/base.html:28 | пункт 
+p-924	§11	1776	5 | SHARED-DEP | internal/features/auth (вход, редирект после логина) | после входа supplier → /supplier/orders; ?redire
+p-925	§11	1777	6 | ENUMERATION | internal/features/softdelete/kinds.go:13–27 реестр Kinds + источники | новый вид purchase-orders («Зак
+p-926	§11	1778	7 | SHARED-DEP | internal/features/suppliers/service.go (архив через is_active), internal/features/suppliers/soft_delete
+p-927	§11	1779	8 | SHARED-DEP | internal/features/board/stock_repo.go:24 stockPendingCTETemplate | переиспользуем расчёт pending в §6.1
+p-928	§11	1780	9 | SHARED-DEP | internal/features/board/print_pdf.go, internal/features/board/fonts | генерация PDF заказа тем же спосо
+p-929	§11	1781	10 | CONFIG | internal/config/config.go:74 FIRM_NAME/FIRM_PHONE | читаем в кабинете и PDF | без изменений | DS-046
+p-930	§11	1782	11 | ENUMERATION | internal/features/*/routes.go (board, clients, calendar, catalog, suppliers, users, softdelete, execu

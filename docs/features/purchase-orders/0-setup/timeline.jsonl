@@ -1,0 +1,4 @@
+{"type": "stage_start", "stage": "light-exec", "ts": "2026-10-22T01:12:48+05:00"}
+{"type": "handoff", "kind": "passport", "path": "0-setup/passport.md", "bytes": 22850, "ts": "2026-10-22T01:12:48+05:00"}
+{"type": "stage_end", "stage": "light-exec", "status": "ok", "ts": "2026-10-22T01:50:56+05:00"}
+{"type": "stage_start", "stage": "light-judge", "ts": "2026-10-22T01:50:56+05:00"}

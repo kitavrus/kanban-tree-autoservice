@@ -23,6 +23,7 @@ var menu = []NavGroup{
 		{Title: "Доска", Icon: "▦", URL: "/"},
 		{Title: "Календарь", Icon: "📅", URL: "/calendar"},
 		{Title: "Остатки", Icon: "📊", URL: "/stock"},
+		{Title: "Закупки", Icon: "🛒", URL: "/purchases"}, // purchase-orders DS-073
 		{Title: "Выплаты", Icon: "💸", URL: "/executor-payouts"},
 	}},
 	{Label: "Справочники", Items: []NavItem{
@@ -55,4 +56,12 @@ func BuildMenu(enabled map[string]bool, isAdmin bool, badges map[string]int) []N
 		}
 	}
 	return out
+}
+
+// SupplierMenu — упрощённый сайдбар кабинета поставщика (purchase-orders DS-018): только
+// «Заказы»; выход — кнопкой в подвале сайдбара.
+func SupplierMenu() []NavGroup {
+	return []NavGroup{{Label: "Кабинет поставщика", Items: []NavItem{
+		{Title: "Заказы", Icon: "📦", URL: "/supplier/orders"},
+	}}}
 }

@@ -433,3 +433,19 @@ body { background: var(--bs-body-bg); }
   .cal-cell { min-height: 58px; padding: 4px; }
   .cal-note { display: none; }
 }
+
+/* ---- Закупки (purchase-orders §8.1–§8.3, §8.6–§8.7) ---- */
+.mw-1100 { max-width: 1100px; }
+/* Расхождение «Соберёт» ≠ «Просим» — жёлтая подсветка строки (§8.3). */
+.po-discrepancy > td { background: var(--bs-warning-bg-subtle) !important; }
+.po-qty { max-width: 8rem; }
+.po-hint { font-size: .825rem; color: var(--bs-secondary-color); }
+/* Кабинет поставщика: телефон в первую очередь (DS-031) — крупные поля, итог и «Собрано»
+   закреплены внизу экрана. Карточки строк не шире экрана: длинные названия переносятся. */
+.so-root { max-width: 860px; min-width: 0; }
+.so-item { overflow-wrap: anywhere; }
+.so-item.so-missing { border-color: var(--bs-danger) !important; }
+.so-item .form-control { min-height: 44px; font-size: 1rem; }
+.so-note-changed { background: var(--bs-warning-bg-subtle); }
+.so-footer { position: sticky; bottom: 0; z-index: 5; background: var(--bs-body-bg); border-top: 1px solid var(--bs-border-color); padding: .75rem 0; margin-top: .75rem; }
+.so-card { cursor: pointer; overflow-wrap: anywhere; }

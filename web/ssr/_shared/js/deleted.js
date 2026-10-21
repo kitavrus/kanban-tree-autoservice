@@ -76,6 +76,14 @@
       kind: 'catalog-categories', label: 'Категории', countKey: 'catalog_categories',
       restoreUrl: function (id) { return '/api/v1/catalog-categories/' + encodeURIComponent(id) + '/restore'; },
       notFound: 'Категория не найдена', confirmText: archivedConfirm
+    },
+    {
+      // purchase-orders (DS-037, DS-072): удалённые черновики закупок; восстановленный
+      // черновик снова в списке «Закупки», ссылка «Открыть» — его карточка.
+      kind: 'purchase-orders', label: 'Закупки', countKey: 'purchase_orders',
+      restoreUrl: function (id) { return '/api/v1/purchase-orders/' + encodeURIComponent(id) + '/restore'; },
+      notFound: 'Заказ не найден',
+      openLink: function (id) { return { href: '/purchases/' + encodeURIComponent(id), text: 'Открыть заказ' }; }
     }
   ];
 

@@ -33,7 +33,7 @@
       {{ if .Shell.User.Name }}
       <div class="d-flex align-items-center gap-2">
         <span class="app-avatar">{{ initials .Shell.User.Name }}</span>
-        <div><b>{{ .Shell.User.Name }}</b><div class="text-body-secondary small">{{ if .Shell.IsAdmin }}Администратор{{ else }}Исполнитель{{ end }}</div></div>
+        <div><b>{{ .Shell.User.Name }}</b><div class="text-body-secondary small">{{ if .Shell.IsAdmin }}Администратор{{ else if .Shell.IsSupplier }}Поставщик{{ else }}Исполнитель{{ end }}</div></div>
       </div>
       <div>
         <label for="app-timezone" class="form-label small text-body-secondary mb-1">Часовой пояс</label>

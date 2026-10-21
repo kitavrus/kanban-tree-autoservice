@@ -51,8 +51,12 @@ type FormVM struct {
 	// Timezone — выбранный пояс (IANA); Timezones — пункты select'а (DS-056).
 	Timezone  string
 	Timezones []timezone.Option
-	Errors    map[string]string // поле → текст ошибки
-	Error     string            // общая ошибка формы
+	// SupplierID / Suppliers — поставщик учётки роли supplier и пункты выпадающего списка
+	// (purchase-orders §8.5).
+	SupplierID string
+	Suppliers  []SupplierOption
+	Errors     map[string]string // поле → текст ошибки
+	Error      string            // общая ошибка формы
 }
 
 var flashes = map[string]string{
@@ -92,7 +96,7 @@ func (h *SSR) create(c fiber.Ctx) error {
 	vm.IsNew = true
 	_, err := h.svc.Create(c.Context(), Input{
 		Login: vm.Login, Name: vm.Name, Role: vm.Role, Phone: vm.Phone, Password: c.FormValue("password"), IsActive: vm.IsActive,
-		Timezone: formTimezone(c),
+		Timezone: formTimezone(c), SupplierID: vm.SupplierID,
 	})
 	if err != nil {
 		return h.formError(c, vm, err)
@@ -109,7 +113,11 @@ func (h *SSR) formEdit(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return h.renderForm(c, fiber.StatusOK, FormVM{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone, IsActive: u.IsActive, Timezone: u.Timezone})
+	vm := FormVM{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone, IsActive: u.IsActive, Timezone: u.Timezone}
+	if u.SupplierID != nil {
+		vm.SupplierID = *u.SupplierID
+	}
+	return h.renderForm(c, fiber.StatusOK, vm)
 }
 
 // update — POST /users/:id.
@@ -118,7 +126,7 @@ func (h *SSR) update(c fiber.Ctx) error {
 	vm.ID = c.Params("id")
 	_, err := h.svc.Update(c.Context(), actorOf(c), vm.ID, Input{
 		Login: vm.Login, Name: vm.Name, Role: vm.Role, Phone: vm.Phone, Password: c.FormValue("password"), IsActive: vm.IsActive,
-		Timezone: formTimezone(c),
+		Timezone: formTimezone(c), SupplierID: vm.SupplierID,
 	})
 	if errors.Is(err, ErrUserNotFound) {
 		return h.status.NotFound(c)
@@ -137,6 +145,8 @@ func formFrom(c fiber.Ctx) FormVM {
 		Phone:    c.FormValue("phone"),
 		IsActive: c.FormValue("is_active") == "on",
 		Timezone: c.FormValue("timezone"),
+		// Поле «Поставщик» имеет смысл только у роли supplier (скрыто у прочих ролей).
+		SupplierID: c.FormValue("supplier_id"),
 	}
 }
 
@@ -182,12 +192,26 @@ func (h *SSR) renderForm(c fiber.Ctx, status int, vm FormVM) error {
 		vm.Timezone = timezone.Default
 	}
 	vm.Timezones = timezone.Options(time.Now(), vm.Timezone)
+	sups, err := h.svc.ActiveSuppliers(c.Context())
+	if err != nil {
+		return err
+	}
+	vm.Suppliers = sups
 	c.Status(status)
 	return h.r.Page(c, "form", vm)
 }
 
 // fieldText — код ошибки поля → текст под полем.
 func fieldText(field, code string) string {
+	if field == "supplier_id" {
+		switch code {
+		case msgRequired:
+			return "Выберите поставщика"
+		case msgNotAllowed:
+			return "Поставщик указывается только для роли «Поставщик»"
+		}
+		return "Поставщик недоступен"
+	}
 	if field == "timezone" {
 		if code == msgRequired {
 			return "Выберите часовой пояс"

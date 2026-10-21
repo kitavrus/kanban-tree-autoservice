@@ -16,6 +16,9 @@ type User struct {
 	Role         string
 	IsActive     bool
 	Timezone     string // имя IANA (DS-031)
+	// SupplierID — привязка учётки роли supplier к записи справочника поставщиков
+	// (purchase-orders DS-007); "" у admin/executor.
+	SupplierID string
 }
 
 type Repo struct {
@@ -26,11 +29,11 @@ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
 
 var ErrNotFound = pgx.ErrNoRows
 
-const userColumns = `id, login, password_hash, name, role, is_active, timezone`
+const userColumns = `id, login, password_hash, name, role, is_active, timezone, COALESCE(supplier_id::text, '')`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	if err := row.Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name, &u.Role, &u.IsActive, &u.Timezone); err != nil {
+	if err := row.Scan(&u.ID, &u.Login, &u.PasswordHash, &u.Name, &u.Role, &u.IsActive, &u.Timezone, &u.SupplierID); err != nil {
 		return nil, err
 	}
 	return &u, nil

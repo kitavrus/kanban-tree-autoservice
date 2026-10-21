@@ -7,6 +7,7 @@
     <option value="">Все роли</option>
     <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
     <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
+    <option value="supplier"{{ if eq .Role "supplier" }} selected{{ end }}>Поставщик</option>
   </select>
   <select class="form-select" style="max-width:200px" name="status" aria-label="Статус" data-testid="filter-status" onchange="this.form.submit()">
     <option value="">Любой статус</option>
@@ -31,7 +32,7 @@
         </div>
       </td>
       <td>{{ .Login }}</td>
-      <td>{{ if eq .Role "admin" }}Администратор{{ else }}Исполнитель{{ end }}</td>
+      <td>{{ if eq .Role "admin" }}Администратор{{ else if eq .Role "supplier" }}Поставщик ({{ .SupplierName }}){{ else }}Исполнитель{{ end }}</td>
       <td class="d-none d-md-table-cell">{{ .Phone }}</td>
       <td class="text-end" data-testid="user-active-tasks">{{ with .ActiveTasks }}{{ . }}{{ else }}0{{ end }}</td>
     </tr>

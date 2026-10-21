@@ -84,3 +84,28 @@ func TestShellBuilder_NoBadgeSource_BadgeZero(t *testing.T) {
 		}
 	}
 }
+
+// purchase-orders DS-018: у поставщика свой сайдбар «Заказы» без разделов мастерской и бейджей.
+func TestShellBuilder_SupplierMenu(t *testing.T) {
+	c := newShellTestCtx(t, "/supplier/orders")
+	c.Locals(LocalViewer, Viewer{Name: "Ерлан", Role: RoleSupplier})
+	b := NewShellBuilder("/", "/stock", "/purchases").WithBadges(fakeBadgeSource{badges: map[string]int{"/stock": 5}})
+	sh := b.Build(c, "Заказы")
+	assert.True(t, sh.IsSupplier)
+	assert.False(t, sh.IsAdmin)
+	require.Len(t, sh.Menu, 1)
+	require.Len(t, sh.Menu[0].Items, 1)
+	assert.Equal(t, "/supplier/orders", sh.Menu[0].Items[0].URL)
+	assert.True(t, sh.NavActive("/supplier/orders"))
+
+	// Сотрудник видит «Закупки» (обе роли, DS-073).
+	c2 := newShellTestCtx(t, "/purchases")
+	c2.Locals(LocalViewer, Viewer{Name: "Исп", Role: "executor"})
+	found := false
+	for _, g := range b.Build(c2, "Закупки").Menu {
+		for _, it := range g.Items {
+			found = found || it.URL == "/purchases"
+		}
+	}
+	assert.True(t, found)
+}

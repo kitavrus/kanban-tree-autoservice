@@ -18,13 +18,15 @@ const (
 	KindServices          Kind = "services"
 	KindCatalogCategories Kind = "catalog-categories"
 	KindSuppliers         Kind = "suppliers"
+	// KindPurchaseOrders — черновики закупок (purchase-orders DS-037, DS-072).
+	KindPurchaseOrders Kind = "purchase-orders"
 )
 
 // Kinds — реестр видов (DS-001), порядок — порядок вкладок раздела. Вид, чей источник ещё не
 // подключён (его часть мастер-спеки не смержена), отдаёт пустой список и счётчик 0.
 var Kinds = []Kind{
 	KindTasks, KindColumns, KindClients, KindEquipment, KindProducts,
-	KindServices, KindCatalogCategories, KindSuppliers,
+	KindServices, KindCatalogCategories, KindSuppliers, KindPurchaseOrders,
 }
 
 // IsKind — v входит в реестр.

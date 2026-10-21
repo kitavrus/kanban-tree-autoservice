@@ -15,15 +15,18 @@ import (
 )
 
 type User struct {
-	ID        string
-	Login     string
-	Name      string
-	Role      string
-	Phone     string
-	IsActive  bool
-	Timezone  string // имя IANA (DS-031)
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID       string
+	Login    string
+	Name     string
+	Role     string
+	Phone    string
+	IsActive bool
+	Timezone string // имя IANA (DS-031)
+	// SupplierID / SupplierName — привязка роли supplier (purchase-orders DS-007); "" — нет.
+	SupplierID   string
+	SupplierName string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 	// ActiveTasks — заполняется только в List (nil в остальных запросах).
 	ActiveTasks *int
 }
@@ -39,7 +42,10 @@ var (
 	errLoginTaken = errors.New("users: login taken")
 )
 
-const columns = `id, login, name, role, phone, is_active, timezone, created_at, updated_at`
+const columns = `id, login, name, role, phone, is_active, timezone,
+  COALESCE(users.supplier_id::text, ''),
+  COALESCE((SELECT s.name FROM suppliers s WHERE s.id = users.supplier_id), ''),
+  created_at, updated_at`
 
 // activeTasksSQL — «Активных заказов» в списке сотрудников (как в прототипе): заказы вне
 // финальной колонки, где сотрудник — ответственный заказа или исполнитель незавершённой
@@ -50,7 +56,7 @@ const activeTasksSQL = `(SELECT count(*) FROM tasks t JOIN columns c ON c.id = t
 
 func scan(row pgx.Row) (*User, error) {
 	var u User
-	if err := row.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.Timezone, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.Timezone, &u.SupplierID, &u.SupplierName, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &u, nil
@@ -105,7 +111,7 @@ func (r *Repo) List(ctx context.Context, p ListParams) ([]User, int, error) {
 	for rows.Next() {
 		var u User
 		var active int
-		if err := rows.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.Timezone, &u.CreatedAt, &u.UpdatedAt,
+		if err := rows.Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.Phone, &u.IsActive, &u.Timezone, &u.SupplierID, &u.SupplierName, &u.CreatedAt, &u.UpdatedAt,
 			&active); err != nil {
 			return nil, 0, err
 		}
@@ -123,9 +129,9 @@ func (r *Repo) GetByID(ctx context.Context, id string) (*User, error) {
 // Create — timezone уже разрешён сервисом (не передан → пояс по умолчанию).
 func (r *Repo) Create(ctx context.Context, in Input, passwordHash, timezone string) (*User, error) {
 	u, err := scan(r.pool.QueryRow(ctx,
-		`INSERT INTO users (login, password_hash, name, role, phone, is_active, timezone)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+columns,
-		in.Login, passwordHash, in.Name, in.Role, in.Phone, in.IsActive, timezone))
+		`INSERT INTO users (login, password_hash, name, role, phone, is_active, timezone, supplier_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid) RETURNING `+columns,
+		in.Login, passwordHash, in.Name, in.Role, in.Phone, in.IsActive, timezone, in.SupplierID))
 	return u, mapUnique(err)
 }
 
@@ -165,10 +171,11 @@ func (r *Repo) Update(ctx context.Context, id string, in Input, passwordHash *st
 		   login = $2, name = $3, role = $4, phone = $5, is_active = $6,
 		   password_hash = COALESCE($7, password_hash),
 		   timezone = COALESCE($8, timezone),
+		   supplier_id = NULLIF($9, '')::uuid,
 		   version = version + 1, updated_at = now()
 		 WHERE id = $1::uuid
 		 RETURNING `+columns,
-		id, in.Login, in.Name, in.Role, in.Phone, in.IsActive, passwordHash, in.Timezone))
+		id, in.Login, in.Name, in.Role, in.Phone, in.IsActive, passwordHash, in.Timezone, in.SupplierID))
 	if err != nil {
 		return nil, nil, mapUnique(err)
 	}
@@ -197,4 +204,37 @@ func mapUnique(err error) error {
 		return errLoginTaken
 	}
 	return err
+}
+
+// SupplierAvailable — поставщик существует, активен и не удалён (purchase-orders §6.17).
+func (r *Repo) SupplierAvailable(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM suppliers WHERE id = $1::uuid AND is_active AND deleted_at IS NULL)`, id).Scan(&ok)
+	return ok, err
+}
+
+// SupplierOption — пункт выпадающего списка «Поставщик» формы сотрудника.
+type SupplierOption struct {
+	ID   string
+	Name string
+}
+
+// ActiveSuppliers — активные, не удалённые поставщики по алфавиту (форма §8.5).
+func (r *Repo) ActiveSuppliers(ctx context.Context) ([]SupplierOption, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id::text, name FROM suppliers WHERE is_active AND deleted_at IS NULL ORDER BY lower(name), id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SupplierOption{}
+	for rows.Next() {
+		var o SupplierOption
+		if err := rows.Scan(&o.ID, &o.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
 }

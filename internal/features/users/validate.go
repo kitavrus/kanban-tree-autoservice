@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 	"github.com/kitavrus/kanban-tree/pkg/timezone"
 )
@@ -13,7 +15,12 @@ import (
 const (
 	RoleAdmin    = "admin"
 	RoleExecutor = "executor"
+	// RoleSupplier — учётка поставщика (purchase-orders DS-007): кабинет /supplier/*.
+	RoleSupplier = "supplier"
 )
+
+// validRole — роль из трёх значений (purchase-orders §4.3).
+func validRole(r string) bool { return r == RoleAdmin || r == RoleExecutor || r == RoleSupplier }
 
 // Коды ошибок полей (details.fields[].message) — клиент переводит их в текст.
 const (
@@ -22,6 +29,10 @@ const (
 	msgTooLong       = "too_long"
 	msgInvalidFormat = "invalid_format"
 	msgInvalid       = "invalid"
+	// supplier_id (purchase-orders §6.17): поставщик в архиве/удалён/не найден; указан у
+	// роли, отличной от supplier.
+	msgUnavailable = "unavailable"
+	msgNotAllowed  = "not_allowed"
 )
 
 // Границы полей.
@@ -52,6 +63,8 @@ type Input struct {
 	// Timezone — имя IANA; nil — не передан: при создании пояс по умолчанию, при правке
 	// колонка не трогается (DS-056).
 	Timezone *string
+	// SupplierID — поставщик учётки роли supplier; "" — не задан (purchase-orders DS-007).
+	SupplierID string
 }
 
 // normalize — trim, логин в нижний регистр (вход регистронезависимый).
@@ -60,6 +73,7 @@ func (in Input) normalize() Input {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Role = strings.TrimSpace(in.Role)
 	in.Phone = strings.TrimSpace(in.Phone)
+	in.SupplierID = strings.TrimSpace(in.SupplierID)
 	return in
 }
 
@@ -84,8 +98,18 @@ func (in Input) validate(passwordRequired bool) []errorspkg.Field {
 	case n > nameMax:
 		add("name", msgTooLong)
 	}
-	if in.Role != RoleAdmin && in.Role != RoleExecutor {
+	if !validRole(in.Role) {
 		add("role", msgInvalid)
+	}
+	// purchase-orders §6.17: supplier ⇔ supplier_id. Существование/активность поставщика
+	// проверяет сервис (нужна БД); здесь — только формат.
+	switch {
+	case in.Role == RoleSupplier && in.SupplierID == "":
+		add("supplier_id", msgRequired)
+	case in.Role == RoleSupplier && uuid.Validate(in.SupplierID) != nil:
+		add("supplier_id", msgUnavailable)
+	case in.Role != RoleSupplier && validRole(in.Role) && in.SupplierID != "":
+		add("supplier_id", msgNotAllowed)
 	}
 	switch {
 	case utf8.RuneCountInString(in.Phone) > phoneMax:

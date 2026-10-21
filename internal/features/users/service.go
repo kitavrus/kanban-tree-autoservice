@@ -75,7 +75,7 @@ func (s *Service) List(ctx context.Context, q ListQuery) (*ListResponse, error) 
 		order = "DESC"
 	}
 	role := q.Role
-	if role != RoleAdmin && role != RoleExecutor {
+	if !validRole(role) {
 		role = ""
 	}
 	items, total, err := s.repo.List(ctx, ListParams{
@@ -112,6 +112,9 @@ func (s *Service) Create(ctx context.Context, in Input) (*UserResponse, error) {
 	if f := in.validate(true); len(f) > 0 {
 		return nil, errorspkg.Validation(f...)
 	}
+	if err := s.checkSupplier(ctx, in); err != nil {
+		return nil, err
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
@@ -146,6 +149,9 @@ func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input) 
 	in = in.normalize()
 	if f := in.validate(false); len(f) > 0 {
 		return nil, errorspkg.Validation(f...)
+	}
+	if err := s.checkSupplier(ctx, in); err != nil {
+		return nil, err
 	}
 	var hash *string
 	if in.Password != "" {
@@ -219,7 +225,34 @@ func (s *Service) SetTimezone(ctx context.Context, userID, tz string) (*Timezone
 	return &TimezoneResponse{Timezone: tz}, nil
 }
 
+// checkSupplier — у роли supplier поставщик существует, активен и не удалён
+// (purchase-orders §6.17): иначе 400 supplier_id: unavailable.
+func (s *Service) checkSupplier(ctx context.Context, in Input) error {
+	if in.Role != RoleSupplier {
+		return nil
+	}
+	ok, err := s.repo.SupplierAvailable(ctx, in.SupplierID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errorspkg.Validation(errorspkg.Field{Name: "supplier_id", Message: msgUnavailable})
+	}
+	return nil
+}
+
+// ActiveSuppliers — пункты выпадающего списка «Поставщик» формы сотрудника (§8.5).
+func (s *Service) ActiveSuppliers(ctx context.Context) ([]SupplierOption, error) {
+	return s.repo.ActiveSuppliers(ctx)
+}
+
 func toResponse(u User) UserResponse {
-	return UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone,
-		IsActive: u.IsActive, Timezone: u.Timezone, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt, ActiveTasks: u.ActiveTasks}
+	r := UserResponse{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, Phone: u.Phone,
+		IsActive: u.IsActive, Timezone: u.Timezone, SupplierName: u.SupplierName,
+		CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt, ActiveTasks: u.ActiveTasks}
+	if u.SupplierID != "" {
+		id := u.SupplierID
+		r.SupplierID = &id
+	}
+	return r
 }

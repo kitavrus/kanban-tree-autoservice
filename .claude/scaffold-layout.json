@@ -1,0 +1,9 @@
+{
+  "backend_feature_root": "internal/features/{feature}",
+  "migrations_dir": "migrations",
+  "frontend_feature_root": "frontend/src/features/{feature}",
+  "e2e_dir": "e2e",
+  "errorspkg_dir": "pkg/errorspkg",
+  "frontend_list_component": "components/{Entity}List.vue",
+  "frontend_form_component": "components/{Entity}Form.vue"
+}

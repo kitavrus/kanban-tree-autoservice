@@ -19,8 +19,21 @@
         <select id="role" name="role" class="form-select{{ if index .Errors "role" }} is-invalid{{ end }}" data-testid="role">
           <option value="executor"{{ if eq .Role "executor" }} selected{{ end }}>Исполнитель</option>
           <option value="admin"{{ if eq .Role "admin" }} selected{{ end }}>Администратор</option>
+          <option value="supplier"{{ if eq .Role "supplier" }} selected{{ end }}>Поставщик</option>
         </select>
         {{ with index .Errors "role" }}<div class="invalid-feedback d-block" data-testid="error-role">{{ . }}</div>{{ end }}
+      </div>
+    </div>
+    <!-- Поставщик (purchase-orders §8.5): виден и обязателен только у роли «Поставщик». -->
+    <div class="row g-3 mb-3" data-supplier-row{{ if ne .Role "supplier" }} hidden{{ end }}>
+      <div class="col-sm-6">
+        <label for="supplier_id" class="form-label">Поставщик *</label>
+        <select id="supplier_id" name="supplier_id" class="form-select{{ if index .Errors "supplier_id" }} is-invalid{{ end }}" data-native data-testid="user-supplier">
+          <option value="">— выберите —</option>
+          {{ range .Suppliers }}<option value="{{ .ID }}"{{ if eq .ID $.SupplierID }} selected{{ end }}>{{ .Name }}</option>
+          {{ end }}
+        </select>
+        {{ with index .Errors "supplier_id" }}<div class="invalid-feedback d-block" data-testid="error-supplier_id">{{ . }}</div>{{ end }}
       </div>
     </div>
     <div class="row g-3 mb-3">
@@ -55,4 +68,15 @@
     </div>
   </div>
 </form>
+<script>
+(function () {
+  var role = document.getElementById('role');
+  var row = document.querySelector('[data-supplier-row]');
+  if (!role || !row) return;
+  role.addEventListener('change', function () {
+    row.hidden = role.value !== 'supplier';
+    if (row.hidden) document.getElementById('supplier_id').value = '';
+  });
+})();
+</script>
 {{ end }}

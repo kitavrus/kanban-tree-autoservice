@@ -1,0 +1,36 @@
+{{ define "content" }}
+<!-- §8.7 Кабинет поставщика: карточка (supplier-orders.js). Ответ сохраняется построчно по blur
+     (DS-063); итог и «Собрано» закреплены внизу на телефоне. -->
+{{ if .ID }}
+<div id="so-view" class="so-root so-view" data-so-page="view" data-so-id="{{ .ID }}" data-testid="so-view-root">
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+    <h2 class="h4 mb-0" id="so-number" data-testid="so-number"></h2>
+    <span class="badge" id="so-status" data-testid="so-status"></span>
+  </div>
+  <div class="small text-body-secondary mb-2" id="so-sent" data-testid="so-sent"></div>
+  <div class="small mb-3 text-break" data-testid="so-firm">{{ .FirmName }}{{ if .FirmPhone }} · <a href="tel:{{ .FirmPhone }}">{{ .FirmPhone }}</a>{{ end }}</div>
+  <div class="card mb-3 d-none" id="so-note" data-testid="so-note">
+    <div class="card-body py-2">
+      <span class="badge text-bg-warning d-none" id="so-note-changed" data-testid="so-note-changed">Изменено</span>
+      <div class="text-break" id="so-note-text"></div>
+    </div>
+  </div>
+  <div id="so-items" data-testid="so-items"></div>
+  <div class="so-footer" id="so-footer">
+    <div class="d-flex align-items-center gap-2 mb-2">
+      <span class="text-body-secondary">Итого:</span>
+      <span class="fw-semibold" id="so-total" data-testid="so-total">—</span>
+      <a class="btn btn-sm btn-outline-secondary ms-auto" href="/supplier/orders/{{ .ID }}/print" data-testid="so-print">Печать</a>
+    </div>
+    <button type="button" class="btn btn-primary btn-lg w-100 d-none" id="so-ready" data-testid="so-ready">Собрано, можно забирать</button>
+  </div>
+</div>
+{{ else }}
+<div class="empty-state" data-testid="so-not-found">
+  <div class="mb-3">Заказ не найден</div>
+  <a href="/supplier/orders" class="btn btn-outline-secondary" data-testid="so-back">К списку</a>
+</div>
+{{ end }}
+{{ end }}
+
+{{ define "scripts" }}{{ if .ID }}<script src="/assets/ssr-shared/js/supplier-orders.js"></script>{{ end }}{{ end }}

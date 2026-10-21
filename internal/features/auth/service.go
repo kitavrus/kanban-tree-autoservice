@@ -114,5 +114,5 @@ func (s *Service) Principal(ctx context.Context, id string) (*middleware.Princip
 	if err != nil {
 		return nil, err
 	}
-	return &middleware.Principal{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, IsActive: u.IsActive, Timezone: u.Timezone}, nil
+	return &middleware.Principal{ID: u.ID, Login: u.Login, Name: u.Name, Role: u.Role, IsActive: u.IsActive, Timezone: u.Timezone, SupplierID: u.SupplierID}, nil
 }

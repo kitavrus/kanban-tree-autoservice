@@ -1,0 +1,51 @@
+{{ define "content" }}
+<!-- §8.2 «Новый заказ»: получатели — из SSR, дефицит — GET /api/v1/purchase-orders/suggestions
+     (purchases.js); «Сохранить черновик» — POST /api/v1/purchase-orders. -->
+<div id="po-new" class="mw-1100" data-po-page="new" data-testid="po-new-root">
+  <div class="row g-3 mb-3">
+    <div class="col-md-5">
+      <label for="po-supplier" class="form-label">Получатель *</label>
+      <select id="po-supplier" class="form-select" data-native data-testid="po-recipient">
+        <option value="" selected disabled>— выберите —</option>
+        <option value="bazaar">{{ .Bazaar }}</option>
+        {{ range .Suppliers }}<option value="{{ .ID }}">{{ .Name }}</option>
+        {{ end }}
+      </select>
+      <div class="invalid-feedback d-block" id="po-supplier-error" data-testid="po-error-supplier_id"></div>
+    </div>
+    <div class="col-md-7">
+      <label for="po-note" class="form-label">Примечание</label>
+      <textarea id="po-note" class="form-control" rows="2" maxlength="1000" data-testid="po-note"></textarea>
+      <div class="invalid-feedback d-block" id="po-note-error" data-testid="po-error-note"></div>
+    </div>
+  </div>
+  <div class="d-flex flex-wrap gap-3 mb-2">
+    <div class="form-check form-switch">
+      <input class="form-check-input" type="checkbox" role="switch" id="po-toggle-for_orders" checked data-testid="po-toggle-for_orders">
+      <label class="form-check-label" for="po-toggle-for_orders">Под заказы</label>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input" type="checkbox" role="switch" id="po-toggle-below_min" checked data-testid="po-toggle-below_min">
+      <label class="form-check-label" for="po-toggle-below_min">Ниже минимума</label>
+    </div>
+  </div>
+  <div class="table-responsive" id="po-lines-wrap">
+    <table class="table align-middle" data-testid="po-lines">
+      <thead><tr><th style="width:2.5rem"></th><th>Запчасть</th><th class="text-end">Остаток</th><th class="text-end">Минимум</th><th>Под заказы</th><th>Тип</th><th style="width:9rem">К заказу</th></tr></thead>
+      <tbody id="po-lines-body"></tbody>
+    </table>
+  </div>
+  <div class="empty-state d-none mb-3" id="po-lines-empty" data-testid="po-suggestions-empty">Дефицита нет — добавьте запчасти вручную</div>
+  <div class="mb-3" style="max-width:420px">
+    <label for="po-add" class="form-label">Добавить запчасть</label>
+    <input type="search" id="po-add" class="form-control" placeholder="Название или артикул" autocomplete="off" data-testid="po-add-product">
+  </div>
+  <div class="invalid-feedback d-block mb-2" id="po-items-error" data-testid="po-error-items"></div>
+  <div class="d-flex flex-wrap gap-2">
+    <a href="/purchases" class="btn btn-outline-secondary" data-testid="po-cancel-new">Отмена</a>
+    <button type="button" class="btn btn-primary ms-auto" id="po-save-draft" data-testid="po-save-draft">Сохранить черновик</button>
+  </div>
+</div>
+{{ end }}
+
+{{ define "scripts" }}<script src="/assets/ssr-shared/js/purchases.js"></script>{{ end }}

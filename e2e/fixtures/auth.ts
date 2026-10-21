@@ -28,11 +28,13 @@ export function todayYmd(tz = 'Asia/Almaty'): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
-export type Role = 'admin' | 'executor';
+// supplier — учётка поставщика (purchase-orders DS-007, TS-F3): обязателен supplier_id.
+export type Role = 'admin' | 'executor' | 'supplier';
 // timezone — часовой пояс IANA (user-timezone DS-031/DS-056): не передан при создании → Asia/Almaty,
 // не передан при правке → не меняется (internal/features/users/dto.go, §TD-6.2).
-export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean; timezone?: string };
-export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean; timezone: string };
+// supplier_id — поставщик учётки роли supplier, у прочих ролей null (purchase-orders §6.17).
+export type NewUser = { login: string; name: string; role: Role; phone?: string; password: string; is_active?: boolean; timezone?: string; supplier_id?: string | null };
+export type User = { id: string; login: string; name: string; role: Role; phone: string; is_active: boolean; timezone: string; supplier_id: string | null; supplier_name: string };
 /** GET /api/v1/auth/me и ответ входа (internal/features/auth/dto.go). */
 export type Me = { id: string; login: string; name: string; role: Role; timezone: string };
 /** PUT /api/v1/users/me/timezone — тело и ответ (internal/features/users/dto.go). */

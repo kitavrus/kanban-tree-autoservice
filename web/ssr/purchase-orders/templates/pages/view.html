@@ -1,0 +1,40 @@
+{{ define "content" }}
+<!-- §8.3 «Карточка заказа»: данные — GET /api/v1/purchase-orders/:id, кнопки по статусу
+     (purchases.js). -->
+<div id="po-view" class="mw-1100" data-po-page="view" data-po-id="{{ .ID }}" data-is-admin="{{ .IsAdmin }}" data-testid="po-view-root">
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <h2 class="h4 mb-0" id="po-number" data-testid="po-number"></h2>
+        <span class="badge" id="po-status-badge" data-testid="po-status"></span>
+      </div>
+      <div class="text-break" data-testid="po-recipient"><span id="po-recipient"></span> <span class="text-body-secondary" id="po-recipient-phone"></span></div>
+      <div class="small text-body-secondary" id="po-dates" data-testid="po-dates"></div>
+      <div class="alert alert-secondary py-2 mt-2 mb-0 d-none" id="po-cancel-reason" data-testid="po-cancel-reason"></div>
+    </div>
+  </div>
+  <div class="mb-3">
+    <label for="po-note" class="form-label">Примечание</label>
+    <textarea id="po-note" class="form-control" rows="2" maxlength="1000" data-testid="po-note"></textarea>
+    <div class="invalid-feedback d-block" id="po-note-error" data-testid="po-error-note"></div>
+  </div>
+  <div class="table-responsive">
+    <table class="table align-middle" data-testid="po-items">
+      <thead><tr id="po-items-head"></tr></thead>
+      <tbody id="po-items-body"></tbody>
+    </table>
+  </div>
+  <div class="text-end fw-semibold mb-3" id="po-total" data-testid="po-total"></div>
+  <div class="mb-3 d-none" style="max-width:420px" id="po-add-wrap">
+    <label for="po-add" class="form-label">Добавить запчасть</label>
+    <input type="search" id="po-add" class="form-control" placeholder="Название или артикул" autocomplete="off" data-testid="po-add-product">
+  </div>
+  <div class="invalid-feedback d-block mb-2" id="po-items-error" data-testid="po-error-items"></div>
+  <div class="d-flex flex-wrap gap-2" id="po-actions">
+    <a class="btn btn-outline-secondary" id="po-print" href="/purchases/{{ .ID }}/print" data-testid="po-print">Печать</a>
+    <div class="ms-auto d-flex flex-wrap gap-2" id="po-buttons"></div>
+  </div>
+</div>
+{{ end }}
+
+{{ define "scripts" }}<script src="/assets/ssr-shared/js/purchases.js"></script>{{ end }}

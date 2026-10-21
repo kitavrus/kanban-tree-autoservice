@@ -1,0 +1,558 @@
+{
+  "feature": "purchase-orders",
+  "depth": "full",
+  "go_module": "github.com/kitavrus/kanban-tree",
+  "tier": "L",
+  "compat": "MVP",
+  "entities": [
+    {
+      "name": "purchase_orders",
+      "table": "purchase_orders",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid"
+        },
+        {
+          "name": "number",
+          "type": "int64",
+          "auto": true
+        },
+        {
+          "name": "supplier_id",
+          "type": "uuid",
+          "fk": "suppliers(id)"
+        },
+        {
+          "name": "status",
+          "type": "enum:PurchaseOrdersStatus",
+          "auto": true,
+          "values": [
+            "draft",
+            "sent",
+            "ready",
+            "picked_up",
+            "cancelled"
+          ]
+        },
+        {
+          "name": "note",
+          "type": "text"
+        },
+        {
+          "name": "note_changed_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "version",
+          "type": "int64",
+          "auto": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "auto": true,
+          "fk": "users(id)"
+        },
+        {
+          "name": "created_at",
+          "type": "time"
+        },
+        {
+          "name": "updated_at",
+          "type": "time"
+        },
+        {
+          "name": "sent_by",
+          "type": "uuid",
+          "auto": true,
+          "fk": "users(id)"
+        },
+        {
+          "name": "sent_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "ready_by",
+          "type": "uuid",
+          "auto": true,
+          "fk": "users(id)"
+        },
+        {
+          "name": "ready_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "picked_up_by",
+          "type": "uuid",
+          "auto": true,
+          "fk": "users(id)"
+        },
+        {
+          "name": "picked_up_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "cancelled_by",
+          "type": "uuid",
+          "auto": true,
+          "fk": "users(id)"
+        },
+        {
+          "name": "cancelled_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "cancel_reason",
+          "type": "text"
+        },
+        {
+          "name": "deleted_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "deleted_by",
+          "type": "uuid",
+          "auto": true,
+          "fk": "users(id)"
+        },
+        {
+          "name": "delete_reason",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "name": "purchase_order_items",
+      "table": "purchase_order_items",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid"
+        },
+        {
+          "name": "order_id",
+          "type": "uuid",
+          "auto": true,
+          "fk": "purchase_orders(id)"
+        },
+        {
+          "name": "product_id",
+          "type": "uuid",
+          "required": true,
+          "fk": "products(id)"
+        },
+        {
+          "name": "position",
+          "type": "int",
+          "auto": true
+        },
+        {
+          "name": "qty",
+          "type": "numeric",
+          "required": true
+        },
+        {
+          "name": "reason",
+          "type": "text",
+          "auto": true
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "auto": true
+        },
+        {
+          "name": "sku",
+          "type": "text",
+          "auto": true
+        },
+        {
+          "name": "unit",
+          "type": "text",
+          "auto": true
+        },
+        {
+          "name": "supplier_qty",
+          "type": "numeric"
+        },
+        {
+          "name": "supplier_price",
+          "type": "numeric"
+        },
+        {
+          "name": "supplier_note",
+          "type": "text"
+        },
+        {
+          "name": "supplier_answered_by",
+          "type": "uuid",
+          "auto": true,
+          "fk": "users(id)"
+        },
+        {
+          "name": "supplier_answered_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "customer_changed_at",
+          "type": "time",
+          "auto": true
+        },
+        {
+          "name": "version",
+          "type": "int64",
+          "auto": true
+        }
+      ],
+      "parent": "purchase_orders"
+    }
+  ],
+  "statuses": {
+    "enum": "PurchaseOrdersStatus",
+    "transitions": {
+      "draft": [
+        "sent",
+        "picked_up",
+        "cancelled"
+      ],
+      "sent": [
+        "draft",
+        "ready",
+        "picked_up",
+        "cancelled"
+      ],
+      "ready": [
+        "picked_up",
+        "cancelled"
+      ]
+    },
+    "terminal": [
+      "picked_up",
+      "cancelled"
+    ]
+  },
+  "actions": [
+    "list",
+    "create",
+    "get_by_id",
+    "update",
+    "delete",
+    "send",
+    "recall",
+    "pick_up",
+    "cancel",
+    "print",
+    "ready"
+  ],
+  "routes_prefix": "/api/v1/purchase-orders",
+  "errors": [
+    {
+      "name": "Forbidden",
+      "http": 403,
+      "case": "403 FORBIDDEN"
+    },
+    {
+      "name": "PurchaseOrderNotFound",
+      "http": 404,
+      "case": "404 PURCHASE_ORDER_NOT_FOUND"
+    },
+    {
+      "name": "PurchaseOrderNotFound",
+      "http": 404,
+      "case": "executor, заказ создан другим"
+    },
+    {
+      "name": "PurchaseOrderVersionConflict",
+      "http": 409,
+      "case": "«Заказ изменился, обновите страницу»"
+    },
+    {
+      "name": "PurchaseOrderReadOnly",
+      "http": 409,
+      "case": "«Поставщик уже собрал заказ — правка недоступна»"
+    },
+    {
+      "name": "PurchaseOrderReadOnly",
+      "http": 409,
+      "case": "«Заказ закрыт — правка недоступна»"
+    },
+    {
+      "name": "PurchaseOrderReadOnly",
+      "http": 409,
+      "case": "«Заказ отменён — правка недоступна»"
+    },
+    {
+      "name": "Forbidden",
+      "http": 403,
+      "case": "«Удалять может только администратор»"
+    },
+    {
+      "name": "PurchaseOrderInvalidStatus",
+      "http": 409,
+      "case": "409 PURCHASE_ORDER_INVALID_STATUS"
+    },
+    {
+      "name": "PurchaseOrderNoSupplier",
+      "http": 409,
+      "case": "«Список на базар не отправляется — отметьте «Забрали»»"
+    },
+    {
+      "name": "PurchaseOrderEmpty",
+      "http": 409,
+      "case": "«Добавьте хотя бы одну строку»"
+    },
+    {
+      "name": "PurchaseOrderInvalidStatus",
+      "http": 409,
+      "case": "статус s:ready/s:picked_up/s:cancelled"
+    },
+    {
+      "name": "PurchaseOrderInvalidStatus",
+      "http": 409,
+      "case": "статус s:ready (поставщик успел нажать «Собрано»)"
+    },
+    {
+      "name": "PurchaseOrderInvalidStatus",
+      "http": 409,
+      "case": "статус s:draft/s:picked_up/s:cancelled"
+    },
+    {
+      "name": "PurchaseOrderNotReady",
+      "http": 409,
+      "case": "sent, у поставщика есть активный вход"
+    },
+    {
+      "name": "PurchaseOrderNotReady",
+      "http": 409,
+      "case": "«Сначала отправьте заказ поставщику»"
+    },
+    {
+      "name": "PurchaseOrderInvalidStatus",
+      "http": 409,
+      "case": "«Заказ уже закрыт — отмена недоступна»"
+    },
+    {
+      "name": "",
+      "http": 404,
+      "case": "заказа нет или executor открывает чужой"
+    },
+    {
+      "name": "Forbidden",
+      "http": 403,
+      "case": "«Раздел только для поставщиков»"
+    },
+    {
+      "name": "PurchaseOrderNotFound",
+      "http": 404,
+      "case": "чужой, черновик, отменён, удалён или нет"
+    },
+    {
+      "name": "PurchaseOrderNotFound",
+      "http": 404,
+      "case": "заказ или строка чужие или не найдены"
+    },
+    {
+      "name": "PurchaseOrderReadOnly",
+      "http": 409,
+      "case": "«Заказ уже отмечен «Собрано»»"
+    },
+    {
+      "name": "PurchaseOrderReadOnly",
+      "http": 409,
+      "case": "409 PURCHASE_ORDER_READ_ONLY"
+    },
+    {
+      "name": "PurchaseOrderReadOnly",
+      "http": 409,
+      "case": "заказ отозван или отменён (нет в кабинете)"
+    },
+    {
+      "name": "PurchaseItemVersionConflict",
+      "http": 409,
+      "case": "«Строку изменили, обновите страницу»"
+    },
+    {
+      "name": "PurchaseOrderNotFound",
+      "http": 404,
+      "case": "чужой, отозван, отменён или нет"
+    },
+    {
+      "name": "PurchaseOrderItemsIncomplete",
+      "http": 409,
+      "case": "«Заполните «Соберу» во всех строках» (+ details.item_ids)"
+    },
+    {
+      "name": "PurchaseOrderItemsIncomplete",
+      "http": 409,
+      "case": "«Укажите цену у строк, которые соберёте» (+ details.item_ids)"
+    },
+    {
+      "name": "",
+      "http": 403,
+      "case": "страница «Нет доступа»"
+    },
+    {
+      "name": "",
+      "http": 404,
+      "case": "чужой, черновик, отменён"
+    },
+    {
+      "name": "Forbidden",
+      "http": 403,
+      "case": "«Нет доступа» (as-is)"
+    },
+    {
+      "name": "SupplierHasOpenPurchases",
+      "http": 409,
+      "case": "«У поставщика есть незакрытые закупки: З-0012, З-0015»"
+    }
+  ],
+  "screens": {
+    "list": {
+      "filters": [
+        {
+          "field": "status",
+          "control": "select",
+          "values": [
+            "draft",
+            "sent",
+            "ready",
+            "picked_up",
+            "cancelled"
+          ]
+        }
+      ]
+    },
+    "form": {
+      "fields": [
+        "supplier_id",
+        "note"
+      ]
+    }
+  },
+  "components": [
+    "docs",
+    "backend",
+    "frontend"
+  ],
+  "tests": {
+    "e2e": [
+      {
+        "id": "TS-014",
+        "title": "Полный круг закупки у поставщика — экраны §8.2, §8.3, §8.6, §8.7 — DS-011, DS-008",
+        "source": "TS-014",
+        "negative": "«Собрано» с пустой строкой → строка подсвечена, статус s:sent"
+      },
+      {
+        "id": "TS-015",
+        "title": "Базар — экраны §8.2, §8.3, §8.4 — DS-058",
+        "source": "TS-015",
+        "negative": "POST send через API → 409"
+      },
+      {
+        "id": "TS-016",
+        "title": "Правка отправленного заказа — экраны §8.3, §8.7 — DS-034, DS-048",
+        "source": "TS-016",
+        "negative": "мы правим после «Собрано» → тост «Поставщик уже собрал заказ — правка недоступна»"
+      },
+      {
+        "id": "TS-017",
+        "title": "Отозвать и отправить снова — экраны §8.3, §8.6 — DS-035",
+        "source": "TS-017",
+        "negative": "«Отозвать» после «Собрано» → тост «Поставщик уже собрал заказ — отозвать нельзя»"
+      },
+      {
+        "id": "TS-018",
+        "title": "Отмена с причиной — экраны §8.3, §8.6 — DS-036, DS-041",
+        "source": "TS-018",
+        "negative": "прямой URL /supplier/orders/:id → «Заказ не найден»"
+      },
+      {
+        "id": "TS-019",
+        "title": "Подсказка «уже в открытом заказе» — экран §8.2 — DS-004, DS-049",
+        "source": "TS-019",
+        "negative": "запчасть только в черновике → подсказки нет, галочка стоит"
+      },
+      {
+        "id": "TS-020",
+        "title": "Поставщик заперт в кабинете — экраны §8.6, §8.7 — DS-017, DS-018",
+        "source": "TS-020",
+        "negative": "чужой заказ по URL → «Заказ не найден»"
+      },
+      {
+        "id": "TS-021",
+        "title": "Кабинет на телефоне — экран §8.7, вьюпорты 360×640 / 768 / 1280, светлая и тёмная темы — DS-031",
+        "source": "TS-021",
+        "negative": "длинное название запчасти не ломает вёрстку"
+      },
+      {
+        "id": "TS-022",
+        "title": "Экраны «Закупки» на узком экране — §8.1–§8.3, один вьюпорт ~360px — DS-031",
+        "source": "TS-022",
+        "negative": "длинное имя поставщика не выталкивает кнопки за край"
+      },
+      {
+        "id": "TS-023",
+        "title": "Учётка поставщика — экран §8.5 — DS-025, DS-044",
+        "source": "TS-023",
+        "negative": "executor открывает /users → 403-страница"
+      },
+      {
+        "id": "TS-024",
+        "title": "Executor видит только свои заказы — экраны §8.1, §8.3, §8.2 — DS-051, DS-060, DS-078",
+        "source": "TS-024",
+        "negative": "прямой POST cancel чужого → 404"
+      },
+      {
+        "id": "TS-025",
+        "title": "Архив поставщика с открытым заказом — существующий экран «Поставщики» — DS-043",
+        "source": "TS-025",
+        "negative": "после «Забрали» — архив проходит"
+      },
+      {
+        "id": "TS-026",
+        "title": "Удаление и восстановление черновика — экраны §8.3 и «Удалённые» — DS-037, DS-072",
+        "source": "TS-026",
+        "negative": "у отправленного заказа кнопки «Удалить» нет, API → 409"
+      }
+    ],
+    "fixtures": [
+      "Сид e2e (e2e/fixtures + Go-сид live-тестов): поставщик «АвтоДеталь Плюс» с активной учёткой supplier",
+      "Заказы-закупки в каждом статусе (draft / sent с частичным ответом / ready / picked_up / cancelled / ",
+      "Существующие хелперы входа e2e: добавить роль supplier; payload'ы хелперов типизировать wire-типами ",
+      "Существующие live-тесты, создающие пользователей (internal/features/users/_live_test.go), и проверки"
+    ]
+  },
+  "views": [
+    {
+      "kind": "list-with-items",
+      "menu": "Закупки → строка списка → карточка",
+      "parent_route": "/purchases",
+      "details": [
+        {
+          "feature": "purchase-orders",
+          "entity": "purchase_order_items",
+          "label": "Строки",
+          "fk": "order_id",
+          "columns": [
+            "name",
+            "sku",
+            "unit",
+            "qty",
+            "supplier_qty",
+            "supplier_price",
+            "supplier_note"
+          ]
+        }
+      ]
+    }
+  ]
+}

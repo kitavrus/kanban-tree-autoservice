@@ -60,6 +60,12 @@ func TestInput_Validate_Fields(t *testing.T) {
 		{"ФИО эмодзи допустимы", func(i *Input) { i.Name = "Пётр 🔧" }, true, "", ""},
 		{"роль мусор", func(i *Input) { i.Role = "root" }, true, "role", msgInvalid},
 		{"роль пусто", func(i *Input) { i.Role = "" }, true, "role", msgInvalid},
+		// purchase-orders §6.17 (TS-F4, DS-007): роль из трёх значений + supplier_id.
+		{"роль supplier с поставщиком", func(i *Input) { i.Role = RoleSupplier; i.SupplierID = "5a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d" }, true, "", ""},
+		{"роль supplier без поставщика", func(i *Input) { i.Role = RoleSupplier }, true, "supplier_id", msgRequired},
+		{"роль supplier, битый поставщик", func(i *Input) { i.Role = RoleSupplier; i.SupplierID = "x" }, true, "supplier_id", msgUnavailable},
+		{"executor с поставщиком", func(i *Input) { i.SupplierID = "5a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d" }, true, "supplier_id", msgNotAllowed},
+		{"admin с поставщиком", func(i *Input) { i.Role = RoleAdmin; i.SupplierID = "5a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d" }, true, "supplier_id", msgNotAllowed},
 		{"телефон буквы", func(i *Input) { i.Phone = "8-900-abc" }, true, "phone", msgInvalidFormat},
 		{"телефон 51", func(i *Input) { i.Phone = strings.Repeat("1", 51) }, true, "phone", msgTooLong},
 		{"пароль пуст при создании", func(i *Input) { i.Password = "" }, true, "password", msgRequired},
@@ -91,6 +97,9 @@ func TestInput_Validate_AllAtOnce(t *testing.T) {
 }
 
 func TestFieldText(t *testing.T) {
+	assert.Equal(t, "Выберите поставщика", fieldText("supplier_id", msgRequired))
+	assert.Equal(t, "Поставщик недоступен", fieldText("supplier_id", msgUnavailable))
+	assert.Equal(t, "Поставщик указывается только для роли «Поставщик»", fieldText("supplier_id", msgNotAllowed))
 	assert.Equal(t, "Минимум 8 символов", fieldText("password", msgTooShort))
 	assert.Equal(t, "Минимум 3 символа", fieldText("login", msgTooShort))
 	assert.Contains(t, fieldText("login", msgInvalidFormat), "латинские")

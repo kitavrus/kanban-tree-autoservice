@@ -120,7 +120,7 @@ func (h *Handler) LoginSubmit(c fiber.Ctx) error {
 		vm.Error = "Введите логин и пароль"
 		return h.renderLogin(c, fiber.StatusBadRequest, vm)
 	}
-	sid, _, err := h.svc.Login(c.Context(), vm.Login, password)
+	sid, u, err := h.svc.Login(c.Context(), vm.Login, password)
 	if err != nil {
 		var app *errorspkg.AppError
 		if errors.As(err, &app) && app.HTTP < fiber.StatusInternalServerError {
@@ -131,6 +131,11 @@ func (h *Handler) LoginSubmit(c fiber.Ctx) error {
 	}
 	if err := h.replaceSession(c, sid); err != nil {
 		return err
+	}
+	// Поставщик заперт в кабинете (purchase-orders DS-018): ?redirect= на любой иной раздел
+	// игнорируется — сразу в /supplier/orders.
+	if u != nil && u.Role == middleware.RoleSupplier && !middleware.SupplierSSRAllowed(vm.Redirect) {
+		return c.Redirect().Status(fiber.StatusSeeOther).To(middleware.SupplierHome)
 	}
 	return c.Redirect().Status(fiber.StatusSeeOther).To(vm.Redirect)
 }

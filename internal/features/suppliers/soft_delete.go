@@ -104,6 +104,10 @@ func (s *Service) Delete(ctx context.Context, a Actor, id string, in softdelete.
 	if len(fields) > 0 {
 		return nil, errorspkg.Validation(fields...)
 	}
+	// Удаление поставщика с незакрытыми закупками запрещено (purchase-orders §6.18, DS-043).
+	if err := s.repo.CheckNoOpenPurchases(ctx, id); err != nil {
+		return nil, err
+	}
 	at, err := s.repo.SoftDelete(ctx, id, a.ID, reason)
 	if errors.Is(err, ErrNotFound) {
 		return nil, ErrSupplierNotFound

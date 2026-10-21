@@ -20,6 +20,9 @@ type BadgeSource interface {
 // RoleAdmin — роль администратора (plan.md §2); остальные роли видят меню «Работа».
 const RoleAdmin = "admin"
 
+// RoleSupplier — учётка поставщика (purchase-orders DS-018): свой упрощённый сайдбар.
+const RoleSupplier = "supplier"
+
 // LocalViewer — Locals-ключ текущего пользователя для layout. Кладёт auth-middleware
 // (фаза 2); нет значения — гость: меню строится без admin-пунктов, блок пользователя скрыт.
 const LocalViewer = "ssr_viewer"
@@ -54,6 +57,8 @@ type Shell struct {
 	ActivePath string
 	User       Viewer
 	IsAdmin    bool
+	// IsSupplier — кабинет поставщика: сайдбар «Заказы / Выход» (purchase-orders DS-018).
+	IsSupplier bool
 	// CSRFToken — формы отдают полем _csrf, fetch — заголовком X-Csrf-Token
 	// (скрипты берут из <meta name="csrf-token">).
 	CSRFToken string
@@ -88,6 +93,16 @@ func (b ShellBuilder) Build(c fiber.Ctx, title string) Shell {
 	token, _ := c.Locals(LocalCSRFToken).(string)
 	isAdmin := v.Role == RoleAdmin
 	v.Timezone = ViewerTimezone(c)
+	if v.Role == RoleSupplier {
+		return Shell{
+			Title:      title,
+			Menu:       SupplierMenu(),
+			ActivePath: c.Path(),
+			User:       v,
+			IsSupplier: true,
+			CSRFToken:  token,
+		}
+	}
 	var badges map[string]int
 	if b.src != nil {
 		badges = b.src.NavBadges(c.Context())

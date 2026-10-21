@@ -1,0 +1,24 @@
+{{ define "content" }}
+<!-- §8.6 Кабинет поставщика: список (supplier-orders.js поверх GET /api/v1/supplier/purchase-orders).
+     Телефон в первую очередь: карточки, на широком экране — те же карточки сеткой. -->
+<div id="so-list" class="so-root" data-so-page="list" data-testid="so-list-root">
+  {{ template "so-firm" . }}
+  <ul class="nav nav-pills flex-nowrap overflow-auto mb-3" id="so-tabs" role="tablist" data-testid="so-tabs">
+    <li class="nav-item"><button type="button" class="nav-link active" data-status="" data-testid="so-tab-all">Все</button></li>
+    <li class="nav-item"><button type="button" class="nav-link" data-status="sent" data-testid="so-tab-sent">Новые</button></li>
+    <li class="nav-item"><button type="button" class="nav-link" data-status="ready" data-testid="so-tab-ready">Собраны</button></li>
+    <li class="nav-item"><button type="button" class="nav-link" data-status="picked_up" data-testid="so-tab-picked_up">Забрали</button></li>
+  </ul>
+  <div class="row g-2" id="so-cards" data-testid="so-cards"></div>
+  <div class="empty-state d-none" id="so-empty" data-testid="so-empty">Новых заказов нет</div>
+</div>
+{{ end }}
+
+{{ define "so-firm" }}{{ if or .FirmName .FirmPhone }}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3" data-testid="so-firm">
+  <div class="fw-semibold text-break">{{ .FirmName }}</div>
+  {{ if .FirmPhone }}<a class="btn btn-sm btn-outline-success ms-auto" href="tel:{{ .FirmPhone }}" data-testid="so-call">📞 Позвонить</a>{{ end }}
+</div>
+{{ end }}{{ end }}
+
+{{ define "scripts" }}<script src="/assets/ssr-shared/js/supplier-orders.js"></script>{{ end }}
