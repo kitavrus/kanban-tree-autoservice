@@ -19,11 +19,15 @@ const TEXTS = [
   'a\u0000b', '‮обратный', 'строка\nперенос', ...XSS,
 ];
 
-/** 2xx либо 400 с details.fields[]; 409 (конфликт статуса/версии) допустим как бизнес-отказ. */
-function expectSane(r: { status: number; body: unknown }, what: string) {
+/** 2xx либо 400, никогда 5xx; 409 (конфликт статуса/версии) допустим как бизнес-отказ.
+ *  400 по канону pkg/errorspkg: значение поля вне правил → VALIDATION с details.fields[];
+ *  структурно битое тело (неверный JSON-тип поля, не декодируется) → BAD_REQUEST «invalid body»
+ *  (as-is всех фич: c.Bind().Body/decode → errorspkg.BadRequest; §3 «Формат ошибок», DS-065). */
+function expectSane(r: { status: number; body: unknown }, what: string, opts: { structural?: boolean } = {}) {
   expect(r.status, `${what}: ${JSON.stringify(r.body)}`).toBeLessThan(500);
   if (r.status === 400) {
     const e = r.body as PoError;
+    if (opts.structural && e.code === 'BAD_REQUEST') return;
     expect(e.code, what).toBe('VALIDATION');
     expect(e.details?.fields?.length ?? 0, `${what}: details.fields[]`).toBeGreaterThan(0);
   }
@@ -49,7 +53,7 @@ test.describe('FUZZ purchase-orders', () => {
     }
     // мусорные типы полей и тела
     for (const body of [{ items: 'x' }, { supplier_id: 5, items: [] }, { items: [{ product_id: p.id, qty: true }] }, { items: [{ product_id: null, qty: null }] }]) {
-      expectSane(await po.admin.raw('POST', '/api/v1/purchase-orders', body), `body ${JSON.stringify(body)}`);
+      expectSane(await po.admin.raw('POST', '/api/v1/purchase-orders', body), `body ${JSON.stringify(body)}`, { structural: true });
     }
   });
 

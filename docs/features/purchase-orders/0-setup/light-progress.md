@@ -50,3 +50,8 @@
 - [x] Go-fuzz: validators/validators_fuzz_test.go — FuzzParseQty, FuzzValidateAnswer, FuzzValidateCreate, FuzzValidateReason по 10s — PASS
 - [x] swagger: swag-аннотации только у 15 новых эндпоинтов + шапка в cmd/server/main.go; make swagger → docs/swagger/{docs.go,swagger.json,swagger.yaml} (12 путей); go.mod += github.com/swaggo/swag v1.16.4
 - [x] self-check: go build ok; go vet ok; go test ./... 21 ok/0 fail; integration purchase-orders/... ok; playwright --list 22 теста; tsc чисто
+
+## FIX-LOOP 2
+- [x] fuzz `{"items":"x"}`: канон проекта — недекодируемое/неверно типизированное тело → 400 BAD_REQUEST (errorspkg.BadRequest «invalid body», as-is всех фич); инвариант fuzz-спеки: VALIDATION+fields для значений, BAD_REQUEST допустим для структурно битых тел, никогда 5xx
+- [x] flaky LOGIN_TAKEN: корень e2e/fixtures/test.ts uniq — testId.slice(0,6) = хэш ФАЙЛА (Playwright testId = fileId-хэш), логины тестов одной спеки на одном воркере совпадали; теперь хэш теста + суффикс retry
+- [x] self-check: playwright --list 22 (файлы фичи) / 213 (все); tsc чисто

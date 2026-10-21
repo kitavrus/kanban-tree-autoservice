@@ -1,5 +1,5 @@
 # Review Bundle: purchase-orders — CHECKS-FAILED
-**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** d3e09c0 | **Generated:** 2026-10-22 01:59 | diff: 122 files changed, 23464 insertions(+), 66 deletions(-)
+**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 2345f07 | **Generated:** 2026-10-22 02:00 | diff: 122 files changed, 23457 insertions(+), 66 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -16,7 +16,7 @@
 | fixture_sync | ✅ | 0 | — |
 | e2e_mode | ✅ | 0 | — |
 | rule_usage | ✅ | 0 | — |
-| e2e_drift | ❌ | 1 | e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 13 id, code: 12 в 2 файлах, проблем: 1)<br>DRIFT: TS-021 есть в design-e2e-strategy.md, теста test('TS-021: …') нет (сценарий без теста) |
+| e2e_drift | ✅ | 0 | — |
 
 ## Diff по линзам
 | Линза | Файлов | Patch |
@@ -343,7 +343,7 @@
 ## Инвентарь доков (точечный grep разрешён, полное чтение — нет)
 - draft-spec.md — 155KB
 - 0-setup/draft-spec.slice-light.md — 136KB
-- 8-code-review/input-bundle.md — 46KB
+- 8-code-review/input-bundle.md — 45KB
 - 0-setup/passport.md — 22KB
 - 7-executing/scaffold-manifest.json — 15KB
 - 0-setup/idioms.md — 14KB

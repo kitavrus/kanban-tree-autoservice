@@ -64,9 +64,14 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
     { scope: 'worker' },
   ],
 
+  // testId = «<fileId>-<хэш теста>»: первые символы — хэш ФАЙЛА, общий для всех тестов спеки,
+  // поэтому берётся часть после «-» (иначе тесты одной спеки на одном воркере получали одинаковые
+  // логины и LOGIN_TAKEN — пользователи не удаляются, ADR-007). Повтор (retry) — свой суффикс.
   uniq: async ({}, use, testInfo) => {
     let n = 0;
-    await use((name) => `e2e-${RUN}-${testInfo.workerIndex}-${testInfo.testId.slice(0, 6)}-${n++}-${name}`.toLowerCase());
+    const testHash = testInfo.testId.split('-').pop()!.slice(0, 6);
+    const retry = testInfo.retry > 0 ? `r${testInfo.retry}` : '';
+    await use((name) => `e2e-${RUN}-${testInfo.workerIndex}-${testHash}${retry}-${n++}-${name}`.toLowerCase());
   },
 
   makeUser: async ({ adminApi }, use) => {
