@@ -1,5 +1,5 @@
 # Review Bundle: purchase-orders — CHECKS-FAILED
-**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 2345f07 | **Generated:** 2026-10-22 02:00 | diff: 122 files changed, 23457 insertions(+), 66 deletions(-)
+**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 6c112b1 | **Generated:** 2026-10-22 02:12 | diff: 125 files changed, 23485 insertions(+), 67 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -22,10 +22,10 @@
 | Линза | Файлов | Patch |
 |---|---|---|
 | backend | 51 | 8-code-review/diff-backend.patch |
-| e2e | 7 | 8-code-review/diff-e2e.patch |
+| e2e | 8 | 8-code-review/diff-e2e.patch |
 | migrations | 2 | 8-code-review/diff-migrations.patch |
 | other | 13 | 8-code-review/diff-other.patch |
-| docs | 49 | — (артефакты, не ревьюятся построчно) |
+| docs | 51 | — (артефакты, не ревьюятся построчно) |
 
 ### backend
 - `M` cmd/server/main.go
@@ -84,6 +84,7 @@
 - `M` e2e/fixtures/auth.ts
 - `M` e2e/fixtures/board-types.ts
 - `A` e2e/fixtures/purchase-orders.ts
+- `M` e2e/fixtures/test.ts
 - `A` e2e/pages/PurchaseOrdersPage.ts
 - `M` e2e/pages/UsersPage.ts
 - `A` e2e/tests/fuzz/purchase-orders_fuzz.spec.ts
@@ -151,6 +152,8 @@
 - `A` docs/features/purchase-orders/8-code-review/input-bundle.md
 - `A` docs/features/purchase-orders/8-code-review/output.md
 - `A` docs/features/purchase-orders/9-validation/evidence/.gitkeep
+- `A` docs/features/purchase-orders/9-validation/evidence/e2e-run.txt
+- `A` docs/features/purchase-orders/9-validation/evidence/last-run.json
 - `A` docs/features/purchase-orders/9-validation/output.md
 - `A` docs/features/purchase-orders/draft-spec-decisions.md
 - `A` docs/features/purchase-orders/draft-spec-flow.svg
@@ -349,7 +352,7 @@
 - 0-setup/idioms.md — 14KB
 - draft-spec-decisions.md — 8KB
 - 7-executing/scaffold-errors-snippet.md — 7KB
-- 0-setup/light-progress.md — 3KB
+- 0-setup/light-progress.md — 4KB
 - 3-design/design-e2e-strategy.md — 2KB
 - 0-setup/pipeline-state.md — 0KB
 - 3-design/design-errors.md — 0KB

@@ -257,6 +257,26 @@ index 0000000..3d7fc75
 +});
 +
 +export { expect };
+diff --git a/e2e/fixtures/test.ts b/e2e/fixtures/test.ts
+index c439d15..12ffdb2 100644
+--- a/e2e/fixtures/test.ts
++++ b/e2e/fixtures/test.ts
+@@ -64,9 +64,14 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
+     { scope: 'worker' },
+   ],
+ 
++  // testId = «<fileId>-<хэш теста>»: первые символы — хэш ФАЙЛА, общий для всех тестов спеки,
++  // поэтому берётся часть после «-» (иначе тесты одной спеки на одном воркере получали одинаковые
++  // логины и LOGIN_TAKEN — пользователи не удаляются, ADR-007). Повтор (retry) — свой суффикс.
+   uniq: async ({}, use, testInfo) => {
+     let n = 0;
+-    await use((name) => `e2e-${RUN}-${testInfo.workerIndex}-${testInfo.testId.slice(0, 6)}-${n++}-${name}`.toLowerCase());
++    const testHash = testInfo.testId.split('-').pop()!.slice(0, 6);
++    const retry = testInfo.retry > 0 ? `r${testInfo.retry}` : '';
++    await use((name) => `e2e-${RUN}-${testInfo.workerIndex}-${testHash}${retry}-${n++}-${name}`.toLowerCase());
+   },
+ 
+   makeUser: async ({ adminApi }, use) => {
 diff --git a/e2e/pages/PurchaseOrdersPage.ts b/e2e/pages/PurchaseOrdersPage.ts
 new file mode 100644
 index 0000000..3470bf6
@@ -398,10 +418,10 @@ index 1d9bf3b..496fd85 100644
      await this.timezone.click();
 diff --git a/e2e/tests/fuzz/purchase-orders_fuzz.spec.ts b/e2e/tests/fuzz/purchase-orders_fuzz.spec.ts
 new file mode 100644
-index 0000000..28a33e5
+index 0000000..f0e6073
 --- /dev/null
 +++ b/e2e/tests/fuzz/purchase-orders_fuzz.spec.ts
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,108 @@
 +import { test, expect, type PoError, type PoOrder } from '../../fixtures/purchase-orders';
 +import { PurchaseOrdersPage } from '../../pages/PurchaseOrdersPage';
 +
@@ -423,11 +443,15 @@ index 0000000..28a33e5
 +  'a\u0000b', '‮обратный', 'строка\nперенос', ...XSS,
 +];
 +
-+/** 2xx либо 400 с details.fields[]; 409 (конфликт статуса/версии) допустим как бизнес-отказ. */
-+function expectSane(r: { status: number; body: unknown }, what: string) {
++/** 2xx либо 400, никогда 5xx; 409 (конфликт статуса/версии) допустим как бизнес-отказ.
++ *  400 по канону pkg/errorspkg: значение поля вне правил → VALIDATION с details.fields[];
++ *  структурно битое тело (неверный JSON-тип поля, не декодируется) → BAD_REQUEST «invalid body»
++ *  (as-is всех фич: c.Bind().Body/decode → errorspkg.BadRequest; §3 «Формат ошибок», DS-065). */
++function expectSane(r: { status: number; body: unknown }, what: string, opts: { structural?: boolean } = {}) {
 +  expect(r.status, `${what}: ${JSON.stringify(r.body)}`).toBeLessThan(500);
 +  if (r.status === 400) {
 +    const e = r.body as PoError;
++    if (opts.structural && e.code === 'BAD_REQUEST') return;
 +    expect(e.code, what).toBe('VALIDATION');
 +    expect(e.details?.fields?.length ?? 0, `${what}: details.fields[]`).toBeGreaterThan(0);
 +  }
@@ -453,7 +477,7 @@ index 0000000..28a33e5
 +    }
 +    // мусорные типы полей и тела
 +    for (const body of [{ items: 'x' }, { supplier_id: 5, items: [] }, { items: [{ product_id: p.id, qty: true }] }, { items: [{ product_id: null, qty: null }] }]) {
-+      expectSane(await po.admin.raw('POST', '/api/v1/purchase-orders', body), `body ${JSON.stringify(body)}`);
++      expectSane(await po.admin.raw('POST', '/api/v1/purchase-orders', body), `body ${JSON.stringify(body)}`, { structural: true });
 +    }
 +  });
 +
