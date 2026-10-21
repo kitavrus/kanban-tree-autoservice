@@ -96,12 +96,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*SupplierRes
 	if f := in.validate(); len(f) > 0 {
 		return nil, errorspkg.Validation(f...)
 	}
-	// Архив поставщика с незакрытыми закупками запрещён (purchase-orders §6.18, DS-043).
-	if !in.IsActive {
-		if err := s.repo.CheckNoOpenPurchases(ctx, id); err != nil {
-			return nil, err
-		}
-	}
+	// Архив с незакрытыми закупками — 409 из repo.Update (DS-043, одна транзакция).
 	sup, err := s.repo.Update(ctx, id, in)
 	if err != nil {
 		return nil, mapErr(err)

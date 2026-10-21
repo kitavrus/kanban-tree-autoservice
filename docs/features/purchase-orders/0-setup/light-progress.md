@@ -55,3 +55,12 @@
 - [x] fuzz `{"items":"x"}`: канон проекта — недекодируемое/неверно типизированное тело → 400 BAD_REQUEST (errorspkg.BadRequest «invalid body», as-is всех фич); инвариант fuzz-спеки: VALIDATION+fields для значений, BAD_REQUEST допустим для структурно битых тел, никогда 5xx
 - [x] flaky LOGIN_TAKEN: корень e2e/fixtures/test.ts uniq — testId.slice(0,6) = хэш ФАЙЛА (Playwright testId = fileId-хэш), логины тестов одной спеки на одном воркере совпадали; теперь хэш теста + суффикс retry
 - [x] self-check: playwright --list 22 (файлы фичи) / 213 (все); tsc чисто
+
+## FIX-LOOP 3 (ревью)
+- [x] HIGH DS-045: users.Update проверяет поставщика только при смене роли на supplier / смене supplier_id; live TestBlockAccountOfArchivedSupplier
+- [x] MEDIUM-1а: Restore черновика недоступного поставщика → 409 PURCHASE_ORDER_SUPPLIER_UNAVAILABLE; live TestRestoreDraftOfArchivedSupplier
+- [x] MEDIUM-1б: SendCheck → 400 supplier_id: unavailable (как create); unit + live TestSendToArchivedSupplier
+- [x] MEDIUM-1в: архив/удаление поставщика — FOR UPDATE + проверка в одной tx; create/restore/все переходы — поставщик FOR SHARE; live TestRace_CreateWaitsForArchive / TestRace_ArchiveWaitsForCreate
+- [x] MEDIUM-2: swag enums на DTO + TestSwagEnumsMatchConstants; make swagger
+- [x] LOW: роли service через middleware.Role*; «Базар (сами)» в поиске и показе «Удалённых»
+- [x] self-check: build ok; vet ok; go test ./... 22 ok/0 fail; integration purchase-orders/... (150 PASS), users, suppliers, softdelete — ok

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/suite"
@@ -985,4 +986,166 @@ func (s *PurchaseOrdersLiveSuite) TestSSRPagesAndPDF() {
 	st, raw = s.supA.Do(http.MethodGet, "/supplier/orders/"+uuid.NewString(), nil)
 	s.Equal(404, st)
 	s.Contains(string(raw), "Заказ не найден")
+}
+
+// ---- FIX-LOOP 3: DS-045 и инвариант DS-043 ----
+
+// DS-045: учётку поставщика, ушедшего в архив, можно заблокировать (проверка доступности
+// поставщика — только при смене роли/поставщика); следующий запрос учётки → 401.
+func (s *PurchaseOrdersLiveSuite) TestBlockAccountOfArchivedSupplier() {
+	sup := s.newSupplier("Уходящий " + mark())
+	login := "po-arch-" + mark()
+	body := map[string]any{"login": login, "name": "Продавец", "password": "secret123", "role": "supplier",
+		"supplier_id": sup, "is_active": true, "timezone": "Asia/Almaty", "phone": ""}
+	st, raw := s.admin.Do(http.MethodPost, "/api/v1/users", body)
+	s.Require().Equal(201, st, string(raw))
+	var u struct {
+		ID string `json:"id"`
+	}
+	s.Require().NoError(json.Unmarshal(raw, &u))
+	b := s.NewBrowser()
+	b.Login(login, "secret123")
+
+	archive := map[string]any{"name": "Уходящий " + mark(), "contact_name": "", "phone": "", "address": "", "note": "", "is_active": false}
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/suppliers/"+sup, archive)
+	s.Require().Equal(200, st, string(raw))
+
+	delete(body, "password")
+	body["name"] = "Переименован"
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
+	s.Equal(200, st, "правка прочих полей при неизменном поставщике: %s", raw)
+	body["is_active"] = false
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
+	s.Require().Equal(200, st, "блокировка учётки архивного поставщика: %s", raw)
+	st, _ = b.Do(http.MethodGet, spAPI, nil)
+	s.Equal(401, st, "сессия оборвана")
+
+	// Привязать учётку к архивному поставщику заново — по-прежнему нельзя (смена supplier_id).
+	other := s.newSupplier("Другой " + mark())
+	body["supplier_id"] = other
+	st, _ = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
+	s.Equal(200, st)
+	body["supplier_id"] = sup
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/users/"+u.ID, body)
+	s.Equal(400, st, string(raw))
+	s.Equal("unavailable", s.field(raw)["supplier_id"])
+}
+
+// DS-043 (а): восстановить удалённый черновик архивного поставщика нельзя — 409
+// PURCHASE_ORDER_SUPPLIER_UNAVAILABLE; черновик остаётся удалённым.
+func (s *PurchaseOrdersLiveSuite) TestRestoreDraftOfArchivedSupplier() {
+	sup := s.newSupplier("Архив-восст " + mark())
+	o := s.mustCreate(s.admin, &sup, line(s.product("В", "0", "0"), "1"))
+	st, raw := s.admin.Do(http.MethodDelete, poAPI+"/"+o.ID, dto.ReasonRequest{Version: o.Version, Reason: ptr("ошибка")})
+	s.Require().Equal(204, st, string(raw))
+	archive := map[string]any{"name": "Архив-восст " + mark(), "contact_name": "", "phone": "", "address": "", "note": "", "is_active": false}
+	st, raw = s.admin.Do(http.MethodPut, "/api/v1/suppliers/"+sup, archive)
+	s.Require().Equal(200, st, "удалённый черновик архиву не мешает: %s", raw)
+
+	st, raw = s.admin.Do(http.MethodPost, poAPI+"/"+o.ID+"/restore", nil)
+	s.expectErr(st, raw, 409, "PURCHASE_ORDER_SUPPLIER_UNAVAILABLE", "Поставщик недоступен — восстановить черновик нельзя")
+	s.Equal("true", s.scalar(`SELECT (deleted_at IS NOT NULL)::text FROM purchase_orders WHERE id = $1::uuid`, o.ID))
+
+	// Мягко удалённый поставщик — так же.
+	sup2 := s.newSupplier("Удалён-восст " + mark())
+	o2 := s.mustCreate(s.admin, &sup2, line(s.product("В2", "0", "0"), "1"))
+	st, _ = s.admin.Do(http.MethodDelete, poAPI+"/"+o2.ID, dto.ReasonRequest{Version: o2.Version, Reason: ptr("ошибка")})
+	s.Require().Equal(204, st)
+	st, raw = s.admin.Do(http.MethodDelete, "/api/v1/suppliers/"+sup2, map[string]string{"reason": "закрыт"})
+	s.Require().Equal(200, st, string(raw))
+	st, raw = s.admin.Do(http.MethodPost, poAPI+"/"+o2.ID+"/restore", nil)
+	s.expectErr(st, raw, 409, "PURCHASE_ORDER_SUPPLIER_UNAVAILABLE", "")
+}
+
+// DS-043 (б): отправить черновик архивному/удалённому поставщику нельзя — 400 supplier_id:
+// unavailable, как при создании (§6.2). Черновик у архивного поставщика сделан в обход API
+// (архив через API при черновике запрещён).
+func (s *PurchaseOrdersLiveSuite) TestSendToArchivedSupplier() {
+	sup := s.newSupplier("Архив-отпр " + mark())
+	o := s.mustCreate(s.admin, &sup, line(s.product("О", "0", "0"), "1"))
+	s.exec(`UPDATE suppliers SET is_active = false WHERE id = $1::uuid`, sup)
+	st, _, raw := s.act(s.admin, o.ID, "send", o.Version)
+	s.Equal(400, st, string(raw))
+	s.Equal("unavailable", s.field(raw)["supplier_id"])
+	s.Equal("Поставщик недоступен", s.err(raw).Message)
+	s.Equal("draft", s.get(s.admin, o.ID).Status)
+
+	s.exec(`UPDATE suppliers SET is_active = true, deleted_at = now(), deleted_by = $2::uuid, delete_reason = 'x' WHERE id = $1::uuid`, sup, s.adminID)
+	st, _, raw = s.act(s.admin, o.ID, "send", o.Version)
+	s.Equal(400, st, string(raw))
+}
+
+func (s *PurchaseOrdersLiveSuite) lockWaiters() int {
+	var n int
+	s.Require().NoError(s.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&n))
+	return n
+}
+
+// race — запрос req уходит, пока тест держит блокировку в tx; по pg_stat_activity тест
+// дожидается, что запрос встал в ожидание, затем выполняет finish (фиксация tx). Без sleep.
+func (s *PurchaseOrdersLiveSuite) race(finish func(), req func() (int, []byte)) (int, []byte) {
+	base := s.lockWaiters()
+	type res struct {
+		st  int
+		raw []byte
+	}
+	done := make(chan res, 1)
+	go func() { st, raw := req(); done <- res{st, raw} }()
+	s.Require().Eventually(func() bool { return s.lockWaiters() > base }, 10*time.Second, 20*time.Millisecond, "запрос ждёт блокировку")
+	select {
+	case r := <-done:
+		s.FailNow("запрос не дождался блокировки", "%d %s", r.st, r.raw)
+	default:
+	}
+	finish()
+	r := <-done
+	return r.st, r.raw
+}
+
+// DS-043 (в), сериализация: архив поставщика идёт (строка поставщика FOR UPDATE, is_active=false,
+// tx не зафиксирована) — создание закупки ждёт блокировку и после фиксации получает 400 «Поставщик
+// недоступен».
+func (s *PurchaseOrdersLiveSuite) TestRace_CreateWaitsForArchive() {
+	ctx := context.Background()
+	sup := s.newSupplier("Гонка-архив " + mark())
+	p := s.product("Г", "0", "0")
+	tx, err := s.Pool.Begin(ctx)
+	s.Require().NoError(err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `SELECT 1 FROM suppliers WHERE id = $1::uuid FOR UPDATE`, sup)
+	s.Require().NoError(err)
+	_, err = tx.Exec(ctx, `UPDATE suppliers SET is_active = false WHERE id = $1::uuid`, sup)
+	s.Require().NoError(err)
+
+	st, raw := s.race(func() { s.Require().NoError(tx.Commit(ctx)) }, func() (int, []byte) {
+		st, _, raw := s.create(s.admin, &sup, line(p, "1"))
+		return st, raw
+	})
+	s.Equal(400, st, string(raw))
+	s.Equal("unavailable", s.field(raw)["supplier_id"])
+	s.Equal("0", s.scalar(`SELECT count(*)::text FROM purchase_orders WHERE supplier_id = $1::uuid`, sup))
+}
+
+// DS-043 (в), сериализация в обратную сторону: создание закупки идёт (строка поставщика FOR SHARE,
+// черновик вставлен, tx не зафиксирована) — архив поставщика ждёт блокировку и после фиксации
+// получает 409 SUPPLIER_HAS_OPEN_PURCHASES; поставщик остаётся активным.
+func (s *PurchaseOrdersLiveSuite) TestRace_ArchiveWaitsForCreate() {
+	ctx := context.Background()
+	sup := s.newSupplier("Гонка-создание " + mark())
+	tx, err := s.Pool.Begin(ctx)
+	s.Require().NoError(err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `SELECT 1 FROM suppliers WHERE id = $1::uuid FOR SHARE`, sup)
+	s.Require().NoError(err)
+	var number int64
+	s.Require().NoError(tx.QueryRow(ctx, `INSERT INTO purchase_orders (supplier_id, created_by) VALUES ($1::uuid, $2::uuid) RETURNING number`,
+		sup, s.adminID).Scan(&number))
+
+	archive := map[string]any{"name": "Гонка-создание " + mark(), "contact_name": "", "phone": "", "address": "", "note": "", "is_active": false}
+	st, raw := s.race(func() { s.Require().NoError(tx.Commit(ctx)) }, func() (int, []byte) {
+		return s.admin.Do(http.MethodPut, "/api/v1/suppliers/"+sup, archive)
+	})
+	s.expectErr(st, raw, 409, "SUPPLIER_HAS_OPEN_PURCHASES", fmt.Sprintf("У поставщика есть незакрытые закупки: З-%04d", number))
+	s.Equal("true", s.scalar(`SELECT is_active::text FROM suppliers WHERE id = $1::uuid`, sup))
 }

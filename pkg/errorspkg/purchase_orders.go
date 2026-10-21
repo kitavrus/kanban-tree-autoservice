@@ -20,6 +20,7 @@ const (
 	CodePurchaseOrderItemsIncomplete = "PURCHASE_ORDER_ITEMS_INCOMPLETE"
 	CodePurchaseItemVersionConflict  = "PURCHASE_ITEM_VERSION_CONFLICT"
 	CodeSupplierHasOpenPurchases     = "SUPPLIER_HAS_OPEN_PURCHASES"
+	CodePurchaseSupplierUnavailable  = "PURCHASE_ORDER_SUPPLIER_UNAVAILABLE"
 )
 
 func conflict(code, msg string) *AppError { return New(code, http.StatusConflict, msg) }
@@ -66,8 +67,11 @@ var (
 	ErrPurchaseOrderNotReadyWait      = conflict(CodePurchaseOrderNotReady, "Дождитесь отметки поставщика «Собрано»")
 	ErrPurchaseOrderNotReadySendFirst = conflict(CodePurchaseOrderNotReady, "Сначала отправьте заказ поставщику")
 	// «Собрано» с неполными строками (§6.15): details.item_ids — строки без ответа/цены.
-	ErrPurchaseOrderItemsNoQty   = conflict(CodePurchaseOrderItemsIncomplete, "Заполните «Соберу» во всех строках")
-	ErrPurchaseOrderItemsNoPrice = conflict(CodePurchaseOrderItemsIncomplete, "Укажите цену у строк, которые соберёте")
+	ErrPurchaseOrderItemsNoQty = conflict(CodePurchaseOrderItemsIncomplete, "Заполните «Соберу» во всех строках")
+	// Восстановление черновика архивного/удалённого поставщика (DS-043, DS-072): вернуло бы
+	// такому поставщику незакрытую закупку.
+	ErrPurchaseOrderRestoreSupplierUnavailable = conflict(CodePurchaseSupplierUnavailable, "Поставщик недоступен — восстановить черновик нельзя")
+	ErrPurchaseOrderItemsNoPrice               = conflict(CodePurchaseOrderItemsIncomplete, "Укажите цену у строк, которые соберёте")
 )
 
 // SupplierHasOpenPurchases — 409 архива/удаления поставщика с незакрытыми закупками

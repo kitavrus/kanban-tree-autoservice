@@ -25,7 +25,7 @@ FROM purchase_orders r
 LEFT JOIN suppliers s ON s.id = r.supplier_id
 JOIN users u ON u.id = r.deleted_by
 WHERE r.deleted_at IS NOT NULL
-  AND ($1::text IS NULL OR coalesce(s.name, 'Базар') ILIKE '%' || $1 || '%' ESCAPE '\'
+  AND ($1::text IS NULL OR coalesce(s.name, 'Базар (сами)') ILIKE '%' || $1 || '%' ESCAPE '\'
        OR r.delete_reason ILIKE '%' || $1 || '%' ESCAPE '\'
        OR r.number = $2::bigint)
   AND ($3::timestamptz IS NULL OR r.deleted_at >= $3)

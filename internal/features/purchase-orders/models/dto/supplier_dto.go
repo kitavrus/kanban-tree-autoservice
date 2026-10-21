@@ -18,7 +18,7 @@ type AnswerRequest struct {
 type SupplierListItem struct {
 	ID            string     `json:"id"`
 	NumberDisplay string     `json:"number_display"`
-	Status        string     `json:"status"`
+	Status        string     `json:"status" enums:"sent,ready,picked_up"`
 	SentAt        *time.Time `json:"sent_at"`
 	ItemsCount    int        `json:"items_count"`
 	AnsweredCount int        `json:"answered_count"`
@@ -52,7 +52,7 @@ type SupplierItem struct {
 type SupplierOrder struct {
 	ID            string         `json:"id"`
 	NumberDisplay string         `json:"number_display"`
-	Status        string         `json:"status"`
+	Status        string         `json:"status" enums:"sent,ready,picked_up"`
 	SentAt        *time.Time     `json:"sent_at"`
 	Note          string         `json:"note"`
 	NoteChanged   bool           `json:"note_changed"`

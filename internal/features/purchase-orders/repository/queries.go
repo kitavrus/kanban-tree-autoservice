@@ -87,6 +87,10 @@ const productsSQL = `
 SELECT id::text, name, sku, unit FROM products
 WHERE id = ANY($1::uuid[]) AND is_active AND deleted_at IS NULL`
 
+// supplierLockSQL — строка поставщика FOR SHARE + «активен и не удалён» (DS-043).
+const supplierLockSQL = `
+SELECT is_active AND deleted_at IS NULL FROM suppliers WHERE id = $1::uuid FOR SHARE`
+
 const supplierAvailableSQL = `
 SELECT 1 FROM suppliers WHERE id = $1::uuid AND is_active AND deleted_at IS NULL FOR SHARE`
 

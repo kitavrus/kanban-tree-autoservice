@@ -42,7 +42,7 @@ type ItemRequest struct {
 	ID        *string `json:"id"`
 	ProductID string  `json:"product_id"`
 	Qty       Num     `json:"qty"`
-	Reason    string  `json:"reason"`
+	Reason    string  `json:"reason" enums:"for_orders,below_min,manual"`
 }
 
 // CreateRequest — POST /api/v1/purchase-orders (§6.2). SupplierID nil — «Базар».
@@ -79,7 +79,7 @@ type ListItem struct {
 	NumberDisplay string     `json:"number_display"`
 	SupplierID    *string    `json:"supplier_id"`
 	RecipientName string     `json:"recipient_name"`
-	Status        string     `json:"status"`
+	Status        string     `json:"status" enums:"draft,sent,ready,picked_up,cancelled"`
 	ItemsCount    int        `json:"items_count"`
 	TotalAmount   *string    `json:"total_amount"`
 	CreatedByName string     `json:"created_by_name"`
@@ -104,7 +104,7 @@ type OrderItem struct {
 	Sku             string  `json:"sku"`
 	Unit            string  `json:"unit"`
 	Qty             string  `json:"qty"`
-	Reason          string  `json:"reason"`
+	Reason          string  `json:"reason" enums:"for_orders,below_min,manual"`
 	SupplierQty     *string `json:"supplier_qty"`
 	SupplierPrice   *string `json:"supplier_price"`
 	SupplierNote    string  `json:"supplier_note"`
@@ -119,7 +119,7 @@ type Order struct {
 	ID               string      `json:"id"`
 	Number           int64       `json:"number"`
 	NumberDisplay    string      `json:"number_display"`
-	Status           string      `json:"status"`
+	Status           string      `json:"status" enums:"draft,sent,ready,picked_up,cancelled"`
 	Version          int64       `json:"version"`
 	SupplierID       *string     `json:"supplier_id"`
 	RecipientName    string      `json:"recipient_name"`
@@ -159,7 +159,7 @@ type Suggestion struct {
 	MinStock     string           `json:"min_stock"`
 	Pending      string           `json:"pending"`
 	ToOrder      string           `json:"to_order"`
-	Reason       string           `json:"reason"`
+	Reason       string           `json:"reason" enums:"for_orders,below_min"`
 	Tasks        []SuggestionTask `json:"tasks"`
 	InOpenOrders []OpenOrderRef   `json:"in_open_orders"`
 	Checked      bool             `json:"checked"`

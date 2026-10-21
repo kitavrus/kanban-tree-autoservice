@@ -19,14 +19,15 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/repository"
 	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/validators"
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
+	"github.com/kitavrus/kanban-tree/internal/server/middleware"
 	"github.com/kitavrus/kanban-tree/pkg/errorspkg"
 )
 
-// Роли (internal/server/middleware: RoleAdmin/RoleExecutor/RoleSupplier).
+// Роли — единый источник internal/server/middleware (без дублирования строк).
 const (
-	RoleAdmin    = "admin"
-	RoleExecutor = "executor"
-	RoleSupplier = "supplier"
+	RoleAdmin    = middleware.RoleAdmin
+	RoleExecutor = middleware.RoleExecutor
+	RoleSupplier = middleware.RoleSupplier
 )
 
 // Actor — кто делает запрос (только из сессии, DS-053).
@@ -275,6 +276,10 @@ func SendCheck(a Actor, v int64) repository.HeadCheck {
 		if h.ItemsCount == 0 {
 			return errorspkg.ErrPurchaseOrderEmpty
 		}
+		// Поставщик ушёл в архив/удалён — тот же отказ, что при создании (§6.2, DS-043).
+		if !h.SupplierAvailable {
+			return validators.Error([]errorspkg.Field{{Name: "supplier_id", Message: validators.MsgUnavailable}})
+		}
 		return nil
 	}
 }
@@ -443,6 +448,8 @@ func (s *Service) Restore(ctx context.Context, a Actor, id string) error {
 	switch {
 	case errors.Is(err, repository.ErrNotDeleted):
 		return softdelete.ErrNotDeleted
+	case errors.Is(err, repository.ErrRestoreSupplierUnavailable):
+		return errorspkg.ErrPurchaseOrderRestoreSupplierUnavailable
 	case err != nil:
 		return mapNotFound(err)
 	}

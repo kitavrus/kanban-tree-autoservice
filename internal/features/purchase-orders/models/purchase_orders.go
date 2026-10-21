@@ -50,6 +50,9 @@ type Head struct {
 	SentAt           *time.Time
 	ItemsCount       int
 	SupplierHasLogin bool
+	// SupplierAvailable — поставщик активен и не удалён (строка поставщика взята FOR SHARE в той
+	// же транзакции, DS-043); у Базара — true.
+	SupplierAvailable bool
 }
 
 // IsBazaar — заказ без поставщика (DS-006).

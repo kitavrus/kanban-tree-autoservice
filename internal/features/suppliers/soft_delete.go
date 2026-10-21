@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kitavrus/kanban-tree/internal/features/softdelete"
@@ -45,10 +46,16 @@ var (
 // ErrNotFound (второй одновременный запрос — тоже, DS-024). is_active не меняется.
 func (r *Repo) SoftDelete(ctx context.Context, id, userID, reason string) (time.Time, error) {
 	var at time.Time
-	err := r.pool.QueryRow(ctx, `
+	// Проверка незакрытых закупок — в той же транзакции под FOR UPDATE строки (DS-043).
+	err := r.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockNoOpenPurchases(ctx, tx, id); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `
 UPDATE suppliers SET deleted_at = now(), deleted_by = $2::uuid, delete_reason = $3, updated_at = now()
 WHERE id = $1::uuid AND deleted_at IS NULL
 RETURNING deleted_at`, id, userID, reason).Scan(&at)
+	})
 	return at.UTC(), err
 }
 
@@ -103,10 +110,6 @@ func (s *Service) Delete(ctx context.Context, a Actor, id string, in softdelete.
 	reason, fields := softdelete.ValidateReason(in.Reason)
 	if len(fields) > 0 {
 		return nil, errorspkg.Validation(fields...)
-	}
-	// Удаление поставщика с незакрытыми закупками запрещено (purchase-orders §6.18, DS-043).
-	if err := s.repo.CheckNoOpenPurchases(ctx, id); err != nil {
-		return nil, err
 	}
 	at, err := s.repo.SoftDelete(ctx, id, a.ID, reason)
 	if errors.Is(err, ErrNotFound) {

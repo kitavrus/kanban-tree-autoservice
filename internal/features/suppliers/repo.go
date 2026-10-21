@@ -104,12 +104,25 @@ func (r *Repo) Create(ctx context.Context, in Input) (*Supplier, error) {
 
 // Update — все поля + is_active, last-write-wins (DS-043); ErrNoRows → ErrNotFound
 // (сервис маппит); удалённый поставщик для правки не существует (soft-delete DS-026).
+//
+// Архив (is_active=false) — в одной транзакции с проверкой незакрытых закупок под блокировкой
+// строки поставщика (purchase-orders DS-043, open_purchases.go).
 func (r *Repo) Update(ctx context.Context, id string, in Input) (*Supplier, error) {
-	s, err := scan(r.pool.QueryRow(ctx,
-		`UPDATE suppliers SET name = $2, contact_name = $3, phone = $4, address = $5, note = $6,
-		        is_active = $7, updated_at = now()
-		 WHERE id = $1::uuid AND deleted_at IS NULL RETURNING `+columns,
-		id, in.Name, in.ContactName, in.Phone, in.Address, in.Note, in.IsActive))
+	var s *Supplier
+	err := r.inTx(ctx, func(tx pgx.Tx) error {
+		if !in.IsActive {
+			if err := lockNoOpenPurchases(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		var err error
+		s, err = scan(tx.QueryRow(ctx,
+			`UPDATE suppliers SET name = $2, contact_name = $3, phone = $4, address = $5, note = $6,
+			        is_active = $7, updated_at = now()
+			 WHERE id = $1::uuid AND deleted_at IS NULL RETURNING `+columns,
+			id, in.Name, in.ContactName, in.Phone, in.Address, in.Note, in.IsActive))
+		return err
+	})
 	if err != nil {
 		return nil, mapNameConflict(err)
 	}

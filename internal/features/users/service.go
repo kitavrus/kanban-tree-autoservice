@@ -150,9 +150,6 @@ func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input) 
 	if f := in.validate(false); len(f) > 0 {
 		return nil, errorspkg.Validation(f...)
 	}
-	if err := s.checkSupplier(ctx, in); err != nil {
-		return nil, err
-	}
 	var hash *string
 	if in.Password != "" {
 		h, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
@@ -165,6 +162,14 @@ func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input) 
 	before, after, err := s.repo.Update(ctx, id, in, hash, func(before *User, otherAdmins int) error {
 		if id == actor.UserID && !in.IsActive {
 			return ErrSelfBlock
+		}
+		// Доступность поставщика проверяется, только когда учётка СТАНОВИТСЯ supplier или
+		// меняется её поставщик (purchase-orders §6.17). Учётку поставщика, уже ушедшего в архив
+		// или удалённого, можно заблокировать и править прочие поля — отзыв доступа (DS-045).
+		if in.Role == RoleSupplier && (before.Role != RoleSupplier || before.SupplierID != in.SupplierID) {
+			if err := s.checkSupplier(ctx, in); err != nil {
+				return err
+			}
 		}
 		wasActiveAdmin := before.Role == RoleAdmin && before.IsActive
 		staysActiveAdmin := in.Role == RoleAdmin && in.IsActive

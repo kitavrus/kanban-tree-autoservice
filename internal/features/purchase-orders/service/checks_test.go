@@ -19,7 +19,7 @@ var (
 
 func head(status string, opts ...func(*models.Head)) models.Head {
 	sup := supplier
-	h := models.Head{ID: "o", Status: status, Version: 5, CreatedBy: execA.ID, SupplierID: &sup, ItemsCount: 2}
+	h := models.Head{ID: "o", Status: status, Version: 5, CreatedBy: execA.ID, SupplierID: &sup, ItemsCount: 2, SupplierAvailable: true}
 	for _, o := range opts {
 		o(&h)
 	}
@@ -29,6 +29,7 @@ func head(status string, opts ...func(*models.Head)) models.Head {
 func bazaar(h *models.Head)   { h.SupplierID = nil }
 func empty(h *models.Head)    { h.ItemsCount = 0 }
 func hasLogin(h *models.Head) { h.SupplierHasLogin = true }
+func archived(h *models.Head) { h.SupplierAvailable = false }
 
 // TS-003 (DS-011, DS-012, DS-042, DS-075): матрица переходов §5 на уровне правил — каждый
 // разрешённый переход проходит, каждый запрещённый даёт свой 409.
@@ -156,4 +157,16 @@ func TestActorOwner(t *testing.T) {
 	assert.NoError(t, staffOnly(execA))
 	assert.Error(t, supplierOnly(Actor{Role: RoleSupplier}), "supplier без привязки")
 	assert.NoError(t, supplierOnly(Actor{Role: RoleSupplier, SupplierID: "x"}))
+}
+
+// DS-043: отправка черновика архивному/удалённому поставщику — 400 supplier_id: unavailable,
+// как при создании (§6.2).
+func TestSendCheck_SupplierUnavailable(t *testing.T) {
+	err := SendCheck(admin, 5)(head("draft", archived))
+	app, ok := err.(*errorspkg.AppError)
+	if assert.True(t, ok) {
+		assert.Equal(t, "VALIDATION", app.Code)
+		assert.Equal(t, "supplier_id", app.Fields[0].Name)
+		assert.Equal(t, "Поставщик недоступен", app.Message)
+	}
 }

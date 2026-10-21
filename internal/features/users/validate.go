@@ -73,7 +73,7 @@ func (in Input) normalize() Input {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Role = strings.TrimSpace(in.Role)
 	in.Phone = strings.TrimSpace(in.Phone)
-	in.SupplierID = strings.TrimSpace(in.SupplierID)
+	in.SupplierID = strings.ToLower(strings.TrimSpace(in.SupplierID))
 	return in
 }
 

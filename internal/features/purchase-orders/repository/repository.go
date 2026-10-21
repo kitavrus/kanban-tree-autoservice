@@ -193,7 +193,26 @@ func lockHead(ctx context.Context, tx pgx.Tx, id, supplierID, lock string) (mode
 	if err != nil {
 		return h, fmt.Errorf("purchase-orders lock: %w", err)
 	}
-	return h, nil
+	h.SupplierAvailable, err = lockSupplier(ctx, tx, h.SupplierID)
+	return h, err
+}
+
+// lockSupplier — строка поставщика FOR SHARE до конца транзакции + «активен и не удалён»
+// (DS-043): архив/удаление поставщика (suppliers, FOR UPDATE) ждёт эту транзакцию либо она —
+// его, и видит уже архивного. nil (Базар) — доступен.
+func lockSupplier(ctx context.Context, tx pgx.Tx, supplierID *string) (bool, error) {
+	if supplierID == nil {
+		return true, nil
+	}
+	var ok bool
+	err := tx.QueryRow(ctx, supplierLockSQL, *supplierID).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("purchase-orders supplier lock: %w", err)
+	}
+	return ok, nil
 }
 
 const (
@@ -404,24 +423,39 @@ func (r *Repository) SoftDelete(ctx context.Context, id, actorID, reason string,
 	return r.transition(ctx, id, check, stmt{softDeleteSQL, []any{id, actorID, reason}})
 }
 
-// Restore — восстановление из раздела «Удалённые» (DS-072).
+// ErrRestoreSupplierUnavailable — восстановление черновика архивного/удалённого поставщика
+// вернуло бы ему незакрытую закупку (DS-043).
+var ErrRestoreSupplierUnavailable = errors.New("purchase-orders: restore supplier unavailable")
+
+// Restore — восстановление из раздела «Удалённые» (DS-072): строка заказа FOR UPDATE, строка
+// поставщика FOR SHARE и проверка «активен и не удалён» в одной транзакции (DS-043).
 func (r *Repository) Restore(ctx context.Context, id string) error {
-	tag, err := r.pool.Exec(ctx, restoreSQL, id)
-	if err != nil {
-		return fmt.Errorf("purchase-orders restore: %w", err)
-	}
-	if tag.RowsAffected() > 0 {
+	return r.inTx(ctx, func(tx pgx.Tx) error {
+		var supplierID *string
+		var deleted bool
+		err := tx.QueryRow(ctx, `SELECT supplier_id::text, deleted_at IS NOT NULL FROM purchase_orders
+			WHERE id = $1::uuid FOR UPDATE`, id).Scan(&supplierID, &deleted)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("purchase-orders restore: %w", err)
+		}
+		if !deleted {
+			return ErrNotDeleted
+		}
+		ok, err := lockSupplier(ctx, tx, supplierID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrRestoreSupplierUnavailable
+		}
+		if _, err := tx.Exec(ctx, restoreSQL, id); err != nil {
+			return fmt.Errorf("purchase-orders restore: %w", err)
+		}
 		return nil
-	}
-	var one int
-	err = r.pool.QueryRow(ctx, `SELECT 1 FROM purchase_orders WHERE id = $1::uuid`, id).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	return ErrNotDeleted
+	})
 }
 
 // Purge — физическое удаление (служебная уборка автотестов, soft-delete-core DS-027);
