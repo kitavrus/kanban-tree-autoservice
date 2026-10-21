@@ -1,5 +1,5 @@
 # Review Bundle: purchase-orders — CHECKS-FAILED
-**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** cd54f1d | **Generated:** 2026-10-22 01:58 | diff: 122 files changed, 22844 insertions(+), 66 deletions(-)
+**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 40053c7 | **Generated:** 2026-10-22 01:59 | diff: 122 files changed, 23444 insertions(+), 66 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -343,7 +343,7 @@
 ## Инвентарь доков (точечный grep разрешён, полное чтение — нет)
 - draft-spec.md — 155KB
 - 0-setup/draft-spec.slice-light.md — 136KB
-- 8-code-review/input-bundle.md — 44KB
+- 8-code-review/input-bundle.md — 46KB
 - 0-setup/passport.md — 22KB
 - 7-executing/scaffold-manifest.json — 15KB
 - 0-setup/idioms.md — 14KB
