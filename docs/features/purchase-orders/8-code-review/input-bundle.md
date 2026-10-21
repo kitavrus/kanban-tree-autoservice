@@ -1,5 +1,5 @@
 # Review Bundle: purchase-orders — CHECKS-FAILED
-**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** 78fa5b1 | **Generated:** 2026-10-22 01:51 | diff: 101 files changed, 14011 insertions(+), 66 deletions(-)
+**Base:** 831b32c834c6228bf8f60c409cf3243d48aaef13 | **HEAD:** cd54f1d | **Generated:** 2026-10-22 01:58 | diff: 122 files changed, 22844 insertions(+), 66 deletions(-)
 
 > Линзы ревью: читай ЭТОТ бандл + patch своей линзы. Полное чтение research/draft-spec/PRD
 > и перегон чекеров ЗАПРЕЩЕНЫ (вердикты ниже; детали — checks/<name>.txt; точечный grep по DS-NNN разрешён).
@@ -11,23 +11,26 @@
 | api_conventions | ✅ | 0 | — |
 | contract | ✅ | 0 | — |
 | date_bound | ✅ | 0 | — |
-| fuzz_verdict | ❌ | 1 | FUZZ-VERDICT FAIL VERDICT-MISSING: tier=L risk=? — обязательная строка `**pw-fuzz:** да&#124;n/a — причина` не найдена в 3-design/design-e2e-strategy.md (fallback §E2E design-frontend-architecture.md); owner — frontend-architect |
+| fuzz_verdict | ❌ | 1 | FUZZ-VERDICT FAIL SPEC-MISSING: вердикт `да` (3-design/design-e2e-strategy.md:8), а frontend/e2e/fuzz/purchase-orders_fuzz.spec.ts отсутствует — owner frontend-dev (шаблон templates/qa-fuzz-playwright.md), `--list` в гейте фазы |
 | live_suite | ✅ | 0 | — |
 | fixture_sync | ✅ | 0 | — |
 | e2e_mode | ✅ | 0 | — |
 | rule_usage | ✅ | 0 | — |
-| e2e_drift | ❌ | 1 | e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 13 id, code: 12 в 1 файлах, проблем: 1)<br>DRIFT: TS-021 есть в draft-spec.md, теста test('TS-021: …') нет (сценарий без теста) |
+| e2e_drift | ❌ | 1 | e2e-drift: FAIL (режим: TS (spec-track §ST-1.4), doc: 2 id, code: 12 в 2 файлах, проблем: 10)<br>DRIFT: test('TS-015…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-016…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-017…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-018…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-019…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-020…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота)<br>DRIFT: test('TS-022…') есть в e2e/, сценария в design-e2e-strategy.md нет (тест-сирота) |
 
 ## Diff по линзам
 | Линза | Файлов | Patch |
 |---|---|---|
-| backend | 47 | 8-code-review/diff-backend.patch |
-| e2e | 6 | 8-code-review/diff-e2e.patch |
+| backend | 51 | 8-code-review/diff-backend.patch |
+| e2e | 7 | 8-code-review/diff-e2e.patch |
 | migrations | 2 | 8-code-review/diff-migrations.patch |
 | other | 13 | 8-code-review/diff-other.patch |
-| docs | 33 | — (артефакты, не ревьюятся построчно) |
+| docs | 49 | — (артефакты, не ревьюятся построчно) |
 
 ### backend
+- `M` cmd/server/main.go
+- `M` go.mod
+- `M` go.sum
 - `M` internal/features/auth/handler.go
 - `M` internal/features/auth/repo.go
 - `M` internal/features/auth/service.go
@@ -52,6 +55,7 @@
 - `A` internal/features/purchase-orders/service/service.go
 - `A` internal/features/purchase-orders/validators/helpers_test.go
 - `A` internal/features/purchase-orders/validators/validators.go
+- `A` internal/features/purchase-orders/validators/validators_fuzz_test.go
 - `A` internal/features/purchase-orders/validators/validators_test.go
 - `M` internal/features/softdelete/kinds.go
 - `A` internal/features/softdelete/purchase_orders_source.go
@@ -82,6 +86,7 @@
 - `A` e2e/fixtures/purchase-orders.ts
 - `A` e2e/pages/PurchaseOrdersPage.ts
 - `M` e2e/pages/UsersPage.ts
+- `A` e2e/tests/fuzz/purchase-orders_fuzz.spec.ts
 - `A` e2e/tests/purchase-orders.spec.ts
 
 ### migrations
@@ -118,6 +123,7 @@
 - `A` docs/features/purchase-orders/11-report/output.md
 - `A` docs/features/purchase-orders/2-spec-interview/prd.md
 - `A` docs/features/purchase-orders/2-spec-interview/spec-decisions.md
+- `A` docs/features/purchase-orders/3-design/design-e2e-strategy.md
 - `A` docs/features/purchase-orders/3-design/design-errors.md
 - `A` docs/features/purchase-orders/3-design/design-frontend-architecture.md
 - `A` docs/features/purchase-orders/3-design/design-go-layers.md
@@ -128,6 +134,21 @@
 - `A` docs/features/purchase-orders/6-plan/code-plan.md
 - `A` docs/features/purchase-orders/7-executing/scaffold-errors-snippet.md
 - `A` docs/features/purchase-orders/7-executing/scaffold-manifest.json
+- `A` docs/features/purchase-orders/8-code-review/checks/api_conventions.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/contract.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/date_bound.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/e2e_drift.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/e2e_mode.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/fixture_sync.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/fuzz_verdict.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/go_naming.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/live_suite.txt
+- `A` docs/features/purchase-orders/8-code-review/checks/rule_usage.txt
+- `A` docs/features/purchase-orders/8-code-review/diff-backend.patch
+- `A` docs/features/purchase-orders/8-code-review/diff-e2e.patch
+- `A` docs/features/purchase-orders/8-code-review/diff-migrations.patch
+- `A` docs/features/purchase-orders/8-code-review/diff-other.patch
+- `A` docs/features/purchase-orders/8-code-review/input-bundle.md
 - `A` docs/features/purchase-orders/8-code-review/output.md
 - `A` docs/features/purchase-orders/9-validation/evidence/.gitkeep
 - `A` docs/features/purchase-orders/9-validation/output.md
@@ -322,12 +343,14 @@
 ## Инвентарь доков (точечный grep разрешён, полное чтение — нет)
 - draft-spec.md — 155KB
 - 0-setup/draft-spec.slice-light.md — 136KB
+- 8-code-review/input-bundle.md — 44KB
 - 0-setup/passport.md — 22KB
 - 7-executing/scaffold-manifest.json — 15KB
 - 0-setup/idioms.md — 14KB
 - draft-spec-decisions.md — 8KB
 - 7-executing/scaffold-errors-snippet.md — 7KB
-- 0-setup/light-progress.md — 2KB
+- 0-setup/light-progress.md — 3KB
+- 3-design/design-e2e-strategy.md — 1KB
 - 0-setup/pipeline-state.md — 0KB
 - 3-design/design-errors.md — 0KB
 - 3-design/design-frontend-architecture.md — 0KB
@@ -343,8 +366,6 @@
 - 0-setup/watch-gate-prefs.md — 0KB
 - 6-plan/code-plan-status.md — 0KB
 - 2-spec-interview/prd.md — 0KB
-- 10-qa/output.md — 0KB
-- 0-setup/diagrams-prefs.md — 0KB
 
 ## Паспорт (выжимка; полный — 0-setup/passport.md)
 # Passport: purchase-orders (generated — руками не править; stage_bundle.py)

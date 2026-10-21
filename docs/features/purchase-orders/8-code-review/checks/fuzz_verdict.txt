@@ -1,4 +1,4 @@
 $ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/igorpotema/.claude/tools/fuzz_verdict_check.py --feature purchase-orders --repo /Users/igorpotema/mycode/kanban-tree-autoservice
 (exit 1)
 
-FUZZ-VERDICT FAIL VERDICT-MISSING: tier=L risk=? — обязательная строка `**pw-fuzz:** да|n/a — причина` не найдена в 3-design/design-e2e-strategy.md (fallback §E2E design-frontend-architecture.md); owner — frontend-architect
+FUZZ-VERDICT FAIL SPEC-MISSING: вердикт `да` (3-design/design-e2e-strategy.md:8), а frontend/e2e/fuzz/purchase-orders_fuzz.spec.ts отсутствует — owner frontend-dev (шаблон templates/qa-fuzz-playwright.md), `--list` в гейте фазы

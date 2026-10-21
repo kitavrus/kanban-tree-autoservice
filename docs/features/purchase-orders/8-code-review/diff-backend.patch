@@ -1,3 +1,141 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 2076610..59fc065 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -18,6 +18,14 @@ import (
+ 	"github.com/kitavrus/kanban-tree/internal/server"
+ )
+ 
++// @title           Kanban-tree API
++// @version         1.0
++// @description     JSON API (CLAUDE.md §API-1: kebab-URL, snake_case JSON, списки {items,total,limit,offset}).
++// @description     Аннотированы эндпоинты закупок по дефициту и кабинета поставщика (purchase-orders).
++// @BasePath        /api/v1
++// @securityDefinitions.apikey CookieSession
++// @in              cookie
++// @name            sid
+ func main() {
+ 	// --check-config ОБЯЗАТЕЛЕН (контракт infra-bootstrap): образ проверяет env
+ 	// своим кодом и выходит 0/1, не поднимая БД/Redis/портов.
+diff --git a/go.mod b/go.mod
+index cd8ef4f..fa02c23 100644
+--- a/go.mod
++++ b/go.mod
+@@ -16,6 +16,7 @@ require (
+ 	github.com/prometheus/client_golang v1.24.1
+ 	github.com/redis/go-redis/v9 v9.22.0
+ 	github.com/stretchr/testify v1.12.1
++	github.com/swaggo/swag v1.16.4
+ 	github.com/valyala/fasthttp v1.73.0
+ 	go.opentelemetry.io/otel v1.46.0
+ 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0
+@@ -27,6 +28,7 @@ require (
+ require (
+ 	dario.cat/mergo v1.0.0 // indirect
+ 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
++	github.com/KyleBanks/depth v1.2.1 // indirect
+ 	github.com/Microsoft/go-winio v0.6.2 // indirect
+ 	github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 // indirect
+ 	github.com/andybalholm/brotli v1.2.2 // indirect
+@@ -41,6 +43,16 @@ require (
+ 	github.com/docker/go-units v0.5.0 // indirect
+ 	github.com/go-logr/logr v1.4.4 // indirect
+ 	github.com/go-logr/stdr v1.2.2 // indirect
++	github.com/go-openapi/jsonpointer v1.0.0 // indirect
++	github.com/go-openapi/jsonreference v1.0.0 // indirect
++	github.com/go-openapi/spec v0.22.9 // indirect
++	github.com/go-openapi/swag/conv v0.28.0 // indirect
++	github.com/go-openapi/swag/jsonutils v0.28.0 // indirect
++	github.com/go-openapi/swag/loading v0.28.0 // indirect
++	github.com/go-openapi/swag/pools v0.28.0 // indirect
++	github.com/go-openapi/swag/stringutils v0.28.0 // indirect
++	github.com/go-openapi/swag/typeutils v0.28.0 // indirect
++	github.com/go-openapi/swag/yamlutils v0.28.0 // indirect
+ 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+ 	github.com/gofiber/schema v1.8.3 // indirect
+ 	github.com/gofiber/utils/v2 v2.4.1 // indirect
+@@ -82,6 +94,7 @@ require (
+ 	golang.org/x/sync v0.23.0 // indirect
+ 	golang.org/x/sys v0.48.0 // indirect
+ 	golang.org/x/text v0.42.0 // indirect
++	golang.org/x/tools v0.49.0 // indirect
+ 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
+ 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
+ 	google.golang.org/grpc v1.83.1 // indirect
+diff --git a/go.sum b/go.sum
+index 12926d0..dfb7232 100644
+--- a/go.sum
++++ b/go.sum
+@@ -4,6 +4,8 @@ filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
+ filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
+ github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
+ github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
++github.com/KyleBanks/depth v1.2.1 h1:5h8fQADFrWtarTdtDudMmGsC7GPbOAu6RVB3ffsVFHc=
++github.com/KyleBanks/depth v1.2.1/go.mod h1:jzSb9d0L43HxTQfT+oSA1EEp2q+ne2uh6XgeJcm8brE=
+ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
+ github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
+ github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 h1:TngWCqHvy9oXAN6lEVMRuU21PR1EtLVZJmdB18Gu3Rw=
+@@ -54,6 +56,33 @@ github.com/go-logr/logr v1.4.4 h1:tG4xh9yMsRCAiodLVTxyrkzSZ9+o0L1Kg/+cPVcbP/8=
+ github.com/go-logr/logr v1.4.4/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
+ github.com/go-logr/stdr v1.2.2 h1:hSWxHoqTgW2S2qGc0LTAI563KZ5YKYRhT3MFKZMbjag=
+ github.com/go-logr/stdr v1.2.2/go.mod h1:mMo/vtBO5dYbehREoey6XUKy/eSumjCCveDpRre4VKE=
++github.com/go-openapi/jsonpointer v1.0.0 h1:kR9tHqY0CtZaOPVFm622dPVNhrvYpwr4uCxgL3h1H8s=
++github.com/go-openapi/jsonpointer v1.0.0/go.mod h1:Z3rw7dWu1p9IgitXCFamSlA5lmDiklEB6vkaxcNZW5Y=
++github.com/go-openapi/jsonreference v1.0.0 h1:jlmTr6torcd1YgDQvSfNmRtKzYDO4FGBkrAdlAVWnpY=
++github.com/go-openapi/jsonreference v1.0.0/go.mod h1:jtwdyGbJk0Xhe5Y+rwtglQP6Sb1WZST4rT32LWB+sv0=
++github.com/go-openapi/spec v0.22.9 h1:/vKIFDcGKp0ktZWGbym/tJEWbk6/XOEmAVU0kqKMH+w=
++github.com/go-openapi/spec v0.22.9/go.mod h1:b/mNUYIOQOyIiUzUzXEE8xzyZqf93KvM9hQGP91yfl0=
++github.com/go-openapi/swag v0.28.0 h1:xkgbOSKj6DZziNpyqRRAOt3GJGtgjgsd2RoyT30VWuw=
++github.com/go-openapi/swag/conv v0.28.0 h1:GtqqbyFe7vR5Y7ehxG9W6/OvrSFdf1OLeTGp40TqxH8=
++github.com/go-openapi/swag/conv v0.28.0/go.mod h1:mbUE+mzctnhxi864m0Q07SpN8OowD9JhxmxuYvZZD/k=
++github.com/go-openapi/swag/jsonutils v0.28.0 h1:YIch6FwO7RXzeAnbO8Tu7dWBZeUEH+4nA0HXltVTnv4=
++github.com/go-openapi/swag/jsonutils v0.28.0/go.mod h1:CYM3WlTUcagR2ZoHdz54di/cbBqt82tuxuXgAjxw+mg=
++github.com/go-openapi/swag/jsonutils/fixtures_test v0.28.0 h1:qV+VVUAx5Oro8WjVWpZeql7YReTKhT4smR4zhcOQZr0=
++github.com/go-openapi/swag/jsonutils/fixtures_test v0.28.0/go.mod h1:mofwUWx70wvskwESqRJ//k/9kURmCgyJl5m5Ppoh5kY=
++github.com/go-openapi/swag/loading v0.28.0 h1:td8QZdZC9MIYGGSnSPKShKiK22I2tU5UQvuUhIBPRLU=
++github.com/go-openapi/swag/loading v0.28.0/go.mod h1:rXB0QiQX5mMveXEA7ouM4KiiM9jVJe4K6BVbwhD1M4k=
++github.com/go-openapi/swag/pools v0.28.0 h1:HPMZWSAfce3rdVTFcjFiCIBtDg9h4x2QlRrHipwhxeU=
++github.com/go-openapi/swag/pools v0.28.0/go.mod h1:kVQefhSK5RWuRe7BXsL8htgBPAMpN7HDGpGEknqugeE=
++github.com/go-openapi/swag/stringutils v0.28.0 h1:ixsc9iYgDPubHL/8nSkbnryEHpD2VRlBMLKpQyPXcDU=
++github.com/go-openapi/swag/stringutils v0.28.0/go.mod h1:lzRN95CxXmA03XcDWHLOb6nOMcxCqR5rGY0lOgsfRoM=
++github.com/go-openapi/swag/typeutils v0.28.0 h1:nRBKSBXjDgf01VDPB3fWeD9nQuhCOVeIYAkUx2tbkyY=
++github.com/go-openapi/swag/typeutils v0.28.0/go.mod h1:Srm0xFNRZ1Y+vCxJclo5qzx8aj+1pAKda/YfFPrG0dQ=
++github.com/go-openapi/swag/yamlutils v0.28.0 h1:TV3JXH6DS46KUroDtMLAYHGkdWf5VDq3wVWFirmzROY=
++github.com/go-openapi/swag/yamlutils v0.28.0/go.mod h1:x0q/yndZHEgk9Rx3DyDqzFUmHy55KTvIZldvF2dTJXs=
++github.com/go-openapi/testify/enable/yaml/v2 v2.6.0 h1:gGHwAJ0R/5jU8BEGDbfRNR3hL68dAVi84WuOApp29B0=
++github.com/go-openapi/testify/enable/yaml/v2 v2.6.0/go.mod h1:tY+St1SGq4NFl0QIqdTY4aEdbChAHxhyB77XQi9iJCo=
++github.com/go-openapi/testify/v2 v2.6.0 h1:5PKH2HE7YJ/LuRPQGvSxBRlFXNQhSetBLlGAgUEu3ug=
++github.com/go-openapi/testify/v2 v2.6.0/go.mod h1:SgsVHtfooshd0tublTtJ50FPKhujf47YRqauXXOUxfw=
+ github.com/go-pdf/fpdf v0.9.0 h1:PPvSaUuo1iMi9KkaAn90NuKi+P4gwMedWPHhj8YlJQw=
+ github.com/go-pdf/fpdf v0.9.0/go.mod h1:oO8N111TkmKb9D7VvWGLvLJlaZUQVPM+6V42pp3iV4Y=
+ github.com/go-sql-driver/mysql v1.8.1 h1:LedoTUt/eveggdHS9qUFC1EFSa8bU2+1pZjSRpvNJ1Y=
+@@ -150,6 +179,8 @@ github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UV
+ github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+ github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
+ github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
++github.com/swaggo/swag v1.16.4 h1:clWJtd9LStiG3VeijiCfOVODP6VpHtKdQy9ELFG3s1A=
++github.com/swaggo/swag v1.16.4/go.mod h1:VBsHJRsDvfYvqoiMKnsdwhNV9LEMHgEDZcyVYX0sxPg=
+ github.com/tinylib/msgp v1.6.4 h1:mOwYbyYDLPj35mkA2BjjYejgJk9BuHxDdvRnb6v2ZcQ=
+ github.com/tinylib/msgp v1.6.4/go.mod h1:RSp0LW9oSxFut3KzESt5Voq4GVWyS+PSulT77roAqEA=
+ github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
+@@ -199,6 +230,8 @@ go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
+ go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
+ golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
+ golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
++golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=
++golang.org/x/mod v0.41.0/go.mod h1:Ek9pY8RKWXwsWvd3rQiHYtMqkjSUV+s1Rj7j4H5Ur6o=
+ golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
+ golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
+ golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
+@@ -209,6 +242,8 @@ golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
+ golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
+ golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=
+ golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=
++golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
++golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
+ gonum.org/v1/gonum v0.17.0 h1:VbpOemQlsSMrYmn7T2OUvQ4dqxQXU+ouZFQsZOx50z4=
+ gonum.org/v1/gonum v0.17.0/go.mod h1:El3tOrEuMpv2UdMrbNlKEh9vd86bmQ6vqIcDwxEOc1E=
+ google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 h1:ax2KzoSRIZU/M0cIxri3pKxy99vniH1PVxWC6si/eZI=
 diff --git a/internal/features/auth/handler.go b/internal/features/auth/handler.go
 index a8a5baa..673d544 100644
 --- a/internal/features/auth/handler.go
@@ -327,10 +465,10 @@ index 0000000..066f89d
 +}
 diff --git a/internal/features/purchase-orders/handler/orders.go b/internal/features/purchase-orders/handler/orders.go
 new file mode 100644
-index 0000000..9b0d595
+index 0000000..428aa68
 --- /dev/null
 +++ b/internal/features/purchase-orders/handler/orders.go
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,368 @@
 +package handler
 +
 +import (
@@ -341,6 +479,18 @@ index 0000000..9b0d595
 +)
 +
 +// list — GET /api/v1/purchase-orders (§6.1).
++//
++// @Summary  Список закупок (§6.1)
++// @Tags     purchase-orders
++// @Produce  json
++// @Param    status query string false "Статус" Enums(draft, sent, ready, picked_up, cancelled)
++// @Param    limit  query int    false "1–100, по умолчанию 50"
++// @Param    offset query int    false ">= 0"
++// @Success  200 {object} dto.ListResponse
++// @Failure  400 {object} ErrorResponse
++// @Failure  403 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders [get]
 +func (h *Handler) list(c fiber.Ctx) error {
 +	resp, err := h.svc.List(c.Context(), actor(c), service.ListQuery{
 +		Status: c.Query("status"), Limit: c.Query("limit"), Offset: c.Query("offset"),
@@ -352,6 +502,17 @@ index 0000000..9b0d595
 +}
 +
 +// create — POST /api/v1/purchase-orders (§6.2): 201 + карточка.
++//
++// @Summary  Создать черновик (§6.2)
++// @Tags     purchase-orders
++// @Accept   json
++// @Produce  json
++// @Param    body body dto.CreateRequest true "Черновик"
++// @Success  201 {object} dto.Order
++// @Failure  400 {object} ErrorResponse
++// @Failure  403 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders [post]
 +func (h *Handler) create(c fiber.Ctx) error {
 +	var req dto.CreateRequest
 +	if err := decode(c, &req); err != nil {
@@ -365,6 +526,16 @@ index 0000000..9b0d595
 +}
 +
 +// get — GET /api/v1/purchase-orders/:id (§6.3).
++//
++// @Summary  Карточка закупки (§6.3)
++// @Tags     purchase-orders
++// @Produce  json
++// @Param    id path string true "id заказа"
++// @Success  200 {object} dto.Order
++// @Failure  403 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id} [get]
 +func (h *Handler) get(c fiber.Ctx) error {
 +	resp, err := h.svc.Get(c.Context(), actor(c), c.Params("id"))
 +	if err != nil {
@@ -374,6 +545,19 @@ index 0000000..9b0d595
 +}
 +
 +// update — PUT /api/v1/purchase-orders/:id (§6.4).
++//
++// @Summary  Правка черновика/отправленного заказа (§6.4)
++// @Tags     purchase-orders
++// @Accept   json
++// @Produce  json
++// @Param    id   path string            true "id заказа"
++// @Param    body body dto.UpdateRequest true "Примечание и строки"
++// @Success  200 {object} dto.Order
++// @Failure  400 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id} [put]
 +func (h *Handler) update(c fiber.Ctx) error {
 +	var req dto.UpdateRequest
 +	if err := decode(c, &req); err != nil {
@@ -387,6 +571,19 @@ index 0000000..9b0d595
 +}
 +
 +// delete — DELETE /api/v1/purchase-orders/:id (§6.5): 204.
++//
++// @Summary  Мягко удалить черновик (§6.5, только admin)
++// @Tags     purchase-orders
++// @Accept   json
++// @Param    id   path string            true "id заказа"
++// @Param    body body dto.ReasonRequest true "Версия и причина"
++// @Success  204
++// @Failure  400 {object} ErrorResponse
++// @Failure  403 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id} [delete]
 +func (h *Handler) delete(c fiber.Ctx) error {
 +	var req dto.ReasonRequest
 +	if err := decode(c, &req); err != nil {
@@ -411,6 +608,18 @@ index 0000000..9b0d595
 +}
 +
 +// send — POST /api/v1/purchase-orders/:id/send (§6.6).
++//
++// @Summary  Отправить поставщику (§6.6)
++// @Tags     purchase-orders
++// @Accept   json
++// @Produce  json
++// @Param    id   path string             true "id заказа"
++// @Param    body body dto.VersionRequest true "Версия"
++// @Success  200 {object} dto.Order
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id}/send [post]
 +func (h *Handler) send(c fiber.Ctx) error {
 +	return h.versioned(c, func(a service.Actor, id string, r dto.VersionRequest) (*dto.Order, error) {
 +		return h.svc.Send(c.Context(), a, id, r)
@@ -418,6 +627,18 @@ index 0000000..9b0d595
 +}
 +
 +// recall — POST /api/v1/purchase-orders/:id/recall (§6.7).
++//
++// @Summary  Отозвать (§6.7)
++// @Tags     purchase-orders
++// @Accept   json
++// @Produce  json
++// @Param    id   path string             true "id заказа"
++// @Param    body body dto.VersionRequest true "Версия"
++// @Success  200 {object} dto.Order
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id}/recall [post]
 +func (h *Handler) recall(c fiber.Ctx) error {
 +	return h.versioned(c, func(a service.Actor, id string, r dto.VersionRequest) (*dto.Order, error) {
 +		return h.svc.Recall(c.Context(), a, id, r)
@@ -425,6 +646,18 @@ index 0000000..9b0d595
 +}
 +
 +// pickUp — POST /api/v1/purchase-orders/:id/pick-up (§6.8).
++//
++// @Summary  «Забрали» (§6.8)
++// @Tags     purchase-orders
++// @Accept   json
++// @Produce  json
++// @Param    id   path string             true "id заказа"
++// @Param    body body dto.VersionRequest true "Версия"
++// @Success  200 {object} dto.Order
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id}/pick-up [post]
 +func (h *Handler) pickUp(c fiber.Ctx) error {
 +	return h.versioned(c, func(a service.Actor, id string, r dto.VersionRequest) (*dto.Order, error) {
 +		return h.svc.PickUp(c.Context(), a, id, r)
@@ -432,6 +665,19 @@ index 0000000..9b0d595
 +}
 +
 +// cancel — POST /api/v1/purchase-orders/:id/cancel (§6.9).
++//
++// @Summary  Отменить с причиной (§6.9)
++// @Tags     purchase-orders
++// @Accept   json
++// @Produce  json
++// @Param    id   path string            true "id заказа"
++// @Param    body body dto.ReasonRequest true "Версия и причина"
++// @Success  200 {object} dto.Order
++// @Failure  400 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id}/cancel [post]
 +func (h *Handler) cancel(c fiber.Ctx) error {
 +	var req dto.ReasonRequest
 +	if err := decode(c, &req); err != nil {
@@ -445,15 +691,38 @@ index 0000000..9b0d595
 +}
 +
 +// restore — POST /api/v1/purchase-orders/:id/restore (раздел «Удалённые», admin, DS-072).
++//
++// @Summary  Восстановить удалённый черновик (DS-072, только admin)
++// @Tags     purchase-orders
++// @Produce  json
++// @Param    id path string true "id заказа"
++// @Success  200 {object} RestoreResponse
++// @Failure  403 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/{id}/restore [post]
 +func (h *Handler) restore(c fiber.Ctx) error {
 +	id := c.Params("id")
 +	if err := h.svc.Restore(c.Context(), actor(c), id); err != nil {
 +		return err
 +	}
-+	return c.JSON(fiber.Map{"id": id})
++	return c.JSON(RestoreResponse{ID: id})
 +}
 +
 +// suggestions — GET /api/v1/purchase-orders/suggestions (§6.10).
++//
++// @Summary  Строки дефицита для «Новый заказ» (§6.10)
++// @Tags     purchase-orders
++// @Produce  json
++// @Param    reason query string false "Тип строки" Enums(for_orders, below_min)
++// @Param    limit  query int    false "1–500, по умолчанию 500"
++// @Param    offset query int    false ">= 0"
++// @Success  200 {object} dto.SuggestionsResponse
++// @Failure  400 {object} ErrorResponse
++// @Failure  403 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /purchase-orders/suggestions [get]
 +func (h *Handler) suggestions(c fiber.Ctx) error {
 +	resp, err := h.svc.Suggestions(c.Context(), actor(c), service.SuggestionsQuery{
 +		Reason: c.Query("reason"), Limit: c.Query("limit"), Offset: c.Query("offset"),
@@ -467,6 +736,18 @@ index 0000000..9b0d595
 +// ---- кабинет поставщика ----
 +
 +// supplierList — GET /api/v1/supplier/purchase-orders (§6.12).
++//
++// @Summary  Кабинет поставщика: список заказов (§6.12)
++// @Tags     supplier-cabinet
++// @Produce  json
++// @Param    status query string false "Статус" Enums(sent, ready, picked_up)
++// @Param    limit  query int    false "1–100, по умолчанию 50"
++// @Param    offset query int    false ">= 0"
++// @Success  200 {object} dto.SupplierListResponse
++// @Failure  400 {object} ErrorResponse
++// @Failure  403 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /supplier/purchase-orders [get]
 +func (h *Handler) supplierList(c fiber.Ctx) error {
 +	resp, err := h.svc.SupplierList(c.Context(), actor(c), service.ListQuery{
 +		Status: c.Query("status"), Limit: c.Query("limit"), Offset: c.Query("offset"),
@@ -478,6 +759,16 @@ index 0000000..9b0d595
 +}
 +
 +// supplierGet — GET /api/v1/supplier/purchase-orders/:id (§6.13).
++//
++// @Summary  Кабинет поставщика: карточка заказа (§6.13)
++// @Tags     supplier-cabinet
++// @Produce  json
++// @Param    id path string true "id заказа"
++// @Success  200 {object} dto.SupplierOrder
++// @Failure  403 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /supplier/purchase-orders/{id} [get]
 +func (h *Handler) supplierGet(c fiber.Ctx) error {
 +	resp, err := h.svc.SupplierGet(c.Context(), actor(c), c.Params("id"))
 +	if err != nil {
@@ -487,6 +778,21 @@ index 0000000..9b0d595
 +}
 +
 +// supplierAnswer — PUT /api/v1/supplier/purchase-orders/:id/items/:item_id (§6.14).
++//
++// @Summary  Кабинет поставщика: ответ по строке (§6.14)
++// @Tags     supplier-cabinet
++// @Accept   json
++// @Produce  json
++// @Param    id      path string            true "id заказа"
++// @Param    item_id path string            true "id строки"
++// @Param    body    body dto.AnswerRequest true "Ответ"
++// @Success  200 {object} dto.AnswerResponse
++// @Failure  400 {object} ErrorResponse
++// @Failure  403 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /supplier/purchase-orders/{id}/items/{item_id} [put]
 +func (h *Handler) supplierAnswer(c fiber.Ctx) error {
 +	var req dto.AnswerRequest
 +	if err := decode(c, &req); err != nil {
@@ -500,12 +806,36 @@ index 0000000..9b0d595
 +}
 +
 +// supplierReady — POST /api/v1/supplier/purchase-orders/:id/ready (§6.15).
++//
++// @Summary  Кабинет поставщика: «Собрано, можно забирать» (§6.15)
++// @Tags     supplier-cabinet
++// @Produce  json
++// @Param    id path string true "id заказа"
++// @Success  200 {object} dto.SupplierOrder
++// @Failure  403 {object} ErrorResponse
++// @Failure  404 {object} ErrorResponse
++// @Failure  409 {object} ErrorResponse
++// @Security CookieSession
++// @Router   /supplier/purchase-orders/{id}/ready [post]
 +func (h *Handler) supplierReady(c fiber.Ctx) error {
 +	resp, err := h.svc.Ready(c.Context(), actor(c), c.Params("id"))
 +	if err != nil {
 +		return err
 +	}
 +	return c.JSON(resp)
++}
++
++// ErrorResponse — wire-формат ошибки pkg/errorspkg (только для swagger): 400 VALIDATION несёт
++// details.fields[], 409 «Собрано» — details.item_ids.
++type ErrorResponse struct {
++	Code    string         `json:"code"`
++	Message string         `json:"message"`
++	Details map[string]any `json:"details,omitempty"`
++}
++
++// RestoreResponse — ответ POST /api/v1/purchase-orders/:id/restore.
++type RestoreResponse struct {
++	ID string `json:"id"`
 +}
 diff --git a/internal/features/purchase-orders/handler/print_pdf.go b/internal/features/purchase-orders/handler/print_pdf.go
 new file mode 100644
@@ -4516,6 +4846,132 @@ index 0000000..30f5b01
 +		return "Недопустимые символы в комментарии"
 +	}
 +	return "Недопустимое значение"
++}
+diff --git a/internal/features/purchase-orders/validators/validators_fuzz_test.go b/internal/features/purchase-orders/validators/validators_fuzz_test.go
+new file mode 100644
+index 0000000..1cb9898
+--- /dev/null
++++ b/internal/features/purchase-orders/validators/validators_fuzz_test.go
+@@ -0,0 +1,120 @@
++package validators
++
++import (
++	"math/big"
++	"strings"
++	"testing"
++	"unicode/utf8"
++
++	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/constants"
++	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/models/dto"
++)
++
++// Go-fuzz валидаторов (§TD-7, in-process — исключение §TD-8): недоверенный ввод поставщика и
++// сотрудника. Инварианты: без паники; принятое значение лежит в границах numeric(12,3)/(12,2) и
++// длин полей; отклонённое — ошибка поля, а не молчаливое обрезание.
++
++var seeds = []string{"0", "1", "0.001", "99999.999", "100000", "-1", "1.0001", "1,5", " 2 ", "1e3", "NaN", "",
++	"9999999.99", "10000000", "00.1", "٣", "<script>alert(1)</script>", strings.Repeat("9", 40)}
++
++func FuzzParseQty(f *testing.F) {
++	for _, s := range seeds {
++		f.Add(s)
++	}
++	max := new(big.Rat).SetFrac64(99999999, 1000)
++	f.Fuzz(func(t *testing.T, s string) {
++		r, ok := ParseQty(s)
++		if !ok {
++			return
++		}
++		if r.Sign() <= 0 || r.Cmp(max) > 0 {
++			t.Fatalf("qty %q принято вне (0; 99999.999]: %s", s, r.FloatString(4))
++		}
++		if fs := r.FloatString(constants.QtyFracDigits); new(big.Rat).SetFrac(r.Num(), r.Denom()).Cmp(mustRat(fs)) != 0 {
++			t.Fatalf("qty %q теряет точность при 3 знаках", s)
++		}
++	})
++}
++
++func mustRat(s string) *big.Rat {
++	r, _ := new(big.Rat).SetString(s)
++	return r
++}
++
++func FuzzValidateAnswer(f *testing.F) {
++	for _, s := range seeds {
++		f.Add(s, s, s, int64(1))
++	}
++	maxQty := new(big.Rat).SetFrac64(99999999, 1000)
++	maxPrice := new(big.Rat).SetFrac64(999999999, 100)
++	f.Fuzz(func(t *testing.T, qty, price, note string, version int64) {
++		q, p := dto.Num(qty), dto.Num(price)
++		out, fields := ValidateAnswer(dto.AnswerRequest{Version: version, SupplierQty: &q, SupplierPrice: &p, SupplierNote: note})
++		bad := map[string]bool{}
++		for _, fl := range fields {
++			bad[fl.Name] = true
++		}
++		if version < 1 && !bad["version"] {
++			t.Fatal("version < 1 принята")
++		}
++		if !bad["supplier_qty"] && out.SupplierQty != nil {
++			r := mustRat(*out.SupplierQty)
++			if r == nil || r.Sign() < 0 || r.Cmp(maxQty) > 0 {
++				t.Fatalf("supplier_qty %q принято вне [0; 99999.999]", qty)
++			}
++		}
++		if !bad["supplier_price"] && out.SupplierPrice != nil {
++			r := mustRat(*out.SupplierPrice)
++			if r == nil || r.Sign() < 0 || r.Cmp(maxPrice) > 0 {
++				t.Fatalf("supplier_price %q принята вне [0; 9999999.99]", price)
++			}
++		}
++		if !bad["supplier_note"] && utf8.RuneCountInString(note) > constants.SupplierNoteMax {
++			t.Fatal("supplier_note > 500 принят")
++		}
++	})
++}
++
++func FuzzValidateCreate(f *testing.F) {
++	for _, s := range seeds {
++		f.Add(s, s, "manual", "9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")
++	}
++	f.Fuzz(func(t *testing.T, qty, note, reason, pid string) {
++		out, fields := ValidateCreate(dto.CreateRequest{Note: note, Items: []dto.ItemRequest{
++			{ProductID: pid, Qty: dto.Num(qty), Reason: reason},
++			{ProductID: pid, Qty: dto.Num(qty), Reason: reason},
++		}})
++		if len(fields) > 0 {
++			return
++		}
++		if utf8.RuneCountInString(out.Note) > constants.NoteMax {
++			t.Fatal("note > 1000 принят")
++		}
++		if len(out.Lines) != 1 {
++			t.Fatalf("дубли product_id не сведены: %d строк", len(out.Lines))
++		}
++		r := mustRat(out.Lines[0].Qty)
++		if r == nil || r.Sign() <= 0 || r.Cmp(new(big.Rat).SetFrac64(99999999, 1000)) > 0 {
++			t.Fatalf("сумма qty %q вне границ", out.Lines[0].Qty)
++		}
++		if !constants.In(out.Lines[0].Reason, constants.Reasons) {
++			t.Fatalf("reason %q вне enum", out.Lines[0].Reason)
++		}
++	})
++}
++
++func FuzzValidateReason(f *testing.F) {
++	for _, s := range seeds {
++		f.Add(s)
++	}
++	f.Fuzz(func(t *testing.T, raw string) {
++		reason, fields := ValidateReason(1, &raw)
++		if len(fields) > 0 {
++			return
++		}
++		n := utf8.RuneCountInString(reason)
++		if n < 1 || n > constants.CancelReasonMax || reason != strings.TrimSpace(reason) {
++			t.Fatalf("причина %q принята вне 1–500 после trim", raw)
++		}
++	})
 +}
 diff --git a/internal/features/purchase-orders/validators/validators_test.go b/internal/features/purchase-orders/validators/validators_test.go
 new file mode 100644
