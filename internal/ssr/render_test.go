@@ -183,6 +183,9 @@ func TestInitials(t *testing.T) {
 		"admin":            "A",
 		"  волков   олег ": "ВО",
 		"":                 "",
+		"Ерлан (АвтоЗапчасти Алматы)": "ЕА",
+		"«Тұрақ» 24": "Т",
+		"( )":        "",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, Initials(in), in)

@@ -29,6 +29,14 @@
     var v = String(s);
     return v.indexOf('.') >= 0 ? v.replace(/0+$/, '').replace(/\.$/, '') : v;
   }
+  // Деньги: «28400.00» → «28 400,00» (неразрывный пробел, запятая) — как numeric.Amount.RU в PDF.
+  function money(s) {
+    if (s == null || s === '') return '';
+    var m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(s));
+    if (!m) return String(s);
+    var frac = ((m[3] || '') + '00').slice(0, Math.max(2, (m[3] || '').length));
+    return m[1] + m[2].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ',' + frac;
+  }
   function toast(msg, isError) { KT.uiToast(msg, isError); }
   function setBadge(b, status) {
     var s = STATUS[status] || { t: status, c: 'text-bg-secondary' };
@@ -85,7 +93,7 @@
         var ans = el('span', null, 'отвечено ' + o.answered_count + ' из ' + o.items_count);
         ans.setAttribute('data-testid', 'so-card-answered');
         meta.append(ans);
-        if (o.total_amount) meta.append(el('span', 'ms-auto fw-semibold', o.total_amount));
+        if (o.total_amount) meta.append(el('span', 'ms-auto fw-semibold', money(o.total_amount)));
         bodyEl.append(meta);
         card.append(bodyEl);
         col.append(card);
@@ -121,7 +129,7 @@
       var box = $('#so-items');
       box.textContent = '';
       o.items.forEach(function (it) { box.append(itemCard(it)); });
-      $('#so-total').textContent = o.total_amount || '—';
+      $('#so-total').textContent = money(o.total_amount) || '—';
       $('#so-ready').classList.toggle('d-none', !o.can_answer);
     }
     function field(label, testid, value, opts) {
@@ -168,7 +176,7 @@
       body.append(row);
 
       var foot = el('div', 'd-flex flex-wrap align-items-center gap-2 mt-2');
-      var amount = el('span', 'fw-semibold', it.line_amount ? 'Сумма: ' + it.line_amount : '');
+      var amount = el('span', 'fw-semibold', it.line_amount ? 'Сумма: ' + money(it.line_amount) : '');
       amount.setAttribute('data-testid', 'so-item-amount');
       var state = el('span', 'small ms-auto', '');
       state.setAttribute('data-testid', 'so-item-state');
@@ -192,8 +200,8 @@
         state.textContent = 'Сохраняю…';
         var pr = KT.api.put(API + '/' + encodeURIComponent(id) + '/items/' + encodeURIComponent(it.id), payload).then(function (r) {
           cur.version = r.version;
-          amount.textContent = r.line_amount ? 'Сумма: ' + r.line_amount : '';
-          $('#so-total').textContent = r.total_amount || '—';
+          amount.textContent = r.line_amount ? 'Сумма: ' + money(r.line_amount) : '';
+          $('#so-total').textContent = money(r.total_amount) || '—';
           changed.classList.toggle('d-none', !r.customer_changed);
           state.className = 'small ms-auto text-success';
           state.textContent = 'Сохранено ✓';

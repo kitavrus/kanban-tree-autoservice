@@ -60,3 +60,22 @@ func TestAmount_Validate_NegativeNotAllowed(t *testing.T) {
 	assert.Equal(t, MsgInvalid, Amount("-1").Validate(scale, false))
 	assert.Empty(t, Amount("-1").Validate(scale, true), "allowNegative=true — валидно")
 }
+
+func TestAmount_RU(t *testing.T) {
+	cases := map[Amount]string{
+		"28400.00": "28 400,00", "1234567.5": "1 234 567,50", "350": "350,00",
+		"0.00": "0,00", "": "0,00", "-1500.00": "-1 500,00", "abc": "abc",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, in.RU(), "in=%q", in)
+	}
+}
+
+func TestAmount_RUQty(t *testing.T) {
+	cases := map[Amount]string{
+		"1.000": "1", "2.500": "2,5", "1500.000": "1 500", "0.125": "0,125", "4": "4", "x": "x",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, in.RUQty(), "in=%q", in)
+	}
+}

@@ -132,12 +132,17 @@ func (s Shell) NavActive(url string) bool {
 	return s.ActivePath == url || strings.HasPrefix(s.ActivePath, url+"/")
 }
 
-// Initials — «Сидоров Пётр» → «СП» (аватар в сайдбаре, как в прототипе).
+// Initials — «Сидоров Пётр» → «СП» (аватар в сайдбаре, как в прототипе). Из каждого слова
+// берётся первая буква: скобки, кавычки и цифры пропускаются — «Ерлан (АвтоЗапчасти)» → «ЕА».
 func Initials(name string) string {
 	var out []rune
 	for _, w := range strings.Fields(name) {
-		r := []rune(w)
-		out = append(out, unicode.ToUpper(r[0]))
+		for _, r := range w {
+			if unicode.IsLetter(r) {
+				out = append(out, unicode.ToUpper(r))
+				break
+			}
+		}
 		if len(out) == 2 {
 			break
 		}

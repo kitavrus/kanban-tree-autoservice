@@ -15,6 +15,7 @@ import (
 	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/mappers"
 	"github.com/kitavrus/kanban-tree/internal/features/purchase-orders/models"
 	"github.com/kitavrus/kanban-tree/internal/ssr"
+	"github.com/kitavrus/kanban-tree/pkg/numeric"
 	"github.com/kitavrus/kanban-tree/pkg/timezone"
 )
 
@@ -59,12 +60,17 @@ func (s *SSR) sendPDF(c fiber.Ctx, o *models.PurchaseOrder, mode pdfMode) error 
 	return c.Send(body)
 }
 
-func dash(s *string) string {
+// dash — пустой ответ поставщика печатается «—», иначе значение через format
+// (numeric.Amount.RUQty для количества, .RU для денег).
+func dash(s *string, format func(numeric.Amount) string) string {
 	if s == nil {
 		return "—"
 	}
-	return *s
+	return format(numeric.Amount(*s))
 }
+
+func qtyRU(a numeric.Amount) string   { return a.RUQty() }
+func moneyRU(a numeric.Amount) string { return a.RU() }
 
 func renderOrderPDF(o *models.PurchaseOrder, mode pdfMode, firm config.FirmInfo, tz string) ([]byte, error) {
 	pdf := board.NewPDFDoc()
@@ -101,9 +107,7 @@ func renderOrderPDF(o *models.PurchaseOrder, mode pdfMode, firm config.FirmInfo,
 	pdf.SetFont(font, "", 10)
 	if mode == pdfOurs {
 		recipient := "Получатель: " + mappers.RecipientName(o)
-		if o.SupplierID == nil {
-			recipient = "Получатель: Базар (покупаем сами)"
-		} else if o.SupplierPhone != "" {
+		if o.SupplierID != nil && o.SupplierPhone != "" {
 			recipient += ", тел. " + o.SupplierPhone
 		}
 		pdf.MultiCell(contentW, 5, recipient, "", "L", false)
@@ -133,12 +137,12 @@ func renderOrderPDF(o *models.PurchaseOrder, mode pdfMode, firm config.FirmInfo,
 	board.PDFTableRow(pdf, widths, aligns, headers, true)
 	pdf.SetFont(font, "", 9)
 	for i, it := range o.Items {
-		row := []string{fmt.Sprint(i + 1), it.Name, it.Sku, it.Qty, it.Unit}
+		row := []string{fmt.Sprint(i + 1), it.Name, it.Sku, numeric.Amount(it.Qty).RUQty(), it.Unit}
 		switch {
 		case bazaar:
 			row = append(row, "")
 		case answered:
-			row = append(row, dash(it.SupplierQty), dash(it.SupplierPrice), dash(it.LineAmount))
+			row = append(row, dash(it.SupplierQty, qtyRU), dash(it.SupplierPrice, moneyRU), dash(it.LineAmount, moneyRU))
 		}
 		board.PDFTableRow(pdf, widths, aligns, row, false)
 	}
@@ -146,7 +150,7 @@ func renderOrderPDF(o *models.PurchaseOrder, mode pdfMode, firm config.FirmInfo,
 	pdf.Ln(3)
 	if answered && o.TotalAmount != nil {
 		pdf.SetFont(font, "B", 12)
-		pdf.MultiCell(contentW, 7, "Итого: "+*o.TotalAmount, "", "R", false)
+		pdf.MultiCell(contentW, 7, "Итого: "+numeric.Amount(*o.TotalAmount).RU(), "", "R", false)
 	}
 	if strings.TrimSpace(o.Note) != "" {
 		pdf.SetFont(font, "B", 10)

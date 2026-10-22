@@ -59,6 +59,14 @@
     var v = String(s);
     return v.indexOf('.') >= 0 ? v.replace(/0+$/, '').replace(/\.$/, '') : v;
   }
+  // Деньги: «28400.00» → «28 400,00» (неразрывный пробел, запятая) — как numeric.Amount.RU в PDF.
+  function money(s) {
+    if (s == null || s === '') return '';
+    var m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(s));
+    if (!m) return String(s);
+    var frac = ((m[3] || '') + '00').slice(0, Math.max(2, (m[3] || '').length));
+    return m[1] + m[2].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ',' + frac;
+  }
   function fieldBase(name) { var m = /^items\[(\d+)\]\.(.+)$/.exec(name); return m ? { index: +m[1], name: m[2] } : null; }
 
   /* Окно с причиной (отмена §8.3 п.5, удаление п.6): кнопка неактивна, пока причина пуста;
@@ -167,7 +175,7 @@
         a.href = '/purchases/' + encodeURIComponent(o.id);
         a.setAttribute('data-testid', 'po-row-number');
         var cells = [a, el('span', 'text-break', o.recipient_name), badge(STATUS, o.status, 'po-row-status'),
-          String(o.items_count), o.total_amount || '', null, dt(o.sent_at), dt(o.picked_up_at)];
+          String(o.items_count), money(o.total_amount), null, dt(o.sent_at), dt(o.picked_up_at)];
         cells.forEach(function (c, i) {
           var td = el('td', (i === 3 || i === 4) ? 'text-end' : '');
           if (i === 5) {
@@ -408,8 +416,8 @@
         tr.append(tdq);
         if (showAnswers) {
           var sq = el('td', null, num(it.supplier_qty)); sq.setAttribute('data-testid', 'po-item-supplier-qty');
-          var sp = el('td', null, it.supplier_price || ''); sp.setAttribute('data-testid', 'po-item-supplier-price');
-          var la = el('td', null, it.line_amount || ''); la.setAttribute('data-testid', 'po-item-line-amount');
+          var sp = el('td', null, money(it.supplier_price)); sp.setAttribute('data-testid', 'po-item-supplier-price');
+          var la = el('td', null, money(it.line_amount)); la.setAttribute('data-testid', 'po-item-line-amount');
           var sn = el('td', 'text-break small', it.supplier_note || ''); sn.setAttribute('data-testid', 'po-item-supplier-note');
           tr.append(sq, sp, la, sn);
         }
@@ -425,7 +433,7 @@
         }
         body.append(tr);
       });
-      $('#po-total').textContent = order.total_amount ? 'Итого: ' + order.total_amount : '';
+      $('#po-total').textContent = order.total_amount ? 'Итого: ' + money(order.total_amount) : '';
     }
     function button(text, cls, testid, fn) {
       var b = el('button', 'btn ' + cls, text);

@@ -60,7 +60,7 @@ test.describe('Закупки по дефициту', () => {
     await expect(ui.status).toHaveText('Собран');
     await expect(ui.item(p1.id)).toHaveAttribute('data-discrepancy', 'true');
     await expect(ui.item(p2.id)).not.toHaveAttribute('data-discrepancy', 'true');
-    await expect(ui.total).toHaveText('Итого: 350.00');
+    await expect(ui.total).toHaveText('Итого: 350,00');
     await ui.button('pickup').click();
     await ui.confirm();
     await expect(ui.status).toHaveText('Забрали');
