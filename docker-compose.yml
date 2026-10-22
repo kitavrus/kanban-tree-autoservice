@@ -10,7 +10,8 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: dev
     ports:
-      - "5442:5432"
+      # порт на хосте — DEV_PG_PORT из .env (compose читает его сам); по умолчанию 5442
+      - "${DEV_PG_PORT:-5442}:5432"
     # PG18+: монтировать ровно в /var/lib/postgresql (БЕЗ /data) — образ сам кладёт
     # данные в версионированный подкаталог (pg_ctlcluster-совместимая раскладка);
     # монтирование в /var/lib/postgresql/data образ теперь считает ошибкой конфигурации
@@ -27,7 +28,8 @@ services:
     image: redis:8
     container_name: autoservice_dev_redis
     ports:
-      - "6389:6379"
+      # DEV_REDIS_PORT из .env; по умолчанию 6389
+      - "${DEV_REDIS_PORT:-6389}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
