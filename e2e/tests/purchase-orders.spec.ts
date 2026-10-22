@@ -460,4 +460,28 @@ test.describe('Закупки по дефициту', () => {
     await ui.row(draft.id).click();
     await expect(page).toHaveURL(new RegExp(`/purchases/${draft.id}$`));
   });
+  test('TS-028: добавленная запчасть встаёт в начало списка и остаётся там после сохранения', async ({ adminPage: page, po, uniq }) => {
+    const acc = await po.supplier(uniq('Порядок'), false);
+    const p1 = await po.product(uniq('первая'), { stock: 5, min_stock: 0 });
+    const p2 = await po.product(uniq('вторая'), { stock: 5, min_stock: 0 });
+    const p3 = await po.product(uniq('третья'), { stock: 5, min_stock: 0 });
+    const ui = new PurchaseOrdersPage(page);
+    const ids = (loc: typeof ui.items) => loc.evaluateAll((rows) => rows.map((r) => (r as HTMLElement).dataset.productId));
+
+    // карточка черновика: две добавленные — сверху, последняя первой; порядок переживает сохранение.
+    const o = await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: p1.id, qty: '1' }] });
+    await ui.gotoView(o.id);
+    await ui.addProduct(p2.name);
+    await ui.addProduct(p3.name);
+    await expect.poll(() => ids(ui.items)).toEqual([p3.id, p2.id, p1.id]);
+    await ui.button('save').click();
+    await expect(ui.toast.last()).toHaveText('Сохранено');
+    await ui.gotoView(o.id);
+    await expect.poll(() => ids(ui.items)).toEqual([p3.id, p2.id, p1.id]);
+
+    // «Новый заказ»: добавленная вручную — над строками дефицита.
+    await ui.gotoNew();
+    await ui.addProduct(p2.name);
+    await expect(page.getByTestId('po-line').first()).toHaveAttribute('data-product-id', p2.id);
+  });
 });

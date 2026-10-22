@@ -414,14 +414,19 @@
     productSearch($('#po-add'), function (p) {
       var ex = lineOf(p.id);
       if (ex) { ex.qtyInput.focus(); ex.qtyInput.select(); return; }
-      lines.push({ product_id: p.id, name: p.name, sku: p.sku, unit: p.unit, reason: 'manual', checked: true, qty: '1', tasks: [], in_open_orders: [] });
+      // Последняя добавленная — вверху списка.
+      lines.unshift({ product_id: p.id, name: p.name, sku: p.sku, unit: p.unit, reason: 'manual', checked: true, qty: '1', tasks: [], in_open_orders: [] });
       render();
     });
     KT.api.get(API + '/suggestions').then(function (resp) {
-      lines = (resp.items || []).map(function (s) {
+      // Добавленные вручную до ответа сервера не теряются и остаются сверху.
+      var manual = lines.slice();
+      var taken = {};
+      manual.forEach(function (l) { taken[l.product_id] = true; });
+      lines = manual.concat((resp.items || []).filter(function (s) { return !taken[s.product_id]; }).map(function (s) {
         return { product_id: s.product_id, name: s.name, sku: s.sku, unit: s.unit, stock: s.stock, min_stock: s.min_stock,
           pending: s.pending, reason: s.reason, tasks: s.tasks, in_open_orders: s.in_open_orders, checked: s.checked, qty: s.to_order };
-      });
+      }));
       render();
     }).catch(function () { render(); toast('Не удалось рассчитать дефицит', true); });
 
@@ -703,7 +708,8 @@
       for (var i = 0; i < items.length; i++) {
         if (items[i].product_id === p.id) { if (items[i].qtyInput) { items[i].qtyInput.focus(); items[i].qtyInput.select(); } return; }
       }
-      items.push({ id: null, product_id: p.id, name: p.name, sku: p.sku, unit: p.unit, qty: '1', reason: 'manual' });
+      // Последняя добавленная — вверху; порядок строк уходит на сервер как есть (position).
+      items.unshift({ id: null, product_id: p.id, name: p.name, sku: p.sku, unit: p.unit, qty: '1', reason: 'manual' });
       markDirty();
       renderItems();
     });
