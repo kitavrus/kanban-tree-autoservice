@@ -18,6 +18,10 @@
     <textarea id="po-note" class="form-control" rows="2" maxlength="1000" data-testid="po-note"></textarea>
     <div class="invalid-feedback d-block" id="po-note-error" data-testid="po-error-note"></div>
   </div>
+  <div class="mb-3 d-none" style="max-width:420px" id="po-add-wrap">
+    <label for="po-add" class="form-label">Добавить запчасть</label>
+    <input type="search" id="po-add" class="form-control" placeholder="Название или артикул" autocomplete="off" data-testid="po-add-product">
+  </div>
   <div class="table-responsive">
     <table class="table align-middle" data-testid="po-items">
       <thead><tr id="po-items-head"></tr></thead>
@@ -25,10 +29,6 @@
     </table>
   </div>
   <div class="text-end fw-semibold mb-3" id="po-total" data-testid="po-total"></div>
-  <div class="mb-3 d-none" style="max-width:420px" id="po-add-wrap">
-    <label for="po-add" class="form-label">Добавить запчасть</label>
-    <input type="search" id="po-add" class="form-control" placeholder="Название или артикул" autocomplete="off" data-testid="po-add-product">
-  </div>
   <div class="invalid-feedback d-block mb-2" id="po-items-error" data-testid="po-error-items"></div>
   <div class="d-flex flex-wrap gap-2" id="po-actions">
     <a class="btn btn-outline-secondary" id="po-print" href="/purchases/{{ .ID }}/print" data-testid="po-print">Печать</a>
