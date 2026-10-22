@@ -40,3 +40,4 @@
 {"type": "stage_end", "stage": "light-review", "status": "ok", "ts": "2026-10-22T02:32:01+05:00"}
 {"type": "tool", "tool": "review_verdict_check", "status": "FAIL", "total_s": 0, "steps": [{"name": "verdict:APPROVED", "s": 0}], "ts": "2026-10-22T02:32:33+05:00"}
 {"type": "tool", "tool": "review_verdict_check", "status": "PASS", "total_s": 0, "steps": [{"name": "verdict:APPROVED", "s": 0}], "ts": "2026-10-22T02:32:55+05:00"}
+{"type": "tool", "tool": "e2e_evidence", "status": "PASS", "total_s": 0, "steps": [{"name": "status:passed", "s": 0}], "ts": "2026-10-22T13:18:41+05:00"}
