@@ -440,6 +440,10 @@ body { background: var(--bs-body-bg); }
 .po-discrepancy > td { background: var(--bs-warning-bg-subtle) !important; }
 .po-qty { max-width: 8rem; }
 .po-hint { font-size: .825rem; color: var(--bs-secondary-color); }
+/* Канбан закупок (§8.1): карточка — ссылка на заказ, без перетаскивания. */
+.po-card:hover { border-color: var(--c, var(--bs-primary)); box-shadow: var(--bs-box-shadow-sm); }
+.po-card:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: 2px; }
+.po-view .badge { font-weight: 500; }
 /* Кабинет поставщика: телефон в первую очередь (DS-031) — крупные поля, итог и «Собрано»
    закреплены внизу экрана. Карточки строк не шире экрана: длинные названия переносятся. */
 .so-root { max-width: 860px; min-width: 0; }

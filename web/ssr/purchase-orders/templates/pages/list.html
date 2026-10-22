@@ -1,32 +1,28 @@
-{{ define "actions" }}<a href="/purchases/new" class="btn btn-primary ms-auto" data-testid="po-new">Новый заказ</a>{{ end }}
+{{ define "actions" }}<a href="/purchases/new" class="btn btn-primary btn-sm ms-auto" data-testid="po-new">+ Новый заказ</a>{{ end }}
 
 {{ define "content" }}
-<!-- §8.1 «Закупки»: список рисует /assets/ssr-shared/js/purchases.js поверх GET /api/v1/purchase-orders. -->
+<!-- §8.1 «Закупки»: канбан по статусам рисует /assets/ssr-shared/js/purchases.js поверх GET /api/v1/purchase-orders. -->
 <div id="po-list" data-po-page="list" data-testid="po-list-root">
-  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-    <label for="po-status" class="visually-hidden">Статус</label>
-    <select id="po-status" class="form-select" style="max-width:240px" data-native data-testid="po-filter-status">
-      <option value="">Все</option>
-      {{ range .Statuses }}<option value="{{ .Value }}">{{ .Title }}</option>
-      {{ end }}
+  <div class="po-views d-flex flex-wrap gap-2 mb-2" id="po-views" role="group" aria-label="Быстрые фильтры" data-testid="po-views"></div>
+
+  <div class="board-filters d-flex flex-wrap gap-2 align-items-center mb-3" data-testid="po-filters">
+    <select class="form-select form-select-sm" id="po-supplier" data-native data-testid="po-filter-supplier" style="max-width:240px"
+            aria-label="Поставщик">
+      <option value="">Все поставщики</option>
     </select>
+    <input type="search" class="form-control form-control-sm" id="po-q" data-testid="po-filter-q"
+           placeholder="Поиск: № заказа, поставщик, автор" style="max-width:280px" autocomplete="off">
+    <button type="button" class="btn btn-outline-secondary btn-sm" id="po-reset" data-testid="po-reset">Сбросить</button>
+    <span class="text-body-secondary small ms-auto" id="po-total" data-testid="po-total"></span>
   </div>
-  <div class="table-responsive d-none" id="po-table-wrap">
-    <table class="table table-hover align-middle" data-testid="po-table">
-      <thead><tr><th>Номер</th><th>Получатель</th><th>Статус</th><th class="text-end">Строк</th><th class="text-end">Сумма</th><th>Создан</th><th>Отправлен</th><th>Забрали</th></tr></thead>
-      <tbody id="po-tbody"></tbody>
-    </table>
+
+  <div id="po-board" class="board-columns" data-testid="po-board">
+    <div class="empty-state" data-testid="po-loading">Загрузка заказов…</div>
   </div>
+
   <div class="empty-state d-none" id="po-empty" data-testid="po-empty">
     <div class="mb-3">Закупок пока нет</div>
     <a href="/purchases/new" class="btn btn-primary">Новый заказ</a>
-  </div>
-  <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-    <span class="text-body-secondary small" id="po-total" data-testid="po-total"></span>
-    <div class="ms-auto d-flex gap-2" id="po-pager">
-      <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="po-prev" data-testid="po-prev">← Назад</button>
-      <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="po-next" data-testid="po-next">Вперёд →</button>
-    </div>
   </div>
 </div>
 {{ end }}

@@ -86,6 +86,10 @@ type ListItem struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	SentAt        *time.Time `json:"sent_at"`
 	PickedUpAt    *time.Time `json:"picked_up_at"`
+	// HasDiscrepancy — поставщик ответил количеством ≠ заказанному хотя бы по одной строке.
+	HasDiscrepancy bool `json:"has_discrepancy"`
+	// IsChanged — заказчик правил заказ после отправки, а поставщик ещё не ответил заново.
+	IsChanged bool `json:"is_changed"`
 }
 
 // ListResponse — конверт §API-1.

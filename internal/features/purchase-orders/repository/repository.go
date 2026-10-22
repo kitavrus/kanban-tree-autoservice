@@ -76,7 +76,7 @@ func scanOrder(row pgx.Row) (*models.PurchaseOrder, error) {
 		&o.CreatedBy, &o.CreatedByName, &o.CreatedAt, &o.UpdatedAt,
 		&o.SentAt, &o.ReadyAt, &o.PickedUpAt, &o.CancelledAt, &o.CancelReason,
 		&o.SupplierHasLogin, &o.ItemsCount, &o.AnsweredCount, &o.TotalAmount,
-		&o.NoteChanged, &changedItems)
+		&o.NoteChanged, &changedItems, &o.HasDiscrepancy)
 	if err != nil {
 		return nil, err
 	}

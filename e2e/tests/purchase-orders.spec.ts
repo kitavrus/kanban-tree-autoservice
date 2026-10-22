@@ -413,4 +413,51 @@ test.describe('Закупки по дефициту', () => {
     expect(r.status).toBe(409);
     expect((r.body as PoError).code).toBe('PURCHASE_ORDER_INVALID_STATUS');
   });
+  test('TS-027: канбан закупок — колонки по статусам, быстрые фильтры, фильтр по поставщику', async ({ adminPage: page, po, uniq }) => {
+    const accA = await po.supplier(uniq('Канбан А'), true);
+    const accB = await po.supplier(uniq('Канбан Б'), false);
+    const p1 = await po.product(uniq('свеча'));
+    const p2 = await po.product(uniq('шрус'));
+    const draft = await po.create(po.admin, { supplier_id: accB.supplier.id, items: [{ product_id: p1.id, qty: '1' }] });
+    let sent = await po.create(po.admin, { supplier_id: accA.supplier.id, items: [{ product_id: p1.id, qty: '4' }] });
+    sent = await po.admin.send(sent);
+    let disc = await po.create(po.admin, { supplier_id: accA.supplier.id, items: [{ product_id: p2.id, qty: '5' }] });
+    disc = await po.admin.send(disc);
+    const supApi = await po.as(accA.login, accA.password);
+    await supApi.answer(disc.id, disc.items[0].id, { version: disc.items[0].version, supplier_qty: '3', supplier_price: '100' });
+
+    const ui = new PurchaseOrdersPage(page);
+    await ui.gotoList();
+    await expect(ui.column('draft').locator(ui.row(draft.id))).toBeVisible();
+    await expect(ui.column('sent').locator(ui.row(sent.id))).toBeVisible();
+    await expect(ui.row(disc.id).getByTestId('po-row-discrepancy')).toHaveText('Расхождение');
+    await expect(ui.row(sent.id).getByTestId('po-row-discrepancy')).toHaveCount(0);
+
+    // поставщик А: черновик Б скрыт, счётчики считают только его заказы.
+    await ui.supplierFilter.selectOption(accA.supplier.id);
+    await expect(ui.row(draft.id)).toHaveCount(0);
+    await expect(ui.viewCount('')).toHaveText('2');
+    await expect(ui.viewCount('active')).toHaveText('2');
+    await expect(ui.viewCount('discrepancy')).toHaveText('1');
+    await expect(page).toHaveURL(new RegExp(`supplier=${accA.supplier.id}`));
+
+    await ui.view('discrepancy').click();
+    await expect(ui.row(disc.id)).toBeVisible();
+    await expect(ui.row(sent.id)).toHaveCount(0);
+
+    // фильтры переживают перезагрузку (URL), «Сбросить» возвращает всё.
+    await page.reload();
+    await expect(ui.view('discrepancy')).toHaveAttribute('aria-pressed', 'true');
+    await expect(ui.row(sent.id)).toHaveCount(0);
+    await page.getByTestId('po-reset').click();
+    await expect(ui.row(draft.id)).toBeVisible();
+    await expect(ui.row(sent.id)).toBeVisible();
+
+    await ui.view('new').click();
+    await expect(ui.row(draft.id)).toBeVisible();
+    await expect(ui.row(sent.id)).toHaveCount(0);
+
+    await ui.row(draft.id).click();
+    await expect(page).toHaveURL(new RegExp(`/purchases/${draft.id}$`));
+  });
 });

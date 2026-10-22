@@ -33,6 +33,7 @@ func ToListItem(o *models.PurchaseOrder) dto.ListItem {
 		SupplierID: o.SupplierID, RecipientName: RecipientName(o), Status: o.Status,
 		ItemsCount: o.ItemsCount, TotalAmount: o.TotalAmount, CreatedByName: o.CreatedByName,
 		CreatedAt: o.CreatedAt.UTC(), SentAt: utc(o.SentAt), PickedUpAt: utc(o.PickedUpAt),
+		HasDiscrepancy: o.HasDiscrepancy, IsChanged: o.IsChanged,
 	}
 }
 

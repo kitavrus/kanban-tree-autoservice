@@ -11,7 +11,12 @@ export class PurchaseOrdersPage {
     await this.page.goto(`/purchases${query}`);
     await expect(this.page.locator('.app-title')).toHaveText('Закупки');
   }
-  get statusFilter(): Locator { return this.page.getByTestId('po-filter-status'); }
+  get supplierFilter(): Locator { return this.page.getByTestId('po-filter-supplier'); }
+  get search(): Locator { return this.page.getByTestId('po-filter-q'); }
+  /** Быстрый фильтр: '' — «Все», new, active, discrepancy, changed, done. */
+  view(v: string): Locator { return this.page.getByTestId(`po-view-${v || 'all'}`); }
+  viewCount(v: string): Locator { return this.view(v).getByTestId('po-view-count'); }
+  column(status: string): Locator { return this.page.locator(`[data-testid="po-col"][data-status="${status}"]`); }
   get rows(): Locator { return this.page.getByTestId('po-row'); }
   row(orderId: string): Locator { return this.page.locator(`[data-testid="po-row"][data-id="${orderId}"]`); }
   get newButton(): Locator { return this.page.getByTestId('po-new'); }

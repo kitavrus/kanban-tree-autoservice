@@ -16,7 +16,9 @@ EXISTS (SELECT 1 FROM users su WHERE su.supplier_id = o.supplier_id AND su.role 
   WHERE i.order_id = o.id AND i.supplier_qty IS NOT NULL AND i.supplier_price IS NOT NULL)::text,
 (o.note_changed_at IS NOT NULL AND o.sent_at IS NOT NULL AND o.note_changed_at > o.sent_at),
 EXISTS (SELECT 1 FROM purchase_order_items i WHERE i.order_id = o.id AND i.customer_changed_at IS NOT NULL
-  AND (i.supplier_answered_at IS NULL OR i.supplier_answered_at < i.customer_changed_at))`
+  AND (i.supplier_answered_at IS NULL OR i.supplier_answered_at < i.customer_changed_at)),
+EXISTS (SELECT 1 FROM purchase_order_items i WHERE i.order_id = o.id
+  AND i.supplier_qty IS NOT NULL AND i.supplier_qty <> i.qty)`
 
 const orderFrom = `
 FROM purchase_orders o

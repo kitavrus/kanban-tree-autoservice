@@ -128,75 +128,210 @@
     });
   }
 
-  // ======================= §8.1 список =======================
-  function initList(root) {
-    var LIMIT = 50;
+  // ======================= §8.1 список: канбан по статусам =======================
+  // Колонки — статусы заказа; переходы между ними — только кнопками в карточке (там
+  // проверки версии и прав), поэтому перетаскивания нет. Быстрые фильтры, поставщик и
+  // поиск применяются на клиенте: доска грузит все заказы страницами по 100.
+  var COLUMNS = [
+    { s: 'draft', c: '#6c757d' },
+    { s: 'sent', c: '#0d6efd' },
+    { s: 'ready', c: '#0dcaf0' },
+    { s: 'picked_up', c: '#198754' },
+    { s: 'cancelled', c: '#343a40' }
+  ];
+  var VIEWS = [
+    { v: '', t: 'Все', test: function () { return true; } },
+    { v: 'new', t: 'Новые', hint: 'Черновики — ещё не отправлены поставщику', test: function (o) { return o.status === 'draft'; } },
+    { v: 'active', t: 'Выполняются', hint: 'Отправлены или собраны поставщиком', test: function (o) { return o.status === 'sent' || o.status === 'ready'; } },
+    { v: 'discrepancy', t: 'С расхождениями', hint: 'Поставщик ответил количеством, отличным от заказанного', cls: 'danger',
+      test: function (o) { return !!o.has_discrepancy; } },
+    { v: 'changed', t: 'Изменены', hint: 'Изменены после отправки — поставщик ещё не ответил заново', cls: 'warning',
+      test: function (o) { return !!o.is_changed; } },
+    { v: 'done', t: 'Завершены', hint: 'Забрали или отменены', test: function (o) { return o.status === 'picked_up' || o.status === 'cancelled'; } }
+  ];
+  var BAZAAR = 'bazaar';
+
+  function initList() {
     var params = new URLSearchParams(location.search);
-    var state = { status: params.get('status') || '', offset: Math.max(0, parseInt(params.get('offset'), 10) || 0) };
-    var sel = $('#po-status');
-    sel.value = state.status;
-    if (params.get('toast') === 'deleted') {
-      toast('Черновик удалён — восстановить можно в «Удалённых»');
-      params.delete('toast');
-      history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
-    }
-    sel.addEventListener('change', function () { state.status = sel.value; state.offset = 0; load(); });
-    $('#po-prev').addEventListener('click', function () { state.offset = Math.max(0, state.offset - LIMIT); load(); });
-    $('#po-next').addEventListener('click', function () { state.offset += LIMIT; load(); });
+    var state = { view: params.get('view') || '', supplier: params.get('supplier') || '', q: params.get('q') || '' };
+    if (!VIEWS.some(function (x) { return x.v === state.view; })) state.view = '';
+    var all = [];
+    var supSel = $('#po-supplier');
+    var qInput = $('#po-q');
+    qInput.value = state.q;
+    if (params.get('toast') === 'deleted') toast('Черновик удалён — восстановить можно в «Удалённых»');
+
+    supSel.addEventListener('change', function () { state.supplier = supSel.value; render(); });
+    var qTimer = null;
+    qInput.addEventListener('input', function () {
+      clearTimeout(qTimer);
+      qTimer = setTimeout(function () { state.q = qInput.value.trim(); render(); }, 200);
+    });
+    $('#po-reset').addEventListener('click', function () {
+      state.view = ''; state.supplier = ''; state.q = '';
+      supSel.value = ''; qInput.value = '';
+      render();
+    });
 
     function syncUrl() {
       var p = new URLSearchParams();
-      if (state.status) p.set('status', state.status);
-      if (state.offset) p.set('offset', state.offset);
+      if (state.view) p.set('view', state.view);
+      if (state.supplier) p.set('supplier', state.supplier);
+      if (state.q) p.set('q', state.q);
       history.replaceState(null, '', '/purchases' + (p.toString() ? '?' + p : ''));
     }
-    function load() {
-      syncUrl();
-      var q = '?limit=' + LIMIT + '&offset=' + state.offset + (state.status ? '&status=' + encodeURIComponent(state.status) : '');
-      KT.api.get(API + q).then(render).catch(function (err) {
-        if (err instanceof KT.ApiError && err.status === 400) {
-          toast('Неизвестный статус', true);
-          state.status = ''; sel.value = ''; state.offset = 0;
-          load();
-          return;
+    function supplierKey(o) { return o.supplier_id || BAZAAR; }
+
+    // Поставщики — из самих заказов: так в фильтре есть и архивные, у которых остались заказы.
+    function fillSuppliers() {
+      var seen = {};
+      var opts = [];
+      all.forEach(function (o) {
+        var k = supplierKey(o);
+        if (seen[k]) { seen[k].n++; return; }
+        seen[k] = { k: k, name: o.recipient_name, n: 1 };
+        opts.push(seen[k]);
+      });
+      opts.sort(function (a, b) {
+        if (a.k === BAZAAR) return 1;
+        if (b.k === BAZAAR) return -1;
+        return a.name.localeCompare(b.name, 'ru');
+      });
+      if (state.supplier && !seen[state.supplier]) state.supplier = '';
+      supSel.textContent = '';
+      supSel.append(new Option('Все поставщики', ''));
+      opts.forEach(function (x) { supSel.append(new Option(x.name + ' (' + x.n + ')', x.k)); });
+      supSel.value = state.supplier;
+    }
+
+    function matchesBase(o) {
+      if (state.supplier && supplierKey(o) !== state.supplier) return false;
+      if (state.q) {
+        var q = state.q.toLowerCase();
+        var hay = [o.number_display, String(o.number), o.recipient_name, o.created_by_name].join(' ').toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    }
+
+    function renderViews(base) {
+      var box = $('#po-views');
+      box.textContent = '';
+      VIEWS.forEach(function (v) {
+        var n = base.filter(v.test).length;
+        var active = state.view === v.v;
+        var b = el('button', 'po-view btn btn-sm ' + (active ? 'btn-' + (v.cls || 'primary') : 'btn-outline-' + (v.cls || 'secondary')));
+        b.type = 'button';
+        b.setAttribute('aria-pressed', active ? 'true' : 'false');
+        b.setAttribute('data-testid', 'po-view-' + (v.v || 'all'));
+        if (v.hint) b.title = v.hint;
+        b.append(document.createTextNode(v.t + ' '));
+        var cnt = el('span', 'badge rounded-pill ' + (active ? 'text-bg-light' : 'text-bg-secondary'), String(n));
+        cnt.setAttribute('data-testid', 'po-view-count');
+        b.append(cnt);
+        b.addEventListener('click', function () { state.view = active ? '' : v.v; render(); });
+        box.append(b);
+      });
+    }
+
+    function card(o, color) {
+      var a = el('a', 'task-card po-card text-reset text-decoration-none d-block');
+      a.href = '/purchases/' + encodeURIComponent(o.id);
+      a.style.setProperty('--c', color);
+      a.style.cursor = 'pointer';
+      a.setAttribute('data-testid', 'po-row');
+      a.dataset.id = o.id;
+      var title = el('div', 'task-card-title d-flex align-items-center gap-2');
+      var num = el('span', null, o.number_display);
+      num.setAttribute('data-testid', 'po-row-number');
+      title.append(num);
+      var st = badge(STATUS, o.status, 'po-row-status');
+      st.classList.add('ms-auto', 'fw-normal');
+      title.append(st);
+      a.append(title);
+      var rec = el('div', 'task-card-client');
+      var rn = el('span', 'name', o.recipient_name);
+      rn.setAttribute('data-testid', 'po-row-recipient');
+      rec.append(rn);
+      a.append(rec);
+      if (o.has_discrepancy || o.is_changed) {
+        var flags = el('div', 'd-flex flex-wrap gap-1 mb-1');
+        if (o.has_discrepancy) {
+          var d = el('span', 'badge text-bg-danger', 'Расхождение');
+          d.setAttribute('data-testid', 'po-row-discrepancy');
+          flags.append(d);
         }
-        toast('Не удалось загрузить список', true);
+        if (o.is_changed) {
+          var ch = el('span', 'badge text-bg-warning', 'Изменён');
+          ch.setAttribute('data-testid', 'po-row-changed');
+          flags.append(ch);
+        }
+        a.append(flags);
+      }
+      var tot = el('div', 'task-card-total');
+      tot.setAttribute('data-testid', 'po-row-total');
+      tot.textContent = o.items_count + ' поз.' + (o.total_amount ? ' · ' + money(o.total_amount) + ' ₽' : '');
+      a.append(tot);
+      var foot = el('div', 'task-card-foot text-body-secondary');
+      var when = o.picked_up_at || o.sent_at || o.created_at;
+      var whenLabel = o.picked_up_at ? 'Забрали ' : (o.sent_at ? 'Отпр. ' : '');
+      foot.append(el('span', 'text-truncate', o.created_by_name), el('span', 'ms-auto text-nowrap', whenLabel + dt(when)));
+      a.append(foot);
+      return a;
+    }
+
+    function render() {
+      syncUrl();
+      var base = all.filter(matchesBase);
+      renderViews(base);
+      var view = VIEWS.filter(function (x) { return x.v === state.view; })[0] || VIEWS[0];
+      var shown = base.filter(view.test);
+      var board = $('#po-board');
+      board.textContent = '';
+      var isEmpty = all.length === 0;
+      $('#po-empty').classList.toggle('d-none', !isEmpty);
+      board.classList.toggle('d-none', isEmpty);
+      $('#po-total').textContent = isEmpty ? '' : 'Показано: ' + shown.length + ' из ' + all.length;
+      if (isEmpty) return;
+      COLUMNS.forEach(function (col) {
+        var items = shown.filter(function (o) { return o.status === col.s; });
+        var c = el('section', 'board-col');
+        c.style.setProperty('--c', col.c);
+        c.setAttribute('data-testid', 'po-col');
+        c.dataset.status = col.s;
+        var head = el('div', 'board-col-head');
+        head.append(el('span', 'dot'), el('span', 'name', STATUS[col.s].t));
+        var cnt = el('span', 'count', String(items.length));
+        cnt.setAttribute('data-testid', 'po-col-count');
+        head.append(cnt);
+        var sum = items.reduce(function (acc, o) { return acc + (o.total_amount ? parseFloat(o.total_amount) : 0); }, 0);
+        if (sum > 0) head.append(el('span', 'column-total ms-auto', money(sum.toFixed(2)) + ' ₽'));
+        c.append(head);
+        var body = el('div', 'board-col-body');
+        if (!items.length) body.append(el('div', 'text-body-secondary small text-center py-3', '—'));
+        items.forEach(function (o) { body.append(card(o, col.c)); });
+        c.append(body);
+        board.append(c);
       });
     }
-    function render(resp) {
-      var body = $('#po-tbody');
-      body.textContent = '';
-      (resp.items || []).forEach(function (o) {
-        var tr = el('tr');
-        tr.setAttribute('data-testid', 'po-row');
-        tr.dataset.id = o.id;
-        tr.style.cursor = 'pointer';
-        var a = el('a', 'fw-semibold', o.number_display);
-        a.href = '/purchases/' + encodeURIComponent(o.id);
-        a.setAttribute('data-testid', 'po-row-number');
-        var cells = [a, el('span', 'text-break', o.recipient_name), badge(STATUS, o.status, 'po-row-status'),
-          String(o.items_count), money(o.total_amount), null, dt(o.sent_at), dt(o.picked_up_at)];
-        cells.forEach(function (c, i) {
-          var td = el('td', (i === 3 || i === 4) ? 'text-end' : '');
-          if (i === 5) {
-            td.append(el('div', null, dt(o.created_at)), el('div', 'small text-body-secondary', o.created_by_name));
-          } else if (c instanceof Node) td.append(c);
-          else td.textContent = c;
-          if (i === 1) td.setAttribute('data-testid', 'po-row-recipient');
-          if (i === 4) td.setAttribute('data-testid', 'po-row-total');
-          tr.append(td);
-        });
-        tr.addEventListener('click', function (e) { if (!e.target.closest('a')) location.href = a.href; });
-        body.append(tr);
+
+    function loadAll(offset, acc) {
+      return KT.api.get(API + '?limit=100&offset=' + offset).then(function (resp) {
+        var items = resp.items || [];
+        acc = acc.concat(items);
+        if (items.length && acc.length < resp.total) return loadAll(offset + items.length, acc);
+        return acc;
       });
-      var empty = !resp.items || resp.items.length === 0;
-      $('#po-table-wrap').classList.toggle('d-none', empty);
-      $('#po-empty').classList.toggle('d-none', !empty || !!state.status);
-      $('#po-total').textContent = 'Всего: ' + resp.total;
-      $('#po-prev').classList.toggle('d-none', state.offset === 0);
-      $('#po-next').classList.toggle('d-none', state.offset + LIMIT >= resp.total);
     }
-    load();
+    loadAll(0, []).then(function (rows) {
+      all = rows;
+      fillSuppliers();
+      render();
+    }).catch(function () {
+      $('#po-board').textContent = '';
+      $('#po-board').append(el('div', 'empty-state', 'Не удалось загрузить заказы'));
+      toast('Не удалось загрузить список', true);
+    });
   }
 
   // ======================= §8.2 новый заказ =======================

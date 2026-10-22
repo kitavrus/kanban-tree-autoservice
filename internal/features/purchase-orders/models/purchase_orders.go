@@ -34,6 +34,8 @@ type PurchaseOrder struct {
 	TotalAmount   *string
 	IsChanged     bool
 	NoteChanged   bool
+	// HasDiscrepancy — хотя бы в одной строке поставщик ответил количеством ≠ заказанному.
+	HasDiscrepancy bool
 
 	Items []PurchaseOrderItem
 }
