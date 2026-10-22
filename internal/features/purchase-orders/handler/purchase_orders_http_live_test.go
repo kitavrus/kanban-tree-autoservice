@@ -1149,3 +1149,62 @@ func (s *PurchaseOrdersLiveSuite) TestRace_ArchiveWaitsForCreate() {
 	s.expectErr(st, raw, 409, "SUPPLIER_HAS_OPEN_PURCHASES", fmt.Sprintf("У поставщика есть незакрытые закупки: З-%04d", number))
 	s.Equal("true", s.scalar(`SELECT is_active::text FROM suppliers WHERE id = $1::uuid`, sup))
 }
+
+// listItem — строка заказа id из GET /purchase-orders (обходит страницы по 100).
+func (s *PurchaseOrdersLiveSuite) listItem(b *testutil.Browser, id string) dto.ListItem {
+	for offset := 0; ; offset += 100 {
+		st, raw := b.Do(http.MethodGet, fmt.Sprintf("%s?limit=100&offset=%d", poAPI, offset), nil)
+		s.Require().Equal(http.StatusOK, st, string(raw))
+		var resp dto.ListResponse
+		s.Require().NoError(json.Unmarshal(raw, &resp))
+		for _, it := range resp.Items {
+			if it.ID == id {
+				return it
+			}
+		}
+		s.Require().NotEmpty(resp.Items, "заказ %s не найден в списке", id)
+	}
+}
+
+// Канбан закупок: has_discrepancy и is_changed в строке списка — основа быстрых фильтров
+// «С расхождениями» и «Изменены».
+func (s *PurchaseOrdersLiveSuite) TestListFlags() {
+	o := s.sentOrder(s.admin, 2)
+	li := s.listItem(s.admin, o.ID)
+	s.False(li.HasDiscrepancy, "ответа ещё нет")
+	s.False(li.IsChanged)
+
+	// ответ с тем же количеством — не расхождение.
+	st, raw := s.answer(s.supA, o.ID, o.Items[1].ID, o.Items[1].Version, ptr("4"), ptr("100"), "")
+	s.Require().Equal(200, st, string(raw))
+	s.False(s.listItem(s.admin, o.ID).HasDiscrepancy, "4 = 4")
+
+	// хотя бы одна строка с другим количеством — расхождение у всего заказа.
+	st, raw = s.answer(s.supA, o.ID, o.Items[0].ID, o.Items[0].Version, ptr("3"), ptr("100"), "")
+	s.Require().Equal(200, st, string(raw))
+	s.True(s.listItem(s.admin, o.ID).HasDiscrepancy, "3 ≠ 4")
+
+	// поставщик исправил ответ — расхождение уходит.
+	cur := s.get(s.admin, o.ID)
+	st, raw = s.answer(s.supA, o.ID, cur.Items[0].ID, cur.Items[0].Version, ptr("4"), ptr("100"), "")
+	s.Require().Equal(200, st, string(raw))
+	s.False(s.listItem(s.admin, o.ID).HasDiscrepancy)
+
+	// заказчик поменял количество после отправки — «Изменён», пока поставщик не ответит.
+	cur = s.get(s.admin, o.ID)
+	st, raw = s.admin.Do(http.MethodPut, poAPI+"/"+o.ID, dto.UpdateRequest{Version: cur.Version, Note: cur.Note, Items: []dto.ItemRequest{
+		{ID: &cur.Items[0].ID, ProductID: cur.Items[0].ProductID, Qty: "6"},
+		{ID: &cur.Items[1].ID, ProductID: cur.Items[1].ProductID, Qty: "4"},
+	}})
+	s.Require().Equal(200, st, string(raw))
+	li = s.listItem(s.admin, o.ID)
+	s.True(li.IsChanged)
+	s.False(li.HasDiscrepancy, "ответ по изменённой строке сброшен")
+
+	cur = s.get(s.admin, o.ID)
+	st, raw = s.answer(s.supA, o.ID, cur.Items[0].ID, cur.Items[0].Version, ptr("5"), ptr("100"), "")
+	s.Require().Equal(200, st, string(raw))
+	li = s.listItem(s.admin, o.ID)
+	s.False(li.IsChanged, "поставщик ответил заново")
+	s.True(li.HasDiscrepancy, "5 ≠ 6")
+}

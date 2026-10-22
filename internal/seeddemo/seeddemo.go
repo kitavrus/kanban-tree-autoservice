@@ -71,6 +71,8 @@ type Result struct {
 	Tasks       int
 	Attachments int
 	Videos      int
+	// PurchaseOrders — заказы поставщикам (канбан «Закупки»).
+	PurchaseOrders int
 }
 
 // Option — настройка прогона.
@@ -215,6 +217,12 @@ func (s *seeder) run() (Result, error) {
 	if err := s.seedTasks(&res, columns, clients, executors, equip, services, products); err != nil {
 		return Result{}, fmt.Errorf("seeddemo: tasks: %w", err)
 	}
+
+	n, err := s.seedPurchaseOrders(executors)
+	if err != nil {
+		return Result{}, fmt.Errorf("seeddemo: purchase orders: %w", err)
+	}
+	res.PurchaseOrders = n
 
 	if err := s.seedDeletedTask(clients, equip["vesta"]); err != nil {
 		return Result{}, fmt.Errorf("seeddemo: deleted task: %w", err)
@@ -924,4 +932,110 @@ func (s *seeder) seedDeletedSupplier() error {
 		WHERE NOT EXISTS (SELECT 1 FROM suppliers WHERE name = $1 AND deleted_at IS NOT NULL)`,
 		demoDeletedSupplierName, s.adminID)
 	return err
+}
+
+// seedPurchaseOrders — учётка кабинета «АвтоДеталь-Опт» и заказы поставщикам во всех
+// статусах (data_purchases.go). Пишет напрямую в таблицы: история (отправлен, собран,
+// забран) датируется в прошлом. Забор заказа остатки не меняет (purchase-orders TS-013).
+func (s *seeder) seedPurchaseOrders(executors []executorRow) (int, error) {
+	supplierIDs := map[string]string{}
+	rows, err := s.tx.Query(s.ctx, `SELECT name, id::text FROM suppliers WHERE deleted_at IS NULL`)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var name, id string
+		if err := rows.Scan(&name, &id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		supplierIDs[name] = id
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(demoPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, fmt.Errorf("bcrypt: %w", err)
+	}
+	if _, err := s.tx.Exec(s.ctx,
+		`INSERT INTO users (login, password_hash, name, role, phone, supplier_id)
+		 VALUES ($1, $2, 'Сафонов Игорь', 'supplier', '+7 495 700-10-10', $3::uuid)
+		 ON CONFLICT (login) DO NOTHING`,
+		demoSupplierLogin, string(hash), supplierIDs[supAvtodetal]); err != nil {
+		return 0, err
+	}
+	var supplierUserID string
+	if err := s.tx.QueryRow(s.ctx, `SELECT id::text FROM users WHERE login = $1`, demoSupplierLogin).Scan(&supplierUserID); err != nil {
+		return 0, err
+	}
+
+	ago := func(h int) *string {
+		if h == 0 {
+			return nil
+		}
+		v := fmt.Sprintf("%d hours", h)
+		return &v
+	}
+	for _, o := range demoPurchaseOrders {
+		var supplierID *string
+		if o.supplier != "" {
+			id, ok := supplierIDs[o.supplier]
+			if !ok {
+				return 0, fmt.Errorf("нет поставщика %q", o.supplier)
+			}
+			supplierID = &id
+		}
+		author := userID(executors, o.author, s.adminID)
+		var cancelReason *string
+		if o.cancelReason != "" {
+			cancelReason = &o.cancelReason
+		}
+		var orderID string
+		if err := s.tx.QueryRow(s.ctx, `
+			INSERT INTO purchase_orders (supplier_id, status, note, created_by, created_at, updated_at,
+			    sent_by, sent_at, ready_by, ready_at, picked_up_by, picked_up_at,
+			    cancelled_by, cancelled_at, cancel_reason, note_changed_at)
+			VALUES ($1::uuid, $2, $3, $4::uuid, now() - $5::interval, now() - least($5::interval, coalesce($6::interval, $5::interval)),
+			    CASE WHEN $6::interval IS NOT NULL THEN $4::uuid END, now() - $6::interval,
+			    CASE WHEN $7::interval IS NOT NULL THEN $10::uuid END, now() - $7::interval,
+			    CASE WHEN $8::interval IS NOT NULL THEN $4::uuid END, now() - $8::interval,
+			    CASE WHEN $9::interval IS NOT NULL THEN $4::uuid END, now() - $9::interval, $11,
+			    CASE WHEN $12 THEN now() - interval '2 hours' END)
+			RETURNING id::text`,
+			supplierID, o.status, o.note, author, *ago(o.createdH), ago(o.sentH), ago(o.readyH), ago(o.pickedH),
+			ago(o.cancelledH), supplierUserID, cancelReason, o.changedAfterSend).Scan(&orderID); err != nil {
+			return 0, fmt.Errorf("заказ %q: %w", o.note, err)
+		}
+		for pos, l := range o.lines {
+			// Первая строка изменённого заказа: правка после отправки, ответа ещё нет —
+			// «Изменён» на канбане.
+			changed := o.changedAfterSend && pos == 0
+			var answeredBy *string
+			answeredAgo := "0 hours"
+			if l.answer {
+				answeredBy = &supplierUserID
+				answeredAgo = fmt.Sprintf("%d hours", max(o.sentH-1, 1))
+			}
+			tag, err := s.tx.Exec(s.ctx, `
+				INSERT INTO purchase_order_items (order_id, product_id, position, qty, reason, name, sku, unit,
+				    supplier_qty, supplier_price, supplier_note, supplier_answered_by, supplier_answered_at,
+				    customer_changed_at)
+				SELECT $1::uuid, p.id, $2, $3::numeric, $4, p.name, p.sku, p.unit,
+				       nullif($5, '')::numeric, nullif($6, '')::numeric, $7, $8::uuid,
+				       CASE WHEN $8::uuid IS NOT NULL THEN now() - $9::interval END,
+				       CASE WHEN $10 THEN now() - interval '2 hours' END
+				FROM products p WHERE p.sku = $11 AND p.deleted_at IS NULL`,
+				orderID, pos, l.qty, l.reason, l.supQty, l.supPrice, l.supNote, answeredBy, answeredAgo, changed, l.sku)
+			if err != nil {
+				return 0, fmt.Errorf("строка %s: %w", l.sku, err)
+			}
+			if tag.RowsAffected() != 1 {
+				return 0, fmt.Errorf("строка заказа: нет запчасти с артикулом %q", l.sku)
+			}
+		}
+	}
+	return len(demoPurchaseOrders), nil
 }

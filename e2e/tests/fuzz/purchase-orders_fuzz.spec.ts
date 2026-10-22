@@ -105,4 +105,35 @@ test.describe('FUZZ purchase-orders', () => {
     await expect(cab.supplierItem(p.name).getByTestId('so-item-note')).toHaveValue(XSS[1]);
     expect(await sp.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
   });
+  test('канбан закупок: мусор в view/supplier/q и XSS в имени поставщика не ломают доску', async ({ adminPage: page, po, uniq }) => {
+    const acc = await po.supplier(uniq(XSS[1]), false);
+    const p = await po.product(uniq('фазз-канбан'));
+    const o = await po.admin.send(await po.create(po.admin, { supplier_id: acc.supplier.id, items: [{ product_id: p.id, qty: '1' }] }));
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    const ui = new PurchaseOrdersPage(page);
+
+    const junk = ['', ' ', 'bazaar', 'all', 'DONE', '__proto__', 'constructor', '%00', 'я'.repeat(150), '😀', '../../etc', ...XSS];
+    for (const v of junk) {
+      const q = new URLSearchParams({ view: v, supplier: v, q: v }).toString();
+      await ui.gotoList('?' + q);
+      await expect(page.getByTestId('po-board'), `query ${q}`).toBeVisible();
+      await expect(page.getByTestId('po-col'), `query ${q}`).toHaveCount(5);
+      expect((await ui.search.inputValue()).length, 'поиск обрезан до 100 символов').toBeLessThanOrEqual(100);
+      // неизвестный быстрый фильтр сбрасывается на «Все».
+      if (!['', 'all', 'DONE'].includes(v)) await expect(ui.view('')).toHaveAttribute('aria-pressed', 'true');
+    }
+
+    await ui.gotoList();
+    for (const v of [...XSS, 'я'.repeat(1000), '\\', '(', '[', '*']) {
+      await ui.search.fill(v);
+      await expect(page.getByTestId('po-board')).toBeVisible();
+    }
+    await ui.search.fill('');
+    await expect(ui.row(o.id).getByTestId('po-row-recipient')).toHaveText(acc.supplier.name);
+    await ui.supplierFilter.selectOption(acc.supplier.id);
+    await expect(ui.row(o.id)).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
+    expect(errors, 'JS-ошибки на странице').toEqual([]);
+  });
 });

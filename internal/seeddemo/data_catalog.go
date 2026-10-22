@@ -139,7 +139,7 @@ var demoServices = []demoServiceItem{
 	{"thermostat", 5, "Замена термостата", "2200", []protoGood{g("25500-2B000", "1"), g("AF-G12P-RED", "1")}},
 }
 
-// demoSupplier — поставщики (справочник): действующий и архивный.
+// demoSupplier — поставщики (справочник): три действующих и архивный.
 type demoSupplier struct {
 	name, contact, phone, address, note string
 	active                              bool
@@ -147,5 +147,7 @@ type demoSupplier struct {
 
 var demoSuppliers = []demoSupplier{
 	{name: "АвтоДеталь-Опт", contact: "Сафонов Игорь", phone: "+7 495 700-10-10", address: "Москва, ул. Генерала Белова, 28", note: "Фильтры, ГРМ, прокладки — доставка на следующий день", active: true},
+	{name: "ЗапчастьСервис", contact: "Лебедева Марина", phone: "+7 495 700-30-30", address: "Москва, Дмитровское ш., 89", note: "Масла, ГРМ, оригинал Hyundai/Kia — забирать до 18:00", active: true},
+	{name: "АвтоЛига", contact: "Гусев Павел", phone: "+7 495 700-40-40", address: "Москва, МКАД 41-й км, стр. 3", note: "Охлаждение и электрика, привезут курьером", active: true},
 	{name: "МоторЗапчасть", contact: "Петров Артём", phone: "+7 495 700-20-20", address: "Москва, Варшавское ш., 125", note: "Пересорт и задержки — больше не работаем", active: false},
 }

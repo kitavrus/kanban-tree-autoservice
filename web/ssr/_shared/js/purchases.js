@@ -153,7 +153,9 @@
 
   function initList() {
     var params = new URLSearchParams(location.search);
-    var state = { view: params.get('view') || '', supplier: params.get('supplier') || '', q: params.get('q') || '' };
+    // Длинный поиск раздувает URL (лимит заголовков сервера) — режем до 100 символов, как поле.
+    var Q_MAX = 100;
+    var state = { view: params.get('view') || '', supplier: params.get('supplier') || '', q: (params.get('q') || '').slice(0, Q_MAX) };
     if (!VIEWS.some(function (x) { return x.v === state.view; })) state.view = '';
     var all = [];
     var supSel = $('#po-supplier');
@@ -165,7 +167,7 @@
     var qTimer = null;
     qInput.addEventListener('input', function () {
       clearTimeout(qTimer);
-      qTimer = setTimeout(function () { state.q = qInput.value.trim(); render(); }, 200);
+      qTimer = setTimeout(function () { state.q = qInput.value.trim().slice(0, Q_MAX); render(); }, 200);
     });
     $('#po-reset').addEventListener('click', function () {
       state.view = ''; state.supplier = ''; state.q = '';

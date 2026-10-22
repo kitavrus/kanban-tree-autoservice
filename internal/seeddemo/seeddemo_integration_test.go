@@ -151,6 +151,7 @@ func (s *SeedDemoSuite) TestSeedDemo_Run_EmptyDB_CreatesFullDemoSet() {
 
 	s.assertDeletedCatalog(adminID, res)
 	s.assertSuppliers(adminID)
+	s.assertPurchaseOrders(res)
 
 	var distinctColumns int
 	s.Require().NoError(s.Pool.QueryRow(ctx,
@@ -390,7 +391,7 @@ func (s *SeedDemoSuite) assertSuppliers(adminID string) {
 		       coalesce(min(delete_reason) FILTER (WHERE deleted_at IS NOT NULL), ''),
 		       coalesce(min(deleted_by::text) FILTER (WHERE deleted_at IS NOT NULL), '')
 		FROM suppliers`).Scan(&active, &archived, &deleted, &reason, &by))
-	s.Equal(1, active, "действующий поставщик")
+	s.Equal(3, active, "действующие поставщики")
 	s.Equal(1, archived, "архивный поставщик")
 	s.Equal(1, deleted, "suppliers: одна удалённая запись")
 	s.NotEmpty(reason, "suppliers: причина удаления")
@@ -559,4 +560,44 @@ func assertStockInvariant(t *testing.T, pool *pgxpool.Pool) {
 	if manual == 0 || consumed == 0 {
 		t.Fatalf("assertStockInvariant: ожидались движения manual (%d) и task_consume (%d)", manual, consumed)
 	}
+}
+
+// assertPurchaseOrders — канбан «Закупки» на демо-стенде непустой во всех колонках и быстрых
+// фильтрах: статусы, «Базар», расхождения, изменённые после отправки; у поставщика
+// «АвтоДеталь-Опт» есть вход в кабинет.
+func (s *SeedDemoSuite) assertPurchaseOrders(res seeddemo.Result) {
+	ctx := context.Background()
+	s.Equal(10, res.PurchaseOrders)
+	byStatus := map[string]int{}
+	rows, err := s.Pool.Query(ctx, `SELECT status, count(*) FROM purchase_orders WHERE deleted_at IS NULL GROUP BY status`)
+	s.Require().NoError(err)
+	for rows.Next() {
+		var st string
+		var n int
+		s.Require().NoError(rows.Scan(&st, &n))
+		byStatus[st] = n
+	}
+	rows.Close()
+	s.Equal(map[string]int{"draft": 2, "sent": 3, "ready": 2, "picked_up": 2, "cancelled": 1}, byStatus)
+
+	var bazaar, discrepancy, changed, lines, snapshotMismatch int
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM purchase_orders WHERE supplier_id IS NULL),
+		       (SELECT count(DISTINCT order_id) FROM purchase_order_items WHERE supplier_qty IS NOT NULL AND supplier_qty <> qty),
+		       (SELECT count(DISTINCT order_id) FROM purchase_order_items WHERE customer_changed_at IS NOT NULL
+		          AND (supplier_answered_at IS NULL OR supplier_answered_at < customer_changed_at)),
+		       (SELECT count(*) FROM purchase_order_items),
+		       (SELECT count(*) FROM purchase_order_items i JOIN products p ON p.id = i.product_id WHERE i.sku <> p.sku)`).
+		Scan(&bazaar, &discrepancy, &changed, &lines, &snapshotMismatch))
+	s.Equal(2, bazaar, "«Базар (сами)»")
+	s.Equal(2, discrepancy, "заказы с расхождениями")
+	s.Equal(1, changed, "изменён после отправки")
+	s.Equal(21, lines)
+	s.Zero(snapshotMismatch, "снимок артикула строки = товар")
+
+	var supplierName string
+	s.Require().NoError(s.Pool.QueryRow(ctx, `
+		SELECT s.name FROM users u JOIN suppliers s ON s.id = u.supplier_id
+		WHERE u.login = 'avtodetal' AND u.role = 'supplier' AND u.is_active`).Scan(&supplierName))
+	s.Equal("АвтоДеталь-Опт", supplierName)
 }
