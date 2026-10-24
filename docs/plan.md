@@ -1,7 +1,7 @@
 # Kanban-tree — план
 
 ## 1. Стек (по образцу zerem_wms)
-- **Backend:** Go 1.26+, Fiber v3, pgx/v5, golang-migrate (`migrations/`, раннер `cmd/migrate`), go-redis v9.
+- **Backend:** Go 1.27+, Fiber v3, pgx/v5, golang-migrate (`migrations/`, раннер `cmd/migrate`), go-redis v9.
 - **Frontend:** Go `html/template` (SSR: общий layout `web/ssr/_layout/templates` (вне корня статики `web/ssr/_shared`), страницы фич — `web/ssr/{feature}/templates`, рендерер `internal/ssr`) + чистый JS (без фреймворков и без сборки). **Основа стилей — vendored Bootstrap 5.3** (как zerem_wms и `/z-scaffold`, D38); вид прототипа — через `--bs-*`-токены и `web/ssr/_shared/app.css` (primary `#2563EB`), тёмная тема — `data-bs-theme`. Общие JS: `theme.js`, `api.js` (fetch + CSRF), `ui-dialog.js` (диалоги на Bootstrap Modal), `combobox.js` (поиск в любом `select.form-select`). Доска и модалки — vanilla JS поверх JSON API.
 - **Drag & drop:** нативный HTML5 DnD (без библиотек); позиция карточки — дробный `position` (меняется одна строка при переносе).
 - **Файлы:** локальный диск (volume `uploads`), интерфейс `FileStore` → позже MinIO/S3 без переписывания. Превью для фото, `<video>` для видео, ссылка для PDF. Лимиты: фото 20 МБ, видео 500 МБ, PDF 20 МБ (D21).

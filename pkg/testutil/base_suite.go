@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"syscall"
@@ -16,8 +17,10 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/ory/dockertest/v3"
-	dc "github.com/ory/dockertest/v3/docker"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
+	"github.com/ory/dockertest/v4"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/suite"
 )
@@ -45,9 +48,9 @@ type BaseSuite struct {
 	DSN  string
 
 	redisAddr string
-	pool      *dockertest.Pool
-	pgRes     *dockertest.Resource
-	redisRes  *dockertest.Resource
+	pool      dockertest.ClosablePool
+	pgRes     dockertest.ClosableResource
+	redisRes  dockertest.ClosableResource
 }
 
 func (s *BaseSuite) RedisAddr() string { return s.redisAddr }
@@ -58,11 +61,14 @@ func (s *BaseSuite) SetupSuite() {
 	defer func() {
 		if !ready {
 			s.purgeInfra()
+			if s.pool != nil {
+				_ = s.pool.Close(context.Background())
+			}
 		}
 	}()
 
 	var err error
-	s.pool, err = dockertest.NewPool("")
+	s.pool, err = dockertest.NewPool(context.Background(), "")
 	s.Require().NoError(err, "docker недоступен")
 	s.reapOrphans()
 
@@ -128,33 +134,40 @@ func (s *BaseSuite) startInfra() error {
 // runContainer публикует порт ТОЛЬКО на 127.0.0.1. При публикации на 0.0.0.0 (дефолт
 // dockertest) любой сокет хоста на 127.0.0.1:<тот же порт> — контейнер соседнего
 // compose-стенда, чужой сервер — молча перехватывает трафик: bind проходит у обоих.
-// Expire НЕ используется: это StopContainer(timeout) — SIGTERM уходит контейнеру сразу
-// (успел стартовать — завершится), а через timeout — SIGKILL посреди длинной сьюты.
-func (s *BaseSuite) runContainer(repo, tag, port string, env ...string) (*dockertest.Resource, error) {
+// WithoutReuse: v4 по умолчанию переиспользует контейнер по repo:tag — каждой сьюте нужна
+// своя чистая пара PG+Redis.
+func (s *BaseSuite) runContainer(repo, tag, port string, env ...string) (dockertest.ClosableResource, error) {
 	host, _ := os.Hostname()
-	res, err := s.pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: repo, Tag: tag, Env: env,
-		Labels: map[string]string{
+	p, err := network.ParsePort(port)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.pool.Run(context.Background(), repo,
+		dockertest.WithTag(tag),
+		dockertest.WithEnv(env),
+		dockertest.WithoutReuse(),
+		dockertest.WithLabels(map[string]string{
 			labelRun:  runID(),
 			labelPID:  strconv.Itoa(os.Getpid()),
 			labelHost: host,
-		},
-		PortBindings: map[dc.Port][]dc.PortBinding{
-			dc.Port(port): {{HostIP: "127.0.0.1", HostPort: ""}},
-		},
-	}, func(hc *dc.HostConfig) { hc.PublishAllPorts = false })
+		}),
+		dockertest.WithPortBindings(network.PortMap{
+			p: {{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: ""}},
+		}),
+		dockertest.WithHostConfig(func(hc *container.HostConfig) { hc.PublishAllPorts = false }),
+	)
 	if err != nil {
 		return nil, err
 	}
 	if res.GetPort(port) == "" || res.GetBoundIP(port) != "127.0.0.1" {
-		_ = s.pool.Purge(res)
+		_ = res.Close(context.Background())
 		return nil, fmt.Errorf("%s: порт %s опубликован не на 127.0.0.1 (%q)", repo, port, res.GetHostPort(port))
 	}
 	return res, nil
 }
 
 // waitReady опрашивает check до deadline; контейнер умер — выходит сразу, не дожидаясь.
-func (s *BaseSuite) waitReady(res *dockertest.Resource, deadline time.Time, check func(context.Context) error) error {
+func (s *BaseSuite) waitReady(res dockertest.ClosableResource, deadline time.Time, check func(context.Context) error) error {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		err := check(ctx)
@@ -162,12 +175,12 @@ func (s *BaseSuite) waitReady(res *dockertest.Resource, deadline time.Time, chec
 		if err == nil {
 			return nil
 		}
-		c, inspErr := s.pool.Client.InspectContainer(res.Container.ID)
+		insp, inspErr := s.pool.Client().ContainerInspect(context.Background(), res.ID(), mobyclient.ContainerInspectOptions{})
 		if inspErr != nil {
 			return fmt.Errorf("контейнер пропал (%v); последняя ошибка: %w", inspErr, err)
 		}
-		if !c.State.Running {
-			return fmt.Errorf("контейнер завершился (%s); последняя ошибка: %w", c.State.String(), err)
+		if st := insp.Container.State; st == nil || !st.Running {
+			return fmt.Errorf("контейнер завершился (%s); последняя ошибка: %w", containerState(st), err)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("не готов за %s: %w", infraAttemptWait, err)
@@ -180,9 +193,9 @@ func (s *BaseSuite) purgeInfra() {
 	if s.pool == nil {
 		return
 	}
-	for _, r := range []**dockertest.Resource{&s.pgRes, &s.redisRes} {
+	for _, r := range []*dockertest.ClosableResource{&s.pgRes, &s.redisRes} {
 		if *r != nil {
-			_ = s.pool.Purge(*r)
+			_ = (*r).Close(context.Background())
 			*r = nil
 		}
 	}
@@ -193,19 +206,20 @@ func (s *BaseSuite) purgeInfra() {
 // параллельные пакеты, соседняя сессия/ворктри — не трогаются.
 func (s *BaseSuite) reapOrphans() {
 	host, _ := os.Hostname()
-	list, err := s.pool.Client.ListContainers(dc.ListContainersOptions{
+	ctx := context.Background()
+	list, err := s.pool.Client().ContainerList(ctx, mobyclient.ContainerListOptions{
 		All:     true,
-		Filters: map[string][]string{"label": {labelHost + "=" + host}},
+		Filters: mobyclient.Filters{}.Add("label", labelHost+"="+host),
 	})
 	if err != nil {
 		return
 	}
-	for _, c := range list {
+	for _, c := range list.Items {
 		pid, err := strconv.Atoi(c.Labels[labelPID])
 		if err != nil || pid <= 0 || !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
 			continue
 		}
-		_ = s.pool.Client.RemoveContainer(dc.RemoveContainerOptions{ID: c.ID, Force: true, RemoveVolumes: true})
+		_, _ = s.pool.Client().ContainerRemove(ctx, c.ID, mobyclient.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 	}
 }
 
@@ -221,4 +235,14 @@ func (s *BaseSuite) TearDownSuite() {
 		s.Pool.Close()
 	}
 	s.purgeInfra()
+	if s.pool != nil {
+		_ = s.pool.Close(context.Background())
+	}
+}
+
+func containerState(st *container.State) string {
+	if st == nil {
+		return "нет состояния"
+	}
+	return fmt.Sprintf("%s, exit=%d", st.Status, st.ExitCode)
 }
